@@ -71,8 +71,16 @@ tolerance measured on one CPU is a hand-copy of that CPU's rounding"). The
 measured multiplier-1 ratios and the fixture that attained each are recorded
 beside every entry and in the stage 6 history section. A ratio above about
 100 at multiplier 1 means a kappa that is not the conditioning of the
-quantity compared, and is fixed in the kappa, never in `c`. A slug missing
-here fails the contract by name; a key that is not a row fails it too.
+quantity compared, and is fixed in the kappa, never in `c`. Re-open rule
+(docs/history/twiss_dispersion_analysis_history.md, section "2026-09-13: CI
+run 436 on e960ca8 red on the stage 6 one-tenth pins; the test-side fix",
+"Not fixed here, still carried"): a row whose ratio at its frozen `c`
+exceeds 0.25 in either measured arm or on the CI runner (whose per-row table
+the stage 6 testset prints) re-opens that row's measurement before the
+suite's one-half pin `_ST6_PIN` in test/runtests.jl trips: `c` moves only by
+the H15 rule with a documented third-arm entry, or the row's kappa is
+re-examined; never a hand move. A slug missing here fails the contract by
+name; a key that is not a row fails it too.
 """
 function _default_identity_multipliers()
     # Measured 2026-09-13 on the integrated main tree at multiplier 1.0 in both CPU arms (the tables are in the

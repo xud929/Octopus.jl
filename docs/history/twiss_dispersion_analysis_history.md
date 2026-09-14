@@ -11310,3 +11310,121 @@ restated.
   pin flipped, so no tolerant rewrite and no re-pin is owed; the kappa_route
   commit re-measures 256 with the stalls (the crab probe's among them) on the
   flag side.
+
+## 2026-09-14: the identity contract's tripwires (test(contracts) commit)
+
+Items 3 and 9 of the stage 7 carried list, the `test(contracts)` commit of
+the batch (the write-up's items 3 and 9 are the plan, cited by path in the
+item 10 section above and not restated). Line numbers are HEAD 180ce70; the
+stage 6 testset block (`test/runtests.jl` 1137-1298) and the contract's
+docstrings sit before every line the M1 commit adds, so its numbers hold on
+the M1 tree too. Test and docstring lines only: no floor, multiplier or
+kappa moves, and no `.github/workflows/ci.yml` line (a workflow edit is
+full-gate class for nothing readable).
+
+### n8: the kind sweep's `:failed` branch, shown to count and to name
+
+The stage 6 testset's negatives n1 to n7 (1219-1291: every multiplier tiny; a
+slug deleted; the liar kind whose example `analyze` cannot take; the kind with
+no example; the certify-everything verb; the perturbing verb; the symplectic
+perturbation of the `:none` runs; the throwing verb; no dense maps) leave one
+branch of the kind sweep without a red: `metrics[ :kinds_failed_example] += 1`
+(`src/contracts/twiss_dispersion_identity.jl: 1069`, failure text "the
+metadata example analyzes to :failed"). The suite pins the count at zero on
+the honest tree (1204) and nothing showed the branch can count. A registered
+liar kind cannot reach it: the sweep runs
+`TwissDispersionAnalysis(strict=false)` (1029), whose default `nonsymplectic =
+:error` throws on a non-symplectic example before any `:failed` result exists,
+so the liar lands in `kinds_declaring_without_result` (n3). n8 is therefore
+verb-based, the pattern of n4 to n6: a probe verb that answers every kind's
+example with the analysis of D10's perturbed dense map under
+`TwissDispersionAnalysis(strict=false, nonsymplectic=:flag,
+symplectic_rtol=1e-9, ...)` (the D10 row, contract 493, already `:failed` in
+both arms), so every kind the sweep analyzes fails its example. The assertions
+are on the metrics (`kinds_failed_example` at least one with `kinds_declaring`
+equal to the honest run's, the sum identity of 1203 still holding, the
+`declaring_without_result` and `without_example` buckets empty, no silent
+diagnostic) and on the message naming the count and a kind, per the write-up's
+"assert on metrics, not `r.message`" alone. The text is the commit's diff.
+
+### The D-row count pin
+
+The contiguity pin at 1197-1200 (`Set(dnums) == Set(1:maximum(dnums))`)
+catches a row deleted from the middle of the diagnostics table and misses
+one deleted from its end: the table's last row D14 (the negative-h Ohmi
+row, contract 529) is deletable unnoticed. The commit adds the literal
+`maximum(dnums) == 14` (the rows D1 to D14 at contract 439-529). A new D
+row moves the literal on purpose, in the same commit as the row.
+
+### The re-open rule, beside `_ST6_PIN` and in the multiplier docstring
+
+The rule stands in this history three times (the run-436 section, "Not
+fixed here": "the runner's exact per-row ratios (the next CI log prints
+them; if any row sits above 0.25 there, the H15 table gets a documented
+third-arm entry or the row's kappa is re-examined, per the 'ratio that moves
+with the CPU target' tell of docs/experiences.md)"; the run-437 section's
+Carried; the second CI-fix gate record) and nowhere on the tree. The
+`_ST6_PIN` comment (1137-1150) explains the one-half pin, the two measured
+arms' worst 0.0948 and the runner's 0.154, 0.125, 0.115, and stops there;
+the `_default_identity_multipliers` docstring (contract 61-76) states H15
+for the two measured arms. Both gain the rule in the run-436 section's
+words: any runner row above 0.25 re-opens the pin decision, and the outcome
+is a documented third-arm H15 entry or a kappa re-examination, never a hand
+move of `c` or of the pin. The rule is a re-open rule, not a third pin: H15
+is a two-arm rule, the runner is not an arm, and at a runner ratio 0.25 H15
+would give a factor 4, not 2 (`ratio_1 = ratio_c * c`).
+
+### The `::notice` chunks
+
+The 57-row table prints unconditionally (1177-1184, with `Sys.CPU_NAME`,
+the cpu target and `OPENBLAS_CORETYPE`) to the step's stdout, and the step
+logs answer 403 from the gate host (the run-436 and run-437 sections); run
+438's table is unread, which is why item 3 asked the owner for a paste. Under
+`GITHUB_ACTIONS` the stage 6 testset now also emits the table as `::notice`
+workflow commands, at most six chunks of under 1 KB each, so the runner's
+per-row ratios appear as annotations on the run's summary page, the one
+channel the record shows readable without a token (whether a per-step
+annotation cap truncates them is unverified until the first run). No new
+ratio pin: the chunks compare nothing, and the tripwire on the pin's single
+source (1292-1298, `_st6_pin_lines`) still finds exactly three `_ST6_PIN`
+lines. The first CI run after the batch's push is the first read of the
+runner's rows; a row above 0.25 there invokes the rule above.
+
+### What this commit changes, and its checks
+
+`test/runtests.jl`: n8, the count pin, the rule sentence in the `_ST6_PIN`
+comment, the `::notice` emission in the stage 6 testset.
+`src/contracts/twiss_dispersion_identity.jl`: the rule sentence in the
+`_default_identity_multipliers` docstring; no code line. The stage 6 testset
+extracted on the commit's tree, both arms (the `_st6_` helpers 1110-1189 and
+the block 1190-1355 on the commit's tree, the tripwire on the pin's single
+source included): 166/166 in 1m31.8s native and 166/166 in 1m31.1s in the AVX2
+arm (`OPENBLAS_CORETYPE=Haswell julia -C haswell`), exit 0 in both,
+`carried/extract/trip_extract.jl` and its two logs; eight assertions more than
+the testset on 180ce70 (158/158 in the second CI-fix commit's native gate
+log), n8's seven and the count pin (the pass count; n8 red on its injected
+verb is the negative passing). Fast lane on the commit's tree: not run on this
+commit's tree alone: AGENTS.md owes the lane before the PUSH, not before every
+commit (owner decision 2026-09-04); the checks of this commit are the extract
+above in both arms and the batch's two-arm full gate on the final tree of the
+push, recorded in its own section below; skipped on this tree alone: the fast
+lane and the full suite. The `::notice` output is not exercised by either (no
+`GITHUB_ACTIONS` here).
+
+### Not verified
+
+No julia ran for this section's drafting; the extract counts above are the
+orchestrator's runs; the runner's annotations, their cap and the runner's
+per-row ratios are the next CI run's; the exact assertion text of n8 is the
+commit's diff. The write-up's items 3 and 9 are cited by path above, not
+restated.
+
+### Carried
+
+- Item 3's owner half: the run-438 paste or a read-only Actions token for
+  the gate host (whether read-only suffices is unverified); whether 0.25
+  stands. Until the first annotated run, the runner class is unmeasured row
+  by row.
+- Item 9 (iii): T2's 41-44 s in-lane cost, report-only; the example runner
+  and `Physics contracts` are lane-gated.
+- Item 11 (a), the AVX2 arm as a Verification Matrix row: the owner's.

@@ -1131,6 +1131,23 @@ end
 # n5: a verb that perturbs every Matrix input by 1e-8 (the identities drift).
 _st6_perturb(a::TwissDispersionAnalysis, x) =
     analyze(a, x isa AbstractMatrix ? x .+ 1e-8 .* randn(MersenneTwister(1), size(x)...) : x)
+# n8: a verb that fails every declaring kind's metadata example. The kind sweep runs each example through the verb
+# with TwissDispersionAnalysis(strict=false), whose default nonsymplectic = :error refuses a non-symplectic example
+# before any verdict, so a registered liar kind cannot reach the sweep's kinds_failed_example branch (n3 lands in
+# kinds_declaring_without_result); the verb reaches it by REPLACING the example with the diagnostics table's D10 map,
+# the perturbed non-symplectic dense map, analyzed under D10's own options (nonsymplectic = :flag, already :failed in
+# both arms). Built the way the D10 row builds it (the contract's seed, the same two rng streams; emittances from the
+# contract). Only an input that IS a registered kind's example is replaced: the identity fixtures are matrices,
+# tuples and a BeamLine, the diagnostic rows matrices and tuples, and they run unchanged, so every finding is the sweep's.
+_st6_meta_example(T) = (meta = Octopus._element_meta_or_nothing(T); meta === nothing ? nothing : meta.example)
+_st6_is_kind_example(x) = any(T -> _st6_meta_example(T) === x, Octopus.registered_element_specs())
+function _st6_fail_every_kind(a::TwissDispersionAnalysis, x)
+    (x isa AbstractMatrix || !_st6_is_kind_example(x)) && return analyze(a, x)
+    c = TwissDispersionIdentityContract()
+    M6 = Matrix{Float64}(Octopus._manufactured_symplectic_map(MersenneTwister(c.seed), 6; stable=true).M)
+    Mpert = M6 .+ 1e-6 .* randn(MersenneTwister(c.seed + UInt64(7)), 6, 6)
+    return analyze(TwissDispersionAnalysis(strict=false, nonsymplectic=:flag, symplectic_rtol=1e-9, emittances=c.emittances), Mpert)
+end
 # The kinds that declare the analysis, derived from the registry (H9: no kind list, no literal).
 _st6_declaring_kinds() = count(T -> TwissDispersionAnalysis in Octopus.supported_analyses(T), Octopus.registered_element_specs())
 
@@ -1148,6 +1165,13 @@ _st6_declaring_kinds() = count(T -> TwissDispersionAnalysis in Octopus.supported
 # and CI run 437 (ce43179) was red there at the same 0.1537; `_st6_pin_lines` and the tripwire at the end of the
 # stage 6 testset read the suite by its package path (so an extract of the testset still audits the suite) and
 # require every ratio pin of the two blocks to name the constant.
+# The RE-OPEN rule (the run-436 history section, "Not fixed here, still carried", restated with the run-437 fix): the
+# pin is one half, but a row whose ratio at its frozen c sits above 0.25 in a readable CI table (the runner class) or
+# in either measured arm re-opens that row's measurement before the pin trips: the H15 table gets a documented
+# third-arm entry or the row's kappa is re-examined (the "ratio that moves with the CPU target" tell of
+# docs/experiences.md), never a hand move of c or of the pin. It is not H15's ten-times rule: H15 sets c from the two
+# measured arms' maxima (c = max(8, 2^ceil(log2(10 max)))); the re-open rule reads the ratios at the frozen c and
+# says when a row must be measured again. The ::notice chunks in the stage 6 testset carry the runner's table.
 const _ST6_PIN = 0.5
 function _st6_pin_lines(src::Vector{String})
     # a block runs from its column-0 title line to the first bare `end` after it (a column-0 `end` inside either
@@ -1179,9 +1203,24 @@ end
     st6_ct = Base.JLOptions().cpu_target
     println("stage 6 identity pins: ratio at the frozen c | c | argmax fixture (host ", Sys.CPU_NAME, ", cpu_target ",
             st6_ct == C_NULL ? "native" : unsafe_string(st6_ct), ", OPENBLAS_CORETYPE ", get(ENV, "OPENBLAS_CORETYPE", "auto"), ")")
-    for slug in st6_slugs
-        println("  ", rpad(string(slug), 44), " ", rpad(string(round(get(m, Symbol("max_", slug), NaN); sigdigits=4)), 9),
-                " c=", rpad(string(round(Int, c.multipliers[slug])), 5), " ", get(m, Symbol("argmax_", slug), "missing"))
+    # the rows' cells (slug, ratio, c, argmax) built once: the plain table below prints the same text as before (local
+    # logs do not change) and the ::notice chunks under GITHUB_ACTIONS read the same strings
+    st6_cells = [(string(slug), string(round(get(m, Symbol("max_", slug), NaN); sigdigits=4)), string(round(Int, c.multipliers[slug])),
+                  string(get(m, Symbol("argmax_", slug), "missing"))) for slug in st6_slugs]
+    for (s, ratio, cc, arg) in st6_cells
+        println("  ", rpad(s, 44), " ", rpad(ratio, 9), " c=", rpad(cc, 5), " ", arg)
+    end
+    # On the CI runner the same table goes out as GitHub Actions annotations (carried item 3): CI's step logs are not
+    # readable from the gate host (403 on the API without a token), annotations are, so the runner class's per-row
+    # measurement needs no paste. GitHub takes one line per annotation with newlines as %0A; at most 6 chunks, each
+    # under 1 KB (cld(rows, 6) rows per chunk, a row cut at 88 characters: 10 * 88 + 9 * 3 + the title is under 1024);
+    # plain ASCII. The chunks add no ratio pin: the tripwire at the end of this testset counts three pin lines.
+    if haskey(ENV, "GITHUB_ACTIONS") && !isempty(st6_cells)
+        st6_compact = [first(string(s, " ", ratio, " c=", cc, ": ", arg), 88) for (s, ratio, cc, arg) in st6_cells]
+        st6_chunks = collect(Iterators.partition(st6_compact, cld(length(st6_compact), 6)))
+        for (k, rows) in enumerate(st6_chunks)
+            println("::notice title=stage 6 identity pins ", k, "/", length(st6_chunks), " (", Sys.CPU_NAME, ")::", join(rows, "%0A"))
+        end
     end
     for slug in st6_slugs
         @test haskey(m, Symbol("max_", slug)) && haskey(m, Symbol("maxval_", slug)) && haskey(m, Symbol("argmax_", slug))
@@ -1197,6 +1236,9 @@ end
     # cover 1..max without a gap (a row deleted from the table opens a gap; the reachable set is contiguous)
     dnums = [parse(Int, match(r"^D(\d+)", row.name).captures[1]) for row in Octopus._identity_contract_diagnostics(c)]
     @test Set(dnums) == Set(1:maximum(dnums))
+    # the highest design row of the table as a literal, on purpose: the contiguity pin alone cannot see the LAST row
+    # deleted (D14 today, 17 rows with D6, D10 and D11 twice); a row added to or removed from the end moves this number
+    @test maximum(dnums) == 14
     @test m[:diagnostics_expected] >= maximum(dnums)
     # the kind sweep (H9): the declaring count derived from the registry, every kind accounted for
     @test m[:kinds_declaring] == _st6_declaring_kinds()
@@ -1288,6 +1330,21 @@ end
     r7 = validate(TwissDispersionIdentityContract(dense_maps=0, dense_maps_4d=0))
     @test r7.passed && r7.metrics[:dense_maps] == 0 && r7.metrics[:dense_maps_4d] == 0
     @test r7.metrics[:fixtures] < m[:fixtures]
+    # n8: the negative for the positive above (kinds_failed_example == 0): a verb that fails every declaring kind's
+    # metadata example (D10's perturbed map under nonsymplectic = :flag in place of the example; the fixtures and the
+    # diagnostic rows run unchanged, so every finding is the sweep's and the first failure text names a kind). The
+    # sweep puts each declaring kind in exactly one of five buckets: analyzed, refused (the documented closed-orbit
+    # reason), failed_example, declaring_without_result, without_example.
+    r8 = Octopus._identity_contract_probe(c, fx, _st6_fail_every_kind)
+    @test !r8.passed && r8.status === :failed
+    @test r8.metrics[:kinds_failed_example] >= 1 && r8.metrics[:kinds_declaring] == m[:kinds_declaring]
+    @test r8.metrics[:kinds_analyzed] + r8.metrics[:kinds_refused] + r8.metrics[:kinds_failed_example] +
+          r8.metrics[:kinds_declaring_without_result] + r8.metrics[:kinds_without_example] == r8.metrics[:kinds_declaring]
+    @test r8.metrics[:kinds_declaring_without_result] == 0 && r8.metrics[:kinds_without_example] == 0
+    @test r8.metrics[:diagnostics_silent] == 0 && isempty(r8.metrics[:diagnostics_silent_names])
+    @test occursin("analyzes to :failed", r8.message) && occursin("($(r8.metrics[:kinds_failed_example]) findings)", r8.message)
+    @test any(T -> (m8 = Octopus._element_meta_or_nothing(T); m8 !== nothing && occursin("kind $(m8.kind):", r8.message)),
+              Octopus.registered_element_specs())
     # the tripwire on the pin's single source, last so that nothing above it can be lost to it: the three ratio
     # pins of this testset and of "Physics contracts" all read `_ST6_PIN` (a literal is a second copy of the
     # number, and a second copy is what a fix moves in one place only: run 437). The suite is read by its package
