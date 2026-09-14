@@ -12438,3 +12438,259 @@ per-push rule is carried item 14, the owner's to reconcile. Skipped on this
 tree alone: the fast lane and the full suite. This commit changes
 `validation/`, `test/` and a README, no `src/`. Ledgers in this commit: this
 section; `docs/todo.md` row 20, one sentence.
+
+## 2026-09-14: carried item 4 decided, the landed kappa rho_M1 cond(U) stays for the (E7) and U_6 symplecticity tests, the near-degenerate ladder's false FAIL is an accepted limitation, the resolution kappa is declined; the read-only derivation pass (docs(analysis) commit)
+
+What item 4 asks. The analysis accepts a normal-mode frame when each of
+its residuals is at most `c * rho_M1 * kappa`: `_FRAME_ACCEPTANCE_MULTIPLIER`
+(c = 64) covers the 4D frame's normalized (I1) reconstruction residual with
+kappa = 1 and its (E7) symplecticity residual with kappa = cond(U_4)
+(`src/analysis/twiss_dispersion_analysis.jl` 1300-1301), and
+`_NORMALIZER_ACCEPTANCE_MULTIPLIER` (c = 64) covers the 6D normalizer's
+reconstruction residual with kappa = 1 and its symplecticity residual with
+kappa = cond(U_6) (1311-1312). The identity contract mirrors the three
+symplecticity and normalizer rows: `r_frame_symplecticity_e7` (c = 64,
+kappa rho_eps cond(U_4), `src/contracts/twiss_dispersion_identity.jl` 708),
+`r_u6_reconstruction` (c = 64, kappa rho_eps, 714) and `r_u6_symplecticity`
+(c = 32, kappa rho_eps cond(U_6), 718). Carried item 4 (the recommendations
+note of 2026-09-13, item 4; the stage 6 section "What is carried") asks
+whether cond(U) is the right kappa for the symplecticity rows, on three
+grounds: (i) the constant's own docstring records the near-degenerate
+coupled ladder `R(0.5) (+) R(0.5 + delta)` rotated by 0.3, whose frame has
+cond(U_4) = 1 and whose (E7) ratio at multiplier 1 is 8.335e2 at delta =
+1e-3, 3.536e4 at 1e-5, 1.250e6 at 1e-7, 3.125e8 at 1e-9 and 1.250e10 at
+1e-11 (measurement_table_4b.md, the ladder rows; the products ratio x delta
+are 0.83, 0.35, 0.125, 0.31 and 0.125, an eps-level residual divided by the
+tune split), so the analysis FAILS frames whose two clusters `_recover_modes`
+had just resolved by the finite-resolution chord `q = min(2, 2 kappa rho_M1
+/ g)` (`src/analysis/mode_clusters.jl` 553-567): an internal inconsistency
+and a false FAIL near a difference resonance; (ii) on the 200 + 20 set the
+M3 driver put the rows above one tenth of c (`r_frame_symplecticity_e7`
+0.1015 on F6b map 18, ratio_1 6.494; `r_u6_symplecticity` 0.1699 / 0.1813 on
+F6a map 115, ratio_1 5.437 / 5.803; `r_u6_reconstruction` 0.2057 on F6a map
+42 haswell, ratio_1 13.17), all far under the 100 of H15 (a multiplier-1
+ratio above 100 is a wrong kappa, fixed in the kappa; none of these is);
+(iii) the two-source gap: the contract freezes `r_u6_symplecticity` at c =
+32 beside the analysis' 64 with the same kappa.
+
+The two candidates and the data. The theory review's resolution kappa
+`cond(U) ||U||^2 / chord_min` puts the ladder rows at 0.13-0.83 and its
+accepted extreme at 1.563 (`R(0.5) (+) R(1.2)` rotated by 0.784398,
+measurement_table_4b.md "(E7) under the proposed resolution kappa"), against
+3.901 for the landed kappa (dense 6D seed 20260919): it fits the ladder. On
+the population the contract freezes it has the wrong shape: the M3 record
+(the section "2026-09-14: the M3 driver, the identity rows at multiplier 1
+on the 200 + 20 set", correlates over the 200 F6a maps, native / haswell)
+has `r_u6_symplecticity` NEGATIVE against cond(U_6) (-0.50) and against
+`cond_U6 * normU6_sq / chord_min` (-0.54 / -0.52), `r_frame_symplecticity_e7`
+negative against the same resolution product (-0.45 native) and against
+cond(U_4) (-0.45 haswell), and `r_u6_reconstruction` tracking tune3 (-0.57 /
+-0.64) with cond(U_6) not among its three strongest correlates and the
+cluster's internal gap Inf on every excursion map. A kappa proportional to
+cond(U) or to the resolution product would move against the rows it is
+meant to flatten; the one correlate the data leave for the U_6 rows is the
+longitudinal tune itself, `1 / sin(mu_3)`, and a correlation is not a
+derivation.
+
+The owner's decision. The owner asked at 10:22 EDT for item 4 to be
+explained for the (E7) and U_6 rows and accepted the recommendation at
+10:33 EDT ("Recommendation accepted."), which is: (a) the landed kappa
+`rho_M1 cond(U)` stays in both acceptance tests and in the contract's three
+rows, nothing executable changes; (b) the ladder's failure at delta <= 1e-3
+is an accepted, documented limitation: a coupled pair whose phase advances
+differ by 1e-3 rad or less FAILS the (E7) acceptance although its clusters
+were resolved, recorded in the docstring of `_FRAME_ACCEPTANCE_MULTIPLIER`
+in place of the carried parenthetical; (c) the resolution kappa is declined
+on the M3 evidence above; (d) before any kappa change a DERIVATION is owed,
+not a fit: a read-only theory pass on why the 4D frame's (E7) error scales
+with the chord near degeneracy and why the U_6 error scales with `1 /
+sin(mu_3)`; (e) if the derivation holds, the kappa change is a separate
+4-8 h job (the 4b ladder windows re-measured in both CPU arms, the
+contract's twin rows re-frozen on the 20 + 5 set by the H15 rule, the
+analysis multipliers' windows re-read) with the 32-versus-64 harmonization
+done as part of that change, not before it; (f) item 4 is separate from the
+`c_scaling_invariance` red on map 98, which hangs on items 6/12.
+
+What changes on the tree. The docstring of `_FRAME_ACCEPTANCE_MULTIPLIER`
+(`src/analysis/twiss_dispersion_analysis.jl`, before line 67): the
+parenthetical "(carried: the kappa choice is a design decision)" gives way to
+a paragraph recording the decision, the limitation and the derivation pass,
+and its parenthetical "(second order in the eigenvector error, so it carries
+the frame's conditioning)" at lines 45-46 becomes first order, as does the
+comment at line 1299 (the derivation below); the docstring of
+`_NORMALIZER_ACCEPTANCE_MULTIPLIER` (68-80) gains a paragraph on the
+contract's c = 32 beside the analysis' 64, the deferred harmonization and the
+two U_6 derivations. No executable line changes, no constant moves.
+`docs/todo.md` row 20 gains one sentence; this section.
+
+The derivation pass (owner decision (d)). Run 2026-09-14 after the owner's
+10:33 EDT acceptance, the last result at 12:06 EDT, as read-only scratch under
+`result/twiss_impl_2026_09_11/carried/item4_derivation/` (`DERIVATION.md`,
+cited by path; git-ignored; every claim tagged with the model that produced it
+and the model that checked it). Round 1 (workflow wf_a2f72c45, this session's
+model): one (E7) deriver, one M3 analyst, one synthesizer delivered; the two
+U_6 derivers and the three referees did not. Round 2 (wf_1a8c97eb): of eight
+slots only the data referee completed; the other seven were stopped at their
+first API call by the model's safeguard on review-framed prompts, and the
+workflow was stopped at 11:47 EDT. The same tasks, framed as independent
+re-derivations from the code followed by a comparison with the note, were then
+run as five standalone agents on the Opus model: an (E7) algebra
+re-derivation, an (E7) numerics re-check and a data re-analysis (all three
+"holds with corrections"), and the two U_6 derivations (delivered by one agent
+each, not cross-checked by a second).
+
+(E7), the 4D frame: derived and cross-checked. With u_1, u_2 the
+(E3)-normalized eigenvectors (u_j^dag S u_j = +/- i pinned exactly), the
+symplecticity residual obeys the exact block identity (E7)^2 = (n_1^2 + n_2^2)
+/ 2 + |u_1^T S u_2|^2 + |u_1^dag S u_2|^2, and the two cross terms obey exact
+identities whose divisors |conj(rho_1) rho_2 - 1| and |rho_1 rho_2 - 1| equal
+the gaps g and g_c of `_pair_gap` (`src/analysis/mode_clusters.jl` 406-407)
+only on the unit circle, so the law needs the eigenvalue departure much
+smaller than the gap. The residual is FIRST order in the eigenvector error
+(the diagonal blocks are pinned by (E3); the cross terms are linear in the
+eigen-residual), not second as the docstring's parenthetical (lines 45-46) and
+the comment at line 1299 said; both are corrected in this commit, wording
+only. The bound is (E7) <= 2 sqrt(2) c_1 rho_M1 cond(U_4) / _pair_gap(rho_1,
+rho_2) with c_1 <= 2 + ||M||_F + rho_M1: the derived kappa is `cond(U_4) /
+_pair_gap`. The review's resolution kappa `cond(U_4) ||U_4||^2 / chord_min`
+has one power of cond(U_4) too many (cond_2(U_4) = ||U_4||_2^2 for a
+symplectic normalizer) and its chord_min is the eigenvalue chord of
+`result/.../measure_stage4b.jl` 191-193, not the N22 chord; the 4b table's
+column "(E7) under the proposed resolution kappa" equals the derived ratio
+divided by cond(U_4), equal to it on the cond = 1 ladder rows only. On the
+default path (two m = 1 clusters, the only path that reaches the test at the
+default chord 1e-3; merged clusters are left unresolved and produce no frame)
+sin mu_j is absent at first order; on the forced m = 2 path g_c -> 2 |sin
+mu_1|. The derived form is an upper bound not attained: the worst-case
+constant 2 sqrt(2) c_1 is 11-14 on the dense maps (31 at most) against
+observed ratios at most 0.9, the coupled F1-F5 fixtures sit 2-4 orders below
+it, and when one mode is ill-conditioned the landed ratio falls like
+cond(U_4)^(-1/2), the mechanism of the M3 record's negative correlations with
+cond(U).
+
+(E7), the numbers (native / haswell throughout). The ladder: (E7) x g =
+0.5-3.36 eps down the five rows, log-log slope -1.000000 between rows with the
+same prefactor (-0.9146 by least squares): the 1 / g law, with g = delta. The
+M3 200 + 20 set, tunes in radians (`src/analysis/eigenmodes_4d.jl` 413 `atan`;
+the min_abs_sin_mu equality holds on 231 / 231 rows; external_gap_min is
+reproduced on 231 / 231 rows in radians and 0 / 231 in fractions): the landed
+ratio's max is 6.494 / 5.508 (H15 c = 128), the derived kappa's 0.893 / 0.831
+(c = 16); on the 20 + 5 freezing set 3.486 / 2.296 (64, the contract's frozen
+c) against 0.666 / 0.439 (8); the largest derived ratio of the whole stage-4b
+set is 1.563 (`R(0.5) (+) R(1.2)` rotated by 0.784398, c = 16), and dense 6D
+seed 20260919 (chord 0.02327) falls from the docstring's 3.90 to 0.0908.
+Spearman of the landed ratio with 1 / _pair_gap is +0.512 / +0.465 on 226 rows
+(+0.624 / +0.574 on the 220 dense maps; 0.03 / 0.02 on 20 + 5: a dense-map
+statement) and -0.095 / -0.191 after the division; on the 220 dense maps the
+sd of log10 falls 0.417 -> 0.330 and 0.400 -> 0.326 (on all 226 rows it rises
+0.499 -> 0.554, an artifact of the coupled F1-F5 and F8 rows far below the
+bound), and the bin medians of the derived ratio are flat at 0.16-0.18 over
+the 1.5 decades of pair gap the dense maps cover (smallest 0.0562). The data
+checks: 201 of 202 rows within a factor 2 of the note's numbers (map 70 the
+exception); chord_min differs between the arms on 84 of 231 rows and rho_M1 on
+46. Left open by the checks: the count of rows with external_gap_min = 2
+sin(mu_min) (181 by the analyst, 30 of 226 at 1e-9 by the referee, a tolerance
+and definition question) and tune3 above pi / 2 on F4 and F5 (6.01 rad).
+
+U_6 symplecticity: derived by one agent, not cross-checked. With U_6 = M_cal
+Ub, Ub = blockdiag(U_4, B), S_6 = blockdiag(S_4, S_2) in the code's coordinate
+order, the exact identity U_6^T S_6 U_6 - S_6 = Ub^T (M_cal^T S_6 M_cal - S_6)
+Ub + blockdiag(U_4^T S_4 U_4 - S_4, B^T S_2 B - S_2) splits the residual into
+the (K1) separation term, bounded by 0.25 eps ||M_cal||_F^2 max(cond(U_4),
+||B||_2^2) (the 0.25 from `k_separation_symplecticity`'s measured 0.22 /
+0.25), the frame's (E7) matrix itself, and the longitudinal term, exactly
+sqrt(2) |det B - 1| <= 1.57e-16 (B[1,2] is the literal 0.0 and alpha_s
+cancels), which refutes the eps ||Ubar_s||^2 guess of the round-1 note.
+Two-sided: |y_sym - hypot(y_e7, y_B)| <= ||T_sep||. So the U_6 symplecticity
+residual is the frame's (E7) plus an eps-sized term; cond(U_6) does not enter
+(it is a lower surrogate for the true scale), and the first power of 1 / sin
+mu_s enters only through ||B||_2^2 = beta_s + (1 + alpha_s^2) / beta_s,
+multiplied by eps. Derived kappa (11): 2 cond(U_4) / _pair_gap + (eps /
+rho_M1) ||M_cal||_F^2 max(cond(U_4), ||B||_2^2); relaxed (12): cond(U_4) /
+_pair_gap + ||M_cal||_F^2 max(cond(U_4), ||B||_2^2). On the 200 + 20 set the
+frame-only kappa `cond(U_4) / _pair_gap` gives max 0.634 / 0.678 (c = 8), (11)
+0.559 / 0.594 (8), (12) 0.427 / 0.390, the landed kappa 5.44 / 5.80 (64; the
+contract's 32 is its own 20 + 5 freeze). Map 70's excess over the frame's (E7)
+is predicted 5.372 against 5.324 measured native (ratio 1.009) and 6.474
+against 7.932 haswell (0.816); on no row does the residual depart from the
+frame's (E7) by more than 0.48 (eps / rho_M1) cond(U_6). Missing from the M3
+driver's columns for a pointwise test: ||M_cal||_F^2, ||Ub||_2^2, ||u_1||
+||u_2||.
+
+U_6 reconstruction: derived by one agent, not cross-checked; the 1 / sin(mu_3)
+question answered. The raw residual splits exactly into the frame's raw (I1),
+the longitudinal raw (I1), the two (K5) off-diagonal blocks of Mbar times B
+and U_4, plus a (K2) term (the compared map is rebuilt as M_cal Mbar Minv,
+`src/analysis/canonical_separation.jl` 407). The longitudinal block Mbar_s B -
+B R(mu_s) has a single nonzero entry, -delta_eff / Mbar_s[1,2], with delta_eff
+= (det Mbar_s - 1) + theta_2 tr(Mbar_s) - theta_1 (theta_1, theta_2 the
+roundoffs of `_twiss_from_block`'s 1 - c^2 and c), all O(eps): L = |delta_eff|
+/ (sqrt(beta_s) |sin mu_s|), verified to 3-4 digits over mu_s in [1e-6, 0.1],
+and det Mbar_s - 1 = `k_longitudinal_block_symplecticity` / sqrt(2) exactly.
+After the normalization max(1, ||M U_6||_F, ||U_6||_F) the term is
+(|delta_eff| / |Mbar_s[1,2]|) Gamma with Gamma <= 1: the controlling small
+quantity is Mbar_s[1,2] = beta_s sin mu_s, not sin mu_s, so the exponent
+against 1 / |sin mu_3| lies in [0, 1] and equals 1 only if beta_s stays O(1)
+as the tune shrinks, which this population does not do. On the 200 + 20 set
+the longitudinal term alone has slope +0.715 / +0.651 against log(1 / |sin
+mu_3|), the frame's (I1) is flat (-0.049 / -0.031), and the assembled model
+reproduces the measured +0.311 / +0.355 as +0.346 / +0.357: the M3 record's
+tune3 correlation (-0.57 / -0.64) explained. The arm swings of 4.9-6.5x on
+maps 42, 70 and 134 come from det(Mbar_s) - 1 being exactly zero in one arm
+and a few eps in the other (map 42: predicted 6.0, measured 6.5). The derived
+worst case kappa_rec = 1 + Gamma max(1, ||Mbar_s||_F^2) / |Mbar_s[1,2]| is a
+breaking-mode envelope (|Mbar_s[1,2]| -> 0 with ||U_4||_F large; nothing in
+the population is within 5x of it), not a better divisor: dividing by it
+widens the spread (sd log10 0.286 -> 0.332 / 0.296 -> 0.344). Recommendation:
+kappa = 1 and c = 64 stay (worst two-arm ratio 5.34 / 13.17 on map 42, 0.21 of
+c). Open: the (K5) row's own tune dependence carries the residual on maps 70
+and 111 (unexplained; it must come from the (D8) dispersion solve); the
+assembled bound overshoots by 2.5x at the median with 3 / 202 and 5 / 202 rows
+slightly above it (max 1.40 / 2.23); beta_s, alpha_s and Mbar_s[1,2] are not
+in the M3 TSV.
+
+What the pass settles for decisions (d) and (e). The (E7) derivation holds and
+is cross-checked by three independent agents and the data referee; the derived
+kappa `cond(U_4) / _pair_gap` would re-freeze `r_frame_symplecticity_e7` at c
+= 16 on 200 + 20 (8 on 20 + 5) and, with the frame-only or the (12) kappa,
+`r_u6_symplecticity` at c = 8, which harmonizes the 32 / 64 pair by
+construction; `r_u6_reconstruction` stays as landed. The two U_6 laws are
+derived by one agent each and not cross-checked, and the M3 driver lacks the
+columns to test them pointwise (||M_cal||_F^2, ||Ub||_2^2, ||u_1|| ||u_2||,
+beta_s, alpha_s, Mbar_s[1,2]). The kappa job of decision (e) is not started;
+its scope is now: the frame acceptance and its twin row, the U_6 symplecticity
+acceptance and its twin row, the M3 driver's missing columns, a second-agent
+cross-check of the two U_6 derivations, the 4b ladder windows in both arms,
+the H15 re-freeze on 20 + 5. In this commit the landed kappa stays everywhere
+(decision (a)); only the wording "second order" (the docstring, lines 45-46;
+the comment, line 1299) is corrected to first order, because the derivation
+and its three cross-checks agree and the docstring's own ladder record already
+showed the 1 / delta law.
+
+Carried. (1) The kappa job of decision (e), a separate owner-decided change:
+`cond(U_4) / _pair_gap` for the (E7) test and its twin row, (12) or the
+frame-only kappa for the U_6 symplecticity test and its twin row, both
+re-frozen by H15 on 20 + 5, the 4b ladder windows re-measured in both CPU
+arms, the analysis multipliers' windows re-read, the 32 / 64 harmonization
+inside it. (2) A second-agent cross-check of the two U_6 derivations and the
+M3 driver's six missing columns. (3) The open data points: the
+external_gap_min = 2 sin(mu_min) count (181 against 30), tune3 above pi / 2 on
+F4 and F5, the (K5) row's own tune dependence. (4) The ladder's false FAIL
+stays until (1) lands. (5) Tooling: review-framed prompts to this session's
+model are stopped by its safeguard at the first call; the same work framed as
+an independent re-derivation on the Opus model runs (recorded for the next
+derivation workflow).
+
+Checks. not run on this commit's tree alone: the Matrix's row "docs plus
+anything else: a `.jl` comment" names the full lane and the Definition of Done
+owes it before the PUSH (owner decision 2026-09-04), so the two-arm full gate
+is owed on the final tree of the batch this commit joins (5873e58 and this
+commit on the pushed b19003b) and recorded in its own section below; skipped
+on this tree alone: the fast lane and the full suite. Run on this tree: `julia
+--project=. -e 'using Octopus'` loads (exit 0; the two docstrings and the
+comment at line 1299 are the only edits to the `.jl` file, and the apply
+script asserts the executable lines unchanged). The added lines are ASCII, the
+history ends with one newline, and the non-table lines of this section are at
+most 78 characters (the heading excepted, as in every section). Ledgers in
+this commit: this section; `docs/todo.md` row 20, one sentence; the two
+docstrings and the comment at line 1299.

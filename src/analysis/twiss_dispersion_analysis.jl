@@ -42,10 +42,11 @@ the 4D normal-mode frame: the normalized (I1) reconstruction residual of
 `NormalModeFrame4D` must be at most `c * rho_M1` (the kappa of a backward
 error of a backward-stable solve is 1: experiences.md, "the kappa is the
 condition number of the quantity COMPARED") and its (E7) symplecticity
-residual at most `c * rho_M1 * cond(U_4)` (second order in the eigenvector
-error, so it carries the frame's conditioning); `rho_M1` is the clusters'
-perturbation scale; above either the result FAILS (the stage 2 record: the
-acceptance threshold on the frame's residual belongs to the analysis).
+residual at most `c * rho_M1 * cond(U_4)` (FIRST order in the eigenvector
+error, corrected 2026-09-14 from second order: the derivation pass below);
+`rho_M1` is the clusters' perturbation scale; above either the result FAILS
+(the stage 2 record: the acceptance threshold on the frame's residual
+belongs to the analysis).
 Extremes (stage 4b D1, measurement_table_4b.md c_frame: 54 unique frames of
 25 dense 6D seeds, 8 dense 4x4 seeds, 4 coupled 4x4 maps, 3 coasting maps,
 the DBA and FODO cells, 5 prescribed-h maps): `(I1) / rho_M1` at most 4.44
@@ -59,7 +60,40 @@ the near-degenerate coupled ladder `R(0.5) (+) R(0.5 + delta)` rotated by
 1.25e10 at 1e-11) while `cond(U_4) = 1`, so the analysis FAILS resolved
 frames whose tunes differ by 1e-3; under the theory review's kappa
 `cond(U_4) ||U_4||^2 / chord_min` the same rows are 0.13-0.83 and the
-accepted extreme 1.56 (carried: the kappa choice is a design decision).
+accepted extreme 1.56.
+
+Owner decision 2026-09-14 (carried item 4): the landed kappa stays. The
+ladder's failure at delta <= 1e-3 is an accepted, documented limitation: a
+coupled pair whose phase advances differ by 1e-3 rad or less FAILS this test
+with a unit-conditioned frame although `_recover_modes` resolved its two
+clusters by the chord `min(2, 2 kappa rho_M1 / g)` (`_chord` in
+mode_clusters.jl); the multiplier-1 ratio lies between 0.1 / delta and 0.9 /
+delta down the ladder (8.3e2, 3.5e4, 1.25e6, 3.1e8, 1.25e10 at delta = 1e-3
+... 1e-11). The resolution kappa was declined: on the 200 dense 6x6 maps of
+the validation script's set the U_6 symplecticity ratio correlates NEGATIVELY
+with it (Spearman -0.54 / -0.52, native / haswell) and with cond(U_6) (-0.50),
+so it has the wrong shape on the population the identity contract freezes (the
+M3 record in the history). The derivation pass of the same day (owner decision
+(d); scratch
+`result/twiss_impl_2026_09_11/carried/item4_derivation/DERIVATION.md`, cited
+by path) finds the (E7) residual FIRST order in the eigenvector error, exactly
+(E7)^2 = (n_1^2 + n_2^2) / 2 + |u_1^T S u_2|^2 + |u_1^dag S u_2|^2, bounded by
+2 sqrt(2) c_1 rho_M1 cond(U_4) / _pair_gap(rho_1, rho_2): the derived kappa is
+`cond(U_4) / _pair_gap` (`mode_clusters.jl`), one power of cond(U_4) and one
+chord below the review's, and it explains the ladder ((E7) x delta = 0.5-3.4
+eps, log-log slope -1.000). On the 200 + 20 set it puts this row's largest
+multiplier-1 ratio at 0.893 / 0.831 (H15 c = 16) against the landed 6.494 /
+5.508 (128) and removes the correlation with 1 / gap (Spearman +0.51 / +0.47
+-> -0.10 / -0.19). The algebra, the numerics and the data were cross-checked
+by three independent agents; the kappa is NOT adopted here (decision (a)). Any
+kappa change is a separate, owner-decided job: the 4b ladder windows
+re-measured in both CPU arms, the contract's twin rows re-frozen by the H15
+rule, and the contract's c = 32 for `r_u6_symplecticity` harmonized with the
+64 here in the same change (the history's section "2026-09-14: carried item 4
+decided, the landed kappa rho_M1 cond(U) stays for the (E7) and U_6
+symplecticity tests, the near-degenerate ladder's false FAIL is an accepted
+limitation, the resolution kappa is declined; the read-only derivation pass
+(docs(analysis) commit)").
 """
 const _FRAME_ACCEPTANCE_MULTIPLIER = 64.0
 
@@ -76,6 +110,28 @@ fixtures with a unique `U_6`): `reconstruction / rho_M1` at most 4.45 (dense
 20260919): window [63.9, open), 64 sits just inside. No fixture the `U_6`
 acceptance must reject exists (the perturbed map loses its `U_6` through the
 (K5) separation, `:not_invariant`).
+
+The identity contract freezes `r_u6_symplecticity` at c = 32 (its own H15
+measurement on the 20 + 5 set) beside this 64 with the same kappa; harmonizing
+the two is part of the kappa change of carried item 4, if the owner orders it
+(owner decision 2026-09-14, the history's section "2026-09-14: carried item 4
+decided, the landed kappa rho_M1 cond(U) stays for the (E7) and U_6
+symplecticity tests, the near-degenerate ladder's false FAIL is an accepted
+limitation, the resolution kappa is declined; the read-only derivation pass
+(docs(analysis) commit)"). That section's derivation pass (single-agent, not
+cross-checked) finds the symplecticity residual of U_6 = M_cal blockdiag(U_4,
+B) equal to the frame's (E7) residual plus an eps-sized separation term, by
+the exact identity U_6^T S_6 U_6 - S_6 = Ub^T (M_cal^T S_6 M_cal - S_6) Ub +
+blockdiag(U_4^T S_4 U_4 - S_4, B^T S_2 B - S_2) whose last block is exactly
+sqrt(2) |det B - 1| <= eps; cond(U_6) does not enter its scale (the derived
+kappa is the frame's `cond(U_4) / _pair_gap` plus ||M_cal||_F^2 max(cond(U_4),
+||B||_2^2), H15 c = 8 on the 200 + 20 set against the landed 64). The
+reconstruction residual's excess over the frame's (I1) is the longitudinal
+block's symplecticity defect (det Mbar_s - 1, O(eps)) divided by |Mbar_s[1,2]|
+= beta_s |sin mu_s|, exponent 0.3-0.4 against 1 / sin mu_3 on the 200 + 20 set
+(not 1), and kappa = 1 with c = 64 stays the better description of that
+population (worst two-arm ratio 13.17 on map 42 haswell, 0.21 of c). Neither
+kappa changes here.
 """
 const _NORMALIZER_ACCEPTANCE_MULTIPLIER = 64.0
 
@@ -1296,7 +1352,8 @@ function _analysis_diagnostics(input::_ANALYSIS_INPUT_T, defect::_DEFECT_T, rule
     if is_determined(transverse) && is_determined(frame)
         f = determined_value(frame)
         # (I1) is the backward error of a backward-stable solve: its scale is rho alone (kappa = 1);
-        # (E7) is second order in the eigenvector error and carries the frame's conditioning.
+        # (E7) is FIRST order in the eigenvector error ((E3) pins the diagonal blocks); the landed kappa is cond(U_4),
+        # the derived one cond(U_4) / _pair_gap (carried item 4, the docstring of _FRAME_ACCEPTANCE_MULTIPLIER).
         push!(residuals, ("frame reconstruction (I1)", f.reconstruction_residual.normalized, _FRAME_ACCEPTANCE_MULTIPLIER * rho_M1))
         push!(residuals, ("frame symplecticity (E7)", f.symplecticity_residual, _FRAME_ACCEPTANCE_MULTIPLIER * rho_M1 * cond(f.normalizer)))
     end
