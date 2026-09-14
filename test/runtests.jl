@@ -1134,22 +1134,44 @@ _st6_perturb(a::TwissDispersionAnalysis, x) =
 # The kinds that declare the analysis, derived from the registry (H9: no kind list, no literal).
 _st6_declaring_kinds() = count(T -> TwissDispersionAnalysis in Octopus.supported_analyses(T), Octopus.registered_element_specs())
 
+# The tree-side pin on the identity contract's ratios at their frozen multipliers: ONE constant for the two
+# testsets that assert it, the stage 6 testset below (every row and the worst) and "Physics contracts" at the end
+# of the file (the worst). The one-tenth rule (H15) is a property of the two MEASURED arms (the multiplier table's
+# comments: every row under 0.1 natively and under -C haswell, both arms' worst 0.0948). The suite also runs on CPU
+# classes nobody measured: CI run 436 (2026-09-13, the ubuntu runner) put three rows at 0.154, 0.125 and 0.115
+# (the multiplier-1 residual of c_d8_round_trip is one ulp there, half an ulp in both arms). The pin is therefore
+# one half: more than five times the arms' worst (0.0948), 3.25 times the runner's observed worst (0.154) and half
+# the contract's own threshold, so a row that trips it has lost more than half its H15 headroom. A failure names
+# its row (the let contexts), and the stage 6 testset prints the 57-row table so that a CI log measures the
+# runner's class row by row. The value lives here ONCE: the run-436 fix (21bce7d) moved the stage 6 testset's two
+# literal 0.1 pins (the worst row and the per-row loop) to 0.5 and left the third literal in "Physics contracts",
+# and CI run 437 (ce43179) was red there at the same 0.1537; `_st6_pin_lines` and the tripwire at the end of the
+# stage 6 testset read the suite by its package path (so an extract of the testset still audits the suite) and
+# require every ratio pin of the two blocks to name the constant.
+const _ST6_PIN = 0.5
+function _st6_pin_lines(src::Vector{String})
+    # a block runs from its column-0 title line to the first bare `end` after it (a column-0 `end` inside either
+    # testset would truncate the scan); a title found other than once, or no bare `end`, contributes no lines, and
+    # the count assertion of the tripwire reports it with the lines it did find
+    function blk(title)
+        starts = findall(startswith("@testset \"" * title), src)
+        length(starts) == 1 || return 1:0
+        stop = findnext(==("end"), src, only(starts))
+        return stop === nothing ? (1:0) : (only(starts):stop)
+    end
+    return [l for t in ("Stage 6: the identity contract passes", "Physics contracts")
+              for l in src[blk(t)] if occursin(r"^\s*@test .*ratio\]?\s*<=\s*", l)]
+end
+
 @testset "Stage 6: the identity contract passes on the tree with pinned metrics, and every negative is red" begin
     c = TwissDispersionIdentityContract()
     r = validate(c)
     @test r.passed && r.status === :passed
     @test occursin("certified", r.message)
     m = r.metrics
-    # The one-tenth rule (H15) is a property of the two MEASURED arms (the multiplier table's comments: every
-    # row under 0.1 natively and under -C haswell, both arms' worst 0.0948). The suite also runs on CPU classes
-    # nobody measured: CI run 436 (2026-09-13, the ubuntu runner) put three rows at 0.154, 0.125 and 0.115 (the
-    # multiplier-1 residual of c_d8_round_trip is one ulp there, half an ulp in both arms). The tree-side pin
-    # is therefore one half: a factor of four over the arms' worst and of two under the contract's own
-    # threshold, so a row that trips it has lost more than half its H15 headroom. A failure names its row
-    # (the let context), and the table below is printed so that a CI log measures the runner's class row by row.
-    st6_pin = 0.5
+    # the pin `_ST6_PIN` (one half; its comment above the testset) on the worst row, named on failure
     @testset let worst = m[:worst_identity]
-        @test m[:worst_ratio] <= st6_pin
+        @test m[:worst_ratio] <= _ST6_PIN
     end
     @test r.residual == m[:worst_ratio]
     @test m[:worst_identity] in keys(c.multipliers)
@@ -1164,7 +1186,7 @@ _st6_declaring_kinds() = count(T -> TwissDispersionAnalysis in Octopus.supported
     for slug in st6_slugs
         @test haskey(m, Symbol("max_", slug)) && haskey(m, Symbol("maxval_", slug)) && haskey(m, Symbol("argmax_", slug))
         @testset let slug = slug, ratio = get(m, Symbol("max_", slug), NaN)
-            @test ratio <= st6_pin
+            @test ratio <= _ST6_PIN
         end
     end
     @test m[:identities] == length(c.multipliers)
@@ -1266,6 +1288,13 @@ _st6_declaring_kinds() = count(T -> TwissDispersionAnalysis in Octopus.supported
     r7 = validate(TwissDispersionIdentityContract(dense_maps=0, dense_maps_4d=0))
     @test r7.passed && r7.metrics[:dense_maps] == 0 && r7.metrics[:dense_maps_4d] == 0
     @test r7.metrics[:fixtures] < m[:fixtures]
+    # the tripwire on the pin's single source, last so that nothing above it can be lost to it: the three ratio
+    # pins of this testset and of "Physics contracts" all read `_ST6_PIN` (a literal is a second copy of the
+    # number, and a second copy is what a fix moves in one place only: run 437). The suite is read by its package
+    # path, not `@__FILE__`, so an extract of this testset audits the suite; a red prints the lines found.
+    @testset let st6_pinned = _st6_pin_lines(readlines(joinpath(pkgdir(Octopus), "test", "runtests.jl")))
+        @test length(st6_pinned) == 3 && all(occursin("_ST6_PIN", l) for l in st6_pinned)
+    end
 end
 
 # Twiss analysis stage 2, Part A: the 4D eigenmode route
@@ -22361,12 +22390,22 @@ if _lane_gate("Physics contracts")
     @test gpic.metrics[:lambda_y] > gau.metrics[:lambda_y]
 
     # The physics identity contract of the Twiss and dispersion analysis
-    # (stage 6): every identity row under its frozen multiplier is under one
-    # tenth of its budget and every expected diagnostic fires (~1 s after
-    # compile; the pinned metrics and the negatives are the stage 6 testset).
+    # (stage 6): every expected diagnostic fires and the worst identity row at
+    # its frozen multiplier stays under the tree-side pin `_ST6_PIN` (one half;
+    # the constant and its rule sit above the stage 6 testset, which asserts
+    # it per row, prints the 57-row table and runs the negatives; ~1 s after
+    # compile). This block kept its own literal one-tenth pin when 21bce7d
+    # moved the stage 6 testset's two to one half, and CI run 437 (2026-09-13,
+    # the ubuntu runner) was red here at 0.1537, the same worst ratio run 436
+    # had shown:
+    # the runner's CPU class puts three rows between 0.11 and 0.16 where both
+    # measured arms stay under 0.095. One constant now, read by the stage 6
+    # tripwire `_st6_pin_lines`, so the pin cannot move in one place only.
     idc = validate(TwissDispersionIdentityContract())
     @test idc.passed
-    @test idc.metrics[:worst_ratio] <= 0.1
+    @testset let worst = idc.metrics[:worst_identity], ratio = idc.metrics[:worst_ratio]
+        @test ratio <= _ST6_PIN
+    end
     @test idc.metrics[:diagnostics_silent] == 0
 end
 end # _lane_gate("Physics contracts")

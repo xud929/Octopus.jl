@@ -1093,7 +1093,47 @@ log) carries the measurement; a pin inside a loop names its row (`@testset
 let slug = slug, ratio = ...`), because a bare `Evaluated: 0.1537 <= 0.1` on
 an admin-walled runner is a number without a row. The review had recorded
 the risk as R2 with "decide before CI shows it": a recorded risk with a
-known fix is cheaper to close before the push than after.
+known fix is cheaper to close before the push than after. The fix that
+adopted these rules applied them to the two pins it moved and not to a third
+copy of the same pin in `Physics contracts`, which CI run 437 found the same
+afternoon at the same 0.1537; the next lesson is that copy.
+
+## A moved pin has copies the fix did not move, and running a copy is not reading it
+
+The run-436 fix (21bce7d) moved the stage 6 testset's two `<= 0.1` pins on
+the identity contract's ratios to `st6_pin = 0.5`, each naming its row. The
+same metric had a third pin, `@test idc.metrics[:worst_ratio] <= 0.1` in
+`Physics contracts` (then line 22368, in a testset the fast lane skips), and
+CI run 437 on ce43179 was red there at 17:34:59 EDT at `0.1537336459459216
+<= 0.1`: run 436's worst row again, and again a bare number without its row.
+
+The fix's own verification RAN that copy: `extract_main_ci.py` put the `idc`
+lines of `Physics contracts` into the scratch `t3_identity.jl` (line 4 the
+literal `<= 0.1`), and both arms passed it 3/3, as they had to: both put the
+worst row at 0.0948, under any pin at or above 0.1. Running a neighbour on
+the host whose rounding the constant absorbs cannot show the constant wrong;
+reading it can. The invariant asks for both, re-run the property AND find
+every test probing the old behavior; the first was done and felt like the
+second, while a grep for `worst_ratio` returns the line at once.
+
+The pin is now one source, `const _ST6_PIN = 0.5` above the stage 6 testset,
+read by both testsets inside `@testset let` contexts naming the row, under a
+tripwire: `_st6_pin_lines(src)` cuts the two blocks out by title and returns
+their `@test ... ratio <= ` lines; the stage 6 testset asserts, last and on
+the suite read by its package path (so an extract still audits the suite), in
+a `@testset let` that prints the lines found, that exactly three exist and
+each names `_ST6_PIN` (158 assertions, was 157). Both arms 170/170, worst row
+`k_longitudinal_block_symplecticity` 0.09476, named in red by a pin at 0.01;
+the literal restored (3 lines, one unnamed), the pin line deleted (2) and the
+title renamed (2, no throw) all fail the tripwire, a regex: the grep is owed.
+
+Rules adopted: a fix that moves a tolerance or a pin greps the tree for the
+NUMBER and the METRIC it pins, reads every hit and names the hits read in its
+commit message beside the blocks run; a value pinned in more than one testset
+is one named constant under a tripwire that reads the file by its package
+path, not the running file, counts the pin lines and sits where a structural
+error in it cannot abort the assertions it guards; a neighbour that executed
+green on the measuring host was run, not audited, and "green" names what ran.
 
 ## Standing decisions, deliberately not being done
 

@@ -10657,3 +10657,151 @@ row "markdown only"). It is not the last commit before the push: the
 section), and that fix's two-arm full gate runs on a tree that contains this
 commit, so this commit is covered by that gate instead of a fast lane of its
 own; the fix's record commit, the last before the push, carries the fast lane.
+
+## 2026-09-13: CI run 437 on ce43179 red on the Physics contracts one-tenth pin; the pin becomes one constant
+
+CI run 437 (https://github.com/xud929/Octopus.jl/actions/runs/34782604175,
+push of ce43179, the run-436 fix 21bce7d plus its gate record; the ubuntu
+runner, Julia 1.12.7, four threads) was red at 17:34:59 EDT, 32 min 16 s into
+its test step (the watch script result/gates/ci_watch_ce43179.log saw the
+conclusion `failure` at 17:35:15). The step's log is admin-walled from the
+gate host (403 without a token), so the identification is the owner's paste
+(the owner's report of the red at 18:56 EDT and the paste at 18:57, to the
+session that wrote this fix):
+
+    Physics contracts: Test Failed at test/runtests.jl:22368
+      Expression: idc.metrics[:worst_ratio] <= 0.1
+       Evaluated: 0.1537336459459216 <= 0.1
+    Test Summary:     | Pass  Fail  Total   Time
+    Physics contracts |   16     1     17  55.0s
+
+| assertion (as pushed, test/runtests.jl:22368 of ce43179) | evaluated on the runner | both local arms |
+|---|---|---|
+| `@test idc.metrics[:worst_ratio] <= 0.1` in `Physics contracts` (16 of 17, the block's only red) | 0.1537336459459216 | 0.09476 (`k_longitudinal_block_symplecticity`, both arms) |
+
+The contract itself PASSED on the runner (`@test idc.passed`, just before
+the pin, is among the 16 green; the contract's threshold is a ratio of 1), and
+0.1537336459459216 is to the last digit the `worst_ratio` run 436 evaluated on
+the stage 6 testset's pin. Everything before `Physics contracts` was green on
+the runner, the stage 6 pinned testset at one half included: run 436 had died
+8 min 44 s in at that testset, this run ran 32 min 16 s of a 34-36 min suite.
+
+**Why 21bce7d missed the copy.** The run-436 fix moved the two one-tenth pins
+of the stage 6 testset (old lines 1144 and 1149) to `st6_pin = 0.5`, each
+inside a `@testset let` naming its row (`git show 21bce7d -- test/runtests.jl`).
+The same metric had a third pin, the literal above, 21000 lines below in a
+block the fast lane skips (`LANE SKIP [fast]: Physics contracts`,
+result/gates/fast_lane_cifix_stage6_2026_09_13.log line 988). The fix's own
+verification RAN that block: its extract script (result/twiss_impl_2026_09_11/
+stage6/ci_repro/extract_main_ci.py, lines 40-45) copied the `idc` lines of
+`Physics contracts` into the scratch testset ci_repro/extract/t3_identity.jl
+(line 4 is the literal `<= 0.1`), and both arms passed it 3 of 3 (ci_repro/
+run_native.log line 65, run_haswell.log line 65), as they had to: a host
+whose worst row is 0.0948 cannot make a pin at 0.1 red. The neighbour was run
+and passed; it was not READ as the same pin. AGENTS.md asks for both: "A
+fix's neighbours are where the next defect is. Re-walk ... re-run its property
+on what it did not change" (line 32; the re-run happened, the re-walk did
+not), "find every contract and test probing the old behavior" (line 29; a
+grep for `worst_ratio` returns the line at once), and "Do not hand-copy
+knowledge ... derive it from one source and add a coverage tripwire" (line
+42): the pin's value was a hand copy in three places.
+
+**Decision: the value stays one half, and it gets one source.** The run-436
+reasoning is unchanged and this red adds no measurement to it: one half is
+5.27 times both arms' worst (0.0948; the run-436 section and 21bce7d's comment
+say "a factor of four", an arithmetic slip the review of this fix caught),
+3.25 times the runner's observed worst (0.1537) and half the contract's
+threshold. No line of `src/` changes; the contract's 57 multipliers, kappas
+and verdict are as landed in d4e67da (a multiplier moves only by the H15
+rule, stage 6 review row 20). What changes is the arrangement of the pin in
+test/runtests.jl (`git diff -- test/runtests.jl`, +53/-14; line numbers of
+the fixed tree after the review's pass, result/gates/cifix2/apply_cifix2_edit2.py):
+
+- `const _ST6_PIN = 0.5` at top level (line 1151), above the stage 6 testset;
+  the pin's explanation moves out of the testset into the comment above the
+  constant (1137-1150: the measured arms, run 436's rows, the three factors).
+- `_st6_pin_lines(src)` (1152-1164): `blk(title)` cuts a block out of the
+  file's lines as the unique column-0 `@testset "<title>` line through the
+  first bare `end` after it; a title found other than once, or no bare `end`,
+  contributes no lines and throws nothing; the function returns, for the
+  stage 6 pinned testset and for `Physics contracts`, every line matching
+  `r"^\s*@test .*ratio\]?\s*<=\s*"` (anchored to the statement start).
+- The tripwire, LAST in the stage 6 testset (1291-1297), after the negatives:
+  `@testset let st6_pinned = _st6_pin_lines(readlines(joinpath(pkgdir(Octopus),
+  "test", "runtests.jl")))` around `@test length(st6_pinned) == 3 &&
+  all(occursin("_ST6_PIN", l) for l in st6_pinned)`. The suite is read by its
+  package path, not `@__FILE__`, so an extract of the testset still audits the
+  suite; a red prints the lines found; last, so nothing above it is lost to it.
+- Both testsets compare against `_ST6_PIN`: the stage 6 worst-row pin
+  (1173-1175, `@testset let worst = m[:worst_identity]`), its 57 per-row pins
+  (1188-1190, `@testset let slug = slug, ratio = ...`), and the `Physics
+  contracts` pin (22406-22408), now `@test ratio <= _ST6_PIN` inside
+  `@testset let worst = idc.metrics[:worst_identity], ratio = idc.metrics[:worst_ratio]`,
+  so a failure on the runner names its row instead of printing a bare number.
+  The block's comment (22392-22403) carries the reason.
+
+The tripwire's failure mode is a red, never a silent pass: a renamed or
+duplicated title or a block without a bare `end` contributes zero lines, a
+column-0 `end` inside a block truncates its scan, and either way the count
+falls under 3 and the assertion fails, its context listing the lines found
+(the first cut threw from `only(...)`; the review made it a count). The negative
+`r5b.metrics[:worst_ratio] > 0.1` at 1283 (n5b, inside the stage 6 block
+1166-1298) is a rejection assertion, not a `<=` pin, and is not matched.
+
+**Verification (package mode from the main tree, c1b7453 plus this edit;
+never Pkg.test by an agent; the orchestrator ran it, again after the review).**
+The stage 6 registration testset, the stage 6 pinned testset and the identity
+tail of `Physics contracts`, extracted by anchor (result/gates/cifix2/
+extract_cifix2.py) and run by run_cifix2.jl in both arms (run_native.sh,
+run_haswell.sh; logs run_native.log and run_haswell.log beside them, line
+numbers from either), then four injections on copies of the suite:
+
+| item | native (Sapphire Rapids) | `-C haswell` + Haswell OpenBLAS |
+|---|---|---|
+| the three blocks (log 62-65) | 170/170: 9, 158, 3; 1m23.7s | 170/170: 9, 158, 3; 1m23.1s |
+| worst row of the printed 57-row table (log 4) | `k_longitudinal_block_symplecticity` 0.09476, c=16 | 0.09476, c=16 |
+| tripwire on the real suite (log 67-70) | 3 pin lines, every one `<= _ST6_PIN` | same |
+| A: the `Physics contracts` pin at 0.01 (log 72-76, 94) | red, `Evaluated: 0.09476392926469653 <= 0.01`, `Context: worst = k_longitudinal_block_symplecticity`, `ratio = 0.09476...` | same |
+| B: literal 0.5 restored on that pin line (log 96) | predicate false (3 lines, one without the constant) | same |
+| C: that pin line deleted (log 97) | predicate false (2 lines) | same |
+| D: the `Physics contracts` title renamed (log 98-99) | predicate false (2 lines), no throw | same |
+| wall / exit (log 1, 101) | 19:20:58-19:22:31 EDT, exit 0 | 19:22:31-19:24:03 EDT, exit 0 |
+
+Count arithmetic. The run-436 fix's extract ran the same blocks at 169 (its
+stage 6 testset 157, ci_repro/run_native.log line 64): the tripwire is the one
+new assertion. Against the stage 7 gate logs (full_gate_stage7_native lines
+320 and 1094, full_gate_stage7_avx2 lines 326 and 1100: the stage 6 testset
+157/157, `Physics contracts` 17/17; 314 rows, 148224/148224 per arm), the
+stage 6 testset goes from 157 to 158, `Physics contracts` stays at 17
+(`@testset let` adds context, not a row or a count), and the full gate is
+expected at 314 rows and 148225/148225 per arm with exactly one differing row.
+The fast lane skips `Physics contracts` and runs the stage 6 testset
+(fast_lane_stage7 log lines 326 and 994; 299 rows, 146222), so it is expected
+at 299 rows and 146223; its start on the pre-review tree was aborted
+(result/gates/fast_lane_cifix2_2026_09_13_ABORTED_pre_review_tree.log), and on
+the reviewed tree (result/gates/fast_lane_cifix2_2026_09_13.log): exit 0,
+19:24:18-19:41:28 EDT (17 min 10 s), `Testing Octopus tests passed`, 299 rows,
+146223/146223, the usual 15 heavyweight sections skipped (`Physics contracts`
+among them), the stage 6 testset 158/158, the pin table's top row
+`k_longitudinal_block_symplecticity` 0.0948 (the parser reads 298 rows and
+146105 on this log: the `Test Summary:` header at log line 595 is interleaved
+with a stderr WARNING and an `@info` block, its row `CPU solver stack is
+thread-count invariant` 118/118 standing at line 691; `grep -c` finds all 299
+headers and 146105 + 118 = 146223). The two-arm full gate on the commit
+(run_full_gate_cifix2_both_arms.sh, logs
+result/gates/full_gate_cifix2_{native,avx2}_2026_09_13.log) is the gate before
+the push, recorded in its own section below, as for 21bce7d.
+
+**Not verified here.** The runner's CPU class: both arms are the two MEASURED
+classes, both keep every row under 0.095, and neither can turn a pin at or
+above 0.1 red, so they confirm the assertion structure, the tripwire and the
+counts, not the runner's margin; the check of the fix is CI on the pushed HEAD.
+The runner's per-row table (printed by the stage 6 testset since 21bce7d, so
+in the run 437 log) is admin-walled, unread.
+
+**Carried.** Any runner row above 0.25 in a readable CI table reopens the pin
+decision (the run-436 section, "Not fixed here"). Carried item 3 of the
+stage 6 section keeps its wording (the runner's per-row numbers unmeasured;
+whether a `c` moves on that class stays with the owner). Whether the AVX2 arm
+becomes a Verification Matrix row (stage 7 carried item 11) remains an owner
+decision. Items M1 and M3 of the stage 6 section are untouched.
