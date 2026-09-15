@@ -54,19 +54,22 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   constraints, capacity posture, crash-recovery cursor, live text mirror,
   and the migration order behind the current APIs.
 - [`twiss_dispersion_analysis.md`](design/twiss_dispersion_analysis.md) — the
-  first analysis (decided 2026-09-11, not implemented): one non-parametric
-  `AbstractAnalysis` object with an `analyze` verb and six pure-math kernels;
-  input by matrix or one-turn Jacobian (complex step, finite difference,
-  ForwardDiff through the extension); reciprocal canonical scaling; a
-  cluster-first pipeline with the coasting test before Krein classification,
-  Gram inertia deciding orientation per cluster, the dispersion ambiguity set
-  for definite degenerate groups, and an availability type in place of
-  NaN-as-silence; the resolution-chord criterion and how its default is
-  measured; receipt-based option certification; the verification plan mapped
-  to the theory's benchmarks; seven staged commits plus an external-benchmark stage (MAD-X, PTC, Xsuite); rejected alternatives. Landing record:
+  first analysis (decided 2026-09-11; stages 1 to 7 landed 2026-09-11 to
+  2026-09-13, stage 8 open): one non-parametric `AbstractAnalysis` object
+  with an `analyze` verb and six pure-math kernels; input by matrix or
+  one-turn Jacobian (complex step, finite difference, ForwardDiff through the
+  extension); reciprocal canonical scaling; a cluster-first pipeline with the
+  coasting test before Krein classification, Gram inertia deciding
+  orientation per cluster, the dispersion ambiguity set for definite
+  degenerate groups, and an availability type in place of NaN-as-silence; the
+  resolution-chord criterion and how its default is measured; receipt-based
+  option certification; the verification plan mapped to the theory's
+  benchmarks; seven staged commits plus an external-benchmark stage (MAD-X,
+  PTC, Xsuite); rejected alternatives. Landing record:
   [`history/twiss_dispersion_analysis_history.md`](history/twiss_dispersion_analysis_history.md)
-  (stages 1 to 7 landed 2026-09-11 to 2026-09-13; stage 8, the external
-  benchmarks, next).
+  (stages 1 to 7 landed 2026-09-11 to 2026-09-13, each push full-gated; the
+  stage 7 carried items are being worked 2026-09-14 in a recorded batch;
+  stage 8, the external benchmarks, is next).
 - [`survey_and_reference_channel.md`](design/survey_and_reference_channel.md) —
   the channel telling a runtime element its place on the reference trajectory:
   static survey values (`s_elem`, later `P0`) baked at compile via the line
@@ -118,8 +121,13 @@ reference material, not API docs; the implementing code links back to them.
   dispersion ambiguity set, the failure of closed-form extraction at a repeated
   selected pair, the numerical handling, and the rolled equal-tune FODO cell
   that MAD-X reports as unstable. The architecture is decided in
-  `design/twiss_dispersion_analysis.md`; implementation and tracked-lattice
-  validation are the open ledger row.
+  `design/twiss_dispersion_analysis.md` and implemented in stages 1 to 7
+  (landed 2026-09-11 to 2026-09-13, recorded in
+  `history/twiss_dispersion_analysis_history.md`): the kernels and the
+  analysis object under `src/analysis/`, the identity contract under
+  `src/contracts/` with `validation/twiss_dispersion_identities.jl` pinning
+  57 of the note's identities; the external benchmarks (stage 8: MAD-X, PTC,
+  Xsuite) are the open ledger row.
 - [`arc_survey_and_velocity_slip.md`](theory/arc_survey_and_velocity_slip.md) —
   what the survey coordinate is (arc length; bend `L` *is* the arc, so
   curvature changes nothing; the patch and kept-whole-line caveats), why the
@@ -357,8 +365,9 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   the analytic rebuild of the rolled equal-tune FODO cell pinned to the MAD-X
   exported map, and the detuned controls behind the resolution-chord default.
 - [`twiss_dispersion_analysis_history.md`](history/twiss_dispersion_analysis_history.md) —
-  campaign record of the Twiss and dispersion analysis implementation, one
-  dated section per stage of the design note's staging: what landed with its
+  campaign record of the Twiss and dispersion analysis implementation, a
+  dated section per stage of the design note's staging and per gate, push,
+  carried-item commit and decision since: what landed with its
   file list, the measurements behind every tolerance (symplectic defect in
   both forms, row-scaled ratio, rho_M0, fixed-point residual on the FODO, DBA,
   TBA cells and the canonical-dispersion oracle maps under complex step and
@@ -371,7 +380,10 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   landed 2026-09-11; stage 3 (mode clusters, the ambiguity set) and stage 4
   (the 6D dispersion routes and canonical separation, then the analysis
   object `TwissDispersionAnalysis`, `analyze`, its options, receipts and
-  effectiveness contract) landed 2026-09-12.
+  effectiveness contract) landed 2026-09-12; stage 5 (the element
+  declaration), stage 6 (the identity contract, its validation script, the
+  DBA-ring example) and stage 7 (the `lattice_cells.jl` refactor) landed
+  2026-09-13; the stage 7 carried items follow from 2026-09-14 onward.
 - [`audit_twiss_dispersion_literature_2026_09_09.md`](history/audit_twiss_dispersion_literature_2026_09_09.md) —
   Parzen, Glukhov, and Dieci–Friedman review; direct 6D projectors and
   continuation checks; GLSF application removed from the active design.

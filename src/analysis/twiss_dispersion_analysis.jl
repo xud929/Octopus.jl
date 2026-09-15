@@ -73,10 +73,10 @@ delta down the ladder (8.3e2, 3.5e4, 1.25e6, 3.1e8, 1.25e10 at delta = 1e-3
 the validation script's set the U_6 symplecticity ratio correlates NEGATIVELY
 with it (Spearman -0.54 / -0.52, native / haswell) and with cond(U_6) (-0.50),
 so it has the wrong shape on the population the identity contract freezes (the
-M3 record in the history). The derivation pass of the same day (owner decision
-(d); scratch
-`result/twiss_impl_2026_09_11/carried/item4_derivation/DERIVATION.md`, cited
-by path) finds the (E7) residual FIRST order in the eigenvector error, exactly
+M3 record in the history). The history's section "2026-09-14: the carried item
+4 derivation pass, condensed record ((E7) frame, U_6 symplecticity, U_6
+reconstruction)" condenses the same day's pass (owner decision (d)): the (E7)
+residual is FIRST order in the eigenvector error, exactly
 (E7)^2 = (n_1^2 + n_2^2) / 2 + |u_1^T S u_2|^2 + |u_1^dag S u_2|^2, bounded by
 2 sqrt(2) c_1 rho_M1 cond(U_4) / _pair_gap(rho_1, rho_2): the derived kappa is
 `cond(U_4) / _pair_gap` (`mode_clusters.jl`), one power of cond(U_4) and one

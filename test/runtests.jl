@@ -5071,7 +5071,9 @@ end
     rbt = Octopus._route_from_graph(:fixed_point, f.M, Dbig, tau; rho_M1=cl.rho_M1, converged=true)
     @test rbt.status === :not_invariant && rbt.converged && Octopus.is_determined(rbt.graph) && !Octopus.is_determined(rbt.h)
     @test _st4_val(rbt.invariance_residual).normalized > floor_big && occursin("exceeds the floor", rbt.detail)
-    # (ii) the census form (result/twiss_impl_2026_09_11/stage6/probes/route_census_int.out, 2026-09-13): on the
+    # (ii) the census form (the stage 6 route census of 2026-09-13, recorded per map in the history's section
+    # "2026-09-14: M1, an unconverged iterate is :not_invariant (fix(analysis) commit)", "The defect"; its re-run
+    # after the fix, 0 of 400, in "The fingerprint before and after"): on the
     # contract's 200-map family (seed 20260911, the fixture builder's stream; the 4x4 count does not move the 6x6
     # draws) the fixed point stopped short on map 89 (both scalings), map 157 (both) and map 165 (scaling = :none):
     # converged = false after 3-4 iterations, normalized residual 1.0, ||zeta|| ~ 1e11, h ~ 1e-24, and the unfixed

@@ -19,9 +19,9 @@
 # zeta = D[:, 1], h = 1 / (1 + D[:, 1]' S_4 D[:, 2]), eta = h D[:, 2]; the
 # invariance equation M_rr D + M_rl = D (M_lr D + M_ll) (D14) with the raw
 # residual F(D) = M_rr D + M_rl - D (M_lr D + M_ll) and the normalized (I1)
-# form of stage 1's `_graph_invariance_residual`. The digest of Section 8
-# (result/twiss_impl_2026_09_11/stage4/digests/theory_sec8_routes.md)
-# transcribes every equation in ASCII.
+# form of stage 1's `_graph_invariance_residual`. The ASCII forms above are
+# the note's own equations, cited by label ((D3) in 8.1, (D7)-(D8) in 8.2,
+# (D14) in 8.4, (I1) in 11.2); the header lists the labels of 8.1-8.7.
 #
 # Every threshold constant below is PROVISIONAL until the stage 4a
 # measurement freezes it; each docstring names the fixtures that set it.

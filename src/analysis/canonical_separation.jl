@@ -23,9 +23,9 @@
 # U_6 = M_cal diag(Ubar_beta, Ubar_s) (K9); Sigma_6 = U_6 diag(eps) U_6'
 # (K10) = sum_j eps_j G_j (K12); kappa_ja = -Im(conj(u_ja) u_j,pa) with row
 # and column sums one and kappa_sz = h (K12); the (K13) block identity; the
-# Ohmi factor (O2) with sqrt(h), defined for h > 0 only. The digest of
-# Section 9 (result/twiss_impl_2026_09_11/stage4/digests/theory_sec9_separation.md)
-# transcribes every equation in ASCII and lists 18 pinnable identities.
+# Ohmi factor (O2) with sqrt(h), defined for h > 0 only. The ASCII forms
+# above are the note's own equations, cited by label ((K2) in 9.1, (K4)-(K5)
+# and (K7)-(K8) in 9.2, (K9)-(K10) and (K12)-(K13) in 9.3, (O2) in 9.4).
 #
 # Every threshold constant below is PROVISIONAL until the stage 4a
 # measurement freezes it. The orchestrator's decisions E1-E12 (stage 4a
