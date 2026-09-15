@@ -1332,9 +1332,10 @@ The stage 8 contract commit (d5fc720) added six assertions on
 (a351d74, 2026-09-15) was red in both arms after four minutes at the stage 6
 pin tripwire `_st6_pin_lines`, which cuts the stage 6 testset and "Physics
 contracts" out by title and requires every `@test ... ratio <= ` line in them
-to name `_ST6_PIN`: it found four lines, the fourth a literal. Eighteen
-top-level rows had passed; `Pkg.test` stops at the first red testset, so the
-rest of the suite never ran and the fixed tree owes both arms in full.
+to name `_ST6_PIN`: it found four lines, the fourth a literal. Seventeen
+top-level rows had passed (the red one the eighteenth); `Pkg.test` stops at
+the first red testset, so the rest of the suite never ran and the fixed tree
+owes both arms in full.
 
 The assertion was redundant. `passed` requires `failed == 0`, a row fails
 when its difference exceeds its class bound, and the ratio is the difference

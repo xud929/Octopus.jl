@@ -14600,10 +14600,10 @@ every ratio pin of the stage 6 testset and of "Physics contracts" reads the
 one constant `_ST6_PIN`): the stage 8 block's sixth assertion `@test
 ext.metrics[:worst_ratio] <= 1.0` was a fourth line of the form `@test ...
 ratio <= ...` in the two scanned blocks and a literal where the tripwire
-requires the constant; the Context line printed the four lines. Eighteen
-top-level rows had passed before it in each arm, the registration testset
-among them (11/11); `Pkg.test` stops at the first red testset, so the rest of
-the suite did not run. The assertion was redundant (`passed` requires
+requires the constant; the Context line printed the four lines. Seventeen
+top-level rows had passed before it in each arm (the red one the eighteenth),
+the registration testset among them (11/11); `Pkg.test` stops at the first
+red testset, so the rest of the suite did not run. The assertion was redundant (`passed` requires
 `failed == 0`, and a row fails when its difference exceeds its class bound,
 so `worst_ratio <= 1` holds by construction) and is dropped, with a comment
 in the block naming the tripwire; the block asserts five things. The
@@ -14616,7 +14616,8 @@ gate) is recorded in `docs/experiences.md`. The red logs are kept as
 `result/gates/full_gate_stage8_avx2_2026_09_15_RED_a351d74.log`
 (git-ignored). The second attempt, on the fixed tree ebaa8b1 (native
 16:48:56-17:01:38 EDT, AVX2 17:01:38-17:14:05 EDT, both `exit=1`), passed the
-stage 6 testset and 156 rows and was red in both arms at "No method grows a
+stage 6 testset and 155 rows (the red one the 156th) and was red in both arms
+at "No method grows a
 Core.Box outside the argued allowlist" (`test/runtests.jl:12334`, the sweep
 of lowered code): `_extref_read_wide` built each row's `Dict` from a
 generator over `columns`, a local the function assigns twice (empty, then
@@ -14656,6 +14657,196 @@ own section above carries the per-class worst ratios. The tracked record
 untracked stage 8 plan, probes and decisions into one place: the measured
 conventions, the beam pin and the per-benchmark digests; the per-commit
 sections above carry the TW-* lines.
+
+### The two-arm full gate on the final tree 99562f2
+
+Seven commits on origin/main 1b1b6da (the pushed tree of CI run 440; 1b1b6da is
+itself the record of the second carried gate, the section "2026-09-14: full
+gate on the second carried batch (five commits on b19003b, final tree
+b4e4f85), in two CPU arms"), each carrying its ledgers and none gated alone
+(AGENTS.md owes the full gate before the PUSH, not before every commit; owner
+decision 2026-09-04, commit 6ac8d61; stage 8 is its own batch with its own
+gate, the stage 7 close's carried item 12 and the design note's Staging item
+8). The batch, oldest first:
+
+- bf7ac2d `feat(validation): benchmark the twiss analysis against MAD-X twiss
+  on its exported one-turn maps` (benchmark A: `validation/twiss_benchmark_cells.jl`,
+  `validation/twiss_madx_benchmark.jl`, `validation/generate_madx_twiss_reference.jl`,
+  the tables `twiss_benchmark_maps.tsv` and `twiss_madx_5.03.06.tsv`; no
+  `src/`, no `test/`; the section "2026-09-15: stage 8, benchmark A").
+- 78cfcfd `feat(validation): benchmark the 6D analysis against PTC ptc_twiss
+  with the RE flipped to (s-ell, delta)` (benchmark B: `validation/twiss_ptc_benchmark.jl`,
+  `validation/generate_ptc_twiss_reference.jl`, `ptc_twiss_madx_5.03.06.tsv`;
+  no `src/`, no `test/`; the section "2026-09-15: stage 8, benchmark B").
+- 0df0190 `feat(validation): benchmark the normalizer and (X2) readout against
+  xtrack 0.112.0` (benchmark C: `validation/twiss_xsuite_benchmark.jl`,
+  `validation/generate_xsuite_twiss_reference.py`, `xsuite_twiss_xtrack_0.112.0.tsv`
+  and its provenance sidecar; no `src/`, no `test/`; the section "2026-09-15:
+  stage 8, benchmark C").
+- d5fc720 `feat(contracts): light suite contract on the committed external
+  twiss tables` (`src/contracts/twiss_external_reference.jl`, 1019 lines, one
+  generator of it replaced by 99562f2 below, and
+  its `include` in `src/Octopus.jl`; `test/runtests.jl`: the registration
+  testset "Stage 8 registers TwissExternalReferenceContract: description,
+  supertype, export, docstring, registry, snapshot, kwarg rejection, skipped
+  path" and six assertions appended to "Physics contracts" (one dropped by
+  ebaa8b1, below); `docs/registry_snapshot.md`
+  one line; the guide, `docs/public_api.md`, the Xsuite section of
+  `validation/README.md`; the section "2026-09-15: TwissExternalReferenceContract,
+  the light suite contract on the committed external twiss tables").
+- a351d74 `docs(analysis): stage 8 closed: todo row 20, docs index, design
+  STATUS, theory 12.2 items 3 and 7, batch closing record` (markdown only:
+  the tracked record `docs/history/twiss_external_benchmarks_2026_09_15.md`
+  indexed in `docs/README.md`, this closing section, the design note's STATUS,
+  the theory note's 12.2 parentheticals, `docs/experiences.md`, `docs/todo.md`
+  row 20).
+- ebaa8b1 `fix(test): the stage 8 block of "Physics contracts" drops its
+  literal ratio pin, which tripped the stage 6 pin tripwire in the first gate
+  attempt` (`test/runtests.jl`: the assertion `@test ext.metrics[:worst_ratio]
+  <= 1.0` removed and a comment naming the tripwire added, nothing else;
+  markdown: the contract section's "First gate attempt and the fix" paragraph
+  and the closing section's commit count in this history, the todo blurb of
+  `docs/README.md`, one entry of `docs/experiences.md`).
+- 99562f2 `fix(contracts): _extref_read_wide drops the generator whose closure
+  over a reassigned local was a Core.Box, which tripped the sweep in the second
+  gate attempt` (`src/contracts/twiss_external_reference.jl`: one line, the
+  row `Dict` built by `zip` instead of a generator over the twice-assigned
+  `columns`, the file keeping its 1019 lines; markdown: the same paragraph of
+  the contract section extended to both attempts, the closing section's count,
+  `docs/README.md`, the `docs/experiences.md` entry).
+
+The gate ran on the clean tree at 99562f2 (the final tree of the push; the
+first attempt, on a351d74, stopped red in both arms after seventeen green rows
+at the stage 6 pin tripwire, its eighteenth row, the second, on ebaa8b1, after
+155 green rows at the Core.Box sweep, its 156th row; the contract section
+above) in the
+worktree `stage8-A` that holds the branch, CUDA active, four threads, both arms
+one after the other from one detached script
+(result/gates/run_full_gate_stage8_both_arms.sh, `setsid nohup`), with the
+depot otherwise idle (no other julia process compiling or testing; the owner's
+long-lived IJulia kernels and one defunct julia child of jupyter-lab only):
+
+    # native arm (the Verification Matrix's gate)
+    julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
+    # AVX2 arm (CI-runner parity: OpenBLAS Haswell kernels, LLVM target haswell)
+    OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4", "-C", "haswell"])'
+
+The reference for every comparison below is the second carried gate (the
+section named above), run on b4e4f85, the tree 1b1b6da records and differs
+from by that record's two markdown files alone: 317 rows and 148378/148378
+in each arm.
+
+| item | native arm | AVX2 arm |
+|---|---|---|
+| tree | 99562f2 (`git status` clean; `Project.toml` and `Manifest.toml` identical to 1b1b6da's) | same |
+| start / end / wall | 17:37:05 / 18:21:09 EDT / 44 min 04 s (the second carried gate: 45 min 38 s) | 18:21:09 / 19:04:48 EDT / 43 min 39 s (the second carried gate: 45 min 03 s) |
+| exit code | 0 (`Testing Octopus tests passed`) | 0 (`Testing Octopus tests passed`) |
+| test summary | 318 top-level testset rows, every one `Pass == Total`; summed 148394 passed of 148394 (the second carried gate: 317 rows, 148378); no Fail, Error or Broken column anywhere | 318 rows, every one `Pass == Total`; summed 148394 passed of 148394; no Fail, Error or Broken column anywhere; every row's counts equal to the native arm's (0 differing counts in the row-by-row comparison) |
+| the rows the batch touches | the registration testset `Stage 8 registers TwissExternalReferenceContract: description, supertype, export, docstring, registry, snapshot, kwarg rejection, skipped path` 11/11 (4.4s) (new in d5fc720: eleven assertions, the snapshot-diff branch included, `docs/registry_snapshot.md` being in the tree; the `:skipped` path on an empty `reference_dir`); `Physics contracts` 22/22 (1m51.5s) (the second carried gate: 17/17 (1m50.5s); +5 on this tree (six in d5fc720, the literal `worst_ratio <= 1.0` dropped by ebaa8b1): `validate(TwissExternalReferenceContract())` on the committed tables, `passed`, the three per-code row counts positive, `failed == 0`; the first `validate` of the contract in a process includes the compile of its path, 33.349793803 s measured standalone on the tree before the review's fixes, 0.024298255 s on the second call); the stage 6 contract testset `Stage 6: the identity contract passes on the tree with pinned metrics, and every negative is red` 167/167 (56.6s) (the second carried gate: 167/167 (57.7s); the batch changes no analysis code, `src/Octopus.jl` gains one `include`); `Architecture integrity` 28/28 (29.8s) (the second carried gate: 28/28 (28.8s); the snapshot-equality and docs-index tripwires it holds see the regenerated `docs/registry_snapshot.md` and the record indexed in `docs/README.md`, fixed assertion counts) | 11/11 (4.4s); 22/22 (1m55.8s) (the second carried gate: 17/17 (1m52.1s)); 167/167 (56.1s) (167/167 (57.8s)); 28/28 (28.6s) (28/28 (28.6s)) |
+| skipped or unrunnable | none: no `LANE SKIP` banner (full lane); the heavyweight sections ran (`The multi-process seam runs under an MPI launcher` 1710/1710 (9m02.4s); `The developer harnesses run divided under an MPI launcher` 4/4 (1m33.6s); `4D eigenmodes: (E7), (E8), projectors, signed areas and (M5) on 200 manufactured maps` 12602/12602 (0.2s); `Mode clusters: 200 + 200 manufactured stable maps are resolved singletons` 11406/11406 (1.5s); `CPU solver stack is thread-count invariant` 118/118 (6.3s); `Every example script runs against the current interface` 6/6 (8m01.2s)) | none: no `LANE SKIP` banner (full lane); the heavyweight sections ran (`The multi-process seam runs under an MPI launcher` 1710/1710 (8m54.7s); `The developer harnesses run divided under an MPI launcher` 4/4 (1m33.7s); `4D eigenmodes: (E7), (E8), projectors, signed areas and (M5) on 200 manufactured maps` 12602/12602 (0.2s); `Mode clusters: 200 + 200 manufactured stable maps are resolved singletons` 11406/11406 (1.5s); `CPU solver stack is thread-count invariant` 118/118 (6.2s); `Every example script runs against the current interface` 6/6 (7m54.1s)) |
+| CUDA | active (`CUDA coverage status` 1/1) | active (`CUDA coverage status` 1/1) |
+| warnings | 41 non-fatal warning lines of 11 distinct texts (numbers normalized, the tree's path normalized; the second carried gate's native arm: 44 of 14); no text new to this log; absent this time, the three texts that made that arm's 14: the two CUDA.jl notices `WARNING: Use of CUDA.CUSOLVER is deprecated, use cuSOLVER instead.` and `WARNING: Use of CUDA.CUSPARSE is deprecated, use cuSPARSE instead.` (printed there by the live precompile of `ArrayInterfaceCUDAExt` inside the test process; the live precompiles inside this arm's test process are the tree's own `OctopusForwardDiffExt` and `OctopusSymbolicsExt`, log lines 595-600, `1 dependency successfully precompiled` twice, printing no notice) and the intermittent one-particle `Warning: particles were lost with no aperture responsible; a coordinate went non-finite where nothing was collimating` report of `_report_losses` (src/tasks/Tasks.jl; once in each arm of the second carried gate, absent from both arms here, as from the stage 7 native arm and the second CI-fix AVX2 arm; the batch touches no tracking code); the eleven texts present keep that arm's counts exactly: the curved-frame notice 23 times, PIC mesh under-coverage 4, the DST width notice 4, CUDA-only solver options inactive on CPU 3, the two known `observer_option_schema` test-side overwrites, the two launch-threads reductions, and the GPUExecutionPolicy, mpiexec and ApertureSpec `alive` notices once each | 41 non-fatal warning lines of 11 distinct texts (numbers normalized, the tree's path normalized; the second carried gate's AVX2 arm: 44 of 14); no text new to this log; the same three texts absent as in the native arm (the two CUDA.jl deprecation notices and the one-particle loss report, once each in the second carried gate's AVX2 arm), and exactly the native arm's eleven texts with the native arm's counts |
+| the contract in each arm, standalone on the same tree after the gate (result/gates/stage8/validate_ext_arm.sh, `CUDA_VISIBLE_DEVICES=` unset-to-empty, one process per arm) | `external twiss references certified: 691 rows (madx 81, ptc 111, xtrack 499), worst ratio 0.3567635076251463 (xtrack Rd_1e-3 ET_bety_edw_teng)` (`sapphirerapids cpu_target=native OPENBLAS_CORETYPE=-`; per class `worst_TOL_A` 0.13881729116399735, `worst_TOL_A_cond` 0.04560352920349014, `worst_TOL_B` 0.0001942890293094024, `worst_TOL_C` 0.004162562893725662, `worst_TOL_D` 0.006708795741161566, `worst_TOL_F` 0.3567635076251463, `worst_assert` 0.0, `worst_witness` 0.048872424440737916; `failed` 0; first call 34.34543800354004 s, second call 0.02801203727722168 s) | `external twiss references certified: 691 rows (madx 81, ptc 111, xtrack 499), worst ratio 0.3567635076251463 (xtrack Rd_1e-3 ET_bety_edw_teng)` (`sapphirerapids cpu_target=haswell OPENBLAS_CORETYPE=Haswell`; per class `worst_TOL_A` 0.13881729116399735, `worst_TOL_A_cond` 0.04560352920349008, `worst_TOL_B` 0.0002220446049250313, `worst_TOL_C` 0.004162562893725662, `worst_TOL_D` 0.006708795741161566, `worst_TOL_F` 0.3567635076251463, `worst_assert` 0.0, `worst_witness` 0.048872424440737916; `failed` 0; first call 33.65487504005432 s, second call 0.020061016082763672 s) |
+| log | `result/gates/full_gate_stage8_native_2026_09_15.log` | `result/gates/full_gate_stage8_avx2_2026_09_15.log` |
+| the fast lane on the same tree BEFORE the gate (a pre-check after the two red attempts, not the gate; `Pkg.test(test_args=["lane=fast"], julia_args=["--threads=4"])`, native, CUDA active; `result/gates/fast_lane_stage8_fixed_tree_2026_09_15.log`) | exit 0, 17:18:24-17:36:32 EDT (18 min 08 s), 303 top-level rows, 146387/146387 summed, 15 `LANE SKIP` banners (the second carried gate's record commit's own fast lane on a markdown-only tree: 302 rows, 146376/146376, 15 banners); no Fail, Error or Broken column | one run, native only |
+
+Row arithmetic: the batch adds ONE top-level testset (the registration testset
+of d5fc720, eleven assertions on this tree) and moves none; it adds five
+assertions to `Physics contracts` (17 -> 22: six in d5fc720, the literal ratio
+pin dropped by ebaa8b1) and changes no other testset's
+count: bf7ac2d, 78cfcfd and 0df0190 touch `validation/` and `docs/` only, and
+the suite runs none of the three consumers, the three generators or the shared
+fixture module (the suite reaches stage 8 through the contract, which reads
+the committed tables and compiles no fixture); a351d74 touches markdown only,
+ebaa8b1 one assertion of `test/runtests.jl` and markdown, 99562f2 one line of
+the contract source and markdown;
+d5fc720's `src/` change is a new file plus one `include`, so every existing
+testset keeps its count (the stage 6 contract testset its 167, the identity
+rows their frozen multipliers). The expected totals are therefore the second
+carried gate's plus 11 + 5 = 16: 318 rows and 148394 in both arms, with
+exactly ONE row new and exactly ONE differing count (`Physics contracts`, 17
+to 22) against that gate's native log, none gone, and none differing between
+the two arms; measured: exactly as expected: 318 rows and 148394/148394 in each arm, ONE row new against the second carried gate's native log (`Stage 8 registers TwissExternalReferenceContract: description, supertype, export, docstring, registry, snapshot, kwarg rejection, skipped path` 11/11) and ONE differing count (`Physics contracts` 17 to 22), none gone, and 0 differing counts between the two arms (every other row its second carried gate count). The gate logs were read by
+result/gates/summarize_gate.py (the scratch reader of the carried gates,
+read-only) (318 rows in both logs, `grep -c 'Test Summary:'` agreeing with the parsed row count in each, no header interleaved with stderr output; no signal was sent to either test process and both logs are test output only).
+
+Before the gate, each commit's change was verified standalone, recorded in
+its own section: the three consumers ran in both arms on their commits' trees
+(A: `TW-MADX-DIGEST 387 0 0.40503179603364126`, `EXIT=0`, and the regenerate
+mode's `differing_cells=0`; B: `TW-PTC-DIGEST 257 0 0.59499739575161859` and
+the regenerate digest `differing=0`; C: `TW-XSUITE-DIGEST 1060 0
+0.99100645626558559`, `rc=0`, and `REGEN-DIGEST cells 2857 differing 0`), each
+with its injected defects red once; d5fc720's contract ran `validate` on the
+committed tables in the native arm on its final tree (691 rows, madx 81, ptc
+111, xtrack 499, 0 failed, worst ratio 0.3567635076251463; the section above)
+with the two new testset bodies as a script (17 of 17) and the live-vs-disk
+snapshot diff empty; `using Octopus` loaded on a351d74 (markdown only). The
+first gate attempt, on a351d74, ran the suite's first seventeen rows green in
+both arms (the registration testset 11/11 among them) and stopped at the
+stage 6 testset's pin tripwire; ebaa8b1's fix was checked by the tripwire
+function itself, extracted from the fixed file and evaluated on it (three
+lines, each naming `_ST6_PIN`), and by `Meta.parseall` of the file. The
+second attempt, on ebaa8b1, ran 155 rows green in both arms (the stage 6
+testset 167/167 among them) and stopped at the Core.Box sweep; 99562f2's fix
+was checked by that sweep and the detached-docstring sweep extracted from the
+suite and run on the tree (2/2 and 1/1), and the tree then ran the fast lane
+(the table row above), the first run of most of the suite on any tree of the
+batch. This gate is the first complete run of the full lane on any tree of
+the batch, the first run of the
+contract in the AVX2 arm, and the only run of the per-push lane the batch
+owes.
+
+What this gate measures and what it does not: both arms are the two MEASURED
+CPU classes (native AVX-512 Sapphire Rapids; the AVX2 emulation
+`OPENBLAS_CORETYPE=Haswell julia -C haswell`), so a gate here confirms the
+counts, the assertion structure, the identity rows and the contract's 691
+rows on the tree at both classes; it cannot measure the runner's third class
+(CI run 440 on 1b1b6da: an identity table no local configuration reproduces,
+worst row `k_longitudinal_block_symplecticity` 0.1537 at c = 16, host label
+`znver5` where runs 436-439 said `sapphirerapids` with the same table). Two
+things of the batch are first seen on the push's CI run: the contract's 691
+rows at the runner's class, gated at the scripts' own tolerance classes with
+no runner margin rule of their own (the least margin on this tree is the
+TOL-F row `xtrack Rd_1e-3 ET_bety_edw_teng` at 0.3567635076251463 of its
+1e-10 absolute bound, the row to read first if the runner is red; the TOL-A
+rows sit at 0.13881729116399735), and the registration testset's `:skipped`
+path on a temporary directory. The three consumers, their twins, ladders,
+anchors and recorded rows run on no CI: the four items of Not verified below
+(the identity script's native exit 1 at defaults, the C2 TOL-E band at
+0.29730193687967565 of 0.29999999999999999 on U2, the recorded nst=32 and
+DISP1 rows, the single measured version of each code) are untouched by the
+suite and by this gate.
+
+The validation row of AGENTS.md's Verification Matrix reads "full, before the
+commit carrying the claim". The three `feat(validation)` commits and the
+`feat(contracts)` commit of this batch carried their claims with no full gate
+on their own trees; the precise statement is again that the clause is
+SUPERSEDED for this batch by the per-push rule (owner decision 2026-09-04,
+commit 6ac8d61; stage 8 its own batch by the standing rule, the stage 7
+close's carried item 12), not met on bf7ac2d's, 78cfcfd's, 0df0190's or d5fc720's tree;
+this gate, on the final tree, is the one the contract section and the closing
+paragraph above named. Stage 7's carried item 14 (the owner's) still asks for
+the row's text to be reconciled with the per-push rule.
+
+This subsection (with the todo row's sentence) is the only change between the
+gated tree and the pushed tree; the commit carrying it is markdown-only and
+finishes with the fast lane on its own tree (matrix row "markdown only"),
+`result/gates/fast_lane_gate_record_stage8_2026_09_15.log` (exit 0,
+19:14:38-19:32:45 EDT, 18 min 07 s, 303 top-level rows, 146387/146387 summed,
+15 `LANE SKIP` banners, no Fail, Error or Broken column; every row and count
+equal to the pre-check's; the lane started on the working tree holding the
+applied subsection and the todo sentence, and the row-count correction of
+the two red attempts (the contract section, this subsection, one entry of
+`docs/experiences.md`: seventeen and 155 green rows where the text said
+eighteen and 156, found by a read-only check of this record against the red
+logs) was written into the same working tree during the run, markdown only).
+It is the LAST commit before the push. The owner approved this push on
+2026-09-15, while the third attempt was running, conditional on this gate
+being green in both arms ("After gate green, please push."; the 2026-09-14
+approval was spent by 1b1b6da); the two green arms above meet the condition,
+so the push carries the seven batch commits and this record (eight commits
+on 1b1b6da) and spends the approval, and the CI run on the new HEAD is the
+check of the batch at the runner's CPU class.
 
 ### Decisions
 
