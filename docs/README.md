@@ -389,7 +389,7 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   declaration), stage 6 (the identity contract, its validation script, the
   DBA-ring example) and stage 7 (the `lattice_cells.jl` refactor) landed
   2026-09-13; the stage 7 carried batch landed 2026-09-14 and stage 8 (the
-  three external benchmarks, six commits) 2026-09-15.
+  three external benchmarks, seven commits) 2026-09-15.
 - [`twiss_external_benchmarks_2026_09_15.md`](history/twiss_external_benchmarks_2026_09_15.md) —
   the stage 8 external benchmark record: the conversion law per code (MAD-X
   J0 and slip, PTC F, xtrack slip), the beam pin, the PTC internal mass, the

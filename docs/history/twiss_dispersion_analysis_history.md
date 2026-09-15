@@ -14591,7 +14591,8 @@ in this tree, after the review of the contract): status `passed`, 691 rows
 `worst_assert` 0.0, `worst_witness` 0.048872424440737916. The two-arm gate
 of the batch is recorded in its closing section.
 
-**First gate attempt and the fix (the `fix(test)` commit of the batch).** The
+**The first two gate attempts and their fixes (the `fix(test)` and
+`fix(contracts)` commits of the batch).** The
 first two-arm gate on a351d74 (2026-09-15; native 16:33:30-16:37:08 EDT, AVX2
 16:37:08-16:40:40 EDT, both `exit=1`) was red in both arms at the stage 6 pin
 tripwire (`test/runtests.jl:1386`, `_st6_pin_lines`, the run-437 rule that
@@ -14613,22 +14614,41 @@ lesson (a new `@test` on a ratio inside either scanned block must read
 gate) is recorded in `docs/experiences.md`. The red logs are kept as
 `result/gates/full_gate_stage8_native_2026_09_15_RED_a351d74.log` and
 `result/gates/full_gate_stage8_avx2_2026_09_15_RED_a351d74.log`
-(git-ignored); the gate of the batch is the re-run on the final tree,
-recorded in the closing section.
+(git-ignored). The second attempt, on the fixed tree ebaa8b1 (native
+16:48:56-17:01:38 EDT, AVX2 17:01:38-17:14:05 EDT, both `exit=1`), passed the
+stage 6 testset and 156 rows and was red in both arms at "No method grows a
+Core.Box outside the argued allowlist" (`test/runtests.jl:12334`, the sweep
+of lowered code): `_extref_read_wide` built each row's `Dict` from a
+generator over `columns`, a local the function assigns twice (empty, then
+the column row), so the generator's closure captured it in a `Core.Box`; the
+sweep printed `_extref_read_wide @ twiss_external_reference.jl:100`. The
+generator became `Dict{String,String}(zip(columns, String.(fields)))`, no
+closure, the file keeping its 1019 lines; the sweep and the detached-
+docstring sweep, extracted from the suite and run on the fixed tree in script
+mode after `using Octopus`, pass (2/2 and 1/1). Neither tripwire had run on
+any tree of the batch: the workflow's checks ran the new testset bodies and
+`validate`, not the suite's sweeps over the tree. The fixed tree runs the
+fast lane before the third gate attempt (the closing section records both);
+the second red logs are kept as
+`result/gates/full_gate_stage8_{native,avx2}_2026_09_15_RED2_ebaa8b1.log`.
+The gate of the batch is the run on the final tree, recorded in the closing
+section.
 
 ## 2026-09-15: stage 8 closed, the external benchmark batch gated
 
 ### What landed in the batch
 
-Six commits: benchmark A (MAD-X twiss; TW-MADX-DIGEST 387 0
+Seven commits: benchmark A (MAD-X twiss; TW-MADX-DIGEST 387 0
 0.40503179603364126), benchmark B (PTC ptc_twiss; TW-PTC-DIGEST 257 0
 0.59499739575161859), benchmark C (xtrack 0.112.0; TW-XSUITE-DIGEST 1060 0
 0.99100645626558559), the light suite contract
 `src/contracts/twiss_external_reference.jl` reading the three committed
-tables at their tolerance classes, this closing record, and the `fix(test)`
-commit after the first gate attempt (the contract section's gate finding
-above: the stage 8 block of "Physics contracts" drops its literal ratio pin,
-which tripped the stage 6 pin tripwire). The contract
+tables at their tolerance classes, this closing record, and the two fix
+commits after the first two gate attempts (the contract section's gate
+finding above: `fix(test)`, the stage 8 block of "Physics contracts" drops
+its literal ratio pin, which tripped the stage 6 pin tripwire;
+`fix(contracts)`, `_extref_read_wide` drops the generator whose closure over
+a reassigned local was a `Core.Box`, which tripped the Core.Box sweep). The contract
 certifies 691 rows (madx 81, ptc 111, xtrack 499), 0 failed, worst ratio
 0.3567635076251463 at xtrack Rd_1e-3 ET_bety_edw_teng (class TOL-F); its
 own section above carries the per-class worst ratios. The tracked record

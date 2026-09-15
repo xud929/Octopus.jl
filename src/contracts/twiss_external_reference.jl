@@ -110,7 +110,7 @@ function _extref_read_wide(path::AbstractString)
         end
         length(fields) == length(columns) ||
             throw(ArgumentError("_extref_read_wide: $(path) row with $(length(fields)) fields, $(length(columns)) columns"))
-        push!(rows, Dict{String,String}(columns[i] => String(fields[i]) for i in eachindex(columns)))
+        push!(rows, Dict{String,String}(zip(columns, String.(fields))))   # no generator: `columns` is reassigned above, a closure over it would be a Core.Box
     end
     isempty(columns) && throw(ArgumentError("_extref_read_wide: $(path) has no column row"))
     return _ExtRefTable(String(path), header, columns, rows)

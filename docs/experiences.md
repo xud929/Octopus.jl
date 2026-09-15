@@ -1346,6 +1346,17 @@ in the stage 6 testset, a block the new lines did not touch. The run-437
 entry above (a copy that RAN is not a copy that was READ) applied in mirror:
 the new line was read by a tripwire the check did not run.
 
+The fixed tree's gate was red again, thirteen minutes into each arm, at the
+Core.Box sweep: `_extref_read_wide` built each row's `Dict` from a generator
+over `columns`, a local assigned twice (empty, then the column row), so the
+generator's closure captured it in a `Core.Box`, the class this file's first
+entries record three times over. The sweep reads lowered code and runs in
+under two seconds after `using Octopus`; extracted from the suite, it would
+have named the method in a minute. A workflow that writes `src/` and runs
+its own testset bodies has run none of the suite's sweeps over the tree, and
+every sweep it did not run is a gate attempt it may cost: the gate stops at
+its first red testset and owes both arms again.
+
 Rules adopted: a new `@test` on a ratio inside "Physics contracts" or the
 stage 6 testset reads `_ST6_PIN` or is not written; an assertion that follows
 from the ones before it is not written either (it adds a pin to move without
@@ -1354,8 +1365,13 @@ runs the testset that holds the tripwire before the gate, and the checklist
 of a workflow's integrator names the tripwires of the blocks it edits
 (`_st6_pin_lines` for the two ratio blocks; the snapshot-equality and
 docs-index tripwires of "Architecture integrity" for the registry and the
-docs); a red gate's logs are kept under a name that says red and names the
-tree, and the re-run on the fixed tree is the gate of record.
+docs); the integrator of a workflow that writes source runs the suite's
+source sweeps extracted (the Core.Box sweep, the detached-docstring sweep,
+`_st6_pin_lines`) before it commits; a batch whose `src/` or `test/` changed
+runs the fast lane on its final tree before the two-arm gate (seventeen
+minutes, against ninety owed again after a red); a red gate's logs are kept
+under a name that says red and names the tree, and the run on the fixed tree
+is the gate of record.
 
 ## Standing decisions, deliberately not being done
 
