@@ -1,0 +1,34 @@
+stage 8 benchmark C (Xsuite twiss) provenance sidecar
+table: validation/reference/xsuite_twiss_xtrack_0.112.0.tsv
+driver: validation/generate_xsuite_twiss_reference.py sha256 0db216a66bf09efeb0325e59880b858cd2ab2b9ba793940275b05d047d26662f
+input maps: validation/reference/twiss_benchmark_maps.tsv sha256 5417a9a604123973f0320b4f7d756923d4ab5d48a1beedcb4cfab91226f278f7
+interpreter that froze the table: result/twiss_impl_2026_09_11/stage8/xsuite_env/venv/bin/python (git-ignored venv; the driver takes its interpreter from the caller)
+OCTOPUS_STAGE8_PYTHON (documentation only): result/twiss_impl_2026_09_11/stage8/xsuite_env/venv/bin/python
+python 3.11.5
+beam pin: beta0 0.94983305469941881 gamma0 3.1973667700405533 residual 1.1102230246251565e-16
+deprecation text: FutureWarning: 'compute_linear_normal_form()' is deprecated and will be removed in future versions. Please use 'get_linear_normal_form()' instead. This deprecation is part of the interface cleanup in view of the 1.0 release.
+xtrack formulas checked line by line against the theory note's (X1)-(X3) at the pinned commit 384952bcb2cd44b500b341b87436f3b1cf3bc817;
+three differences: (1) compute_linear_normal_form is a deprecated wrapper of get_linear_normal_form (linear_normal_form.py:150-157);
+  (2) betx_edw_teng/alfx_edw_teng/bety_edw_teng/alfy_edw_teng/g_edw_teng and f1001/f1010 are derived from W (lattice_functions_from_W.py:86-116);
+  (3) the use_full_inverse branch (lattice_functions_from_W.py:240-282) is new; the default branch is the one this table uses
+pip freeze:
+  certifi==2026.7.22
+  cffi==2.1.1
+  charset-normalizer==3.5.1
+  Cython==3.3.0
+  idna==3.19
+  lark==1.3.1
+  numpy==2.4.6
+  pandas==3.0.5
+  pycparser==3.0
+  python-dateutil==2.9.0.post0
+  requests==2.34.2
+  scipy==1.17.1
+  six==1.17.0
+  tqdm==4.70.1
+  urllib3==2.7.0
+  xdeps==0.10.20
+  xfields==0.27.2
+  xobjects==0.6.10
+  xpart==0.23.18
+  xtrack==0.112.0

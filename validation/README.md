@@ -1302,6 +1302,132 @@ regenerate digest.
 (Staging item 8); ../docs/history/twiss_dispersion_analysis_history.md (the
 2026-09-15 stage 8 benchmark B section, which records the W1 miss and D19).
 
+## Twiss Benchmark Against Xsuite
+
+**Script:** validation/twiss_xsuite_benchmark.jl (920 lines, consumer) and
+validation/generate_xsuite_twiss_reference.py (576 lines, generator);
+fixtures from validation/twiss_benchmark_cells.jl through the maps table
+validation/reference/twiss_benchmark_maps.tsv.
+**Committed table:** validation/reference/xsuite_twiss_xtrack_0.112.0.tsv
+(2881 lines: a 23-line header, one column row, 2857 data rows in long form
+layer/fixture/compile/quantity/value) with the sidecar
+validation/reference/xsuite_twiss_provenance.txt (34 lines).
+
+**External tool:** xtrack 0.112.0 with xobjects 0.6.10, xpart 0.23.18, numpy
+2.4.6 on python 3.11.5 (table header tool line), run by the python generator
+only, in a pinned virtual environment under the git-ignored result/ tree (the
+sidecar records the interpreter path and the pinned commit
+384952bcb2cd44b500b341b87436f3b1cf3bc817). The consumer is pure Julia and
+reads the committed table and sidecar, so the suite needs no python; the
+generator's regenerate mode diffs a fresh xtrack run against the committed
+table (REGEN-DIGEST cells 2857 differing 0 header_lines_differing 0, rc=0,
+quoted in the history section).
+
+**Provenance gate.** The sidecar records the generator's sha256
+0db216a66bf09efeb0325e59880b858cd2ab2b9ba793940275b05d047d26662f and the
+input maps table's sha256
+5417a9a604123973f0320b4f7d756923d4ab5d48a1beedcb4cfab91226f278f7; the
+consumer recomputes the maps table's digest and gates TW-XSUITE-WITNESS
+maps_table_sha256_matches_sidecar 1 1 0 PASS (consumer run line 6). The
+sidecar is written only by the generator: any re-freeze of the maps table
+(as the benchmark B rework and the final fix did) turns this line red until
+the generator is rerun, which is what happened on 2026-09-15 and was
+resolved by the re-freeze recorded in the history section.
+
+**Flags** (table header): xtrack Line.twiss on the exported one-turn map
+with finite-difference steps dx 1e-6, dpx 1e-7, dy 1e-6, dpy 1e-7, dzeta
+1e-5, ddelta 1e-6; beam mass0 938.27208943e6 eV, p0c 2.8494991640982566e9
+eV (the campaign pin: header_beta0_vs_pin 0.94983305469941881
+0.9498330546994187 1.1102230246251565e-16 PASS, consumer run line 2); the
+xtrack FutureWarning on the deprecated call is recorded in the header;
+XSUITE_ALLOW_KERNEL_COMPILATION=1 is exported for the CPU kernels.
+
+**Measured conventions.** Xsuite's sixth pair (zeta, delta) is Octopus's
+(ell-s, delta) with no reflection and no beta0 scaling (J0 = I, F = I); the
+only conversion is the slip shear Sh(-C/gamma0^2), which pairs xtrack with
+the Octopus TASK compile. Numbers: S0_r56_vs_L_over_gamma0sq
+0.97817168361909312 against 0.97817168200370863, difference
+1.6153844928368244e-09 (line 7, TOL-D relative); W1_r65_vs_minus_octopus_m65
+-0.18584658855011466 against -0.18584658879140895, difference
+2.4129429010422143e-10 (line 20); the generator's rotation witness
+rot_s_rad_vs_SRotation_sandwich_maxabs 8.2399365108898337e-18 and the U2 sign
+witness R40/R41 -1 -1 (the GEN-WITNESS lines of the generator freeze, quoted
+in the history section; 11 witnesses, 0 failing). The (X2) readout form is selected by the internal
+(T15) lambda, form 2 on Rd_1e-3, D6_3 and D8_3, with |lambda_internal - g|
+at worst 4.2743586448068527e-13, and physical_h_vs_det(U_ls) holds to
+1.6819878823071122e-14 (history section, benchmark C).
+
+**Fixtures:** builders from validation/twiss_benchmark_cells.jl, read
+through the maps table; the C1 layer (normalizer and dispersion on U1, U2, K1, K2,
+R_0, Rd_1e-3, D6_3, D8_3 at TOL-A for the dispersion rows, a recorded plan
+deviation from TOL-D), the C2 layer (rows 5-6 of the normalized one-turn map
+at TOL-D with the nst ladder) and the C3 layer (the T6 6D cell against the
+Octopus longitudinal mode; gated, stage 8 decision D5 branch (a)): T6 witnesses r55
+1 against 0.99999999999999978, r56 0.43212780506815801 against
+0.43212780995540045 (4.8872424440737916e-09), r65 -0.18584658855011463
+against -0.18584658879140895 (2.4129431785979705e-10), r66
+0.91969052150635877 against 0.91969052059788692 (9.0847185330034108e-10),
+all PASS (lines 1021-1025); the T6 longitudinal mode is certified at
+0.14974352568848381 against 0.14974352201203292 (lines 389, 1028). Rd_1e-6
+is recorded, not gated.
+
+**Metric and tolerance classes.** TW-XSUITE <fixture> <quantity> <octopus>
+<external> <|diff|> <tol> <class> PASS|FAIL; TOL-D is 1e-7 relative on the
+xtrack rows 5-6; TOL-E is the fitted order 4.0 +- 0.3 with the frozen
+nst=64 cap min(10 x 2.3920456726500561e-09, 1e-8) = 1e-8: TW-XSUITE-ORDER
+U1 4.0013416877743504, U2 3.7026980631203243, K1 4.00046327507245, K2
+3.7049247094295761 with nst=64 model residuals 2.0827201074880008e-10,
+2.3920456726500561e-09, 3.4805491821998658e-12, 2.3805526438991365e-09
+(lines 699-828). The worst gated ratio is the U2 fitted order,
+TW-XSUITE-WORST C2 U2 model_fitted_order diff=0.29730193687967565
+bound=0.29999999999999999 TOL-E (line 1063; 0.9 percent of margin, an owner
+item). The committed run prints TW-XSUITE-DIGEST 1060 0 0.99100645626558559
+and TW-XSUITE-NOTE digest gated=623 recorded=357 defect=none PASS (lines
+1064-1065, identical on the haswell arm) with rc=0. Of the 623 gated rows,
+20 (the C1 lines named zeta_dx_vs_xtrack_dx_zeta_4d(0_vs_0), one per
+fixture and compile mode) assert a structural zero on both sides and can
+never fail; the name declares it.
+
+**Injected defect** (stage 8 decision D16): OCTOPUS_STAGE8_DEFECT=drop_shear omits
+Sh(-C/gamma0^2); the C2 rows_cols_5_6_maxscaled_nst64 lines fail on all
+eight fixtures (U1 0.2934515050746257, U2 0.51354012806127169, K1 and the
+R_/Rd_ family 0.23476120405192902, K2 0.5135401282209735) and the run prints
+TW-XSUITE-DIGEST 1060 8 5135401.2822097354 with rc=1
+(drop_shear run: the eight FAIL rows at lines 702, 743, 784, 826, 868, 909,
+950 and 1005, the digest at 1079-1082; quoted in the history section).
+
+**Run** (from the repository root; consumer, then generator, which needs
+the pinned xtrack environment):
+
+```bash
+env CUDA_VISIBLE_DEVICES="" julia --project=. validation/twiss_xsuite_benchmark.jl
+env CUDA_VISIBLE_DEVICES="" OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. validation/twiss_xsuite_benchmark.jl
+env XSUITE_ALLOW_KERNEL_COMPILATION=1 <python-with-xtrack-0.112.0> validation/generate_xsuite_twiss_reference.py
+env XSUITE_ALLOW_KERNEL_COMPILATION=1 OCTOPUS_STAGE8_REGENERATE=1 <python-with-xtrack-0.112.0> validation/generate_xsuite_twiss_reference.py
+```
+
+**Overrides:**
+
+- OCTOPUS_STAGE8_DEFECT=none|drop_shear (consumer; default none).
+- OCTOPUS_STAGE8_REGENERATE=1 (generator; diff a fresh run against the
+  committed table; prints REGEN-DIGEST).
+- OCTOPUS_STAGE8_PYTHON (documentation only: the interpreter recorded in the
+  sidecar; the generator is run with whichever python carries xtrack
+  0.112.0).
+
+**Outputs:** the consumer writes result/twiss_xsuite_benchmark.tsv and
+prints the TW-XSUITE lines, the WORST line, the digest and rc; the generator
+writes validation/reference/xsuite_twiss_xtrack_0.112.0.tsv and
+validation/reference/xsuite_twiss_provenance.txt (generator and maps table
+sha256, interpreter, package versions, pinned commit) with its GEN-WITNESS
+and GEN-DIGEST lines.
+
+**Theory and design:** ../docs/theory/twiss_dispersion.md section 12.2 item 7
+(the Ohmi and Xsuite conventions, (X2) after coordinate conversion) and
+item 3; ../docs/design/twiss_dispersion_analysis.md (Staging item 8);
+../docs/history/twiss_dispersion_analysis_history.md (the 2026-09-15 stage 8
+benchmark C section).
+
 ## Twiss and Dispersion Identities
 
 `twiss_dispersion_identities.jl` checks the tagged Twiss and dispersion

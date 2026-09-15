@@ -14387,3 +14387,130 @@ gated number are unchanged.
 - The nst=64 cap 8.4916074172269873e-09 is frozen from the G6 residual;
   a higher nst in the generator would lower it.
 
+## 2026-09-15: stage 8, benchmark C, the normalizer and (X2) readout against xtrack 0.112.0
+
+### What landed
+
+- validation/generate_xsuite_twiss_reference.py (576 lines): builds each
+  fixture's one-turn map from validation/reference/twiss_benchmark_maps.tsv
+  in xtrack 0.112.0 (xobjects 0.6.10, xpart 0.23.18, numpy 2.4.6, python
+  3.11.5 [table header tool line]) and freezes
+  validation/reference/xsuite_twiss_xtrack_0.112.0.tsv (2881 lines: 23
+  header lines, one column row, 2857 long-form rows) with the sidecar
+  validation/reference/xsuite_twiss_provenance.txt (34 lines: generator
+  sha256 0db216a66bf09efeb0325e59880b858cd2ab2b9ba793940275b05d047d26662f,
+  input maps sha256
+  5417a9a604123973f0320b4f7d756923d4ab5d48a1beedcb4cfab91226f278f7,
+  interpreter, pinned commit
+  384952bcb2cd44b500b341b87436f3b1cf3bc817).
+- validation/twiss_xsuite_benchmark.jl (920 lines): the pure-Julia consumer;
+  applies Sh(-C/gamma0^2) with J0 = I, F = I, checks the sidecar, runs the
+  three layers C1 (normalizer and dispersion), C2 (rows 5-6 with the nst
+  ladder) and C3 (the T6 6D cell, gated, D5 branch (a)).
+- validation/README.md: the section "Twiss Benchmark Against Xsuite";
+  docs/todo.md row 20: one sentence appended.
+
+### Standalone verification
+
+Native arm [stage8/impl/C/run_native.log]:
+
+    TW-XSUITE start defect=none table=xsuite_twiss_xtrack_0.112.0.tsv julia=1.12.4 threads=1
+    TW-XSUITE ... header_beta0_vs_pin 0.94983305469941881 0.9498330546994187 1.1102230246251565e-16 ... PASS
+    TW-XSUITE-WITNESS maps_table_sha256_matches_sidecar 1 1 0 PASS
+    TW-XSUITE-WITNESS S0_r56_vs_L_over_gamma0sq(TOL-D_rel) 0.97817168361909312 0.97817168200370863 1.6153844928368244e-09 PASS
+    TW-XSUITE-WITNESS W1_r65_vs_minus_octopus_m65(TOL-D_rel) -0.18584658855011466 -0.18584658879140895 2.4129429010422143e-10 PASS
+    TW-XSUITE-MODEL U1 64 2.0827201074880008e-10
+    TW-XSUITE-ORDER U1 4.0013416877743504 1e-08 PASS
+    TW-XSUITE-WORST C2 U2 model_fitted_order diff=0.29730193687967565 bound=0.29999999999999999 TOL-E
+    TW-XSUITE-DIGEST 1060 0 0.99100645626558559
+    TW-XSUITE-NOTE digest gated=623 recorded=357 defect=none PASS
+    rc=0
+
+AVX2 arm [stage8/impl/C/run_haswell.log]: lines 1063-1067 identical (the
+same WORST, DIGEST and NOTE lines), rc=0. Fitted orders: U1
+4.0013416877743504, U2 3.7026980631203243, K1 4.00046327507245, K2
+3.7049247094295761; nst=64 residuals 2.0827201074880008e-10,
+2.3920456726500561e-09, 3.4805491821998658e-12, 2.3805526438991365e-09
+(lines 699-828); frozen cap min(10 x 2.3920456726500561e-09, 1e-8) = 1e-8.
+C3 T6 witnesses (lines 1021-1025): r55 1 against 0.99999999999999978, r56
+0.43212780506815801 against 0.43212780995540045 (4.8872424440737916e-09),
+r65 -0.18584658855011463 against -0.18584658879140895
+(2.4129431785979705e-10), r66 0.91969052150635877 against
+0.91969052059788692 (9.0847185330034108e-10), all PASS; the T6
+longitudinal mode is certified at 0.14974352568848381 against
+0.14974352201203292 (lines 389, 1028). Generator: 11 GEN-WITNESS PASS
+(rot_s_rad_vs_SRotation_sandwich_maxabs 8.2399365108898337e-18; U2 sign
+R40/R41 -1 -1), GEN-DIGEST rows 2857 witnesses 11 failing 0, and in
+regenerate mode REGEN-DIGEST cells 2857 differing 0 header_lines_differing
+0, rc=0 [stage8/impl/C/gen_refreeze_final.log, gen_regenerate_final.log,
+the final-tree freeze of 2026-09-15 after the maps table's header repoint;
+the 2857 data rows are bit-identical to the 12:52 freeze,
+stage8/review/final_fix_runs/xsuite_rows_diff.txt].
+
+### Decisions
+
+- D5: C3 is included and gated (branch (a)); the T6 witnesses pass at TOL-D.
+- D16: one defect, drop_shear.
+- C1 dispersion rows are gated at TOL-A, a recorded deviation from the
+  plan's TOL-D; the (X2) form is selected by the internal (T15) lambda (form
+  2 on Rd_1e-3, D6_3, D8_3; |lambda_internal - g| at worst
+  4.2743586448068527e-13) and physical_h_vs_det(U_ls) is gated (worst
+  1.6819878823071122e-14) [stage8/review/fix_C.md].
+- Rd_1e-6 is recorded, not gated, as in benchmark A.
+- The xtrack FutureWarning on the deprecated call is recorded in the table
+  header rather than silenced.
+
+### Tables
+
+- validation/reference/xsuite_twiss_xtrack_0.112.0.tsv, md5
+  9e9e17b2fb0d80ec6c014c8e44fa498d (header line 1 repointed by the final
+  fix, data rows bit-identical); header: tool line, FD steps dx 1e-6 dpx
+  1e-7 dy 1e-6 dpy 1e-7 dzeta 1e-5 ddelta 1e-6, beam mass0 938.27208943e6
+  eV p0c 2.8494991640982566e9 eV.
+- validation/reference/xsuite_twiss_provenance.txt, md5
+  b78517d42cbd5f49be71539f157b2256, frozen by the generator on the final
+  tree (lines 3-4, the driver and maps sha256, are the only lines that
+  changed from the 12:52 freeze [stage8/review/final_fix_runs/xsuite_sidecar_diff.txt]).
+
+### Injected defects
+
+- drop_shear: the eight C2 rows_cols_5_6_maxscaled_nst64 lines fail (U1
+  0.2934515050746257, U2 0.51354012806127169, K1 and the R_/Rd_ family
+  0.23476120405192902, K2 0.5135401282209735); TW-XSUITE-DIGEST 1060 8
+  5135401.2822097354, rc=1 [stage8/impl/C/run_defect_drop_shear.log: the eight FAIL rows at
+  lines 702, 743, 784, 826, 868, 909, 950 and 1005; the digest at 1079 and
+  XSUITE_EXIT=1 at 1082].
+
+### Review findings and fixes
+
+[stage8/review/fix_C.md] The review replaced the external form guess by
+the internal (T15) lambda selection, gated physical_h_vs_det(U_ls), moved
+C1 dispersion to TOL-A, demoted Rd_1e-6 to recorded and froze the nst=64
+cap at 1e-8. fix_C reports the generator at 573 lines; wc -l on the final
+tree gives 576. The audit [stage8/review/audit_8.md finding 1] found the
+sidecar stale against the maps table re-frozen by the benchmark B rework
+(the consumer exited 1 at maps_table_sha256_matches_sidecar); the final fix
+[stage8/review/final_fix_8.md] repointed the scratch-only citations in the
+generator and the consumer, reran the generator freeze, and reran the
+consumer in both arms and the drop_shear defect on the final tree; the
+numbers above are from those runs.
+
+### Not verified
+
+- Twenty of the 623 gated rows (zeta_dx_vs_xtrack_dx_zeta_4d(0_vs_0)) assert
+  a structural zero on both sides and cannot fail; they are named as such.
+- The TOL-E band is marginal on U2 and K2 (fitted orders
+  3.7026980631203243 and 3.7049247094295761, the U2 diff at 0.9 percent of
+  the 0.3 bound); the cause (the FD steps of xtrack's twiss versus the
+  exported map's fourth-order ladder) is an owner item.
+- Only xtrack 0.112.0 in the pinned venv was measured.
+
+### Carried forward
+
+- Widen or re-derive the C2 TOL-E band for the dispersive cells, or fit
+  the order on the nst (16, 32, 64) triple only.
+- Gate the C1 dispersion at TOL-D as planned once the TOL-A choice is
+  reviewed by the owner.
+- A consumer-side check that the sidecar's generator sha256 matches the
+  committed generate_xsuite_twiss_reference.py (today only the maps digest
+  is gated).
