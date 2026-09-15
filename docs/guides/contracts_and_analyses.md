@@ -51,6 +51,22 @@ not fire FAILS the contract. It is mirrored by
 Identities" of `validation/README.md`), which prints the per-row ratios. Run
 both after changing any file of `src/analysis/`.
 
+`TwissExternalReferenceContract` is the light suite contract of the stage 8
+external twiss benchmarks. Its `validate` reads the committed tables of
+`validation/reference/` (the newest `twiss_madx_<v>.tsv`,
+`ptc_twiss_madx_<v>.tsv`, `xsuite_twiss_xtrack_<v>.tsv` and the Octopus maps
+`twiss_benchmark_maps.tsv`) and re-runs every convention row whose two sides
+both sit in a table: the optics MAD-X `twiss`, PTC `ptc_twiss` and xtrack
+printed against `analyze` of the external one-turn map converted by the stage
+8 law (or of the Octopus map xtrack was handed), at the benchmarks' tolerance
+classes times `tolerance_scale`. No external tool runs and no fixture is
+compiled; a missing table gives `:skipped` naming its generator, and a code
+that contributes no row FAILS. The heavy runs -- the twin rows, the nst
+ladders, the rolled-family anchors and the recorded rows -- stay in
+`validation/twiss_madx_benchmark.jl`, `validation/twiss_ptc_benchmark.jl` and
+`validation/twiss_xsuite_benchmark.jl` (the three stage 8 sections of
+`validation/README.md`).
+
 `StrongStrongPICMultiProcessConsistencyContract` is the three-way statement
 for the PIC collide -- CPU against MPI at each rank count, CPU against CUDA
 through `StrongStrongPICBackendConsistencyContract`, MPI against CUDA by

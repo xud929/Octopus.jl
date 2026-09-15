@@ -312,6 +312,7 @@ constructor names remain the user-facing way to build those specs.
 - `HighEnergyWeakStrongLimitContract`
 - `SymplecticityContract`
 - `TwissDispersionIdentityContract`
+- `TwissExternalReferenceContract`
 
 ## Analyses
 

@@ -335,6 +335,7 @@ Use Julia help:
 ?PublicConfigurationEffectivenessContract
 ?AnalysisOptionEffectivenessContract
 ?TwissDispersionIdentityContract
+?TwissExternalReferenceContract
 ?SymplecticityContract
 ?HighEnergyWeakStrongLimitContract
 ?CoherentModePhysicsContract

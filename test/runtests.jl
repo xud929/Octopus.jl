@@ -1105,6 +1105,38 @@ end
     @test_throws ArgumentError validate(TwissDispersionIdentityContract(); bogus=1)
 end
 
+# Stage 8 registration of the light suite contract on the committed external
+# twiss tables (src/contracts/twiss_external_reference.jl, design "Staging"
+# item 8). Mirrors the stage 6 form above; the real validate on the committed
+# tables runs in "Physics contracts", the twins and ladders stay in the
+# validation scripts. The skipped path uses an empty reference_dir.
+@testset "Stage 8 registers TwissExternalReferenceContract: description, supertype, export, docstring, registry, snapshot, kwarg rejection, skipped path" begin
+    @test Octopus.description(TwissExternalReferenceContract) isa String
+    @test occursin("MAD-X", Octopus.description(TwissExternalReferenceContract))
+    @test TwissExternalReferenceContract <: Octopus.AbstractPhysicsContract
+    @test isdefined(Octopus, :TwissExternalReferenceContract) && Base.isexported(Octopus, :TwissExternalReferenceContract)
+    @test !occursin("No documentation found", string(Base.Docs.doc(Base.Docs.Binding(Octopus, :TwissExternalReferenceContract))))
+    reg = summarize_registry()
+    @test :TwissExternalReferenceContract in reg.contracts
+    md = Octopus.registry_snapshot_markdown()
+    @test occursin("TwissExternalReferenceContract", md)
+    # the snapshot on disk differs from the live one at most in lines naming
+    # the contract (the integrator regenerates it on main; the 4b-B shape)
+    root = dirname(dirname(dirname(String(first(methods(Octopus.validate_configuration_metadata)).file))))
+    ondisk = joinpath(dirname(root), "docs", "registry_snapshot.md")
+    if isfile(ondisk)
+        live = Set(split(md, '\n')); disk = Set(split(read(ondisk, String), '\n'))
+        changed = union(setdiff(live, disk), setdiff(disk, live))
+        @test all(l -> occursin("TwissExternalReferenceContract", l), changed)
+    end
+    # the contract rejects unknown keywords (the real validate is in "Physics contracts")
+    @test_throws ArgumentError validate(TwissExternalReferenceContract(); bogus=1)
+    # a reference_dir without the tables is :skipped, naming the generator
+    r = validate(TwissExternalReferenceContract(reference_dir=mktempdir()))
+    @test r.status == :skipped
+    @test occursin("generate_madx_twiss_reference.jl", r.message)
+end
+
 # n5b: a symplectic perturbation x * exp(1e-8 S H) (H symmetric: the analysis's
 # symplecticity gate passes it) applied to the scaling = :none runs only.
 function _st6_perturb_symplectic_none(a::TwissDispersionAnalysis, x)
@@ -22749,6 +22781,17 @@ if _lane_gate("Physics contracts")
         @test ratio <= _ST6_PIN
     end
     @test idc.metrics[:diagnostics_silent] == 0
+    # The light external-reference contract (stage 8): re-runs the convention
+    # rows of the MAD-X, PTC and xtrack benchmarks on the committed tables of
+    # validation/reference/ (external optics against analyze of the converted
+    # map); the twins and the nst ladders stay in the validation scripts.
+    ext = validate(TwissExternalReferenceContract())
+    @test ext.passed
+    @test ext.metrics[:rows_madx] > 0
+    @test ext.metrics[:rows_ptc] > 0
+    @test ext.metrics[:rows_xtrack] > 0
+    @test ext.metrics[:failed] == 0
+    @test ext.metrics[:worst_ratio] <= 1.0
 end
 end # _lane_gate("Physics contracts")
 

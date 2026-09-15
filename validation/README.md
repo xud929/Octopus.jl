@@ -1428,6 +1428,20 @@ item 3; ../docs/design/twiss_dispersion_analysis.md (Staging item 8);
 ../docs/history/twiss_dispersion_analysis_history.md (the 2026-09-15 stage 8
 benchmark C section).
 
+### The suite contract on the committed tables
+
+`TwissExternalReferenceContract` (src/contracts/twiss_external_reference.jl)
+is the light suite twin of the three benchmarks above. Its `validate` reads
+four committed tables from validation/reference/ -- the newest
+twiss_madx_<v>.tsv, ptc_twiss_madx_<v>.tsv, xsuite_twiss_xtrack_<v>.tsv and
+the Octopus maps twiss_benchmark_maps.tsv -- and re-runs every convention row
+whose two sides both sit in a table: the external optics against `analyze` of
+the converted external map (or of the Octopus map xtrack was handed), at the
+tolerance classes of the scripts. No MAD-X, PTC or python runs and no fixture
+is compiled; a missing table gives `:skipped` naming its generator. The twin
+rows, the nst ladders (TOL-E), the rolled-family anchors and the recorded
+rows stay in the three scripts of this README.
+
 ## Twiss and Dispersion Identities
 
 `twiss_dispersion_identities.jl` checks the tagged Twiss and dispersion

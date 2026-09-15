@@ -14154,7 +14154,12 @@ runner's CPU class.
 
 ### Standalone verification
 
-Native arm [stage8/impl/A/run_native.log]:
+Provenance: the gate-arm logs, defect logs and review notes behind this
+section are git-ignored run output; the lines quoted here and the record
+docs/history/twiss_external_benchmarks_2026_09_15.md (section 5; re-run and
+regenerate recipe in its section 10) supersede them.
+
+Native arm (validation/twiss_madx_benchmark.jl):
 
     TW-MADX-CONFIG table=twiss_madx_5.03.06.tsv version=5.03.06 defect=none analysis=TwissDispersionAnalysis(strict=false, scaling=:none) ladder=(4, 8, 16, 32, 64)
     TW-MADX-WITNESS U2_partnership_converted_(5,6)_vs_octopus_bare_(5,6) -0.081412323090219285 -0.081412323096546585 6.3272997952168453e-12 PASS
@@ -14165,17 +14170,17 @@ Native arm [stage8/impl/A/run_native.log]:
     TW-MADX-DIGEST 387 0 0.40503179603364126
     EXIT=0
 
-AVX2 arm (OPENBLAS_CORETYPE=Haswell, -C haswell) [stage8/impl/A/run_haswell.log]:
+AVX2 arm (OPENBLAS_CORETYPE=Haswell, -C haswell):
 the digest line 365 is identical, TW-MADX-DIGEST 387 0 0.40503179603364126,
 EXIT=0. Fitted orders on both arms: U1 4.0013414895306783, U2
 3.9988016758485325, K1 4.0004537849572168, K2 3.9987980534024454, with
 nst=64 model residuals 2.0827214952667816e-10, 7.8839690331733436e-10,
-3.4806602045023283e-12, 7.8473405551449105e-10 [run_native.log lines
-160-185]. The beta0 pin residual over all table rows is
-1.1102230246251565e-16 [line 2]. Regenerate mode on both arms:
-MADX-REGENERATE-DIFF differing_cells=0, EXIT=0 [stage8/impl/A/regen_native.log,
-regen_haswell.log]. Counts after the review fix: 98 gated rows, 121 WITNESS
-lines, 110 RECORDED lines [stage8/review/fix_A.md].
+3.4806602045023283e-12, 7.8473405551449105e-10 (the native run's
+TW-MADX-MODEL and TW-MADX-ORDER lines). The beta0 pin residual over all table rows is
+1.1102230246251565e-16 (the run's second line). Regenerate mode on both arms
+(validation/generate_madx_twiss_reference.jl with OCTOPUS_STAGE8_REGENERATE=1):
+MADX-REGENERATE-DIFF differing_cells=0, EXIT=0. Counts after the review fix: 98 gated rows, 121 WITNESS
+lines, 110 RECORDED lines (see Review findings and fixes below).
 
 ### Decisions
 
@@ -14188,10 +14193,11 @@ lines, 110 RECORDED lines [stage8/review/fix_A.md].
   file) [table header lines 20-22].
 - D16: two injected defects, drop_J and transpose_R.
 - D17: regenerate mode is OCTOPUS_STAGE8_REGENERATE=1.
-- The U2 finite-difference dispersion witness is recorded, not gated: FD/DX
-  0.94983305085229297 against the pin 0.94983305469941881, difference
-  3.8471258401173714e-09, the deltap=+-0.0001 truncation
-  [stage8/impl/A/gen_native.log].
+- The U2 finite-difference dispersion witness is gated at its own coarser
+  class TOL_FD = 1e-8 (rows U2_FD/DX_vs_beta0_header and
+  U2_FD_vs_beta0*DX_relative in validation/twiss_madx_benchmark.jl), not at
+  TOL-B: FD/DX 0.94983305085229297 against the pin 0.94983305469941881,
+  difference 3.8471258401173714e-09, the deltap=+-0.0001 truncation.
 
 ### Tables
 
@@ -14204,31 +14210,29 @@ lines, 110 RECORDED lines [stage8/review/fix_A.md].
   def5fe389c74d203b6fd9792c62b592c after the benchmark B rework re-froze the
   G6 rows (see the benchmark B section) and the final fix repointed header
   lines 1, 12 and 19 to tracked records (MAPS-DIFF cells=1890 differing=0,
-  every data row bit-identical [stage8/review/final_fix_runs/regen_maps.log]);
+  every data row bit-identical in the generator's regenerate diff);
   the MAD-X consumer does not read the G6 rows.
 
 ### Injected defects
 
 - OCTOPUS_STAGE8_DEFECT=drop_J: four witnesses fail (the partnership witness
   reads -0.034559825812292666 against -0.081412323096546585, difference
-  0.046852497284253919); TW-MADX-DIGEST 35 4 10605609037863.729; EXIT=1
-  [stage8/impl/A/defect_drop_J.log].
+  0.046852497284253919); TW-MADX-DIGEST 35 4 10605609037863.729; EXIT=1.
 - OCTOPUS_STAGE8_DEFECT=transpose_R: TW-MADX K1 r12 -0.19140492597569261
   -0.020416340718808941 0.17098858525688368 ... FAIL and r21
-  0.17098858525688457 FAIL; TW-MADX-DIGEST 387 2 170988585256.88458; EXIT=1
-  [stage8/impl/A/defect_transpose_R.log].
+  0.17098858525688457 FAIL; TW-MADX-DIGEST 387 2 170988585256.88458; EXIT=1.
 
 ### Review findings and fixes
 
-[stage8/review/fix_A.md] The review moved the K1 block-entry comparison to
+The review moved the K1 block-entry comparison to
 the gated set (r11..r22 = 0.86201121670608871, -0.020416340718808941,
 -0.19140492597569572, 1.0534161426817839 from the generator, matched at
 TOL-A), demoted the Rd_1e-6 fixture to recorded (analyze returns :failed;
 E7 1.785672875796623e-9 against 3.009598136315693e-12 on Rd_1e-3) and the
 nst=32 residuals to recorded (U2 1.2613734057254078e-08, K2
 1.2555206652109518e-08 against 1e-9), which is why only the nst=64 point is
-capped (D6). fix_A reports the consumer at 723 lines; the final fix
-[stage8/review/final_fix_8.md] replaced the two pinned A3 anchor literals
+capped (D6). The review's note reported the consumer at 723 lines; the final
+fix replaced the two pinned A3 anchor literals
 (0.9744003972058644, 0.0360896443733161, read off a run) by
 rolled_exact_anchor, which evaluates cos mu = tr(Dr Qd Dr Qf)/2 from the
 fixture's own thick-quadrupole and drift 2x2 blocks (L=0.2, k=+-1, drift
@@ -14261,8 +14265,8 @@ fixture's own thick-quadrupole and drift 2x2 blocks (L=0.2, k=+-1, drift
 ### What landed
 
 - validation/generate_ptc_twiss_reference.jl (523 lines): runs MAD-X
-  5.03.06 with PTC (PTC-VERSION 5.03.06 [stage8/impl/B_rework/gen_regenerate_fix2.log
-  line 1]) on the shared fixtures and freezes
+  5.03.06 with PTC (PTC-VERSION 5.03.06, the generator's first printed
+  line) on the shared fixtures and freezes
   validation/reference/ptc_twiss_madx_5.03.06.tsv (27 lines: 16 header
   lines, one column row, 10 data rows, 91 columns); regenerate mode diffs.
 - validation/twiss_ptc_benchmark.jl (736 lines): the consumer; reads the
@@ -14272,13 +14276,18 @@ fixture's own thick-quadrupole and drift 2x2 blocks (L=0.2, k=+-1, drift
 - validation/twiss_benchmark_cells.jl and validation/reference/twiss_benchmark_maps.tsv
   re-frozen by the rework: the G6 cavity strength is now V/E_total =
   0.00066666666666666664 and the maps header grew from 18 to 20 lines
-  (MAPS-DIFF cells=1890 differing=0 after fix_B2 [stage8/review/fix_B2.md]).
+  (MAPS-DIFF cells=1890 differing=0 after the fix_B2 review fix).
 - validation/README.md: the section "Twiss Benchmark Against PTC ptc_twiss";
   docs/todo.md row 20: one sentence appended.
 
 ### Standalone verification
 
-Native arm [stage8/impl/B/run_native.log]:
+Provenance: the gate-arm logs, defect logs and review notes behind this
+section are git-ignored run output; the lines quoted here and the record
+docs/history/twiss_external_benchmarks_2026_09_15.md (section 6; re-run and
+regenerate recipe in its section 10) supersede them.
+
+Native arm (validation/twiss_ptc_benchmark.jl):
 
     ... julia 1.12.4 sapphirerapids; OPENBLAS_CORETYPE=- cpu_target=native
     TW-PTC table table_rows_present 10 10 0 0 TOL-C PASS
@@ -14290,7 +14299,7 @@ Native arm [stage8/impl/B/run_native.log]:
     TW-PTC-NOTE ladder: largest nst=64 residual 5.0524842989951857e-09 against the frozen LADDER_CAP_64 8.4916074172269873e-09
     TW-PTC-DIGEST 257 0 0.59499739575161859
 
-AVX2 arm [stage8/impl/B/run_haswell.log]: identity line
+AVX2 arm: identity line
 OPENBLAS_CORETYPE=Haswell cpu_target=haswell; line 317 TW-PTC-DIGEST 257 0
 0.59499739575161859, identical. Fitted orders (both arms, lines 244-310):
 U1 3.9571693644344288, U2 3.9789324501096024, K2 3.9789636821507823, B4
@@ -14302,7 +14311,7 @@ G6_0.2MV BETA33 117.96964928170352 117.96964928121247
 4.9105608468380524e-10. Symplectic residual of B4 before F
 1.4176806664743553, after F 4.6629367034256575e-15. Regenerate mode:
 TW-PTC-REGEN-DIGEST header_lines=16 cells=910 differing=0 PASS
-[gen_regenerate_fix2.log line 64]. The pre-fix_B2 run printed TW-PTC-DIGEST
+(the generator's regenerate digest line). The pre-fix_B2 run printed TW-PTC-DIGEST
 256 0 0.59499739575161859; fix_B2 added one gated row.
 
 ### The W1 miss at the header beta0 and D19
@@ -14320,7 +14329,7 @@ none"), and every cavity comparison is gated against the Octopus twin built
 at the PTC effective beam with g6_strength = V/E_total =
 0.00066666666666666664 (the twin rule, header line 11). The twin rows agree
 to 1.1102230246251565e-16 (B4), 4.3368086899420177e-19 (G6_2.0MV) and
-5.4210108624275222e-20 (G6_0.2MV) [run_native.log lines 114, 182, 213].
+5.4210108624275222e-20 (G6_0.2MV), the three twin rows of the native run.
 
 ### Decisions
 
@@ -14339,7 +14348,7 @@ to 1.1102230246251565e-16 (B4), 4.3368086899420177e-19 (G6_2.0MV) and
 - validation/reference/ptc_twiss_madx_5.03.06.tsv, md5
   4e9e19ea8b0d3a9237ec5547fd20df39 (the final fix re-froze it once more
   with header lines 4, 9, 10, 13, 14, 15 repointed to tracked records; the
-  10 data rows bit-identical [stage8/review/final_fix_runs/ptc_rows_diff.txt]);
+  10 data rows bit-identical);
   header line 4 the flags, line 9 the
   beam, line 10 D19, line 11 the twin rule, line 13 the conversion, line
   14 the witness ledger, line 16 "columns: 91".
@@ -14347,25 +14356,27 @@ to 1.1102230246251565e-16 (B4), 4.3368086899420177e-19 (G6_2.0MV) and
   def5fe389c74d203b6fd9792c62b592c after the rework and the final fix's
   header repoint (data rows bit-identical, see the benchmark A section); the G6 cells moved
   (m65 0.001768743036974341 to 0.0016800106017876653, m66 bare
-  0.99585311990156822 to 0.99606115620863456 [stage8/impl/B_rework/regen_maps.log]).
+  0.99585311990156822 to 0.99606115620863456, per the generator's regenerate
+  diff).
 
 ### Injected defects
 
 - drop_F: TW-PTC-DIGEST 180 30 2824760677698.0918, exit 1; first red line
   W1_M65_flipped_vs_strength_k_over_PTC_BETA0^2 -0.185846588444706
-  0.18584658844470603 0.37169317688941206 FAIL [stage8/impl/B/defect_drop_F.log line 272].
+  0.18584658844470603 0.37169317688941206 FAIL (line 272 of the defect run).
 - cavity_57MV: TW-PTC-DIGEST 257 14 92923294.222352341, exit 1; the W1
   twin reads 0.17655425902247079 FAIL (line 21) and the B4 twin
-  0.17655425902247077 FAIL (line 114) [stage8/impl/B/defect_cavity_57MV.log].
+  0.17655425902247077 FAIL (line 114 of the defect run).
 
 ### Review findings and fixes
 
-[stage8/impl/rework_B.md, stage8/review/fix_B2.md] The first
-implementation was reworked: the G6 strength was re-derived as V/E_total,
+The first
+implementation was reworked (the rework note and the fix_B2 review note are
+condensed here): the G6 strength was re-derived as V/E_total,
 the maps table re-frozen (8 G6 cells changed, then MAPS-DIFF differing=0),
 the W1 miss traced to the PTC mass (D19) instead of being tolerated, and
 fix_B2 added the header beta0 vs pin gate and the two maps header lines.
-The final fix [stage8/review/final_fix_8.md] repointed the scratch-only
+The final fix repointed the scratch-only
 citations of the generator, the consumer and the shared module to tracked
 records and renamed one RECORDED row label
 (ladder_nst32_residual_design_TOL-E_1e-9_not_gated_D6); the digest and every
@@ -14412,7 +14423,12 @@ gated number are unchanged.
 
 ### Standalone verification
 
-Native arm [stage8/impl/C/run_native.log]:
+Provenance: the gate-arm logs, defect logs and review notes behind this
+section are git-ignored run output; the lines quoted here and the record
+docs/history/twiss_external_benchmarks_2026_09_15.md (section 7; re-run and
+regenerate recipe in its section 10) supersede them.
+
+Native arm (validation/twiss_xsuite_benchmark.jl):
 
     TW-XSUITE start defect=none table=xsuite_twiss_xtrack_0.112.0.tsv julia=1.12.4 threads=1
     TW-XSUITE ... header_beta0_vs_pin 0.94983305469941881 0.9498330546994187 1.1102230246251565e-16 ... PASS
@@ -14426,7 +14442,7 @@ Native arm [stage8/impl/C/run_native.log]:
     TW-XSUITE-NOTE digest gated=623 recorded=357 defect=none PASS
     rc=0
 
-AVX2 arm [stage8/impl/C/run_haswell.log]: lines 1063-1067 identical (the
+AVX2 arm: lines 1063-1067 identical (the
 same WORST, DIGEST and NOTE lines), rc=0. Fitted orders: U1
 4.0013416877743504, U2 3.7026980631203243, K1 4.00046327507245, K2
 3.7049247094295761; nst=64 residuals 2.0827201074880008e-10,
@@ -14442,10 +14458,8 @@ longitudinal mode is certified at 0.14974352568848381 against
 (rot_s_rad_vs_SRotation_sandwich_maxabs 8.2399365108898337e-18; U2 sign
 R40/R41 -1 -1), GEN-DIGEST rows 2857 witnesses 11 failing 0, and in
 regenerate mode REGEN-DIGEST cells 2857 differing 0 header_lines_differing
-0, rc=0 [stage8/impl/C/gen_refreeze_final.log, gen_regenerate_final.log,
-the final-tree freeze of 2026-09-15 after the maps table's header repoint;
-the 2857 data rows are bit-identical to the 12:52 freeze,
-stage8/review/final_fix_runs/xsuite_rows_diff.txt].
+0, rc=0 (the final-tree freeze of 2026-09-15 after the maps table's header
+repoint; the 2857 data rows are bit-identical to the 12:52 freeze).
 
 ### Decisions
 
@@ -14455,7 +14469,7 @@ stage8/review/final_fix_runs/xsuite_rows_diff.txt].
   plan's TOL-D; the (X2) form is selected by the internal (T15) lambda (form
   2 on Rd_1e-3, D6_3, D8_3; |lambda_internal - g| at worst
   4.2743586448068527e-13) and physical_h_vs_det(U_ls) is gated (worst
-  1.6819878823071122e-14) [stage8/review/fix_C.md].
+  1.6819878823071122e-14), a review finding (see below).
 - Rd_1e-6 is recorded, not gated, as in benchmark A.
 - The xtrack FutureWarning on the deprecated call is recorded in the table
   header rather than silenced.
@@ -14470,27 +14484,27 @@ stage8/review/final_fix_runs/xsuite_rows_diff.txt].
 - validation/reference/xsuite_twiss_provenance.txt, md5
   b78517d42cbd5f49be71539f157b2256, frozen by the generator on the final
   tree (lines 3-4, the driver and maps sha256, are the only lines that
-  changed from the 12:52 freeze [stage8/review/final_fix_runs/xsuite_sidecar_diff.txt]).
+  changed from the 12:52 freeze).
 
 ### Injected defects
 
 - drop_shear: the eight C2 rows_cols_5_6_maxscaled_nst64 lines fail (U1
   0.2934515050746257, U2 0.51354012806127169, K1 and the R_/Rd_ family
   0.23476120405192902, K2 0.5135401282209735); TW-XSUITE-DIGEST 1060 8
-  5135401.2822097354, rc=1 [stage8/impl/C/run_defect_drop_shear.log: the eight FAIL rows at
-  lines 702, 743, 784, 826, 868, 909, 950 and 1005; the digest at 1079 and
-  XSUITE_EXIT=1 at 1082].
+  5135401.2822097354, rc=1 (in the defect run the eight FAIL rows are at
+  lines 702, 743, 784, 826, 868, 909, 950 and 1005, the digest at 1079 and
+  XSUITE_EXIT=1 at 1082).
 
 ### Review findings and fixes
 
-[stage8/review/fix_C.md] The review replaced the external form guess by
+The review replaced the external form guess by
 the internal (T15) lambda selection, gated physical_h_vs_det(U_ls), moved
 C1 dispersion to TOL-A, demoted Rd_1e-6 to recorded and froze the nst=64
-cap at 1e-8. fix_C reports the generator at 573 lines; wc -l on the final
-tree gives 576. The audit [stage8/review/audit_8.md finding 1] found the
+cap at 1e-8. The review's note reported the generator at 573 lines; wc -l on
+the final tree gives 576. The audit (finding 1) found the
 sidecar stale against the maps table re-frozen by the benchmark B rework
 (the consumer exited 1 at maps_table_sha256_matches_sidecar); the final fix
-[stage8/review/final_fix_8.md] repointed the scratch-only citations in the
+repointed the scratch-only citations in the
 generator and the consumer, reran the generator freeze, and reran the
 consumer in both arms and the drop_shear defect on the final tree; the
 numbers above are from those runs.
@@ -14514,3 +14528,64 @@ numbers above are from those runs.
 - A consumer-side check that the sidecar's generator sha256 matches the
   committed generate_xsuite_twiss_reference.py (today only the maps digest
   is gated).
+
+## 2026-09-15: TwissExternalReferenceContract, the light suite contract on the committed external twiss tables
+
+Stage 8 commit 4 adds `TwissExternalReferenceContract`
+(`src/contracts/twiss_external_reference.jl`, an `AbstractPhysicsContract`
+with the fields `reference_dir` and `tolerance_scale`; `validate` takes no
+keywords and throws `ArgumentError` on any): the suite's statement of the
+three benchmarks above, restricted to what is re-judged on committed numbers.
+
+**Re-run.** Every convention row whose two sides both sit in a table of
+`validation/reference/` (newest version by numeric fields, the
+`PTCConsistencyContract` rule): the A1 rows of benchmark A (MAD-X `twiss`
+against `analyze` of the exported map after J0 = diag(1,1,1,1,beta0,1/beta0)
+and the bare-target shear u = -C/gamma0^2), the B0 witnesses of benchmark B
+on the RE (F = diag(1,1,1,1,-1,1), task-target shear +C/gamma0^2), the B1
+and B2 rows against `ptc_twiss`, and the C1 and C3 rows of benchmark C
+(xtrack's readout against `analyze` of the Octopus map xtrack was handed,
+read from `twiss_benchmark_maps.tsv`).
+
+**Not run.** The twin rows, the nst ladders (TOL-E), the rolled-family
+anchors and the recorded rows stay in `validation/twiss_madx_benchmark.jl`,
+`validation/twiss_ptc_benchmark.jl` and `validation/twiss_xsuite_benchmark.jl`;
+the contract compiles no fixture and starts no external tool.
+
+**Skipped rule.** A missing table gives `ContractResult(:skipped, ...)`
+naming the generator that writes it (`generate_madx_twiss_reference.jl`,
+`generate_ptc_twiss_reference.jl`, `generate_xsuite_twiss_reference.py`,
+`write_benchmark_maps` of `twiss_benchmark_cells.jl`, all under
+`validation/`). A code present but contributing no row FAILS.
+
+**Tolerance classes.** The scripts' own, times `tolerance_scale`: TOL-A
+1e-12 relative floored at |ext| = 1 and 1e-13 absolute on cos mu, sin mu;
+TOL-B 1e-12 on beta0 DX; TOL-C 1e-9 relative and 1e-10 on cos mu (PTC);
+TOL-D 1e-7 on rows or columns 5-6 of an xtrack finite-difference map; TOL-F
+1e-10 absolute on the degenerate rolled cells; plus `assert` (the scripts'
+`assert_row` calls as 1-vs-1 rows at tolerance 0), `witness` (the scripts'
+`witness_row` calls: the S0/S0_pt pins, the symplectic residuals, the T6 C
+pin, the form-1 twiss mu, the W1 cavity law at 1e-10, the T6 longitudinal
+block at 1e-7 relative) and `TOL-A-cond` (TOL-A widened to 10 kappa(U)^2
+eps_mach on the manufactured dense maps). The metric key of a class is
+`worst_<class>` with `-` replaced by `_` (`worst_TOL_A_cond`).
+`residual = worst_ratio`.
+
+**Suite.** The registration testset "Stage 8 registers
+TwissExternalReferenceContract" of `test/runtests.jl` (description naming
+MAD-X, supertype, export, docstring, registry, snapshot diff, kwarg
+rejection, skipped path on an empty `reference_dir`) and the "Physics
+contracts" testset, which runs `validate` on the committed tables and asserts
+`passed`, `rows_madx`, `rows_ptc`, `rows_xtrack` > 0, `failed == 0`,
+`worst_ratio <= 1.0`. Entries: `docs/guides/contracts_and_analyses.md`,
+`docs/public_api.md`, the Xsuite section of `validation/README.md`.
+
+**Measured on the committed tables** (`validate(TwissExternalReferenceContract())`
+in this tree, after the review of the contract): status `passed`, 691 rows
+(madx 81, ptc 111, xtrack 499), `failed` 0, `worst_ratio`
+0.3567635076251463 at `xtrack Rd_1e-3 ET_bety_edw_teng` (TOL-F); per class
+`worst_TOL_A` 0.13881729116399735, `worst_TOL_A_cond` 0.04560352920349014,
+`worst_TOL_B` 0.0001942890293094024, `worst_TOL_C` 0.004162562893725662,
+`worst_TOL_D` 0.006708795741161566, `worst_TOL_F` 0.3567635076251463,
+`worst_assert` 0.0, `worst_witness` 0.048872424440737916. The two-arm gate
+of the batch is recorded in its closing section.

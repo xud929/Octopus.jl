@@ -131,6 +131,10 @@ include("contracts/analysis_effectiveness.jl")
 # compile_runtime and the element specs above; before Registry so the
 # registry discovers it and the snapshot gains its Contracts line).
 include("contracts/twiss_dispersion_identity.jl")
+# Stage 8: the light suite contract on the committed external twiss tables
+# (MAD-X, PTC, xtrack): re-runs the convention rows through analyze; needs the
+# analysis; before Registry so the registry discovers it.
+include("contracts/twiss_external_reference.jl")
 
 # Generated registry/introspection helpers. Keep this last.
 include("registry/Registry.jl")
