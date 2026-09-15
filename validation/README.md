@@ -1185,6 +1185,123 @@ section 13.10 (the rolled FODO constant); ../docs/design/twiss_dispersion_analys
 (Staging item 8); ../docs/history/twiss_dispersion_analysis_history.md
 (the 2026-09-15 stage 8 benchmark A section).
 
+## Twiss Benchmark Against PTC ptc_twiss
+
+**Script:** validation/twiss_ptc_benchmark.jl (736 lines, consumer) and
+validation/generate_ptc_twiss_reference.jl (523 lines, generator); fixtures
+from validation/twiss_benchmark_cells.jl and the maps table
+validation/reference/twiss_benchmark_maps.tsv.
+**Committed table:** validation/reference/ptc_twiss_madx_5.03.06.tsv (27
+lines: a 16-line header, one column row, 10 data rows, 91 columns; header
+line 16 "columns: 91").
+
+**External tool:** MAD-X 5.03.06 with its PTC library (PTC-VERSION 5.03.06, the
+generator's first printed line, quoted in the history section), run by the
+generator only. The consumer reads the committed table, so the
+suite does not need PTC; regenerate mode reruns PTC and compares
+(TW-PTC-REGEN-DIGEST header_lines=16 cells=910 differing=0 PASS, quoted in
+the history section).
+
+**Flags** (table header line 4, stage 8 decision D4): ptc_create_layout with model=1,
+method=6, nst=10, exact=true; ptc_twiss with time=false, icase=6, closed
+orbit on. The method=2 orbit-artifact ladder recorded in header line 5
+(fitted order 1.9858063694406614 against 2.0 +- 0.2) is the reason method=6
+was chosen.
+
+**Measured conventions.** With time=false PTC's sixth pair is (s-ell, delta)
+in the reversed orientation of Octopus's (ell-s, delta): the reader applies
+F = diag(1,1,1,1,-1,1), M_oct = F . M_ptc . F^-1, with no beta0 scaling
+(J0 = I) and no slip shear (u = 0), because PTC time=false is the partner of
+the Octopus BARE compile (header line 13). The table is committed as PTC
+prints it (stage 8 decision D7); the reader flips. Numbers that pin the convention
+(consumer run, quoted in the history section): the symplectic residual of the B4 map before F is
+1.4176806664743553 and after F 4.6629367034256575e-15; the ALFA33 sign under
+PTC's T convention on B4 reads 0.14225874842551697 against
+0.14225874842495717, difference 5.5980220459161956e-13 (line 127); the
+S0 witness RE56 is exactly 0 (S0_RE56_zero 0) and S0_RE12 at pt=1e-3 is
+9.990009990009991 (generator witnesses, history section).
+
+**The PTC internal proton mass (stage 8 decision D19) and the twin rule.** The W1 thin-cavity
+witness M65_flipped_vs_formula_at_header_beta0 misses by 3.4670291637617368e-10
+(0.185846588444706 against 0.18584658879140892, consumer run line 24; header
+line 14 "misses by 3.467e-10 and is recorded, not gated; gated witnesses that
+missed: none"). The measured cause is PTC's internal proton mass
+0.938272081358 GeV (header line 10; TW-PTC-NOTE W1 D19 line), which shifts
+the effective beam to PTC_BETA0 = 0.94983305558539111 and PTC_GAMMA0 =
+3.1973667975476534 (header - ptc = -8.8597229552789258e-10 on beta0). The
+twin rule (header line 11): the 6D gated comparisons build the Octopus twin
+of each cavity cell at the PTC effective beam with g6_strength = V/E_total =
+0.00066666666666666664, and the gated twin rows then agree to
+1.1102230246251565e-16 on B4 M65 (0.18584658844470611 against
+0.185846588444706, line 114), 4.3368086899420177e-19 on G6_2.0MV and
+5.4210108624275222e-20 on G6_0.2MV (lines 182, 213). The header beta0 itself
+matches the pin to 1.1102230246251565e-16 (S0_beta0_header_vs_pin
+0.94983305469941881 0.9498330546994187, line 10). The BETA_jk index order is
+j = plane, k = mode (header line 15, where the wrong order misses by
+2.4808469094089958 on B4K and 4.7146912630910229 on K2).
+
+**Fixtures:** builders from validation/twiss_benchmark_cells.jl; the ten
+table rows U1, U2, K2, B4, B4K, G6_2.0MV, G6_0.2MV
+plus the witnesses S0, W1 (thin cavity) and the method=2 ladder row
+(TW-PTC table table_rows_present 10 10 0 0 TOL-C PASS, line 8).
+
+**Metric and tolerance classes.** Lines print TW-PTC <fixture> <quantity>
+<octopus> <external> <|diff|> <tol> <class> PASS|FAIL. TOL-C is 1e-9
+relative on the 6D Twiss functions (1e-10 absolute on cos mu, 1e-12 on the
+symplectic residual), e.g. B4 BETA22 8.4062705380446641 8.4062705380116149
+3.304911899704166e-11 and G6_0.2MV BETA33 117.96964928170352
+117.96964928121247 4.9105608468380524e-10; TOL-E is the fitted order 4.0 +-
+0.3 over nst (4, 8, 16, 32, 64) with a frozen nst=64 cap: TW-PTC-ORDER U1
+3.9571693644344288, U2 3.9789324501096024, K2 3.9789636821507823, B4
+3.9764988582412593, B4K 3.9766859084864121, G6_2.0MV and G6_0.2MV
+3.9481404510869567 (lines 244-310, all PASS), and TW-PTC-NOTE ladder:
+largest nst=64 residual 5.0524842989951857e-09 against the frozen
+LADDER_CAP_64 8.4916074172269873e-09 (line 316). The committed run prints
+TW-PTC-DIGEST 257 0 0.59499739575161859 (line 317, identical on the
+haswell arm) and exits 0. The DISP1 rows are recorded, e.g. B4
+0.73354515845480206 against 0.73354515845480184.
+
+**Injected defects** (stage 8 decision D16): OCTOPUS_STAGE8_DEFECT=drop_F skips the
+reflection and prints TW-PTC-DIGEST 180 30 2824760677698.0918 with exit 1
+(drop_F run line 272, quoted in the history section; the first red line is
+W1_M65_flipped_vs_strength_k_over_PTC_BETA0^2 -0.185846588444706
+0.18584658844470603 0.37169317688941206 FAIL); cavity_57MV builds the twin at
+the wrong voltage and prints TW-PTC-DIGEST 257 14 92923294.222352341 with
+exit 1 (cavity_57MV run line 334, history section; W1 twin 0.17655425902247079
+FAIL at line 21).
+
+**Run** (from the repository root; consumer, then generator, which needs
+MAD-X with PTC):
+
+```bash
+env CUDA_VISIBLE_DEVICES="" julia --project=. validation/twiss_ptc_benchmark.jl
+env CUDA_VISIBLE_DEVICES="" OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. validation/twiss_ptc_benchmark.jl
+env CUDA_VISIBLE_DEVICES="" julia --project=. validation/generate_ptc_twiss_reference.jl
+env CUDA_VISIBLE_DEVICES="" OCTOPUS_STAGE8_REGENERATE=1 julia --project=. validation/generate_ptc_twiss_reference.jl
+```
+
+**Overrides:**
+
+- OCTOPUS_STAGE8_DEFECT=none|drop_F|cavity_57MV (consumer; default none).
+- OCTOPUS_STAGE8_PTC_TABLE (consumer; an alternative table path).
+- OCTOPUS_STAGE8_REGENERATE=1 (generator; rerun PTC and diff against the
+  committed table; prints TW-PTC-REGEN-DIGEST).
+- OCTOPUS_MADX (generator; default /usr/local/bin/madx).
+- OCTOPUS_STAGE8_WORKDIR (generator; scratch directory).
+
+**Outputs:** the consumer writes result/twiss_ptc_benchmark.tsv and prints
+the TW-PTC lines, the identity line (julia 1.12.4, host, OPENBLAS_CORETYPE
+and cpu_target), the ladder note and the digest; the generator writes
+validation/reference/ptc_twiss_madx_5.03.06.tsv with its 16-line header
+(flags, beam, PTC-effective beam, twin rule, conversion, witness ledger) or the
+regenerate digest.
+
+**Theory and design:** ../docs/theory/twiss_dispersion.md section 12.2 items
+5 and 7 (full 6D normalization against an independent 6D code) and section
+4 (the (ell-s, delta) pair); ../docs/design/twiss_dispersion_analysis.md
+(Staging item 8); ../docs/history/twiss_dispersion_analysis_history.md (the
+2026-09-15 stage 8 benchmark B section, which records the W1 miss and D19).
+
 ## Twiss and Dispersion Identities
 
 `twiss_dispersion_identities.jl` checks the tagged Twiss and dispersion

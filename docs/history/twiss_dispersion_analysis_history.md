@@ -14256,3 +14256,134 @@ fixture's own thick-quadrupole and drift 2x2 blocks (L=0.2, k=+-1, drift
 - The maps table is shared: any fixture change re-freezes it and every
   consumer's provenance line (the Xsuite sidecar gates its sha256).
 
+## 2026-09-15: stage 8, benchmark B, the 6D analysis against PTC ptc_twiss with the RE flipped to (s-ell, delta)
+
+### What landed
+
+- validation/generate_ptc_twiss_reference.jl (523 lines): runs MAD-X
+  5.03.06 with PTC (PTC-VERSION 5.03.06 [stage8/impl/B_rework/gen_regenerate_fix2.log
+  line 1]) on the shared fixtures and freezes
+  validation/reference/ptc_twiss_madx_5.03.06.tsv (27 lines: 16 header
+  lines, one column row, 10 data rows, 91 columns); regenerate mode diffs.
+- validation/twiss_ptc_benchmark.jl (736 lines): the consumer; reads the
+  table as PTC prints it (D7), applies F = diag(1,1,1,1,-1,1) with J0 = I
+  and no slip shear, builds the Octopus twins at the PTC effective beam
+  (D19) and prints the TW-PTC lines.
+- validation/twiss_benchmark_cells.jl and validation/reference/twiss_benchmark_maps.tsv
+  re-frozen by the rework: the G6 cavity strength is now V/E_total =
+  0.00066666666666666664 and the maps header grew from 18 to 20 lines
+  (MAPS-DIFF cells=1890 differing=0 after fix_B2 [stage8/review/fix_B2.md]).
+- validation/README.md: the section "Twiss Benchmark Against PTC ptc_twiss";
+  docs/todo.md row 20: one sentence appended.
+
+### Standalone verification
+
+Native arm [stage8/impl/B/run_native.log]:
+
+    ... julia 1.12.4 sapphirerapids; OPENBLAS_CORETYPE=- cpu_target=native
+    TW-PTC table table_rows_present 10 10 0 0 TOL-C PASS
+    TW-PTC S0 S0_beta0_header_vs_pin 0.94983305469941881 0.9498330546994187 1.1102230246251565e-16 ... PASS
+    TW-PTC-RECORDED W1 M65_flipped_vs_formula_at_header_beta0_PTC_internal_mass_effect 0.185846588444706 0.18584658879140892 3.4670291637617368e-10
+    TW-PTC B4 M65_octopus_twin_at_PTC_beam_vs_converted 0.18584658844470611 0.185846588444706 1.1102230246251565e-16 1e-10 TOL-C PASS
+    TW-PTC B4 ALFA33_PTC_T_convention_sign 0.14225874842551697 0.14225874842495717 5.5980220459161956e-13 ... TOL-C PASS
+    TW-PTC-ORDER U1 3.9571693644344288 4+-0.29999999999999999 PASS
+    TW-PTC-NOTE ladder: largest nst=64 residual 5.0524842989951857e-09 against the frozen LADDER_CAP_64 8.4916074172269873e-09
+    TW-PTC-DIGEST 257 0 0.59499739575161859
+
+AVX2 arm [stage8/impl/B/run_haswell.log]: identity line
+OPENBLAS_CORETYPE=Haswell cpu_target=haswell; line 317 TW-PTC-DIGEST 257 0
+0.59499739575161859, identical. Fitted orders (both arms, lines 244-310):
+U1 3.9571693644344288, U2 3.9789324501096024, K2 3.9789636821507823, B4
+3.9764988582412593, B4K 3.9766859084864121, G6_2.0MV and G6_0.2MV
+3.9481404510869567. nst=64 residuals: B4 8.5503359947836088e-10, B4K
+8.505682824733185e-10, G6 5.0524842989951857e-09. Sample 6D gated rows: B4
+BETA22 8.4062705380446641 8.4062705380116149 3.304911899704166e-11;
+G6_0.2MV BETA33 117.96964928170352 117.96964928121247
+4.9105608468380524e-10. Symplectic residual of B4 before F
+1.4176806664743553, after F 4.6629367034256575e-15. Regenerate mode:
+TW-PTC-REGEN-DIGEST header_lines=16 cells=910 differing=0 PASS
+[gen_regenerate_fix2.log line 64]. The pre-fix_B2 run printed TW-PTC-DIGEST
+256 0 0.59499739575161859; fix_B2 added one gated row.
+
+### The W1 miss at the header beta0 and D19
+
+The W1 thin-cavity witness compares the flipped PTC M65 with the formula at
+the header beta0 and misses: 0.185846588444706 against 0.18584658879140892,
+difference 3.4670291637617368e-10, above TOL-C. The measured cause
+(TW-PTC-NOTE W1 D19 line; table header line 10) is PTC's internal proton
+mass 0.938272081358 GeV, which at the pinned momentum gives the effective
+beam PTC_BETA0 = 0.94983305558539111, PTC_GAMMA0 = 3.1973667975476534
+(header beta0 minus PTC beta0 = -8.8597229552789258e-10). Decision D19: the
+witness at the header beta0 is recorded, not gated (header line 14 "misses
+by 3.467e-10 and is recorded, not gated; gated witnesses that missed:
+none"), and every cavity comparison is gated against the Octopus twin built
+at the PTC effective beam with g6_strength = V/E_total =
+0.00066666666666666664 (the twin rule, header line 11). The twin rows agree
+to 1.1102230246251565e-16 (B4), 4.3368086899420177e-19 (G6_2.0MV) and
+5.4210108624275222e-20 (G6_0.2MV) [run_native.log lines 114, 182, 213].
+
+### Decisions
+
+- D4: model=1 method=6 nst=10 exact=true time=false; the method=2 ladder
+  fits order 1.9858063694406614 against 2.0 +- 0.2 (header line 5;
+  U2_orbit_artifact_method2 PASS in the generator), the orbit artifact
+  that ruled method=2 out.
+- D7: the table is committed as printed; the reader flips with F.
+- D19: the PTC internal mass and the twin rule, above.
+- BETA_jk index order j = plane, k = mode (header line 15; the other order
+  misses by 2.4808469094089958 on B4K and 4.7146912630910229 on K2).
+- D16: defects drop_F and cavity_57MV.
+
+### Tables
+
+- validation/reference/ptc_twiss_madx_5.03.06.tsv, md5
+  4e9e19ea8b0d3a9237ec5547fd20df39 (the final fix re-froze it once more
+  with header lines 4, 9, 10, 13, 14, 15 repointed to tracked records; the
+  10 data rows bit-identical [stage8/review/final_fix_runs/ptc_rows_diff.txt]);
+  header line 4 the flags, line 9 the
+  beam, line 10 D19, line 11 the twin rule, line 13 the conversion, line
+  14 the witness ledger, line 16 "columns: 91".
+- validation/reference/twiss_benchmark_maps.tsv, md5
+  def5fe389c74d203b6fd9792c62b592c after the rework and the final fix's
+  header repoint (data rows bit-identical, see the benchmark A section); the G6 cells moved
+  (m65 0.001768743036974341 to 0.0016800106017876653, m66 bare
+  0.99585311990156822 to 0.99606115620863456 [stage8/impl/B_rework/regen_maps.log]).
+
+### Injected defects
+
+- drop_F: TW-PTC-DIGEST 180 30 2824760677698.0918, exit 1; first red line
+  W1_M65_flipped_vs_strength_k_over_PTC_BETA0^2 -0.185846588444706
+  0.18584658844470603 0.37169317688941206 FAIL [stage8/impl/B/defect_drop_F.log line 272].
+- cavity_57MV: TW-PTC-DIGEST 257 14 92923294.222352341, exit 1; the W1
+  twin reads 0.17655425902247079 FAIL (line 21) and the B4 twin
+  0.17655425902247077 FAIL (line 114) [stage8/impl/B/defect_cavity_57MV.log].
+
+### Review findings and fixes
+
+[stage8/impl/rework_B.md, stage8/review/fix_B2.md] The first
+implementation was reworked: the G6 strength was re-derived as V/E_total,
+the maps table re-frozen (8 G6 cells changed, then MAPS-DIFF differing=0),
+the W1 miss traced to the PTC mass (D19) instead of being tolerated, and
+fix_B2 added the header beta0 vs pin gate and the two maps header lines.
+The final fix [stage8/review/final_fix_8.md] repointed the scratch-only
+citations of the generator, the consumer and the shared module to tracked
+records and renamed one RECORDED row label
+(ladder_nst32_residual_design_TOL-E_1e-9_not_gated_D6); the digest and every
+gated number are unchanged.
+
+### Not verified
+
+- PTC's internal mass is inferred from the effective beam that makes the
+  W1 witness close to 1e-16; no PTC source line was read (the measured
+  convention rule of docs/experiences.md).
+- The DISP1 rows are recorded (B4 0.73354515845480206 against
+  0.73354515845480184), not gated.
+- Only ptc_twiss time=false was measured; time=true is untested.
+
+### Carried forward
+
+- Gate the DISP1 rows once the twin dispersion at the PTC beam is derived.
+- A ptc_twiss time=true row would pin the (T, PT) partner directly.
+- The nst=64 cap 8.4916074172269873e-09 is frozen from the G6 residual;
+  a higher nst in the generator would lower it.
+
