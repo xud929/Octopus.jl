@@ -14576,8 +14576,9 @@ TwissExternalReferenceContract" of `test/runtests.jl` (description naming
 MAD-X, supertype, export, docstring, registry, snapshot diff, kwarg
 rejection, skipped path on an empty `reference_dir`) and the "Physics
 contracts" testset, which runs `validate` on the committed tables and asserts
-`passed`, `rows_madx`, `rows_ptc`, `rows_xtrack` > 0, `failed == 0`,
-`worst_ratio <= 1.0`. Entries: `docs/guides/contracts_and_analyses.md`,
+`passed`, `rows_madx`, `rows_ptc`, `rows_xtrack` > 0 and `failed == 0` (five
+assertions; no ratio pin, see the gate finding below). Entries:
+`docs/guides/contracts_and_analyses.md`,
 `docs/public_api.md`, the Xsuite section of `validation/README.md`.
 
 **Measured on the committed tables** (`validate(TwissExternalReferenceContract())`
@@ -14590,16 +14591,44 @@ in this tree, after the review of the contract): status `passed`, 691 rows
 `worst_assert` 0.0, `worst_witness` 0.048872424440737916. The two-arm gate
 of the batch is recorded in its closing section.
 
+**First gate attempt and the fix (the `fix(test)` commit of the batch).** The
+first two-arm gate on a351d74 (2026-09-15; native 16:33:30-16:37:08 EDT, AVX2
+16:37:08-16:40:40 EDT, both `exit=1`) was red in both arms at the stage 6 pin
+tripwire (`test/runtests.jl:1386`, `_st6_pin_lines`, the run-437 rule that
+every ratio pin of the stage 6 testset and of "Physics contracts" reads the
+one constant `_ST6_PIN`): the stage 8 block's sixth assertion `@test
+ext.metrics[:worst_ratio] <= 1.0` was a fourth line of the form `@test ...
+ratio <= ...` in the two scanned blocks and a literal where the tripwire
+requires the constant; the Context line printed the four lines. Eighteen
+top-level rows had passed before it in each arm, the registration testset
+among them (11/11); `Pkg.test` stops at the first red testset, so the rest of
+the suite did not run. The assertion was redundant (`passed` requires
+`failed == 0`, and a row fails when its difference exceeds its class bound,
+so `worst_ratio <= 1` holds by construction) and is dropped, with a comment
+in the block naming the tripwire; the block asserts five things. The
+pre-gate checks of the contract commit ran the two new testset bodies as a
+script and `validate`, not the stage 6 testset that holds the tripwire; the
+lesson (a new `@test` on a ratio inside either scanned block must read
+`_ST6_PIN` or not be a ratio pin, and the stage 6 testset runs before the
+gate) is recorded in `docs/experiences.md`. The red logs are kept as
+`result/gates/full_gate_stage8_native_2026_09_15_RED_a351d74.log` and
+`result/gates/full_gate_stage8_avx2_2026_09_15_RED_a351d74.log`
+(git-ignored); the gate of the batch is the re-run on the final tree,
+recorded in the closing section.
+
 ## 2026-09-15: stage 8 closed, the external benchmark batch gated
 
 ### What landed in the batch
 
-Five commits: benchmark A (MAD-X twiss; TW-MADX-DIGEST 387 0
+Six commits: benchmark A (MAD-X twiss; TW-MADX-DIGEST 387 0
 0.40503179603364126), benchmark B (PTC ptc_twiss; TW-PTC-DIGEST 257 0
 0.59499739575161859), benchmark C (xtrack 0.112.0; TW-XSUITE-DIGEST 1060 0
 0.99100645626558559), the light suite contract
 `src/contracts/twiss_external_reference.jl` reading the three committed
-tables at their tolerance classes, and this closing record. The contract
+tables at their tolerance classes, this closing record, and the `fix(test)`
+commit after the first gate attempt (the contract section's gate finding
+above: the stage 8 block of "Physics contracts" drops its literal ratio pin,
+which tripped the stage 6 pin tripwire). The contract
 certifies 691 rows (madx 81, ptc 111, xtrack 499), 0 failed, worst ratio
 0.3567635076251463 at xtrack Rd_1e-3 ET_bety_edw_teng (class TOL-F); its
 own section above carries the per-class worst ratios. The tracked record

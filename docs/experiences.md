@@ -1324,6 +1324,39 @@ measured window, in a separate decision; a predicted number enters a pin, a
 row or a docstring only inside a bracketed placeholder that names its
 measurement, until the two-arm run replaces it.
 
+## A redundant assertion inside a tripwire's scan is a copy the tripwire counts
+
+The stage 8 contract commit (d5fc720) added six assertions on
+`TwissExternalReferenceContract` to "Physics contracts", the sixth
+`@test ext.metrics[:worst_ratio] <= 1.0`. The first two-arm gate of the batch
+(a351d74, 2026-09-15) was red in both arms after four minutes at the stage 6
+pin tripwire `_st6_pin_lines`, which cuts the stage 6 testset and "Physics
+contracts" out by title and requires every `@test ... ratio <= ` line in them
+to name `_ST6_PIN`: it found four lines, the fourth a literal. Eighteen
+top-level rows had passed; `Pkg.test` stops at the first red testset, so the
+rest of the suite never ran and the fixed tree owes both arms in full.
+
+The assertion was redundant. `passed` requires `failed == 0`, a row fails
+when its difference exceeds its class bound, and the ratio is the difference
+over the bound, so `worst_ratio <= 1` follows from the rows passing and is
+not a second fact. It was written as a sanity line, the kind that costs
+nothing, and it cost a gate. The commit's pre-gate check ran the two new
+testset bodies as a script and `validate` on the tables; the tripwire lives
+in the stage 6 testset, a block the new lines did not touch. The run-437
+entry above (a copy that RAN is not a copy that was READ) applied in mirror:
+the new line was read by a tripwire the check did not run.
+
+Rules adopted: a new `@test` on a ratio inside "Physics contracts" or the
+stage 6 testset reads `_ST6_PIN` or is not written; an assertion that follows
+from the ones before it is not written either (it adds a pin to move without
+adding a fact to check); a commit that adds lines to a block a tripwire scans
+runs the testset that holds the tripwire before the gate, and the checklist
+of a workflow's integrator names the tripwires of the blocks it edits
+(`_st6_pin_lines` for the two ratio blocks; the snapshot-equality and
+docs-index tripwires of "Architecture integrity" for the registry and the
+docs); a red gate's logs are kept under a name that says red and names the
+tree, and the re-run on the fixed tree is the gate of record.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

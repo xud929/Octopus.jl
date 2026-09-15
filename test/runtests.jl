@@ -22791,7 +22791,11 @@ if _lane_gate("Physics contracts")
     @test ext.metrics[:rows_ptc] > 0
     @test ext.metrics[:rows_xtrack] > 0
     @test ext.metrics[:failed] == 0
-    @test ext.metrics[:worst_ratio] <= 1.0
+    # No ratio pin here: `passed` requires `failed == 0`, and a row fails when
+    # its difference exceeds its own class bound, so the worst ratio is at most
+    # one by construction. `_st6_pin_lines` reads this block and requires every
+    # `@test ... ratio <= ...` line to name `_ST6_PIN`; a literal pin on this
+    # contract's ratio tripped it in the first stage 8 gate attempt (2026-09-15).
 end
 end # _lane_gate("Physics contracts")
 
