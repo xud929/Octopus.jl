@@ -1397,9 +1397,10 @@ function _analysis_diagnostics(input::_ANALYSIS_INPUT_T, defect::_DEFECT_T, rule
             push!(routes, _ROUTE_DIAGNOSTIC_T((r.route, r.status, res.normalized, res.raw, cc, r.iterations, r.converged, r.detail)))
             if r.route === dispersion.primary && is_determined(r.invariance_residual) && is_determined(r.graph)
                 D = determined_value(r.graph)
-                # mirror of kappa_route in _route_from_graph (Frobenius norm of the graph, not opnorm)
+                # the kernel's floor through the same helper with the same arguments: clusters.matrix is the scaled matrix
+                # the routes ran on (result.matrix_scaled) and r.coefficient_condition the route's reported amplification
                 push!(residuals, ("primary route invariance (I1)", res.normalized,
-                                  _ROUTE_INVARIANCE_MULTIPLIER * eps() * max(1.0, norm(clusters.matrix)) * max(1.0, norm(D))^2))
+                                  _ROUTE_INVARIANCE_MULTIPLIER * eps() * _kappa_route(clusters.matrix, D, r.coefficient_condition)))
             end
         end
         if is_determined(separation)

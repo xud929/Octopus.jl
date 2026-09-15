@@ -1219,6 +1219,105 @@ line numbers are read on the tree the record declares, by `git show
 <sha>:<path>`, not from the editor; and the strength a commit message claims
 for a pin is the strength the assertion has (`== declaring`, not `>= 1`).
 
+## A floor's kappa belongs to the quantity the floor bounds, and a reported condition number is not an amplification factor until it is derived as one
+
+The dispersion route kernel `_route_from_graph` accepted a formed graph `D`
+when its normalized (I1) residual sat under `256 eps max(1, ||M||_F) max(1,
+||D||_F)^2`. That kappa is the RAW residual's: the roundoff of forming `M_rr D
++ M_rl - D (M_lr D + M_ll)` is of order `eps ||M||_F max(1, ||D||_F)^2`. The
+residual the floor judged is the raw one divided by `N(D) = max(1, ||M_rr
+D||_F, ||M_rl||_F, ||D (M_lr D + M_ll)||_F)`, and its first-order roundoff is
+`6 eps max(1, ||M||_F) max(1, ||D||_F^2 / N(D))`, whose bracket is bounded: on
+the 805 accepted rows of each arm of the landed route dump it is 1 on 208 rows
+and at most 5.93 on the rest, while `||D||_F^2` grows without bound, so a
+graph scaled by 1e8 met a floor above 3 (every normalized residual is at most
+3) and the test was vacuous exactly where it was needed (the M1 lesson above).
+The (I1) rejection that had stood for two days, the weak cavity's polynomial
+graph at 642 times `eps kappa`, was the other face of the same error: under
+the RAW kappa a valid graph formed through an ill-conditioned solve reads as
+642, because the kappa did not carry the route's amplification; under the
+kappa of the quantity actually bounded it reads as 1.7e-3 in both arms.
+Deriving the kappa for the normalized quantity, with the route's own
+amplification factor as a third term, moved a rejected valid graph inside the
+floor and a garbage graph outside it in the same stroke.
+
+The second error hid inside the first. The routes reported a
+`coefficient_condition` and the plan called it the route's amplification. It
+was not: the polynomial route reported `cond(A_s)`, while its roundoff into
+the graph is `||M||_F^2 / sigma_min(A_s)`, which on the witness of a synthetic
+scan (31087 formed polynomial graphs) is 1.59e4 against `cond(A_s) = 1.318`,
+the missing factor being `||M||_F^2 / ||A_s||_2` (a kappa built on `cond(A_s)`
+leaves that exact graph at 134.8 times `eps kappa`, the derived one at 0.121);
+the projector route reported the trace-separation condition, while the
+roundoff of a FORMED projector graph is `max(1, cc)^2 max(1, ||P_s||_2 /
+|h|)`: on 883 synthetic projector rows the reported `cc` leaves a multiplier-1
+ratio of 5.6e3, the derived form 0.34. Only the eigenplane and the two
+iterative routes reported the number that is their amplification. A condition
+number is a property of a solve; an amplification factor is a property of the
+route from the solve to the quantity bounded, and it has to be derived per
+route from the first-order error of the graph formula, not read off the field
+the route happened to report.
+
+The two-arm corpus (201 fixtures, 1005 route rows per arm, `||M||_F` in
+[2.470, 3.712], `||D||_F <= 0.9993` on every row whose `N(D) = 1`) could not
+tell the derived kappa from the simpler hypothesis `max(1, ||M||_F) max(1,
+cc)`: both accept and reject the same rows at c = 64 and at 256. Three
+synthetic families (`M = blockdiag(R(a1), R(a2), R(a3)) exp(K(X))`, 120000
+draws, 703 with `||D||_F > 30`; a generic family; a scaled-graph family)
+separated them at once: on graphs of norm 30 to 3.3e4 the simpler hypothesis
+puts exact graphs at 41.6, 80.9, 46.5 and 11.3 times `eps kappa` by decade of
+`||D||_F` (the worst row `||M||_F` 2.450, `||D||_F` 235.7, cc 1.447,
+normalized 6.366e-14), the derived kappa at 0.578, 0.385, 0.025 and 0.00034:
+without the bracket the floor rejects exact graphs outside the corpus. A
+corpus certifies a kappa on its own support; the exponent of `||M||_F` (1
+against 2) is still undecided by any fixture the tree has, and the record says
+so instead of choosing by taste.
+
+The acceptance window is a measurement, not a freezing rule. Stage 4a prints
+`[accepted extreme x10, rejected extreme / 10]` for `c_inv`, and on 2026-09-12
+it was EMPTY (`[1519, 64.2]`): the largest accepted ratio, a valid graph at
+151.9, sat within a factor 4.2 of the smallest rejected one, the weak cavity's
+polynomial graph at 642. An empty window says the kappa is wrong, since a
+valid graph cannot lose to roundoff by a factor 150; it does not say which way
+to move the constant, and nobody moved it. H15 (`c = max(8, 2^ceil(log2(10
+x)))` from the measured accepted extreme x) freezes an identity-contract row;
+the kernel's acceptance constant 256 is frozen by the window rule and is the
+owner's to move once the window under the derived kappa is measured in both
+arms (measured accepted extreme 5.34 | 5.28, a converged fixed-point iterate,
+so that H15 would say 64; the constant stays 256 in the commit that changes
+the kappa, so that the two moves are never confounded).
+
+A prediction is not a measurement, even the derivation's own. The derivation
+predicted the weak cavity's polynomial amplification at 2.29e6 and the plan
+wrote the acceptance ratio 0.0845 | 0.0804 into the pin's expected comment;
+both numbers used `cond(A_s)` on the scaled matrix, the very field the
+derivation had just shown to under-state the amplification. The landed
+condition measured 1.107e8 in both arms (the missing `||M_s||_F^2 / ||A_s||_2`
+is 48 here) and the ratio 1.75e-3 | 1.66e-3. The spec's "the landed form
+exceeds the bounded one by at least s" was false at s = 1e2 (the quotient is
+`N(sD)`, 33.5 on the fixture) and the test now asserts the exact bound `s
+||M_rr D||_F`. Every number written into a pin, a contract row or a docstring
+before its run is a bracketed placeholder naming its measurement, which the
+fingerprint replaces; a predicted value never loses its brackets. Three more
+predictions missed here: the c_d14 row's H15 (32 predicted, 16 measured), the
+k_route_agreement row's (unchanged 32 predicted, 8 measured: its condition
+maximum sees the extended amplification factors) and the census (a drop of
+about 3 predicted; unchanged, because the census family has no weak cavity).
+
+Rules adopted (2026-09-14, the kappa_route re-derivation): a floor's kappa is
+derived from the first-order error of the QUANTITY the floor compares,
+normalized or raw, and the derivation is recorded beside the constant; a
+route's reported condition is called its amplification factor only after the
+route's graph formula has been differentiated to show it, and a route whose
+reported condition is not its amplification extends the field rather than
+letting the floor guess; a kappa is tested on synthetic families outside the
+corpus's support before it is frozen, and the record names the parameters the
+corpus leaves undecided; an empty acceptance window sends the kappa back to
+derivation and moves no constant, while the constant itself moves only from a
+measured window, in a separate decision; a predicted number enters a pin, a
+row or a docstring only inside a bracketed placeholder that names its
+measurement, until the two-arm run replaces it.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

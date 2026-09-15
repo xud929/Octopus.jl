@@ -11303,6 +11303,10 @@ restated.
   contract 831 with `coefficient_condition` folded) unified, form B, 256
   re-measured with the stalls on the flag side, `r_primary` and `c_d14`
   re-frozen; it must not share a commit with M1 (attribution of M1's windows).
+  - Landed 2026-09-14 (the kappa_route commit): one helper in place of three
+  formulas, the weak cavity's polynomial graph accepted, r_primary and c_d14
+  re-frozen (and k_route_agreement, by H15); recorded in its own section
+  below.
   - Item 2 (M3): the freezing set; until it is decided the script at its
   defaults stays red natively on map 98, which this commit does not touch. -
   The route's `converged` is in `result.diagnostics.routes` but printed by no
@@ -12694,3 +12698,783 @@ history ends with one newline, and the non-table lines of this section are at
 most 78 characters (the heading excepted, as in every section). Ledgers in
 this commit: this section; `docs/todo.md` row 20, one sentence; the two
 docstrings and the comment at line 1299.
+
+## 2026-09-14: kappa_route re-derived (stage 7 items 6 and 12; fix(analysis))
+
+**Decision.** The owner accepted the recommendation on carried items 6 and 12
+of the stage 7 list at about 14:30 EDT ("Recommendation accepted."): the kappa
+of the (I1) acceptance floor of a formed dispersion graph is DERIVED, not
+inherited from the landed `max(1, ||M||_F) max(1, ||D||_F)^2` (the RAW
+residual's kappa) and not the headline hypothesis `max(1, ||M||_F) max(1, cc)`
+either; one helper `_kappa_route` carries the formula for the kernel, the
+diagnostics mirror, the identity contract's two (I1) rows, the stage 4a
+driver, the route dump and the tests, so that no second copy of the floor
+exists; the two routes whose reported `coefficient_condition` is not their
+amplification factor (polynomial, projector) have that field extended rather
+than the kappa made route-aware (the orchestrator's resolution of flag F2
+below); `_ROUTE_INVARIANCE_MULTIPLIER` stays 256 in this commit, because it is
+an acceptance constant frozen by the stage 4a window rule
+(`validation/README.md`, "Twiss and Dispersion Acceptance Windows"), not by
+the identity contract's H15 formula, and whether 256 stays is decided from the
+measured window; every status, multiplier and number that depends on a
+measurement was written with its predicted value inside a bracketed
+measurement marker until the two-arm fingerprint ran, and appears below as
+measured; where a prediction missed, the miss is named. Out of scope: seeding
+of the iterative routes, the map 98 `c_scaling_invariance` red (a correction
+below), flag F4's coverage fixture. The derivation ran as a read-only pass on
+HEAD 35a3585 (three independent derivations, of the graph perturbation, of the
+backward error of the invariant-subspace equation and of the contract rows,
+then two independent re-derivation checks, then one synthesis; Workflow
+launched 16:10 EDT, synthesis at about 17:20 EDT; scratch under
+`result/twiss_impl_2026_09_11/carried/kappa_route/`, git-ignored, named here
+once as provenance). Everything the decision rests on is condensed below; the
+record needs nothing from that tree.
+
+**Derivation.** Line numbers in this subsection are those of 35a3585 (the tree
+the derivation read, HEAD at the time; its child 43ac3aa touches no source
+file); the sites after the edit are listed under Sites.
+
+The quantity. `_graph_invariance_residual`
+(`src/analysis/symplectic_linear_algebra.jl` 407-415) forms, for a 4x2 graph
+D of the 6x6 map M with blocks M_rr (4x4), M_rl (4x2), M_lr (2x4), M_ll
+(2x2),
+
+    F(D) = M_rr D + M_rl - D (M_lr D + M_ll),      raw = ||F||_F,
+    N(D) = max(1, ||M_rr D||_F, ||M_rl||_F, ||D (M_lr D + M_ll)||_F),
+    normalized = raw / N(D)  <= 3   (the triangle inequality).
+
+With Lambda = M_lr D + M_ll and W = [D; I_2], M W - W Lambda = [F(D); 0]: F
+is the invariant-subspace residual of span(W), its bottom block exact by
+construction; on an exact graph the plane is symplectic with area h != 0
+(the isotropy floor, `dispersion_routes.jl` 691), so det Lambda = 1. The
+floor is `normalized > 256 eps kappa_route` (690, 710) with the landed
+`kappa_route = max(1, ||M||_F) max(1, ||D||_F)^2` (689); since M1 an
+unconverged iterate is `:not_invariant` regardless (710). The normalizer has
+two regimes on the derivation's route dump (1005 formed routes per arm over
+201 fixtures, the contract's 200 dense 6x6 maps and the suite's weak cavity,
+through `analyze` at scaling `:auto`, native and `OPENBLAS_CORETYPE=Haswell
+julia -C haswell`): N > 1 on 696 of 802 accepted rows natively and 696 of
+803 under haswell, where N grows at least linearly in ||D||_F (||M_rr D||_F
+>= sigma_min(M_rr) ||D||_F and ||D Lambda||_F >= ||D||_F / sigma_max(Lambda);
+measured d log N / d log ||D||_F = 0.917 native / 0.939 haswell over the rows
+with ||D||_F > 1); N = 1 on the other 106 / 107, every one of which has
+||D||_F <= 0.9993.
+
+The first-order bound, evaluation roundoff. The code forms A = M_rr D, B = D
+(M_lr D + M_ll), F = A + M_rl - B (411-413); with |fl(XY) - XY| <= gamma_k |X|
+|Y|,
+
+    ||dF_eval||_F <= gamma_9 (||M_rr||_F ||D||_F + ||M_rl||_F
+                    + ||M_lr||_F ||D||_F^2 + ||M_ll||_F ||D||_F)
+                 <= 4 gamma_9 max(1, ||M||_F) max(1, ||D||_F)^2.        (1)
+
+(1) IS the landed kappa: the first-order bound on the RAW residual. Divided
+by N each of its four terms is matched by a term of N up to a
+product-cancellation slack (||M_rr||_F ||D||_F / ||M_rr D||_F and its D
+Lambda twin) that is not bounded by 1, so the rigorous statement keeps a
+bracket:
+
+    normalized_eval <= 6 eps max(1, ||M||_F) max(1, ||D||_F^2 / N(D)).  (2)
+
+The normalization removes ONE power of ||D||_F, not two, before any route
+error enters. (2) is attained to a small constant: the medians of normalized /
+(eps max(1, ||M||_F) bracket) on the accepted direct rows are 1.50 / 1.15 /
+2.00 native (eigenplane / polynomial / projector) and 1.55 / 1.17 / 2.30
+haswell. A route-independent source has the same shape: the graph is ROUNDED
+into Float64 at 686, and F(D + dD) = (M_rr - D M_lr) dD - dD Lambda + O(dD^2)
+with ||dD|| <= u ||D|| gives normalized of order u ||M|| ||D||_F^2 / N for a
+perfectly correct graph (checked against 50-digit exact graphs of Float64
+maps: ||D||_F up to 764 at ||M||_F = 2.6, normalized 4.6e-17 to 3.1e-15,
+realized at 1.7e-2 of the crude bound). The 200 exact graphs of stage 4a sit
+at 0.579 eps max(1, ||M||_F) (the pre-fingerprint's
+`measurement_table_4a_native.md` 187).
+
+Propagated graph error. F(D + E) = L_D(E) + E M_lr E with L_D(X) = M_rr X -
+X Lambda - D M_lr X, the operator the Newton step solves (928-930), and
+||L_D||_2 <= 4 ||M||_2 max(1, ||D||_2), so
+
+    normalized_prop <= 4 ||M||_2 max(1, ||D||_2) ||E||_F / N(D).         (3)
+
+||E|| is route-specific and comes in two shapes: RELATIVE, eps gamma ||D||,
+giving the factor max(1, ||D||_F) ||D||_F / N; ABSOLUTE, eps gamma (1 +
+||D||)^2, giving (1 + ||D||)^2 max(1, ||D||) / N. Neither is O(1): with N of
+order theta ||D||_F both grow like ||D||_F. The two graph-perturbation passes
+measured this bracket on the corpus ([0.374, 5.93]) and called it an
+order-one slack, which is true of the NUMBER on this corpus (||D||_F <= 5.18)
+and false of the FUNCTION.
+
+Eigenplane (736-770, cc = cond(U_ls) at 748): an EXACT identity, reached by
+all three passes and verified at 60 digits by both checks. The eigensolver is
+backward stable, (M + dM) u = lambda u with ||dM||_2 <= p eps ||M||_2
+(measured max ||G||_F / (eps ||M||_2) = 14.4). With U_s = [Re u, -Im u] (744),
+R_s the 2x2 rotation-scaling block of lambda, M U_s = U_s R_s + G, G = -dM
+U_s, D = U_rs U_ls^-1 (755) and W = U_s U_ls^-1 = [D; I]:
+
+    Lambda = U_ls R_s U_ls^-1 + G_l U_ls^-1,
+    M_rr D + M_rl = D (U_ls R_s U_ls^-1) + G_r U_ls^-1,
+    F(D) = (G_r - D G_l) U_ls^-1                                exactly, (4)
+
+and with ||U_s||_F <= (1 + ||D||_2) ||U_ls||_F and ||U_ls||_F /
+sigma_min(U_ls) <= sqrt(2) cond(U_ls),
+
+    normalized <= sqrt(2) p eps ||M||_2 cc (1 + ||D||_2)^2 / N(D).      (5)
+
+Three consequences: cc = cond(U_ls) IS this route's amplification factor
+(gamma_eigenplane = cc); no eigenvector conditioning appears, because the
+residual is a backward-error quantity, so 1 / sep governs the graph's
+ACCURACY and not its residual (the synthetic rows below confirm (4) over
+separations 1e-3 to O(1)); and the bracket (1 + ||D||)^2 / N is real and
+attained, equivalently 1 / sigma_max(U_ls) <= 2 max(1, ||D||_2), the amount
+by which cond(U_ls) understates 1 / sigma_min(U_ls). Constant of (5) on the
+synthetic eigenplane family below: max 2.01.
+
+Polynomial (772-802, cc = cond(A_s) at 793): A_s D = -B_s is solved by LU
+(798). A backward-stable solve gives ||E|| / ||D|| <= 2 c eps cond(A_s) for
+the data the solver is GIVEN, but those data are A_s + dA_form with
+||dA_form|| <= c eps ||M||_F^2: A_s = M_rr^2 + M_rl M_lr - tau_s M_rr + I
+(789-791) is a signed sum of terms of size ||M||^2, so ||dA_form|| is NOT
+bounded by c eps ||A_s||_2 and the honest amplification is
+
+    ||M||_F^2 / sigma_min(A_s) = cond(A_s) ||M||_F^2 / ||A_s||_2,
+    gamma_polynomial = max(1, ||M||_F^2 / sigma_min(A_s)).                (6)
+
+The graph-perturbation pass exhibited it (its family 1): at fixed cond(A_s) =
+9.36, ||E|| / (eps ||D||) runs 4.6 to 1.4e13 as ||M||_F runs 2.66 to 9.4e6.
+The first check's synthetic scan (`derive/c1_poly.py`, 31087 formed polynomial
+graphs, ||M||_F in [2.45, 3.05]): with cc = cond(A_s) the multiplier-1 ratio
+normalized / (eps max(1, ||M||_F) max(1, cc) bracket) reaches 134.8, past the
+campaign's ">100 means the kappa is wrong" line, at cond(A_s) = 1.318 where
+||M||_F^2 / sigma_min(A_s) = 1.59e4 (A_s well conditioned but only 4e-4 in
+norm, so its formation roundoff swamps it; legitimately formed, far above the
+`:singular_coefficient` floor at 794); with (6) the same row is at 0.121 and
+the family's maximum is 0.12. The solve half of the error is relative, the
+formation half absolute, so the (1 + ||D||)^2 / N shape applies here too.
+
+Projector (805-870, cc = max(1, ||Z||_2) / min gap at 832): P_s = prod_{k !=
+s} (Z - tau_k I) / (tau_s - tau_k) (838-841), h = tr((P_s)_ll) / 2 (844), D
+= (P_s)_rl / h (853). P_s is EVALUATED, not solved: roundoff in Z and in the
+two factors is amplified by both gaps and then by the division by h, so
+
+    gamma_projector = max(1, cc)^2 max(1, ||P_s||_2 / |h|),              (7)
+
+cc squared times the graph-formation amplification ||P_s||_2 / |h| >=
+||D||_2. The reported cc^1 is what the corpus needs (measured cc exponent
+0.90 +- 0.05 native, 0.92 +- 0.05 haswell) but is not derived, and (7) is not
+optional: on 883 synthetic symplectic projector rows the multiplier-1 ratio
+is 1.216e8 with max(1, cc) alone, 5576 with max(1, cc) times the bracket,
+2408 with max(1, cc)^2 times the bracket (still broken) and 0.3376 with (7)
+times the bracket; the load-bearing missing factor is ||P_s||_2 / |h|, not
+the squaring of the gap (0.3771 with cc max(1, ||P_s||_2 / |h|); 0.3614 with
+cc^2 max(1, 1 / |h|), the cheaper admissible variant), and cc is below 1 on
+4.6% of those rows, so the max(1, .) wrappers are mandatory. A second
+mechanism: tau_s, tau_k are Float64, |dtau| >= u |tau| enters through dP /
+dtau of order ||Z|| / gap^2; a 40-digit trace-cubic tau drops this route's
+normalized residual by one to three decades on near-degenerate maps while
+the polynomial route's barely moves. The error is absolute (the division by
+h), so the bracket has the (1 + ||D||)^2 / N shape.
+
+Newton (900-962) and fixed point (964-1020): both stop at normalized <= 16
+eps max(1, ||M||_F) (922, 990) and an unconverged iterate is
+`:not_invariant` by the flag (710), so a converged iterate satisfies
+normalized <= c_stop eps max(1, ||M||_F) by construction, with no gamma and
+no ||D||: any kappa >= max(1, ||M||_F) with c_inv >= c_stop = 16 accepts it
+(673-676), and an iterative row's multiplier-1 ratio is at most 16 (measured
+over the 202 accepted iterate rows per arm: 15.679 native / 15.327 haswell).
+Their reported cc ((D21) at 929-930, (D16) at 987) is pure headroom, 1.33e7
+on the weak cavity, with measured cc exponents +0.005 and -0.108, zero as
+derived.
+
+The unified kappa. Collecting the six bounds, every route obeys
+
+    normalized <= c eps max(1, ||M||_F) max(1, gamma_route) beta(D),
+    beta = (1 + ||D||_F)^2 / N            (absolute: eigenplane, projector,
+                                           the formation half of polynomial)
+    beta = max(1, ||D||_F) ||D||_F / N    (relative: the polynomial solve;
+                                           the iterates need no beta)
+
+and both shapes are covered, to within a factor 4 absorbed by c, by
+
+    kappa_route = max(1, ||M||_F) max(1, gamma_route)
+                  max(1, ||D||_F^2 / N(D)),                             (KB)
+    gamma_route = cond(U_ls)                             eigenplane
+                  max(1, ||M||_F^2 / sigma_min(A_s))     polynomial
+                  max(1, cc)^2 max(1, ||P_s||_2 / |h|)   projector
+                  the (D21) / (D16) operator condition   newton, fixed point
+
+Why the ||D|| exponent is the bounded bracket. The first-order analysis gives
+NEITHER 0 (the hypothesis K1 = max(1, ||M||_F) max(1, cc): "the residual is
+normalized, so ||D|| cancels") NOR 2 (the landed K0): the bracket's exponent
+in ||D||_F is 2 at N = 1 and 1 in the populated N > 1 regime. The
+hypothesis's reasoning cancels one of the two powers; the second cancels
+only where the route's graph error is relative to ||D||, true of the
+polynomial solve and false of the eigenplane (4), the projector (7) and the
+evaluation and formation errors (2). Properties: (i) KB >= max(1,
+||M||_F), so c_stop <= c_inv survives; (ii) KB <= K0 max(1, gamma) with
+equality exactly at N = 1, so the landed kappa is the N = 1 corner of the
+derived one, right for the RAW residual (1) and wrong for the normalized
+one; (iii) KB is bounded on garbage graphs because N grows with ||D||: over
+the 160 stalled rows per arm ||D||_F reaches 1.74e21 while the bracket
+reaches 42.6 (the M1 defect seen from the kappa side); (iv) every factor is
+in scope where the floor is applied: ||M||_F at 689, N as raw / normalized
+of the residual just computed, gamma through quantities the routes already
+form (svdvals(A_s) at 791, h at 844, opnorm(P_s) at 848), no new linear
+algebra.
+
+Disagreements among the three passes, adjudicated from the code. (D1) The
+two graph-perturbation passes concluded that the ||D|| power cancels against
+N when N > 1 (exponent 0); the exact eigenplane step (4) and the evaluation
+bound (2) say one power stands; both passes are corpus-true (beta <= 5.93)
+and formula-false. (D2) Both recorded that no large-graph family at bounded
+||M||_F is known; one exists, conjugating blockdiag(A_4, L_2) by the
+symplectic S = [U V] built from V = span([D; I]) and its J-orthogonal
+complement (||M^T J M - J|| <= 1e-12), graphs of norm 1e2 to 1e4 at ||M||_F
+about 3, and the two checks built two more (below). (D3) cond(A_s) against
+(6): (6), the polynomial paragraph. (D4) "cc misses the eigenvector
+conditioning ||M||_2 / sep": that factor governs the graph's accuracy, which
+no (I1) floor tests.
+
+The constant. c_e <= gamma_9 (about 4.5) from (1), plus a propagated part <=
+4 times each route's O(1) backward-stability constant, and c_stop = 16 for
+the iterates, which dominates: 4 <= c <= 16 by derivation against a dump
+extreme 3.485, so the H15 formula gives c_inv = max(8, 2^ceil(log2(10 x
+3.485))) = 64, a factor 4 over the structural lower bound c_stop = 16. That
+is a prediction (flag F3), from 201 fixtures under the coded cc, and the
+constant is in any case an acceptance constant judged by the stage 4a window
+rule (the Decision): it stays 256 in this commit.
+
+The contract rows and the diagnostics triple. (4a)
+`r_primary_route_invariance_i1` (`twiss_dispersion_identity.jl` 699, 725): the
+recorded value is the primary route's `invariance_residual.normalized` pushed
+at `twiss_dispersion_analysis.jl` 1401-1402, the same Float64 the kernel
+compares with its floor at 710, so the row is a MIRROR and its kappa must be
+the kernel's on the primary route; it was not even a mirror of the landed
+kernel (`opnorm(D)^2` at 699 against `norm(Df)^2` at 689, an M1-era drift).
+Under KB: max(1, ||Ms||_F) max(1, gamma_primary) max(1, ||D||_F^2 / N), the
+max(1, .) on gamma mandatory because a route may report
+`:not_derived_for_cluster` (682) and the loop falls back to 0.0 at 1396.
+Predicted c = 32 in both arms, and measured 32 (freezing-set maxima at
+multiplier 1 under KB with the coded cc: 1.884 native / 1.666 haswell) against
+1024. 32 is STRICTER than the kernel's own c_inv (256 landed; 64 was the
+derivation's predicted value), so a ratio in (32, 256] would pass the kernel
+and fail the contract; the choice (freeze 32 by H15, or pin the row at c_inv
+to keep it a true mirror) is read from the measurement (F6). (4b) The
+diagnostics triple (`twiss_dispersion_analysis.jl` 1396-1403) is declared a
+mirror of the kernel's kappa (1400) and must print exactly what the kernel
+used, bracket and gamma included; it is not in `_VERDICT_RESIDUALS`
+(1462-1463), so it moves only the printed tolerance and row (4a). (4c)
+`c_d14_graph_invariance` (895-901) recomputes the normalized (I1) residual in
+the CALLER's coordinates from `result.matrix` and `ph.graph` with kappa nD^2
+alone: no map norm, no condition, no scaling. Under the scaling M~ = C M C^-1,
+C = diag(C_r, C_l), F~(D~) = C_r F(D) C_l^-1 and each normalizer term obeys
+the same congruence, so the normalization absorbs the scaling exactly only for
+scalar C_r, C_l; otherwise gamma_C = c_r c_l max(1, c_r c_l) belongs (c_r =
+cond(C_r), c_l = cond(C_l); 1 exactly under `:none`). The kappa is gamma_C
+max(1, ||Ms||_F) max(1, gamma_primary) max(1, ||D_phys||_F^2 / N_phys), N_phys
+the denominator already at 901. Predicted c = 32, measured 16 (Measurement
+below), rigorous worst case 512 (every 6x6 symplectic matrix has ||M||_F >=
+sqrt(6) = 2.449, the dump's minimum is 2.470, so the ratio at the landed
+argmax is at most 67.09 / 2.449 = 27.4); not measurable from the dump, which
+carries no caller-coordinate graph, so measured in both arms before freezing.
+(4d) `k_route_agreement` (831-838) is a RAW infinity-norm difference of (D8)
+triples, so the (I1) argument does not apply; through `_graph_to_dispersion`
+(411-418) the h and eta components create ||D||_F^2 |h|^2, so the ||D||^2 at
+837 STAYS and cc_max is right up to a factor 2; the derivation kept c = 32
+(the measurement moved it, below). Two gaps, neither exercised by the freezing
+set and both only loosening the floor: max(1, |h|)^2 is missing (|h| <= 1.18
+accepted, 354 on the trial-011 crab map), and by (4) an absolute-error route's
+graph error is itself eps ||M|| gamma (1 + ||D||)^2, one further max(1,
+||D||)^2. Its cc maximum now sees the two extended conditions, so its c is
+re-measured (predicted 32, unchanged; measured 8, Measurement below). (4e) The
+four test-local kappas (`test/runtests.jl` 4442, 4489, 4511, 5501) bound RAW
+forward errors against a manufactured exact triple, never the normalized
+residual; their ||D||^2 is the (D8)-conversion factor of (4d), correct by (1).
+They stay.
+
+The data test. Ratios are normalized / (eps kappa) at multiplier 1, eps =
+2.2204e-16; K0 = landed, K1 = hypothesis, KB = derived with the CODED cc for
+gamma (what the dump carries). Per arm: 1005 formed routes; accepted 802
+native / 803 haswell; converged `:not_invariant` 43 / 42; stalled 160 / 160;
+`recomputed_normalized` equals `normalized` bitwise. Maximum ratio over the
+accepted rows, native / haswell (recomputed three times):
+
+| route | n (native) | K0 | K1 | KB |
+|---|---|---|---|---|
+| eigenplane | 200 | 43.97 / 166.5 | 2.92 / 3.17 | 2.68 / 2.76 |
+| polynomial | 200 | 25.06 / 8.50 | 2.85 / 3.03 | 2.09 / 1.82 |
+| projector | 200 | 80.49 / 174.2 | 1.91 / 1.19 | 1.13 / 0.76 |
+| newton | 148 | 10.59 / 10.69 | 2.01 / 2.00 | 1.39 / 1.38 |
+| fixed_point | 54 | 14.68 / 14.80 | 3.05 / 3.49 | 3.05 / 3.49 |
+| all | 802 / 803 | 80.49 / 174.2 | 3.05 / 3.49 | 3.05 / 3.49 |
+| H15 c | | 1024 / 2048 | 32 / 64 | 32 / 64 |
+
+K0 reaches 174.2 on ACCEPTED rows, above the campaign's ">100 means the
+kappa is wrong" line. K1 and KB share their extreme: the argmax is a
+converged fixed-point iterate at ||D||_F about 1 (bracket 1), the stop floor
+and not conditioning (F6a dense 6x6 map 64 native, map 5 haswell); K0's
+argmax is map 86 [projector]. Dropping cc altogether gives 373.9 / 809.1: cc
+is necessary. On this corpus K1 and KB are INDISTINGUISHABLE (same maxima,
+same H15 constant); the synthetic families below separate them.
+
+The weak cavity (M[6,5] = -1e-6 folded, shear 0.7) through `analyze` at
+`:auto`; ||M||_F = 2.701, ||D||_F = 0.374, N = 1 on all five rows, so KB =
+K1 there with the coded cc:
+
+| route | normalized native / haswell | coded cc | K0 ratio | K1 = KB ratio |
+|---|---|---|---|---|
+| eigenplane | 1.96e-13 / 9.98e-14 | 6.73e2 | 327.4 / 166.5 | 0.49 / 0.25 |
+| polynomial | 1.16e-10 / 1.10e-10 | 2.29e6 | 1.93e5 / 1.84e5 | 0.084 / 0.080 |
+| projector | 6.68e-10 / 1.81e-10 | 2.19e7 | 1.11e6 / 3.01e5 | 0.051 / 0.014 |
+| newton, fixed_point | 3.04e-16 / 2.45e-16 | 1.33e7 | 0.508 / 0.408 | 3.8e-8 (equal) |
+
+The eigenplane row is the sharpest evidence against K0: the same map and code
+land at 327.4 native (rejected at 256) and 166.5 haswell (accepted), a route
+status on a knife edge a BLAS kernel moves. At the kernel path (unscaled,
+`test/runtests.jl` 4560) the stage 4a table shows the same: landed 1.519e+02 /
+6.424e+02 / 1.571e+04 for the eigenplane / polynomial / projector graphs (the
+pre-fingerprint's `measurement_table_4a_native.md` 154, 159, 160) against
+1.8e-01 / 5.733e-02 / 4.672e-02 with cc folded (178-179).
+
+Other-branch rows (converged, `:not_invariant`, iterative, 40 per arm): the
+floor must ACCEPT them (maximum KB ratio 0.487 / 0.080) and the branch check
+at 701 must reject them; the margin |trace_residual| / (c_inv eps kappa
+max(1, ||M||_F)) has minimum 1.21e6 at (KB, 256), 4.85e6 at (KB, 64), 2.90e7
+at (K1, 64) and 1.94e8 at the landed (K0, 256), while accepted iterates stay
+<= 0.0070; the check keeps firing under every candidate. Stalled iterates
+(160 per arm, normalized 7.05e-4 to 1.15): minimum multiplier-1 ratio
+5.23e-28 under K0 (the M1 vacuousness), 2.13e9 under K1, 1.17e8 under KB,
+but 7.2e-9 under K1 max(1, ||D||_F): a BARE ||D|| factor re-opens the M1
+hole while the bracket does not. "The K1 floor alone rejects every stall"
+holds for this dump only: stage 4a's trial-011 crab fixed-point stall sits
+at 2.651 with cc folded (`measurement_table_4a_native.md` 180), inside the
+accepted band, so the M1 flag stays load-bearing (F5). Vacuity: the largest
+kappa is 8.61e42 under K0 against 3 / (256 eps) = 5.28e13; 5.91e7 under KB.
+
+The three synthetic families. (i) The synthesis's eigenplane family ((D2)
+above; 2016 rows), maximum ratio in the buckets ||D||_F / max(1, ||M||_F) in
+[0, 1), [1, 10), [10, 100), [100, inf): K1 2.50, 14.55, 43.58, 86.31; KB 2.50,
+1.22, 0.41, 0.24. (ii) The first check's weakly coupled family M =
+blockdiag(R(a1), R(a2), R(a3)) exp(K(X)), a1 = a3 + d, d in [1e-15, 1e-2],
+||X|| in [1e-3, 0.5] (120000 draws, 703 with ||D||_F > 30; ||M||_F in [2.45,
+2.65], ||D||_F to 3.3e4): maximum K1 ratio by ||D||_F decade 41.63 (1e1),
+80.89 (1e2), 46.53 (1e3), 11.32 (1e4) against KB 0.578, 0.385, 0.025, 0.00034;
+the worst K1 row (||M||_F 2.450, ||D||_F 235.7, cc 1.447, N = 235.75,
+normalized 6.366e-14) is a legitimate symplectic map with a correct eigenplane
+graph that K1 at c = 64 would declare `:not_invariant`, and the worst KB ratio
+over 20000 synthetic eigenplane maps is 5.758 (c = 64, the corpus's own
+constant). (iii) The second check's family, built independently (600 samples):
+K1 in the same 81-86 band, KB below 5.8. In the first check's second, fully
+generic family (M = exp(J (S0 + s S1)), ||M_lr||_F median 0.458, ||D||_F to
+2.3e5) the worst K1 ratio is only 12.36, because cc grows with ||D|| there; it
+is the weakly coupled family with cc = O(1) that breaks K1. The ||D|| exponent
+is decided by these families, not by the corpus.
+
+What flips and what stays (predicted from the dump; the measured statuses are
+under Pins below). Under KB at c = 64 or 256 (K1 agrees on every fixture of
+the dump) the weak cavity's polynomial and projector graphs become `:none` in
+both arms and its eigenplane graph natively (already `:none` under haswell);
+no other row changes status and no accepted row is rejected. Consequences on
+HEAD 35a3585: `test/runtests.jl` 4579 (`polynomial status === :not_invariant`)
+FAILS and the comments at 4576-4578 go stale, while 4580, 4581 and the raw eta
+/ h bound at 4575 still pass; the D12 row (`twiss_dispersion_identity.jl`
+519-528) loses its `:not_invariant` clause on the polynomial diagnostic but
+keeps a verdict clause (all 1000 dense-map rows of the dump report `degraded`
+with every route `:none`, from the uncertified longitudinal selection at
+`twiss_dispersion_analysis.jl` 1140), so it stays must-reject and only its
+polynomial clause is rewritten; the stage 4a `c_inv` window, EMPTY since
+2026-09-12 (`measurement_table_4a_native.md` 151-153), closes on its accepted
+side (151.9 -> 0.18) and the arm-dependent item 6 verdict goes away.
+Unchanged: the branch check, the isotropy floor (691), the M1 converged flag
+(710), the four test-local kappas (4e), `k_route_agreement`'s code and, the
+derivation predicted, its c = 32 (4d; measured 8), every other frozen
+constant.
+
+The flags and what was done with them. F1 (the derivation does not give the
+accepted headline max(1, ||M||_F) max(1, cc): it gives that with cc replaced
+by gamma_route AND times the bracket, which is 1 on 205 of 802 accepted rows
+and <= 5.93 on the rest, while three families reach 81-86x without it):
+RESOLVED, the bracket is in the helper (the Decision). F2 (cond(A_s) and the
+trace-gap cc are not their routes' amplification factors, witnesses 134.8
+and 5.6e3; extend the two `coefficient_condition`s or make the kappa
+route-aware): RESOLVED by the orchestrator in favour of extending the field.
+The polynomial route reports ||M||_F^2 / sigma_min(A_s); a FORMED projector
+graph reports max(1, cc)^2 max(1, ||P_s||_2 / |h|), the larger of the two
+admissible forms, while the two `:singular_*` early returns keep reporting
+the trace-separation cc (no P_s or usable h there); the field's documented
+meaning becomes "the route's roundoff amplification into its graph", which
+for the eigenplane and the two iterative routes is the condition number
+already reported; the `c_coef` guards compare `sv[end]` and the smallest gap
+with their floors directly, never the reported condition, so they are
+unchanged. F3 (c_inv = 64 is predicted, not measured; the dump is 201
+fixtures under the coded cc and the stage 4a INFORMATIONAL column divided by
+K0 cc; the answer lies in {16, 32, 64, 128, 256} with c_stop = 16 a
+structural lower bound): LEFT TO THE OWNER with the measurement; this commit
+keeps 256 and measures the window in both arms (Measurement below). F4
+(coverage: once the weak cavity stops being a rejection, no fixture
+exercises the (I1) floor's rejecting side for a DIRECT route; a graph
+genuinely not invariant at modest gamma, or a large-graph map from the
+synthetic families, would restore the two-sided window and populate ||D||_F
+>> 1): LEFT TO THE OWNER, out of this commit's scope. F5 (do not weaken the
+M1 `converged` flag with "the floor alone rejects every stall": on the
+260-fixture stage 4a corpus it does not, the trial-011 crab fixed point sits
+at 2.651): RESOLVED, adopted; the kernel's docstring and comment say so. F6
+(the contract rows rest on one derivation, neither check re-derived them;
+`r_primary_route_invariance_i1` and `c_d14_graph_invariance` must be
+re-measured in both arms, the dump missing the tuple fixtures F4 and F5 and
+carrying no caller-coordinate graph): RESOLVED by implementation plus
+measurement; both rows call the helper (c_d14 with the caller's blocks,
+||Ms||_F as the map norm and gamma_C) and are re-frozen from the two-arm
+run; `k_route_agreement` keeps its ||D||^2 and is re-measured because its
+cc maximum now sees the two extended conditions. F7 (not decidable in this
+tree: the ||M|| exponent, 1 against 2, with ||M||_F in [2.470, 3.712] only,
+and the N = 1 corner with a large graph, unpopulated since every N = 1 row
+has ||D||_F <= 0.9993 and structurally rare, N >= ||D||_F / ||Lambda||_2
+with det Lambda = 1 forcing ||Lambda||_2 >= ||D||_F): RESOLVED by taking the
+derivation's exponent, one power of ||M||_F outside gamma ((1)-(3); the
+polynomial's second power sits inside gamma_polynomial), and recording that
+the corpus cannot test it: a known limit of the fixtures, not a decision
+pending.
+
+**Sites.** Line numbers are this commit's tree, re-read 19:10 EDT on the final
+working tree on 43ac3aa (the record step that followed touched only the three
+record files, none of them cited here). E1-E13 and D1-D6 are the plan's
+labels.
+- `src/analysis/dispersion_routes.jl`: 88-89 (D1) the module note "extending
+  `kappa_route` by the coefficient condition is carried" becomes "the route's
+  amplification factor enters that floor through `_kappa_route` (landed
+  2026-09-14)"; 92 names the old number as `cond(A_s) = 1.1e4`. 102-145, the
+  helper (new): docstring 102-131 with the formula, the first-order bound, the
+  three properties, the argument requirements and the guards; the Real method
+  132-143 (`_kappa_route(M, D, gamma; map_norm=norm(M))`, `ArgumentError` on a
+  non-6x6 `M`, a non-4x2 `D`, a non-finite or negative `gamma` or `map_norm`;
+  N formed term by term as `_graph_invariance_residual` forms its normalizer);
+  the `Determined{Float64}` method 144-145 (an unavailable condition counts as
+  1). 147-179 (D2) the `_ROUTE_INVARIANCE_MULTIPLIER` docstring: the formula
+  by reference to the helper, the landed kappa named as the RAW residual's
+  with its 2026-09-12 empty window (151.9 against 642) and its vacuity as
+  history, the measured window under the derived kappa (accepted extreme 5.34
+  | 5.28, a converged fixed-point iterate; rejected extreme 3.60, a stall
+  rejected by the flag; EMPTY; H15 would give 64), "the constant stays 256
+  until the owner decides from that measurement", PROVISIONAL kept; 180 `const
+  _ROUTE_INVARIANCE_MULTIPLIER = 256.0` unchanged. 375-381 the
+  `coefficient_condition` field's meaning in the route-report docstring (the
+  gamma of `_kappa_route`; the four forms). 719-739 (D3) the
+  `_route_from_graph` docstring: the helper's formula; bounded on garbage
+  graphs, the converged flag stays (the crab stall at 3.60 in both arms). 748
+  (E1) `kappa_route = _kappa_route(M, Df, coefficient_condition)`, 749
+  `inv_floor` unchanged. 760 (E2) the branch check, text unchanged, its
+  threshold moving with the kappa (margin 1.21e6 at (KB, 256)). 770-771 (E3)
+  the comment at the M1 condition. 831-846 the polynomial docstring (the new
+  condition, why `cond(A_s)` under-states it, the guard); 858 `condition =
+  _condition_number(norm(Mf)^2, sv[end], ...)`. 877-880 and 882-888 the
+  projector docstring (the two early returns keep cc, the formed graph reports
+  the amplification); 920-921 `nPs = opnorm(Ps)` reused by the
+  graph-singularity floor; 928-933 the assertion that the trace-separation
+  `condition` is determined past its own floor (`error` otherwise),
+  `amplification = Determined(max(1.0, cc)^2 * max(1.0, nPs / abs(h)))`,
+  passed to `_route_from_graph` as `coefficient_condition`.
+- `src/analysis/twiss_dispersion_analysis.jl`: 1400-1401 the comment
+  (`clusters.matrix` is `result.matrix_scaled`, the matrix the routes ran on);
+  1403 (E4) the "primary route invariance (I1)" tolerance
+  `_ROUTE_INVARIANCE_MULTIPLIER * eps() * _kappa_route(clusters.matrix, D,
+  r.coefficient_condition)`.
+- `src/contracts/twiss_dispersion_identity.jl`: 86-96 (D5) the header comment,
+  the two (I1) graph rows carry the route kappa, their re-measured ratios
+  1.884 | 1.666 and 1.291 | 0.942 (the landed largest, c_d14 at 52 | 67 on
+  dense map 12, kept as history) and k_route_agreement's 0.317 | 0.384 against
+  2.394 | 2.900; 106 (E8) `:r_primary_route_invariance_i1 => 32` (1.884e+00 |
+  1.666e+00, maps 2 | 12; was 1024 at 4.397e+01 | 5.174e+01, map 12); 133 (E6)
+  `:k_route_agreement => 8` (3.171e-01 | 3.841e-01, map 9; was 32 at 2.394e+00
+  | 2.900e+00: the row's code is unchanged, its condition maximum sees the
+  extended amplification factors); 141 (E8) `:c_d14_graph_invariance => 16`
+  (1.291e+00 | 9.425e-01, maps 2 | 20; was 1024 at 5.213e+01 | 6.709e+01, map
+  12); 431-434 the contract docstring's D12 sentence; 523-531 (E9) the D12
+  comment and row name ("... the polynomial route's formed graph and its
+  amplification factor"), 535-536 the predicate: polynomial `status ===
+  :none`, `coefficient_condition > 1e3`, `r.status === :degraded`; 680-691
+  `_identity_contract_primary_condition(dr)` (new): the primary route's
+  reported condition, unavailable with `:not_derived_for_cluster` when the
+  primary route is not in the list; 700-701 (D6) the docstring's route kappa;
+  721-723 (E5) `kappa_route = graph_ok ? _kappa_route(Ms,
+  determined_value(result.dispersion.graph),
+  _identity_contract_primary_condition(result.dispersion)) : 1.0`; 925-936
+  (E7) the c_d14 kappa `gamma_C * _kappa_route(M, D, cc_primary;
+  map_norm=norm(result.matrix_scaled))` with `C = _scaling_matrix(
+  result.scaling)`, `C_r`, `C_l` its 4x4 and 2x2 diagonal blocks as explicit
+  matrices, `gamma_C = cond(C_r) cond(C_l) max(1, cond(C_r) cond(C_l))`, `M`
+  the caller's matrix (so N is the physical normalizer).
+- `test/runtests.jl`: 4397-4400 (E10) the vocabulary pin's (I1) bound through
+  the helper with the route's reported condition; 4427-4520 the four new
+  testsets (Tests added, below); 4673-4681 (E11) the weak-cavity comment and
+  the pin `polynomial status === :none`, 4683 `> 1e3` kept with the new
+  number; 4755-4756 (E12) the false graph's floor through the helper with
+  gamma 1.0; 5027-5029 and 5034-5036 the M1 testset's comments (the landed
+  floor in the past tense; the flag rule stands); 5042 the forward-error kappa
+  of the h bound, kept and named; 5050-5052 (E13) the exact graph's (I1) bound
+  through the helper with 1.0; 5057-5064 the Dbig comment; 5066-5067
+  `floor_big` through the helper and `@test floor_big < 1e-6`; 5070-5073 the
+  Dbig assertions (test (a)).
+- `validation/twiss_dispersion_acceptance_windows.jl` (the stage 4a driver,
+  tracked since 43ac3aa): 84 `kappa_route(M, D, cc) = Octopus._kappa_route(M,
+  D, cc)`; 318-320 the comment (M is the matrix the routes ran on); 323, 343
+  the c_inv ratios with `r.coefficient_condition`; 326, 330 the INFORMATIONAL
+  column renamed `c_inv_unconditioned` (`v * max(1, cc)`: what the
+  amplification factor buys); 397, 401 the false and zero graphs with gamma
+  1.0; 522-523 the two spec strings.
+- `validation/README.md` 1113-1114, 1132: `c_inv_conditioned` ->
+  `c_inv_unconditioned` in the driver's paragraph and the two-direction rule;
+  1143-1153 the c_inv window paragraph rewritten with the measured window
+  (accepted 5.34 | 5.28 against rejected 3.60, EMPTY on its rejected side, the
+  floor's own rejections the two synthetic guard graphs far above the edge;
+  256 stays until the owner decides); 1186-1214 a new section for
+  `twiss_dispersion_route_dump.jl` (one section per script, AGENTS.md 114).
+- `validation/twiss_dispersion_route_dump.jl` (new, 81 lines): one TSV row per
+  formed route over the contract's 200 dense 6x6 maps and the weak cavity
+  through `analyze` at `:auto`, the normalizer terms, ||Ms||, ||D||, cc,
+  `recomputed_normalized`, `kappa_route` (the helper on the same matrix the
+  routes ran on) and `ratio`; usage in its header.
+- `docs/design/twiss_dispersion_analysis.md` 366-370: one sentence after "(I1)
+  above tolerance means not invariant" stating the tolerance `c_inv eps max(1,
+  ||M||_F) max(1, gamma) max(1, ||D||_F^2 / N(D))`.
+
+**Measurement.** The pre-edit fingerprint is 35a3585's (the plan's section 2
+numbers, both arms); the post-edit fingerprint is `fingerprint_post/` under
+`carried/kappa_route/`, run per arm in the order (ii) (iii) (iv) (i) (v),
+native first, then `OPENBLAS_CORETYPE=Haswell julia -C haswell`. The constant
+stays 256 in this commit whatever the window says (spec D-E; H15: the
+derivation, not the window, moves it). (i) Stage 4a, `measure_stage4a.jl` on
+the 260-fixture corpus, the `c_inv` block. Pre: accepted 1243 / rejected 25 /
+unlabelled 266, accepted extreme 151.9 (the weak cavity's eigenplane, both
+arms), rejected minimum 52.5 (the trial-011 crab's stalled fixed-point
+iterate), window EMPTY since 2026-09-12. Post: accepted extreme 5.341 native |
+5.283 haswell at "dense k=197 (mu_s=-1.461) [fixed_point]", a converged
+fixed-point iterate, whose ratio `c_stop` = 16 bounds by construction (the
+next accepted rows: dense map 173's fixed point 4.667 haswell, dense map 137's
+eigenplane 4.217 in both arms, the repeated oracle's Newton 3.630 | 3.654,
+dense map 157's eigenplane 3.193 native; the largest accepted formed graph of
+a direct route is that eigenplane at 4.217); rejected extreme 3.602 in both
+arms at "trial-011 crab k=kc(1-0.001) [fixed_point, stalled iterate]",
+rejected by the `converged` flag and not by the floor; every rejected row the
+table lists is a stalled iterate (the prescribed_h oracle index 1 and the
+prescribed h = -1.0 fixed points at 1.037e4, dense map 64's at 1.211e6);
+window [53.41, 0.3602] native | [52.83, 0.3602] haswell, EMPTY in both arms
+and for a new reason: the pre window's rejected side was the weak cavity's
+polynomial and projector graphs, now accepted, and no formed graph of a direct
+route sits on the rejected side any more, so the floor's own rejecting side
+has no fixture (flag F4's coverage gap, carried); an empty window contains
+nothing, 256 included, and H15 on the accepted extreme would give max(8,
+2^ceil(log2(53.4))) = 64 (flag F3, the owner's); counts 1245 / 23 / 266 in
+both arms (pre 1243 / 25 / 266: the two weak formed graphs moved from rejected
+to accepted; the weak eigenplane was accepted in this driver already, at
+151.9); the unlabelled extreme is dense map 173's first Newton iterate of two
+at 2.217e8 (pre: dense map 53's at 1.398e9). Predicted from the dump (the
+plan's reading, both arms): accepted extreme about 3.5 (haswell, fixed point,
+map 5; native 3.05, map 64), the rejected side the false graph (about 1e15),
+the zero graph and the converged `:not_invariant` formed graphs; c = max(8,
+2^ceil(log2(10 x 3.49))) = 64. Measured against it: the dump's own maximum is
+3.05 | 3.49 as predicted, the driver's corpus adds the dense maps 197, 173 and
+137 above it (5.34 | 5.28), H15 still says 64, and the four smallest rejected
+rows are all stalled iterates. An accepted row above 100 would have meant the
+kappa is wrong (stop, back to the derivation); none is. (ii) The frozen table
+(`carried/frozen_table.jl`), the three rows at multiplier 1. The reading rule:
+the contract stores `tol = c eps max(1, kappa)` and `metrics[:max_<slug>]` is
+the ratio AT the frozen c, so the multiplier-1 ratio is that ratio times c
+(not `maxval`). Pre (native | haswell): `r_primary_route_invariance_i1`
+4.397e+01 | 5.174e+01 at c 1024 (F6a dense 6x6 map 12);
+`c_d14_graph_invariance` 5.213e+01 | 6.709e+01 at 1024 (map 12);
+`k_route_agreement` 2.394e+00 | 2.900e+00 at 32 (map 9). Post at the OLD c,
+then re-frozen and re-run: `r_primary` 1.8838 (F6a dense 6x6 map 2) | 1.6659
+(map 12), H15 c = max(8, 2^ceil(log2(18.84))) = 32 as predicted; re-frozen at
+32 and re-run (`refreeze/`): 0.0589 | 0.0521; `c_d14` 1.2910 (map 2) | 0.9425
+(map 20), H15 c = 16, NOT the predicted 32 (the prediction had no measurement
+of the caller-coordinate graph behind it); re-frozen at 16 and re-run: 0.0807
+| 0.0589; `k_route_agreement` 0.3171 | 0.3841 (map 9), a factor 7.5 below the
+landed 2.394 | 2.900 with the row's code unchanged (its condition maximum
+`cc_max` now sees the extended polynomial and projector amplification
+factors), H15 c = 8, NOT the predicted "unchanged 32"; re-frozen at 8 and
+re-run: 0.0396 | 0.0480. The owner's decision named `r_primary` and `c_d14`;
+this row moved because the contract freezes every row by H15 of the two-arm
+measurement and by nothing else, and the move is flagged in the report.
+Predicted (the derivation's 4a-4d): `r_primary` 1.884 | 1.666 on maps 1-20 ->
+32; `c_d14` 32 with a rigorous worst case of 512 that the dump cannot measure
+(no caller-coordinate graph, no tuple fixtures F4 and F5); `k_route_agreement`
+32 unchanged. (iii) The validation script at its tracked defaults. Pre: native
+exit 1 (`c_scaling_invariance` map 98, 6.707e-12 against 6.031e-12, digest
+0x75a0b10f84b2fdb1), haswell exit 0 (worst 0.689, digest 0x11f90af4a5841198).
+Post: native exit 1 (map 98 `c_scaling_invariance`, 6.7069e-12 against
+6.0314e-12 as before; digest 0xecc3e19b276694c4), haswell exit 0 (worst
+0.6888, `c_scaling_invariance`; digest 0x3e1c8b9e2b3346e1). The digests moved
+because the three rows' values moved, and they do not depend on c (the re-run
+at the re-frozen c reproduces both). The three rows at the re-frozen c:
+`r_primary` 0.0839 (map 179) | 0.0862 (map 90), `c_d14` 0.1194 (map 93) |
+0.0814 (map 64), `k_route_agreement` 0.0757 | 0.0805 (map 139), all below the
+0.25 re-open threshold; pre, at the landed kappa and c, they were 0.0429 |
+0.0505 and 0.0509 | 0.0655 (map 12, c 1024) and 0.0959 (map 81) | 0.0906 (map
+9) at c 32; expected unchanged, map 98 being a synchrotron-mode covariance
+excess and not a kappa matter. (iv) The census (`census_180ce70.jl`). Pre,
+both arms: `runs=402 nonconverged_routes=320 nonconverged_with_status_none=0
+not_invariant_routes=401`. Post: `runs=402 nonconverged_routes=320
+nonconverged_with_status_none=0 not_invariant_routes=401` in both arms,
+byte-identical to pre. The expected drop did not happen because the census
+walks the 6x6 matrices of `_identity_contract_fixtures` (the 200 dense maps
+and the F8 coasting map, twice each, `scaling = :auto` and `:none`) and the
+weak cavity is not among them (the D12 row of the diagnostics table builds it
+itself); no dense-map route changed status (run (v)); expected
+`nonconverged_with_status_none` 0 (M1 holds) and `not_invariant_routes` down
+by the accepted weak graphs, about 3 natively (eigenplane, polynomial,
+projector) and 2 under haswell (polynomial, projector). (v) The route dump,
+1005 rows per arm over 201 fixtures (the contract's 200 dense 6x6 maps and the
+weak cavity through `analyze` at `:auto`): statuses identical in both arms in
+all 1005 rows (the weak cavity's eigenplane included, `:none` at 0.4866 |
+0.2473; every result `:degraded`); 805 `:none` rows, all converged, largest
+ratio 3.0526 (dense map 64, fixed point, native) | 3.4850 (dense map 5, fixed
+point, haswell), none above 25.6 (c / 10); 200 `:not_invariant` rows, 40 of
+them converged and branch-side (another invariant plane; largest ratio 0.0794
+| 0.0766, so the floor alone would accept them and the branch check, not the
+floor, rejects them) and 160 stalled iterates (smallest ratio 1.166e8), so the
+recomputed ratio reproduces the kernel's status in every row. Provenance, not
+evidence: `carried/kappa_route/smoke/kr_smoke_b2.jl` under haswell at 18:24
+EDT (`smoke_b2_haswell.log`, SMOKE OK) ran the weak cavity through `analyze`
+at `:auto` with both route lists: verdict `degraded`, no failure named; per
+route (normalized residual, amplification, kappa, ratio of the residual to eps
+times kappa): eigenplane 9.982e-14, 672.97, 1817.6, 0.2473; polynomial
+1.1025e-10, 1.1069e8, 2.9897e8, 1.661e-3; projector 1.805e-10, 5.108e14,
+1.3797e15, 5.89e-10; Newton and the fixed point 2.448e-16, 1.3275e7, 3.585e7,
+3.08e-8 (iterations 0, converged). No native smoke log exists; the tree's D12
+comment records the native run: normalized 1.16e-10 at the same 1.1e8, ratio
+1.7e-3, eigenplane 0.49 (the derivation's dump table has the eigenplane at
+1.96e-13 native, 327.4 under the landed kappa and 0.49 under KB). The post
+fingerprint confirms both arms: eigenplane `:none` cc 672.9656, kappa
+1817.576, ratio 0.4866 | 0.2473; polynomial `:none` cc 1.106932e8, kappa
+2.989651e8, ratio 1.7459e-3 | 1.6608e-3; projector `:none` cc 5.108441e14,
+kappa 1.379711e15, ratio 2.180e-9 | 5.892e-10; Newton and the fixed point
+`:none` cc 1.327545e7, kappa 3.585494e7, ratio 3.823e-8 | 3.075e-8 (converged,
+0 iterations); the projector's floor is vacuous at that cc, which the D12 row
+does not assert on and the dump records. The polynomial amplification 1.1e8 is
+48 times the derivation's predicted 2.29e6, which was cond(A_s) on the scaled
+matrix: the extended condition adds the factor ||M_s||_F^2 / ||A_s||_2 the
+derivation had shown missing (the witness 134.8); the accepted ratio moves the
+same way (the plan's 0.0845 x 2.29e6 / 1.107e8 = 1.75e-3).
+
+**Pins that flipped.** Statuses are measured where an arm is named; an arm in
+brackets is owed to the post fingerprint. P1 `test/runtests.jl` 4681 (4579 on
+35a3585): the weak cavity's polynomial route through `_dispersion_routes` on
+the UNSCALED Mw, `:not_invariant` -> `:none`, amplification 1.26e6 and
+multiplier-1 ratio 5.1e-4 native (the test's comment at 4678-4679) | 1.2638e6
+and 4.970e-4 haswell (`weak_smoke.jl`, both arms: normalized 3.726e-13 |
+3.643e-13, kappa 3.3013e6, ||Mw||_F 2.6122; the eigenplane cc 836.66 at 0.1816
+in both arms, the projector cc 1.2399e11 at 1.27e-7, Newton and the fixed
+point cc 1.3063e5 at 6.25e-6 | 4.74e-6; every route `:none`); 4683 keeps `>
+1e3` with the new number (1.26e6 = ||M||_F^2 / sigma_min(A_s); cond(A_s) was
+1.1e4 on this unscaled matrix, 2.3e6 on the scaled one). P2
+`twiss_dispersion_identity.jl` 535-536, the D12 predicate: polynomial `:none`,
+`coefficient_condition > 1e3`, `r.status === :degraded`. Stronger than the
+plan's arm-safe `!== :failed` because the verdict is measured `:degraded` in
+both arms with no failure named (the eigenplane accepted at 0.49 | 0.25);
+under the landed kappa the eigenplane sat at the tolerance's edge, 2.0e-13
+native (`:not_invariant`, verdict `:failed`) against 1.0e-13 haswell (`:none`,
+`:degraded`), so the row could not assert the verdict at all. P3 5057-5073
+(4951-4960 on 35a3585), the M1 Dbig block: `floor_big > 3` and "converged =
+true gives `:none`" were the vacuous-floor facts and are gone; test (a) stands
+in their place. P4 4755-4756 (4653): the false graph stays rejected (ratio
+about 1e15), its floor written through the helper with gamma 1. P5 4397-4400
+(4397) and 5050-5052 (4946): (I1) bounds rewritten to the helper, one formula
+in the suite; 4671-4672 (4574-4575) and 5042 (4937) are NOT rewritten: they
+bound the (D8) triple's forward error with kappa_tau x cc, a different
+quantity, and 5042 now says so. Nothing else flips (the plan's 3.2 list: the
+flag-side, branch-side and tolerant assertions, the reason table at 6552 which
+must still SEE `:not_invariant`): the Prescribed h = 0.05 testset, whose
+certified run must still find the Newton route `:not_invariant` on another
+branch, passes in both arms in `kr_extract2.jl` (25 of 25 assertions, exit 0,
+19:00-19:06 EDT, `carried/kappa_route/extract2/`), so the Newton route of that
+run stays `:not_invariant` under the new floor.
+
+**Tests added.** All on `_st4_dense(0)` unless said, inside the existing
+"Dispersion routes" and M1 testsets. (a) 5057-5073, in the M1 testset: `Dbig =
+1e8 .* f.D`, `floor_big = 256 eps _kappa_route(f.M, Dbig, 1.0)`, `floor_big <
+1e-6` (the bracket bounded: N(Dbig) is of order ||Dbig||_F^2 ||M_lr||),
+`normalized > floor_big`, and the fixed-point route from that graph with
+`converged = true` is `:not_invariant` with the graph determined, h
+unavailable and "exceeds the floor" in its detail: the floor rejects the
+garbage on its own. (b) 4504-4520: through `analyze` (strict = false) the
+diagnostics row "primary route invariance (I1)" has tolerance `==`
+`_ROUTE_INVARIANCE_MULTIPLIER * eps() * _kappa_route(res.matrix_scaled, D,
+cc)` exactly, D and cc read from the primary route. (c) 4429-4455: the helper
+equals `max(1, ||M||_F) max(1, ||D||_F^2 / N)` with N = raw / normalized from
+`_graph_invariance_residual` (rtol 1e-12); >= max(1, ||M||_F) for gamma in
+(0.5, 1, 7); the unavailable `Determined` counts as 1, `Determined(5.0)` five
+times that; `map_norm = 2 ||M||_F` doubles it; `ArgumentError` on NaN, Inf and
+-1 gamma, a 4x4 M, a 4x3 D. (d) 4456-4477: for s in (1e2, 1e4, 1e8), `kb =
+_kappa_route(M, s .* D, 1.0) <= 1e3 max(1, ||M||_F)` (the spec's own bound;
+the haswell smoke reads kb / ||M||_F = 29.995, 25.786, 25.646, "identical in
+both CPU arms" per the testset's comment), `landed >= (1 - 1e-12) s ||M_rr
+D||_F kb` (exact from N's definition; the spec's "at least s" is FALSE at s =
+1e2, landed / kb = N(sD) = 33.5 there) and `landed >= 10 kb`. (e) 4478-4503:
+through `_dispersion_routes(f.M, cl)` the polynomial route's condition `==`
+`norm(f.M)^2 / svdvals(A_s)[end]` with A_s recomputed from (D19) (rtol 1e-12);
+the projector route's condition >= 1 and >= the square of its trace-separation
+condition recomputed as the kernel does. The extracts, rebuilt from titles:
+`kr_extract.jl` (ten testsets: Stage 6 registers, the seven Dispersion routes
+testsets, the Stage 4a chain, the Stage 6 contract testset; 12977 assertions
+per arm) with the weak-cavity smoke `weak_smoke.jl`, green in both arms at
+18:33-18:38 EDT (exit 0, `carried/kappa_route/extract/`) and again after the
+re-freeze (`refreeze/`, exit 0) and after the independent check's fixes
+(`extract3/`, exit 0, 12976 assertions per arm: the projector's two bounds
+became one exact pin); `kr_extract2.jl` (the Prescribed h = 0.05 and Physics
+contracts testsets, the latter running
+`validate(TwissDispersionIdentityContract())` against `_ST6_PIN` on the
+re-frozen rows) green in both arms (25 + 17 assertions per arm, exit 0,
+19:00-19:06 EDT, `extract2/`). No `ratio <=` pin line was added (the
+`_ST6_PIN` tripwire counts exactly 3).
+
+**Records.** This section. `docs/todo.md` row 20, one sentence appended before
+the closing " |". The docstrings: D1 module note, D2
+`_ROUTE_INVARIANCE_MULTIPLIER` (the measured window of run (i); PROVISIONAL
+kept, the window being EMPTY), D3 `_route_from_graph`, the
+`coefficient_condition` field, the polynomial and projector routes, D5 the
+contract header and the three rows' comments, D6 the r_primary docstring, the
+D12 row. `validation/README.md` `c_inv_conditioned` -> `c_inv_unconditioned`
+(two sites). The design note at `docs/design/twiss_dispersion_analysis.md`
+366-370. One lesson in `docs/experiences.md` (2026-09-14). The kappa_route
+bullet of the stage 7 Carried paragraph (11301-11305) gains a one-line "Landed
+2026-09-14" sub-item, add-only. Provenance under
+`result/twiss_impl_2026_09_11/carried/kappa_route/`:
+`DERIVATION_KAPPA_ROUTE.md` (the two independent checks `derive/c1.md` and
+`derive/c2.md`; the derivation passes `derive/d1.md`, `d2.md`, `d3.md`),
+`PLAN.md`, `PLAN_B_SPEC.md`, `dump/routes_{native, haswell}.tsv`, `smoke/`,
+`fingerprint_pre/`, `fingerprint_post/`. `HANDOFF.md`'s top section is the
+orchestrator's.
+
+**Corrections.** The map 98 c_scaling_invariance red in the native
+validation arm is a synchrotron-mode covariance excess (FINDINGS.md,
+item6_12), not a kappa_route matter. The external_gap_min = 2 sin(mu_min)
+count is resolved at 181 of 226 (rel tol 1e-6; the 30 at 1e-9 was
+withdrawn as too tight).
+
+**Checks.** The extracts `kr_extract.jl` (12977 assertions per arm) and
+`weak_smoke.jl` in both arms, exit 0, before the marker fills; `kr_extract.jl`
+again after the re-freeze (`refreeze/`) and after the check's fixes
+(`extract3/`, the projector amplification pinned exactly, 12976 assertions per
+arm), exit 0 in both arms; `kr_extract2.jl` in both arms , exit 0, 25 + 17
+assertions per arm (the Prescribed h = 0.05 and Physics contracts testsets,
+19:00-19:06 EDT). An independent read-only check of the diff and of these
+record texts (seven checkers and eight re-checks, 19:17-19:35 EDT; briefing
+`records/CHECK_INPUTS.md`, findings `records/check_findings.txt`) found 41
+discrepancies in comments, record prose and one test (the crab stall's stale
+2.65, the message's 180ce70 line numbers, three lesson misstatements, twelve
+line citations, the README entry the route dump lacked, a vacuous projector
+assertion, now an exact pin): every one corrected before the commit. The post
+fingerprint (18:38-18:48 EDT, both arms) and the re-freeze run (18:50-19:00
+EDT) are read above: the `c_inv` window [53.4, 0.36] EMPTY, the three rows
+1.884 | 1.666, 1.291 | 0.942 and 0.317 | 0.384 at multiplier 1 and 0.059 |
+0.052, 0.081 | 0.059 and 0.040 | 0.048 at the re-frozen c (frozen table
+`STATUS passed`, worst 0.0948 `k_longitudinal_block_symplecticity` in both
+arms), the validation script exit 1 | 0 with digests 0xecc3e19b276694c4 |
+0x3e1c8b9e2b3346e1, the census line unchanged, the dump's 1005 statuses equal
+across arms with no `:none` row above 3.49. Every tracked file of the commit
+parses (`Meta.parseall`); no measurement marker remains in a tracked file; the
+`_ST6_PIN` tripwire still counts exactly three pin lines (the Stage 6
+identity-contract testset of the extract). No `Pkg.test` was run for this
+commit: the two-arm full gate is owed on the batch's final tree before the
+push; this commit is measured by the extracts and the fingerprint, not by
+Pkg.test. The tree change is this commit's alone (no site shared with 5873e58,
+35a3585 or 43ac3aa); the commit is made by the owner, never pushed on its own.

@@ -4394,7 +4394,10 @@ _st4_wrap(mu) = mod(mu, 2pi)
             @test norm(_st4_val(r.zeta) - f.zeta, Inf) <= c * eps() * kappa
             @test norm(_st4_val(r.eta) - f.eta, Inf) <= c * eps() * kappa
             @test abs(_st4_val(r.h) - f.h) <= c * eps() * kappa
-            @test _st4_val(r.invariance_residual).normalized <= Octopus._ROUTE_INVARIANCE_MULTIPLIER * eps() * kappa
+            # the (I1) floor is the kernel's own (`_kappa_route`, re-derived 2026-09-14) with the route's reported
+            # amplification, on the exact graph (it stands for the route's graph to within the agreement bound): the
+            # suite carries one formula for that floor, and a :none status already implies this bound
+            @test _st4_val(r.invariance_residual).normalized <= Octopus._ROUTE_INVARIANCE_MULTIPLIER * eps() * Octopus._kappa_route(f.M, f.D, r.coefficient_condition)
             @test abs(_st4_val(r.trace_residual)) <= c_route * eps() * kappa
             @test r.converged
             r.route in (:newton, :fixed_point) ? (@test r.iterations >= 1) : (@test r.iterations == 0 && r.halvings == 0)
@@ -4421,6 +4424,100 @@ _st4_wrap(mu) = mod(mu, 2pi)
         @test abs(rep.tunes[1] - f.mus[1]) <= 64 * eps() * max(1, norm(f.M)) && abs(rep.tunes[2] - f.mus[2]) <= 64 * eps() * max(1, norm(f.M))
     end
     @test n_fp_noncontractive <= 8       # 6 of 200 measured (ratio 5 to 19 near coincident betatron / synchrotron traces)
+    # The (I1) floor's kappa, re-derived 2026-09-14 (`_kappa_route`): ONE helper for the kernel, the diagnostics mirror,
+    # the identity contract, the stage 4a driver and the tests. Only the definitional tests below spell the formula out.
+    @testset "the kappa_route helper on dense map 0: definition, monotonicity, the Determined method, map_norm, guards" begin
+        f = _st4_dense(0)
+        M = f.M; D = f.D
+        nM = max(1.0, norm(M))
+        # N(D) = max(1, ||M_rr D||_F, ||M_rl||_F, ||D (M_lr D + M_ll)||_F) is the normalizer the residual divides by,
+        # so it is raw / normalized of `_graph_invariance_residual` (the division rounds: rtol 1e-12)
+        res = Octopus._graph_invariance_residual(M, D)
+        @test res.raw > 0
+        N = res.raw / res.normalized
+        k1 = Octopus._kappa_route(M, D, 1.0)
+        @test isapprox(k1, nM * max(1.0, norm(D)^2 / N); rtol=1e-12)
+        # KB >= max(1, ||M||_F) for every amplification factor: the kernel docstring's c_stop <= c_inv argument needs it
+        @test all(Octopus._kappa_route(M, D, g) >= nM for g in (0.5, 1.0, 7.0))
+        @test Octopus._kappa_route(M, D, 0.5) == k1                                       # max(1, gamma) clips below 1
+        @test Octopus._kappa_route(M, D, 7.0) >= 7 * nM
+        # the Determined method: an unavailable condition counts as 1 (the direct kernel call's default), a unique one is its value
+        @test Octopus._kappa_route(M, D, Octopus.Determined{Float64}(:not_derived_for_cluster, "no linear solve in this route")) == k1
+        @test isapprox(Octopus._kappa_route(M, D, Octopus.Determined(5.0)), 5 * k1; rtol=1e-14)
+        # map_norm stands in for ||M||_F (the contract's c_d14 row hands the scaled matrix's norm with the physical
+        # normalizer); a symplectic 6x6 map has ||M||_F >= sqrt(6) > 1, so doubling it doubles the kappa
+        @test isapprox(Octopus._kappa_route(M, D, 1.0; map_norm=2 * norm(M)), 2 * k1; rtol=1e-14)
+        @test_throws ArgumentError Octopus._kappa_route(M, D, NaN)
+        @test_throws ArgumentError Octopus._kappa_route(M, D, Inf)
+        @test_throws ArgumentError Octopus._kappa_route(M, D, -1.0)
+        @test_throws ArgumentError Octopus._kappa_route(M[1:4, 1:4], D, 1.0)
+        @test_throws ArgumentError Octopus._kappa_route(M, hcat(D, D[:, 1]), 1.0)
+    end
+    @testset "the kappa_route bracket is bounded on scaled graphs of dense map 0; the landed ||D||_F^2 form is not" begin
+        f = _st4_dense(0)
+        M = f.M; D = f.D
+        nM = max(1.0, norm(M))
+        Mrr = M[1:4, 1:4]
+        for s in (1e2, 1e4, 1e8)
+            Ds = s .* D
+            kb = Octopus._kappa_route(M, Ds, 1.0)
+            # the bracket ||Ds||_F^2 / N(Ds) tends to ||D||_F^2 / ||D M_lr D||_F as s grows (the quadratic term of N),
+            # a limit independent of s: on this fixture kb / max(1, ||M||_F) is 30.0, 25.8, 25.6 at the three scales
+            # (the same three digits in both CPU arms, 2026-09-14), against the extreme 42.6 over the 160 stalled rows per arm of
+            # the route dump (||D||_F up to 1.74e21); 1e3 is the bound with margin
+            @test kb <= 1e3 * nM
+            # the landed form grows like s^2 while the derived kappa is bounded: once s ||D||_F >= 1 and the bracket
+            # exceeds 1 (both hold here) the ratio landed / kb equals N(Ds) exactly, and N(Ds) >= ||M_rr Ds||_F =
+            # s ||M_rr D||_F (the linear term of N; the quadratic term takes over from s ~ 1e3 on this fixture, where
+            # the ratio is 33.5 at s = 1e2 and 3.9e5 at s = 1e4)
+            landed = nM * max(1.0, norm(Ds))^2
+            @test landed >= (1 - 1e-12) * s * norm(Mrr * D) * kb
+            @test landed >= 10 * kb
+        end
+    end
+    @testset "the two extended coefficient conditions are the routes' amplification factors (dense map 0)" begin
+        f = _st4_dense(0)
+        cl = _st4_clusters(f.M)
+        rep = Octopus._dispersion_routes(f.M, cl)
+        # polynomial: ||M||_F^2 / sigma_min(A_s), A_s from (D19) with the report's tau_s. The old cond(A_s) under-stated
+        # the amplification: the formation error of A_s is eps ||M||_F^2, so cond(A_s) misses ||M||_F^2 / ||A_s||_2
+        Mrr = f.M[1:4, 1:4]; Mrl = f.M[1:4, 5:6]; Mlr = f.M[5:6, 1:4]
+        tau_s = _st4_val(rep.tau_s)
+        As = Mrr * Mrr + Mrl * Mlr - tau_s * Mrr + Matrix(1.0I, 4, 4)
+        pc = _st4_route(rep, :polynomial).coefficient_condition
+        @test Octopus.is_determined(pc)
+        @test isapprox(_st4_val(pc), norm(f.M)^2 / svdvals(As)[end]; rtol=1e-12)
+        # projector (FORMED graph): max(1, cc)^2 max(1, ||P_s||_2 / |h|) with cc the trace-separation condition
+        # max(1, ||Z||_2) / min |tau_s - tau_k|, Z = M + M^-1 and the gaps the route's reported singular_values.
+        # Formed on map 0 (every direct route is :none in the loop above); else the first dense map 0:5 where it is
+        kp = 0; fp = f; repp = rep
+        while !Octopus.is_determined(_st4_route(repp, :projector).graph) && kp < 5
+            kp += 1; fp = _st4_dense(kp); repp = Octopus._dispersion_routes(fp.M, _st4_clusters(fp.M))
+        end
+        pr = _st4_route(repp, :projector)
+        @test Octopus.is_determined(pr.graph) && Octopus.is_determined(pr.coefficient_condition) && length(pr.singular_values) == 2
+        Z = fp.M + Octopus._symplectic_inverse(fp.M)
+        cc_trace = max(1.0, opnorm(Z)) / minimum(pr.singular_values)
+        taus = [Octopus._cluster_trace(c) for c in _st4_clusters(fp.M).clusters]; s = repp.longitudinal_cluster; Ps = prod(((Z - taus[k] * I) / (taus[s] - taus[k]) for k in eachindex(taus) if k != s); init=Matrix(1.0I, 6, 6))   # P_s as the route forms it, from the clusters' traces (the report's tau_s is 2 cos mu_s, equal only up to roundoff)
+        @test isapprox(_st4_val(pr.coefficient_condition), max(1.0, cc_trace)^2 * max(1.0, opnorm(Ps) / abs(tr(Ps[5:6, 5:6]) / 2)); rtol=1e-10)
+    end
+    @testset "the diagnostics mirror of the (I1) floor is the kernel's helper (dense map 0 through analyze)" begin
+        f = _st4_dense(0)
+        res = analyze(TwissDispersionAnalysis(strict=false), f.M)
+        @test res.dispersion !== nothing
+        if res.dispersion !== nothing
+            pr = res.dispersion.routes[findfirst(r -> r.route === res.dispersion.primary, res.dispersion.routes)]
+            @test Octopus.is_determined(pr.graph) && Octopus.is_determined(pr.invariance_residual)
+            i = findfirst(x -> x[1] == "primary route invariance (I1)", res.diagnostics.residuals)
+            @test i !== nothing
+            if i !== nothing && Octopus.is_determined(pr.graph)
+                # the mirror calls the same helper with the same arguments as the kernel: the matrix the routes ran on
+                # (result.matrix_scaled), the primary route's graph and its reported condition. EXACT equality (==)
+                @test res.diagnostics.residuals[i][3] == Octopus._ROUTE_INVARIANCE_MULTIPLIER * eps() * Octopus._kappa_route(res.matrix_scaled, _st4_val(pr.graph), pr.coefficient_condition)
+                @test res.diagnostics.residuals[i][2] == _st4_val(pr.invariance_residual).normalized
+            end
+        end
+    end
 end
 
 @testset "Dispersion routes: the prescribed-h maps (every direct route returns the triple; h negative included)" begin
@@ -4573,12 +4670,17 @@ end
     @test _st4_route(rep, :eigenplane).status === :none
     # the exact graph of M_cal diag(A, B) M_cal^-1 is [0, eta] for EVERY longitudinal block B: eta and h = 1 are exact
     @test norm(_st4_val(rep.eta) - f.eta, Inf) <= 16 * eps() * kappa_w && abs(_st4_val(rep.h) - 1) <= 16 * eps() * kappa_w
-    # the polynomial route sees the near-coincident traces (N16) through a regular but ill-conditioned solve
-    # (cond 1.1e4 measured): its formed graph is flagged :not_invariant by the (I1) floor (normalized residual
-    # eps cond(A_s), ten times the acceptance), while Newton and the fixed point converge
-    @test _st4_route(rep, :polynomial).status === :not_invariant && Octopus.is_determined(_st4_route(rep, :polynomial).graph)
+    # the polynomial route sees the near-coincident traces (N16) through a regular but ill-conditioned solve. Its
+    # reported `coefficient_condition` is the route's amplification ||M||_F^2 / sigma_min(A_s) (re-derived 2026-09-14;
+    # the old cond(A_s) = 1.1e4 under-stated it, missing ||M||_F^2 / ||A_s||_2), and the (I1) floor carries that
+    # amplification: the formed graph, whose normalized residual is eps-scale times it, is inside the floor and
+    # ACCEPTED, while Newton and the fixed point converge. Measured on this UNSCALED Mw through _dispersion_routes
+    # in both CPU arms (2026-09-14): polynomial :none, amplification 1.26e6, multiplier-1 ratio 5.1e-4 native |
+    # 5.0e-4 haswell; through analyze (scaling :auto, the identity contract's D12 row) the same map reports 1.1e8 in
+    # both arms. The graph stays determined either way.
+    @test _st4_route(rep, :polynomial).status === :none && Octopus.is_determined(_st4_route(rep, :polynomial).graph)
     @test _st4_route(rep, :newton).status === :none && _st4_route(rep, :fixed_point).status === :none
-    @test _st4_val(_st4_route(rep, :polynomial).coefficient_condition) > 1e3     # measured 1.1e4
+    @test _st4_val(_st4_route(rep, :polynomial).coefficient_condition) > 1e3     # 1.26e6 = ||M||_F^2 / sigma_min(A_s) (cond(A_s) was 1.1e4)
     # the coasting-structure absent fields are all present (dossier Part A)
     @test rep.coasting.longitudinal_map == zeros(2, 2) && rep.coasting.shear == 0.0 && rep.coasting.transverse_map == Mw[1:4, 1:4]
     # DBA cell (benchmark 12.2-3), test-local Newton closed orbit at delta = +-1e-4
@@ -4650,7 +4752,8 @@ end
     @test abs(res.invariance.raw - 1.5 * sqrt(2) * sin(0.73)) <= 16eps()
     r = Octopus._route_from_graph(:polynomial, Md, Dfalse, 2cos(0.73); rho_M1=1e-15)
     @test r.status === :not_invariant && Octopus.is_determined(r.graph) && !Octopus.is_determined(r.zeta)
-    @test _st4_val(r.invariance_residual).normalized > Octopus._ROUTE_INVARIANCE_MULTIPLIER * eps() * max(1, norm(Md)) * max(1, norm(Dfalse))^2
+    # the direct kernel call carries no coefficient condition, so its amplification factor is 1.0: this is the exact kernel floor
+    @test _st4_val(r.invariance_residual).normalized > Octopus._ROUTE_INVARIANCE_MULTIPLIER * eps() * Octopus._kappa_route(Md, Dfalse, 1.0)
     # the pseudoinverse graph of the degenerate map is 0 with raw residual ||M_rl|| = 0 here; the design's 0.28293 belongs to the crab similarity
     cld = _st4_clusters(Md)
     @test cld.degeneracy_status === :degenerate
@@ -4921,20 +5024,22 @@ end
 
 @testset "Dispersion routes: an unconverged iterate is :not_invariant whatever the (I1) floor says (M1, 2026-09-13)" begin
     # M1 (the stage 6 record's carried item 1, fixed 2026-09-13 in form A2): `_route_from_graph` judged every FORMED
-    # graph by the (I1) floor 256 eps max(1, ||M||_F) max(1, ||D||_F)^2 and read `converged` in the branch test only.
-    # The residual it compares is the NORMALIZED (I1) residual (divided by the norms of its terms, so bounded by a
-    # small constant for ANY graph) while the floor grows with ||D||_F^2: once ||D||_F is large the acceptance is
+    # graph by the (I1) floor, then 256 eps max(1, ||M||_F) max(1, ||D||_F)^2, and read `converged` in the branch test
+    # only. The residual it compares is the NORMALIZED (I1) residual (divided by the norms of its terms, so bounded by
+    # a small constant for ANY graph) while that floor grew with ||D||_F^2: once ||D||_F was large the acceptance was
     # vacuous, and a fixed-point iterate that stopped short (a stall or the cap) with a garbage graph was reported
     # :none with Determined zeta, eta, h. The rule the Newton and `_MAX_HALVINGS` docstrings already promised: an
     # iterate with converged = false is :not_invariant regardless of the floor; graph, canonical_area,
     # invariance_residual and trace_residual are still reported, zeta, eta, h unavailable with reason :not_invariant.
-    # All three forms below are RED on 180ce70 (the unfixed tree).
+    # All three forms below are RED on 180ce70 (the unfixed tree). The floor's kappa was re-derived 2026-09-14
+    # (`_kappa_route`: bounded on garbage graphs, see the 1e8 D block of (i)); the flag rule stands because a stall can
+    # sit inside a bounded floor too (the trial-011 crab stall at ratio 3.60 of eps kappa_route in both arms).
     # (i) the unit form: the EXACT graph of a dense map (its residual far inside the floor) passed with converged = false
     f = _st4_dense(0)
     cl = _st4_clusters(f.M)
     rep = Octopus._dispersion_routes(f.M, cl)
     tau = _st4_val(rep.tau_s)
-    kappa = max(1, norm(f.M)) * max(1, norm(f.D))^2
+    kappa = max(1, norm(f.M)) * max(1, norm(f.D))^2            # the forward-error kappa of the h bound below, not the (I1) floor
     r = Octopus._route_from_graph(:fixed_point, f.M, f.D, tau; rho_M1=cl.rho_M1, converged=false)
     @test r.status === :not_invariant && !r.converged
     @test Octopus.is_determined(r.graph) && Octopus.is_determined(r.canonical_area)
@@ -4942,22 +5047,30 @@ end
     @test !Octopus.is_determined(r.zeta) && r.zeta.reason === :not_invariant
     @test !Octopus.is_determined(r.eta) && !Octopus.is_determined(r.h) && r.h.reason === :not_invariant
     @test occursin("converged = false", r.detail)
-    # the residual IS inside the floor: the status comes from the flag alone
-    @test _st4_val(r.invariance_residual).normalized <= Octopus._ROUTE_INVARIANCE_MULTIPLIER * eps() * kappa
+    # the residual IS inside the floor: the status comes from the flag alone (the direct call has no coefficient
+    # condition, so the kernel's amplification factor is 1.0 and this is its exact floor)
+    @test _st4_val(r.invariance_residual).normalized <= Octopus._ROUTE_INVARIANCE_MULTIPLIER * eps() * Octopus._kappa_route(f.M, f.D, 1.0)
     # the same call with converged = true (the direct routes' default) is :none: the direct routes are unchanged
     r_ok = Octopus._route_from_graph(:fixed_point, f.M, f.D, tau; rho_M1=cl.rho_M1, converged=true)
     @test r_ok.status === :none && r_ok.converged && Octopus.is_determined(r_ok.zeta) && Octopus.is_determined(r_ok.eta)
     @test abs(_st4_val(r_ok.h) - f.h) <= 1024 * eps() * kappa
-    # the same flag on a graph whose norm makes the floor vacuous (1e8 D: floor ~1.4e2 against the residual's bound
-    # of 3): the floor alone accepts the garbage (converged = true is :none), the flag refuses it. This is the direct
+    # the same flag on a garbage graph of large norm (1e8 D). Under the landed kappa max(1, ||M||_F) max(1, ||D||_F)^2
+    # the floor here was ~1.4e2 against a normalized residual bounded by 3, so the floor alone accepted the garbage and
+    # only the flag refused it. The re-derived kappa (`_kappa_route`, 2026-09-14) is BOUNDED on garbage graphs: its
+    # bracket ||D||_F^2 / N(D) does not grow with the scale of D because the normalizer N >= ||D (M_lr D + M_ll)||_F is
+    # of order ||D||_F^2 ||M_lr||_F for a large D, so the floor stays eps-scale (asserted below 1e-6) while the
+    # residual of Dbig is O(1): converged = true is now :not_invariant from the floor, converged = false from the
+    # flag; neither is :graph_isotropic (the canonical area is 1e16 times the exact graph's). This is the direct
     # kernel call in the regime M1 fixed; the census runs of (ii) reach it only through `analyze` (review 2026-09-14).
     Dbig = 1e8 .* f.D
-    floor_big = Octopus._ROUTE_INVARIANCE_MULTIPLIER * eps() * max(1, norm(f.M)) * max(1, norm(Dbig))^2
-    @test floor_big > 3
+    floor_big = Octopus._ROUTE_INVARIANCE_MULTIPLIER * eps() * Octopus._kappa_route(f.M, Dbig, 1.0)
+    @test floor_big < 1e-6
     rb = Octopus._route_from_graph(:fixed_point, f.M, Dbig, tau; rho_M1=cl.rho_M1, converged=false)
     @test rb.status === :not_invariant && !rb.converged && !Octopus.is_determined(rb.h) && rb.h.reason === :not_invariant
-    @test _st4_val(rb.invariance_residual).normalized <= floor_big
-    @test Octopus._route_from_graph(:fixed_point, f.M, Dbig, tau; rho_M1=cl.rho_M1, converged=true).status === :none
+    @test _st4_val(rb.invariance_residual).normalized > floor_big
+    rbt = Octopus._route_from_graph(:fixed_point, f.M, Dbig, tau; rho_M1=cl.rho_M1, converged=true)
+    @test rbt.status === :not_invariant && rbt.converged && Octopus.is_determined(rbt.graph) && !Octopus.is_determined(rbt.h)
+    @test _st4_val(rbt.invariance_residual).normalized > floor_big && occursin("exceeds the floor", rbt.detail)
     # (ii) the census form (result/twiss_impl_2026_09_11/stage6/probes/route_census_int.out, 2026-09-13): on the
     # contract's 200-map family (seed 20260911, the fixture builder's stream; the 4x4 count does not move the 6x6
     # draws) the fixed point stopped short on map 89 (both scalings), map 157 (both) and map 165 (scaling = :none):

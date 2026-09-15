@@ -1110,8 +1110,8 @@ the `c` of the `c eps kappa` and `c rho_M1 ...` floors in
 `src/analysis/dispersion_routes.jl` (`c_graph`, `c_iso`, `c_coef`, `c_inv`,
 `c_stop`, `c_coast`, `c_tie`) and `src/analysis/canonical_separation.jl`
 (`c_sep`, `c_triple`, `c_ell`, `c_ohmi`), plus the informational
-`c_inv_conditioned` (`c_inv` with the route's coefficient condition folded
-into its kappa). It writes a markdown table of four sections: (1) the oracle
+`c_inv_unconditioned` (`c_inv` with the route's amplification factor dropped
+from its kappa). It writes a markdown table of four sections: (1) the oracle
 agreement table, every route of `_dispersion_routes` on the 39 oracle maps of
 the canonical-dispersion note against the note's own reference graphs, zeta,
 eta and h at the design's `2e-10`; (2) every multiplier's window by the
@@ -1129,7 +1129,7 @@ standard output, so a run's log carries the twelve windows; they are not in
 the table.
 
 The one-tenth / ten rule has two directions. For a residual-type constant
-(`c_inv`, `c_inv_conditioned`, `c_stop`, `c_coast`, `c_sep`, `c_triple`) the
+(`c_inv`, `c_inv_unconditioned`, `c_stop`, `c_coast`, `c_sep`, `c_triple`) the
 guarded quantity must stay small: every accepted ratio at multiplier 1 must
 stay below `c / 10` and every rejected ratio must exceed `10 c`, so the window
 is `[10 * accepted extreme, rejected extreme / 10]`. For a floor-type constant
@@ -1141,11 +1141,16 @@ both sides are closer than a factor 100 (the driver's own wording); an edge
 with no fixture is open. Every landed multiplier is a power of two, measured
 in both CPU arms (the native one and `OPENBLAS_CORETYPE=Haswell julia -C
 haswell`) and sitting inside its window, except `c_inv`, whose window is EMPTY
-on this tree: the history's M1 record of 2026-09-14 keeps 256 and leaves the
-kappa to its derivation. The identity contract's freezing rule `c = max(8,
-2^ceil(log2(10 max(ratio_native, ratio_haswell))))` does not apply to these
-constants. A kappa changes only when its derivation is found wrong, never to
-fit a window.
+on its rejected side: under the kappa re-derived 2026-09-14 (`_kappa_route`,
+the history's kappa_route section) the accepted extreme is 5.34 | 5.28, a
+converged fixed-point iterate bounded by `c_stop`, and the smallest rejected
+ratio 3.60 is a stalled iterate rejected by the `converged` flag, not by the
+floor; the floor alone rejects only the driver's two synthetic guard graphs,
+the false and the zero graph, far above the edge, so no fixture sits near its
+rejecting edge (carried), and 256 stays until the owner decides from the
+measurement. The identity contract's freezing rule `c = max(8, 2^ceil(log2(10
+max(ratio_native, ratio_haswell))))` does not apply to these constants. A
+kappa changes only when its derivation is found wrong, never to fit a window.
 
 The fixture builders are the suite's own `_st3_` / `_st4_` helpers, extracted
 from `test/runtests.jl` by NAME at run time (the definitions from `const
@@ -1177,6 +1182,36 @@ every measurement (the stage 4a table of 2026-09-12 and the re-measurements
 since) is in `../docs/history/twiss_dispersion_analysis_history.md`; the
 derivations are in `../docs/theory/twiss_dispersion.md` and the design's
 verification table in `../docs/design/twiss_dispersion_analysis.md`.
+
+## Twiss and Dispersion Route Dump
+
+`twiss_dispersion_route_dump.jl` is the raw material behind the (I1) route
+acceptance floor of `src/analysis/dispersion_routes.jl` (`_kappa_route`,
+re-derived 2026-09-14; the kappa_route section of the history): one TSV row
+per FORMED dispersion route over the identity contract's 6x6 matrix fixtures
+(the 200 dense maps; the tuple and BeamLine fixtures, the 4x4 maps and the
+coasting map add no row) plus the suite's weak-cavity map, each through
+`analyze` with the default scaling, in whichever CPU arm the caller sets.
+A row carries the route's status and `converged` flag, its normalized and
+raw (I1) residuals, the three normalizer terms, the scaled matrix's and the
+graph's norms, the reported `coefficient_condition`, the trace residual, the
+canonical area, the tunes, the verdict, the residual recomputed here (it must
+equal the reported one), `kappa_route` on the same matrix with the reported
+condition, and the multiplier-1 ratio `normalized / (eps kappa_route)`: an
+accepted row sits below `c_inv` = 256, a graph this floor rejected sits above
+it, and a converged iterate the trace-residual branch check rejected can sit
+below it. Run from the repository root:
+
+```bash
+julia --startup-file=no --project=. --threads=4 validation/twiss_dispersion_route_dump.jl OUT.tsv
+```
+
+It prints one line naming the output file, the row and fixture counts and the
+arm's host. The stage 4a driver above measures the `c_inv` window itself; this
+dump is what a reader recomputes it from offline, and its 2026-09-14 reading
+(1005 rows per arm, statuses identical in both arms, no accepted row above
+ratio 3.49, the weak cavity's five routes accepted) is in the kappa_route
+section of `../docs/history/twiss_dispersion_analysis_history.md`.
 
 ## Paper Anchors
 

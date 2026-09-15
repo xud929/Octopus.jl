@@ -363,7 +363,11 @@ measurement protocol of the next subsection has run.
    convert their graph to ζ, η, h by (D8). Every route stores the normalized
    (I1) residual, the raw residual, the trace difference, and the canonical
    area; (I1) above tolerance means not invariant, a vanishing canonical area
-   means graph isotropic.
+   means graph isotropic. The (I1) tolerance is `c_inv eps max(1, ||M||_F)
+   max(1, gamma) max(1, ||D||_F^2 / N(D))`, gamma the route's reported
+   amplification factor (its `coefficient_condition`) and N the residual's
+   own normalizer (`_kappa_route`, re-derived 2026-09-14; the history
+   section of that date).
 10. **Separation** (D3), (K2), (K4), (K5), (K7); the Ohmi factor when h > 0;
     the 4D pipeline (E1–E8) on the barred betatron block with its
     reconstruction residual; the closed-form check (E10–E14) skipped with a

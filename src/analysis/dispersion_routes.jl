@@ -85,11 +85,11 @@ tau_s)^2 (tau_2 - tau_s)^2`). The Sylvester operators of the Newton and
 fixed-point routes (D15), (D21) are NOT tested against this floor: their
 solves are guarded by LAPACK failure only (a singular operator is caught as
 an exception and reported), and the resulting graph is judged by (I1);
-extending `kappa_route` by the coefficient condition is carried (stage 4a
-record, "Carried forward", item 3). PROVISIONAL; measured 2026-09-12 (stage
+the route's amplification factor enters that floor through `_kappa_route`
+(landed 2026-09-14). PROVISIONAL; measured 2026-09-12 (stage
 4a record, "Derived windows"): must-accept extreme `sigma_min / (rho_M1
 max(1, ||A||_2)) = 1.546e9` (the weak-cavity map's projector trace gap;
-its `A_s`, condition 1.1e4, also stays above the floor and is judged by
+its `A_s`, cond(A_s) = 1.1e4, also stays above the floor and is judged by
 (I1)); must-reject extremes `0.376` on the `zeta = e_x, eta = e_px` (h = 0)
 fixture's polynomial `A_s`, exactly 0 on `diag(R(0.73), R(1.41), R(0.73))`
 (coincident selected trace: `A_s` and the trace gap) and on the (D24)
@@ -100,29 +100,82 @@ operators at ratio 0.012 are outside this guard's reach (see above).
 const _COEFFICIENT_CONDITION_MULTIPLIER = 64.0
 
 """
+    _kappa_route(M, D, gamma; map_norm=norm(M)) -> Float64
+
+The conditioning factor of the (I1) invariance floor `_ROUTE_INVARIANCE_MULTIPLIER * eps * _kappa_route(M, D, gamma)`
+of a FORMED 4x2 graph `D` of the 6x6 map `M`:
+
+    kappa_route = max(1, map_norm) * max(1, gamma) * max(1, ||D||_F^2 / N(D)),
+    N(D) = max(1, ||M_rr D||_F, ||M_rl||_F, ||D (M_lr D + M_ll)||_F)
+
+with `N` the normalizer of `_graph_invariance_residual` (its expressions are copied here so the two agree bit
+for bit), `gamma` the route's roundoff amplification into its graph, i.e. its REPORTED `coefficient_condition`
+(the `Determined{Float64}` method counts an unavailable condition as 1: the direct kernel call has no solve), and
+`map_norm` the map's Frobenius norm (`||M||_F` by default; the identity contract's c_d14 row passes `||M_s||_F`
+while `M` is the caller's matrix with the physical normalizer). Every floor in the package (the kernel
+`_route_from_graph`, the diagnostics mirror, the identity contract's r_primary and c_d14 rows, the stage 4a
+measurement driver and the route dump) calls this function.
+
+Derivation (re-derived 2026-09-14, DERIVATION_KAPPA_ROUTE.md section 3; the history section of that date): to
+first order every route's normalized residual obeys `normalized <= c eps max(1, ||M||_F) max(1, gamma) beta(D)`
+with `beta = (1 + ||D||_F)^2 / N` for the routes whose graph error is absolute (eigenplane, projector, the
+formation half of the polynomial route) and `beta = max(1, ||D||_F) ||D||_F / N` for the relative polynomial
+solve; both shapes are covered by the bracket `max(1, ||D||_F^2 / N)` to within a factor 4 absorbed by `c_inv`.
+Properties: `kappa_route >= max(1, ||M||_F)`, so `c_stop <= c_inv` still puts a converged iterate inside the
+floor; it equals the landed form `max(1, ||M||_F) max(1, ||D||_F)^2` exactly at `N = 1`, which is the RAW
+residual's kappa and the wrong one for the normalized residual (multiplier-1 ratio 174.2 on accepted rows of
+the derivation's corpus, above the campaign's ">100 means the kappa is wrong" line); and it is bounded on
+garbage graphs because `N` grows with `||D||_F` (over 160 stalled rows per arm `||D||_F` reaches 1.74e21 while
+the bracket reaches 42.6), so the floor is no longer vacuous for a diverged iterate. A 6x6 `M`, a 4x2 `D`, a
+finite non-negative `gamma` and a finite non-negative `map_norm` are required (`ArgumentError` otherwise).
+"""
+function _kappa_route(M::AbstractMatrix{<:Real}, D::AbstractMatrix{<:Real}, gamma::Real; map_norm::Real=norm(M))
+    size(M) == (6, 6) || throw(ArgumentError("_kappa_route takes a 6x6 matrix, got $(size(M))"))
+    size(D) == (4, 2) || throw(ArgumentError("_kappa_route takes a 4x2 graph, got $(size(D))"))
+    (isfinite(gamma) && gamma >= 0) || throw(ArgumentError("_kappa_route: gamma must be a non-negative finite number, got $(gamma)"))
+    (isfinite(map_norm) && map_norm >= 0) || throw(ArgumentError("_kappa_route: map_norm must be a non-negative finite number, got $(map_norm)"))
+    Mrr = M[1:4, 1:4]; Mrl = M[1:4, 5:6]; Mlr = M[5:6, 1:4]; Mll = M[5:6, 5:6]
+    # the normalizer N(D) of _graph_invariance_residual, expression for expression
+    A = Mrr * D
+    B = D * (Mlr * D + Mll)
+    N = max(1.0, norm(A), norm(Mrl), norm(B))
+    return max(1.0, Float64(map_norm)) * max(1.0, Float64(gamma)) * max(1.0, norm(D)^2 / N)
+end
+_kappa_route(M::AbstractMatrix{<:Real}, D::AbstractMatrix{<:Real}, gamma::Determined{Float64}; map_norm::Real=norm(M)) =
+    _kappa_route(M, D, is_determined(gamma) ? determined_value(gamma) : 1.0; map_norm=map_norm)
+
+"""
     _ROUTE_INVARIANCE_MULTIPLIER
 
 `c_inv` of a route's acceptance: a FORMED graph whose normalized (I1)
 residual exceeds `c_inv * eps * kappa_route` is `:not_invariant` (its graph,
 canonical area and residuals are still REPORTED beside the status so a
 disagreement is visible; zeta, eta and h are unavailable with that reason),
-where `kappa_route = max(1, ||M||_F) * max(1, ||D||_F)^2`. PROVISIONAL;
-measured 2026-09-12 (stage 4a record, "Derived windows"; ratios
-`normalized / (eps kappa_route)` at multiplier 1 over the 260 fixtures):
-accepted extreme 151.9, the eigenplane graph of "weak cavity (M[6,5] = -1e-6
-folded, shear 0.7)" (pinned `:none` by the suite; next 93.3, "dense k=66
-(mu_s=-1.068) [projector]"); rejected extreme 642, the polynomial route's
-formed graph of the same weak-cavity map (pinned `:not_invariant`, TS6; next
-1.57e4, its projector graph, and 1.70e5, "prescribed h=-1.0 [fixed_point,
-stalled iterate]"). The one-tenth / ten window `[1519, 64.2]` is EMPTY
-(rejected / accepted = 4.2 < 10): no value of `c_inv` separates the two
-pins; 256 lies between the two extremes (any c in (152, 642) keeps both
-pins), and the record reads the gap as `kappa_route` lacking the route's
-condition (carried to the kappa_route decision). The floor is vacuous for
-large `||D||_F` (M1, 2026-09-13): the normalized residual is at most 3 by
-construction while the floor grows with `||D||_F^2`, so the iterative
-routes are judged by convergence, not by this floor (see
-`_route_from_graph`).
+where `kappa_route = _kappa_route(M, D, gamma) = max(1, ||M||_F) * max(1,
+gamma) * max(1, ||D||_F^2 / N(D))`, `gamma` the route's reported
+amplification factor and `N` the residual's own normalizer (re-derived
+2026-09-14; the landed `max(1, ||M||_F) max(1, ||D||_F)^2` was the RAW
+residual's kappa: measured 2026-09-12 with it, the one-tenth / ten window
+was EMPTY, accepted extreme 151.9 on the weak cavity's eigenplane graph
+against rejected extreme 642 on its polynomial graph, and the floor was
+vacuous for large `||D||_F` since the normalized residual is at most 3 by
+construction while that kappa grows with `||D||_F^2`; stage 4a record,
+"Derived windows", and M1, 2026-09-13). PROVISIONAL; the window under the
+derived kappa is measured in both CPU arms by
+validation/twiss_dispersion_acceptance_windows.jl (2026-09-14, 260 fixtures,
+1245 accepted / 23 rejected / 266 unlabelled values per arm): accepted extreme
+5.34 native | 5.28 haswell, a converged fixed-point iterate of dense map 197 (an
+iterate's ratio is at most `c_stop` = 16 by construction); rejected extreme 3.60
+in both arms, the trial-011 crab's stalled fixed-point iterate, rejected by the
+converged flag and not by this floor, so the window [53.4, 0.36] native | [52.8,
+0.36] haswell is EMPTY on its rejected side, which no graph a route formed
+populates any more (the floor alone rejects only the driver's two synthetic
+guard graphs, the false and the zero graph, far above the edge; no fixture sits
+near its rejecting edge: a coverage gap, carried), and the identity contract's
+H15 formula would give `max(8, 2^ceil(log2(10 * 5.34))) = 64`. The constant
+stays 256 until the owner decides from that measurement (an acceptance constant
+is frozen by the window rule, not by H15). The converged flag, not this floor,
+is the iterative routes' acceptance (see `_route_from_graph`).
 """
 const _ROUTE_INVARIANCE_MULTIPLIER = 256.0
 
@@ -319,8 +372,13 @@ unique and invariant, else the `DETERMINATION_REASONS` member:
 `Determined`; `invariance_residual` (the (I1) graph form, normalized and
 raw, available whenever a graph was formed, invariant or not);
 `trace_residual` (`tr(M_lr D + M_ll) - tau_s`); `coefficient_condition` (the
-2-norm condition of the route's linear solve: `U_ls`, `A_s`, the Sylvester
-operator, or the trace separations; unavailable for a route with none, and
+route's roundoff amplification into its graph, the `gamma` of the (I1)
+floor's `_kappa_route`: the 2-norm condition of the linear solve for the
+eigenplane (`U_ls`), Newton and fixed-point routes (the Sylvester operator),
+`||M||_F^2 / sigma_min(A_s)` for the polynomial route and `max(1, cc)^2
+max(1, ||P_s||_2 / |h|)` for a formed projector graph, `cc` the
+trace-separation condition that the projector's `:singular_*` returns report
+on their own (re-derived 2026-09-14); unavailable for a route with none, and
 unavailable with `:singular_coefficient` when the smallest singular value or
 trace gap is exactly zero: no `Inf` stands in for an infinite condition);
 `h_alternative` (a second evaluation of `h` where the theory gives one:
@@ -665,16 +723,17 @@ Dossier E4 and E8 for a FORMED 4x2 graph `D`: `graph`, `canonical_area`, `invari
 `trace_residual` are always unique; `:graph_isotropic` when `|area| <= _ISOTROPY_MULTIPLIER * rho_M1
 * max(1, ||D||_2^2)`; else `(zeta, eta, h)` by (D8); `:not_invariant` when `converged` is false OR the
 normalized (I1) residual exceeds `_ROUTE_INVARIANCE_MULTIPLIER * eps * kappa_route`, `kappa_route =
-max(1, ||M||_F) * max(1, ||D||_F)^2` (the `detail` says which of the two fired). An iteration that stopped
-short of its stop floor (a stall or the cap, `converged = false`) is `:not_invariant` whatever the floor
-says, because the floor cannot judge it: the normalized residual is at most 3 by construction (the triangle
-inequality on the three terms of `_graph_invariance_residual`) while the floor grows with `||D||_F^2`, so a
-diverged iterate with a large graph is always within it (M1, 2026-09-13: fixed-point stalls of the
-contract's dense family at normalized residual 1.0 were reported `:none`). Convergence to the stop floor is
-the iterative routes' acceptance (a converged iterate is within the (I1) floor by construction: `c_stop <=
-c_inv` and `kappa_route >= max(1, ||M||_F)`), the (I1) floor the direct routes' (they call with the default
-`converged = true`). In every `:not_invariant` case `zeta`, `eta`, `h` are unavailable with the status's
-reason and the graph stays reported.
+_kappa_route(M, D, coefficient_condition) = max(1, ||M||_F) * max(1, gamma) * max(1, ||D||_F^2 / N(D))` with
+`gamma` the route's reported `coefficient_condition` (1 when unavailable) and `N` the residual's normalizer
+(the `detail` says which of the two fired). An iteration that stopped short of its stop floor (a stall or
+the cap, `converged = false`) is `:not_invariant` whatever the floor says: the floor is bounded on garbage
+graphs (`N` grows with `||D||_F`, so a diverged iterate is no longer inside it by construction as it was
+under the landed `||D||_F^2` kappa, M1, 2026-09-13), but it cannot judge a stall on its own (the trial-011
+crab stall sits at ratio 3.60 of `eps kappa_route` in both arms, inside the accepted band), so the converged flag STAYS
+the iterative routes' acceptance. Convergence to the stop floor is that acceptance (a converged iterate is
+within the (I1) floor by construction: `c_stop <= c_inv` and `kappa_route >= max(1, ||M||_F)`), the (I1)
+floor the direct routes' (they call with the default `converged = true`). In every `:not_invariant` case
+`zeta`, `eta`, `h` are unavailable with the status's reason and the graph stays reported.
 With `check_branch` (the iterative routes) a CONVERGED graph whose `trace_residual` exceeds
 `inv_floor * max(1, ||M||_F)` is `:not_invariant` too: it is an invariant plane of another mode (theory 8.6).
 """
@@ -686,7 +745,7 @@ function _route_from_graph(route::Symbol, M::AbstractMatrix{<:Real}, D::Abstract
     Df = Matrix{Float64}(D)
     res = _route_residuals(M, Df, tau_s)
     inv_res = Determined{_ROUTE_RESIDUAL_T}(:unique, res.invariance, nothing, :none, "")
-    kappa_route = max(1.0, norm(M)) * max(1.0, norm(Df))^2
+    kappa_route = _kappa_route(M, Df, coefficient_condition)
     inv_floor = _ROUTE_INVARIANCE_MULTIPLIER * eps(Float64) * kappa_route
     iso_floor = _ISOTROPY_MULTIPLIER * rho_M1 * max(1.0, opnorm(Df)^2)
     common = (Determined(Df), Determined(res.area), inv_res, Determined(res.trace_residual), coefficient_condition, h_alternative,
@@ -708,8 +767,8 @@ function _route_from_graph(route::Symbol, M::AbstractMatrix{<:Real}, D::Abstract
                                Determined{Float64}(reason, d), common[2:end]...)
     end
     if !converged || res.invariance.normalized > inv_floor
-        # An iterate that stopped short of its stop floor is judged by convergence, not by the (I1) floor: the
-        # normalized residual is at most 3 by construction while the floor grows with ||D||_F^2 (M1, 2026-09-13).
+        # An iterate that stopped short of its stop floor is judged by convergence, not by the (I1) floor: the floor
+        # is bounded on garbage graphs (_kappa_route), but a stall can sit inside the accepted band (M1, 2026-09-13).
         reason = :not_invariant
         d = (converged ? "normalized (I1) residual $(res.invariance.normalized) exceeds the floor $(inv_floor) (kappa_route = $(kappa_route)); the graph is reported but is not a dispersion" :
                          "the iteration stopped short of the stop floor (converged = false): normalized (I1) residual $(res.invariance.normalized) against the floor $(inv_floor) (kappa_route = $(kappa_route)); the graph is reported but is not a dispersion") *
@@ -774,10 +833,16 @@ end
 
 Dossier E5, theory 8.5 (D18)-(D19): `A_s = M_rr^2 + M_rl M_lr - tau_s M_rr +
 I_4`, `B_s = M_rr M_rl + M_rl M_ll - tau_s M_rl`, `D = -(A_s \\ B_s)`;
-`coefficient_condition = cond(A_s)` and its singular values reported;
-`:singular_coefficient` when `sigma_min(A_s) <= _COEFFICIENT_CONDITION_MULTIPLIER
-* rho_M1 * max(1, ||A_s||_2)` ((N16): coincident traces or a singular
-projection); otherwise the (D8) conversion and the residuals as in E4.
+`coefficient_condition = ||M||_F^2 / sigma_min(A_s)`, the route's roundoff
+amplification into its graph (the singular values of `A_s` reported beside
+it; the landed `cond(A_s) = sigma_max(A_s) / sigma_min(A_s)` under-states
+it because the formation error of `A_s` is `eps ||M||_F^2`, so `cond(A_s)`
+misses the factor `||M||_F^2 / ||A_s||_2`: witness ratio 134.8 at multiplier
+1 on the derivation's corpus, 2026-09-14); `:singular_coefficient` when
+`sigma_min(A_s) <= _COEFFICIENT_CONDITION_MULTIPLIER * rho_M1 * max(1,
+||A_s||_2)` ((N16): coincident traces or a singular projection; the guard
+compares `sigma_min(A_s)` with its floor directly, never the reported
+condition); otherwise the (D8) conversion and the residuals as in E4.
 """
 function _polynomial_route(M::AbstractMatrix{<:Real}, tau_s::Real; rho_M1::Real)
     size(M) == (6, 6) || throw(ArgumentError("_polynomial_route takes a 6x6 matrix, got $(size(M))"))
@@ -790,7 +855,7 @@ function _polynomial_route(M::AbstractMatrix{<:Real}, tau_s::Real; rho_M1::Real)
     Bs = Mrr * Mrl + Mrl * Mll - tau_s * Mrl
     sv = svdvals(As)
     floor = _COEFFICIENT_CONDITION_MULTIPLIER * rho_M1 * max(1.0, sv[1])
-    condition = _condition_number(sv[1], sv[end], "the (D19) coefficient A_s")
+    condition = _condition_number(norm(Mf)^2, sv[end], "the (D19) coefficient A_s (amplification ||M||_F^2 / sigma_min(A_s))")
     if sv[end] <= floor
         d = "sigma_min(A_s) = $(sv[end]) at or below the floor $(floor): (N16) det A_s = h^2 (tau_1 - tau_s)^2 (tau_2 - tau_s)^2 vanishes (coincident selected trace or h = 0)"
         return _unavailable_route(:polynomial, :singular_coefficient, d; coefficient_condition=condition, singular_values=sv)
@@ -809,11 +874,18 @@ inverse `_symplectic_inverse`) and the three traces `taus` (the selected one
 at index `selected`), `P_s = prod_{k != s} (Z - tau_k I) / (tau_s - tau_k)`
 with the repeated betatron factor RETAINED (no division by `tau_1 - tau_2`);
 `:singular_coefficient` when any `|tau_s - tau_k|` is at or below
-`_COEFFICIENT_CONDITION_MULTIPLIER * rho_M1 * max(1, ||Z||_2)`; the projector
-residuals `||P_s^2 - P_s||`, `||M P_s - P_s M||` in `detail`; `h = tr((P_s)_ll)
-/ 2` (D27) with `h_alternative` from (D8) of the graph `D = (P_s)_rl / h`;
+`_COEFFICIENT_CONDITION_MULTIPLIER * rho_M1 * max(1, ||Z||_2)` (the guard
+compares the smallest gap with its floor directly); the projector residuals
+`||P_s^2 - P_s||`, `||M P_s - P_s M||` in `detail`; `h = tr((P_s)_ll) / 2`
+(D27) with `h_alternative` from (D8) of the graph `D = (P_s)_rl / h`;
 `:singular_longitudinal_projection` when `|h|` is at or below the graph
-floor; then the residuals as in E4.
+floor; then the residuals as in E4. `coefficient_condition`: the two
+`:singular_*` early returns report the trace-separation condition `cc =
+max(1, ||Z||_2) / min_k |tau_s - tau_k|`; the FORMED graph reports the
+route's roundoff amplification into it, `max(1, cc)^2 * max(1, ||P_s||_2 /
+|h|)` (the two divisions of (D26) and the division by `h` of (D27); `cc`
+alone under-states it by a witness ratio 5.6e3 at multiplier 1 on the
+derivation's corpus, 2026-09-14).
 """
 function _projector_route(M::AbstractMatrix{<:Real}, taus::AbstractVector{<:Real}, selected::Integer; rho_M1::Real,
                           cluster_projector::Union{Nothing,AbstractMatrix{<:Real}}=nothing)
@@ -845,14 +917,20 @@ function _projector_route(M::AbstractMatrix{<:Real}, taus::AbstractVector{<:Real
     ll_dev = norm(Ps[5:6, 5:6] - h * Matrix{Float64}(I, 2, 2))
     diag_detail = "projector residuals: ||P^2 - P|| $(idem), ||M P - P M|| $(comm), ||(P_s)_ll - h I|| $(ll_dev)" *
                   (cluster_projector === nothing ? "" : ", ||P_s - cluster projector|| $(norm(Ps - cluster_projector))")
-    gfloor = _GRAPH_SINGULARITY_MULTIPLIER * rho_M1 * max(1.0, opnorm(Ps))
+    nPs = opnorm(Ps)
+    gfloor = _GRAPH_SINGULARITY_MULTIPLIER * rho_M1 * max(1.0, nPs)
     if abs(h) <= gfloor
         d = "|h| = tr((P_s)_ll) / 2 = $(abs(h)) at or below the floor $(gfloor): the projector is finite but has no physical graph; " * diag_detail
         return _unavailable_route(:projector, :singular_longitudinal_projection, d; coefficient_condition=condition, singular_values=gaps)
     end
     D = Ps[1:4, 5:6] / h
     h8 = 1 / (1 + dot(D[:, 1], _symplectic_form(4) * D[:, 2]))
-    r = _route_from_graph(:projector, Mf, D, tau_s; rho_M1=rho_M1, coefficient_condition=condition, h_alternative=Determined(h8),
+    # The formed graph's amplification factor: the trace-separation condition squared (two (D26) divisions) times the
+    # (D27) division by h. `condition` is unavailable only when the smallest gap is exactly 0, caught by the floor above.
+    is_determined(condition) || error("_projector_route: the trace-separation condition is unavailable past its own floor ($(condition.reason): $(condition.detail))")
+    cc = determined_value(condition)
+    amplification = Determined(max(1.0, cc)^2 * max(1.0, nPs / abs(h)))
+    r = _route_from_graph(:projector, Mf, D, tau_s; rho_M1=rho_M1, coefficient_condition=amplification, h_alternative=Determined(h8),
                           singular_values=gaps, detail=diag_detail)
     # (D27) h is the route's h; the (D8) evaluation of the same graph is h_alternative.
     if r.status === :none

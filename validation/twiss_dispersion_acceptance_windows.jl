@@ -81,7 +81,7 @@ function longitudinal_vector(cl, rep)
     k = findfirst(m -> m.index == rep.longitudinal, modes)
     return k === nothing ? nothing : modes[k].vector
 end
-kappa_route(M, D) = max(1.0, norm(M)) * max(1.0, norm(D))^2
+kappa_route(M, D, cc) = Octopus._kappa_route(M, D, cc)   # the source's kappa (derived 2026-09-14); cc = the route's reported coefficient_condition (Determined or real)
 const RESULTS = Dict{String,Any}()
 const LINES = String[]
 pr(s...) = push!(LINES, string(s...))
@@ -315,17 +315,19 @@ function collect_route_ratios!(tag, M, cl, rep)
     elseif new.status !== :cluster_unresolved && new.status !== :coasting_structure
         unl!("c_coef", "$(tag) [(D15) Sylvester operator]", v)
     end
-    # c_inv: normalized (I1) / (eps kappa_route); accepted = :none routes, rejected = :not_invariant graphs (stalled or other branch)
+    # c_inv: normalized (I1) / (eps kappa_route); accepted = :none routes, rejected = :not_invariant graphs (stalled or other branch).
+    # M is the matrix the routes ran on (the caller passes the same M to _dispersion_routes and here); the kappa takes the
+    # route's reported coefficient_condition, exactly as the kernel does.
     for r in (eig, pol, prj, new, fp)
         is_determined(r.invariance_residual) || continue
-        v = dv(r.invariance_residual).normalized / (EPS * kappa_route(M, dv(r.graph)))
+        v = dv(r.invariance_residual).normalized / (EPS * kappa_route(M, dv(r.graph), r.coefficient_condition))
         cr = is_determined(r.coefficient_condition) ? dv(r.coefficient_condition) : 1.0
         if r.status === :none
-            acc!("c_inv", "$(tag) [$(r.route)]", v); acc!("c_inv_conditioned", "$(tag) [$(r.route)]", v / cr)
+            acc!("c_inv", "$(tag) [$(r.route)]", v); acc!("c_inv_unconditioned", "$(tag) [$(r.route)]", v * max(1.0, cr))
         elseif r.status === :not_invariant
             # a graph on ANOTHER branch is invariant (rejected by the trace check, not by (I1)): unlabelled for c_inv
             occursin("another branch", r.detail) ? unl!("c_inv", "$(tag) [$(r.route), other branch]", v) : rej!("c_inv", "$(tag) [$(r.route), $(r.iterations > 0 ? "stalled iterate" : "formed graph")]", v)
-            occursin("another branch", r.detail) || rej!("c_inv_conditioned", "$(tag) [$(r.route)]", v / cr)
+            occursin("another branch", r.detail) || rej!("c_inv_unconditioned", "$(tag) [$(r.route)]", v * max(1.0, cr))
         end
     end
     # c_stop: converged iterates' final residual / (eps max(1, ||M||_F)) accepted; the iterate one step short rejected
@@ -338,7 +340,7 @@ function collect_route_ratios!(tag, M, cl, rep)
         if is_determined(short_run.invariance_residual)
             v = dv(short_run.invariance_residual).normalized / (EPS * max(1.0, norm(M)))
             unl!("c_stop", "$(tag) [newton iterate $(new.iterations - 1) of $(new.iterations)]", v)
-            unl!("c_inv", "$(tag) [newton iterate $(new.iterations - 1) of $(new.iterations)]", dv(short_run.invariance_residual).normalized / (EPS * kappa_route(M, dv(short_run.graph))))
+            unl!("c_inv", "$(tag) [newton iterate $(new.iterations - 1) of $(new.iterations)]", dv(short_run.invariance_residual).normalized / (EPS * kappa_route(M, dv(short_run.graph), short_run.coefficient_condition)))
         end
     end
     # c_tie: label margins / (eps kappa_frame) = margin / tie_tolerance * c_tie (clear labels are accepted fixtures)
@@ -392,11 +394,11 @@ function part_a_collection()
     r = Octopus._route_from_graph(:eigenplane, g.Md.M, g.Diso, 2cos(0.73); rho_M1=rho_d)
     rej!("c_iso", "isotropic graph [e_x, -e_px] on $(g.Md.name)", abs(dv(r.canonical_area)) / (rho_d * max(1.0, opnorm(g.Diso)^2)))
     r = Octopus._route_from_graph(:polynomial, g.Md.M, g.Dfalse, 2cos(0.73); rho_M1=rho_d)
-    rej!("c_inv", "false graph [diag(1, -0.5); 0] on $(g.Md.name) (theory 13.7)", dv(r.invariance_residual).normalized / (EPS * kappa_route(g.Md.M, g.Dfalse)))
+    rej!("c_inv", "false graph [diag(1, -0.5); 0] on $(g.Md.name) (theory 13.7)", dv(r.invariance_residual).normalized / (EPS * kappa_route(g.Md.M, g.Dfalse, 1.0)))   # a direct kernel call: no solve, gamma = 1
     # the pseudoinverse (zero) graph on the crab similarity: raw residual sqrt(2) k sin 0.73 (design 0.28293)
     r0 = Octopus._route_residuals(g.Mks.M, zeros(4, 2), 2cos(0.73))
     RESULTS["zero graph raw residual on crab similarity"] = (raw=r0.invariance.raw, design=sqrt(2) * g.k * sin(0.73))
-    rej!("c_inv", "zero (pseudoinverse) graph on $(g.Mks.name)", Octopus._graph_invariance_residual(g.Mks.M, zeros(4, 2)).normalized / (EPS * kappa_route(g.Mks.M, zeros(4, 2))))
+    rej!("c_inv", "zero (pseudoinverse) graph on $(g.Mks.name)", Octopus._graph_invariance_residual(g.Mks.M, zeros(4, 2)).normalized / (EPS * kappa_route(g.Mks.M, zeros(4, 2), 1.0)))   # no route: gamma = 1
     # label ties: the 45-degree rolls (x-y for the transverse margin, y-z for the longitudinal one)
     ux = ComplexF64[1, -im, 0, 0, 0, 0]; uy = ComplexF64[0, 0, 1, -im, 0, 0]; uz = ComplexF64[0, 0, 0, 0, 1, -im]
     lb = Octopus._mode_labels_6d([(ux + uy) / sqrt(2), (ux - uy) / sqrt(2), uz], [0.73, 0.73, 5.4])
@@ -517,8 +519,8 @@ function multiplier_section(reports)
     specs = [("c_graph", "c_graph (_GRAPH_SINGULARITY_MULTIPLIER)", "sigma_min(U_ls) / (rho_M1 max(1, ||U_s||_2)); accepted = regular eigenplane routes, rejected = :singular_longitudinal_projection", Octopus._GRAPH_SINGULARITY_MULTIPLIER, false),
              ("c_iso", "c_iso (_ISOTROPY_MULTIPLIER)", "|1 + D1' S_4 D2| / (rho_M1 max(1, ||D||_2^2)) of every formed graph; rejected = the isotropic graph", Octopus._ISOTROPY_MULTIPLIER, false),
              ("c_coef", "c_coef (_COEFFICIENT_CONDITION_MULTIPLIER)", "sigma_min / (rho_M1 max(1, sigma_max)) of A_s, the projector trace gap / (rho_M1 max(1, ||Z||_2)), sigma_min(I - M_rr) of (D24); rejected = :singular_coefficient; the (D15) operator is LAPACK-guarded only (unlabelled)", Octopus._COEFFICIENT_CONDITION_MULTIPLIER, false),
-             ("c_inv", "c_inv (_ROUTE_INVARIANCE_MULTIPLIER)", "normalized (I1) / (eps kappa_route), kappa_route = max(1, ||M||_F) max(1, ||D||_F)^2; accepted = :none routes, rejected = :not_invariant graphs (stalled iterates, the false and zero graphs); other-branch graphs and short Newton iterates unlabelled", Octopus._ROUTE_INVARIANCE_MULTIPLIER, true),
-             ("c_inv_conditioned", "INFORMATIONAL: c_inv with the route's coefficient condition folded into kappa", "normalized (I1) / (eps kappa_route cond_route), cond_route = the route's reported coefficient_condition (cond(U_ls), cond(A_s), the trace-gap or Sylvester condition); same labels as c_inv; not a source constant", Octopus._ROUTE_INVARIANCE_MULTIPLIER, true),
+             ("c_inv", "c_inv (_ROUTE_INVARIANCE_MULTIPLIER)", "normalized (I1) / (eps kappa_route), kappa_route = _kappa_route(M, D, cc) = max(1, ||M||_F) max(1, cc) max(1, ||D||_F^2 / N(D)), N(D) = max(1, ||M_rr D||_F, ||M_rl||_F, ||D (M_lr D + M_ll)||_F) the (I1) normalizer and cc the route's reported coefficient_condition (its amplification factor: cond(U_ls), ||M||_F^2 / sigma_min(A_s), the squared trace-gap condition times ||P_s||_2 / |h|, the Sylvester operator condition; 1 when unavailable); accepted = :none routes, rejected = :not_invariant graphs (stalled iterates, the false and zero graphs); other-branch graphs and short Newton iterates unlabelled", Octopus._ROUTE_INVARIANCE_MULTIPLIER, true),
+             ("c_inv_unconditioned", "INFORMATIONAL: c_inv with the route's amplification factor DROPPED", "normalized (I1) / (eps kappa_route / max(1, cc)) = v * max(1, cc), v the c_inv ratio and cc the route's reported coefficient_condition; same labels as c_inv; not a source constant (shows what the amplification factor buys)", Octopus._ROUTE_INVARIANCE_MULTIPLIER, true),
              ("c_stop", "c_stop (_ITERATION_STOP_MULTIPLIER)", "normalized (I1) / (eps max(1, ||M||_F)); accepted = the EXACT graph's roundoff floor (the iteration must be able to stop there); converged final iterates and the iterate one step short are unlabelled (the rule defines that boundary itself)", Octopus._ITERATION_STOP_MULTIPLIER, true),
              ("c_coast", "c_coast (_COASTING_MULTIPLIER)", "max structure residual / (rho_M1 max(1, ||M||_F)) = margin * c_coast; accepted = coasting maps, rejected = every bunched map and the weak cavity", Octopus._COASTING_MULTIPLIER, true),
              ("c_tie", "c_tie (_LABEL_TIE_MULTIPLIER)", "|margin| / (eps kappa_frame); accepted = clear labels, rejected = declared ties (the 45-degree rolls and every margin the data put at or below the tolerance)", Octopus._LABEL_TIE_MULTIPLIER, false),

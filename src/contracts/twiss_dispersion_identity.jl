@@ -86,8 +86,12 @@ function _default_identity_multipliers()
     # Measured 2026-09-13 on the integrated main tree at multiplier 1.0 in both CPU arms (the tables are in the
     # stage 6 section of docs/history/twiss_dispersion_analysis_history.md): per row the multiplier-1 ratio
     # native | haswell | the argmax fixture; c = max(8, 2^ceil(log2(10 max))). Every ratio is below 100 (H15):
-    # no kappa was grown into a c. The largest, c_d14_graph_invariance (52 | 67, dense map 12), shares its (I1)
-    # normalization with the analysis's own primary-route row. The nine rows marked "(re-measured)" got their
+    # no kappa was grown into a c. The two (I1) graph rows (r_primary_route_invariance_i1, c_d14_graph_invariance)
+    # carry the route kappa `_kappa_route(Ms, D, cc_primary)` (re-derived 2026-09-14; c_d14 with the caller's blocks,
+    # ||Ms||_F as the map norm and the scaling's gamma_C) and were re-frozen from a 2026-09-14 two-arm re-measurement
+    # (r_primary 1.884 | 1.666, c_d14 1.291 | 0.942; under the landed ||D||^2 kappa the largest ratio was c_d14 at
+    # 52 | 67, dense map 12), as was k_route_agreement, whose condition maximum now sees the extended amplification
+    # factors (0.317 | 0.384, was 2.394 | 2.900). The nine rows marked "(re-measured)" got their
     # kappa corrected by the stage 6 review (cond(U) on the completeness / (E7) / scaling rows; no condition
     # number on the (D24) residual rows) and were re-measured in both arms before their c was frozen.
     return Dict{Symbol,Float64}(
@@ -99,7 +103,7 @@ function _default_identity_multipliers()
         :r_u6_symplecticity => 32,  # 1.803e+00 | 1.486e+00 | F6a dense 6x6 map 16
         :r_covariance_closure => 8,  # 4.514e-01 | 3.531e-01 | F6a dense 6x6 map 19
         :r_k14_zz_identity => 8,  # 2.606e-02 | 5.212e-02 | F6a dense 6x6 map 14
-        :r_primary_route_invariance_i1 => 1024,  # 4.397e+01 | 5.174e+01 | F6a dense 6x6 map 12
+        :r_primary_route_invariance_i1 => 32,  # 1.884e+00 | 1.666e+00 | F6a dense 6x6 map 2 | map 12 (re-frozen 2026-09-14 under _kappa_route; was 1024 at 4.397e+01 | 5.174e+01 | map 12 under the landed kappa)
         :k_separation_inverse => 8,  # 2.209e-01 | 2.218e-01 | F6a dense 6x6 map 11
         :k_separation_symplecticity => 8,  # 2.158e-01 | 1.714e-01 | F6a dense 6x6 map 20
         :k_transverse_block_symplecticity => 16,  # 9.753e-01 | 9.533e-01 | F6a dense 6x6 map 10
@@ -126,7 +130,7 @@ function _default_identity_multipliers()
         :k_ohmi_graph_difference => 8,  # 4.734e-01 | 2.647e-01 | F6a dense 6x6 map 2
         :k_coasting_symplectic_consistency => 8,  # 2.171e-02 | 2.032e-02 | F8 coasting map
         :k_coasting_solve_residual => 8,  # 9.020e-02 | 6.378e-02 | F1 DBA cell (tuple) (re-measured: no condition number on the residual)
-        :k_route_agreement => 32,  # 2.394e+00 | 2.900e+00 | F6a dense 6x6 map 9
+        :k_route_agreement => 8,  # 3.171e-01 | 3.841e-01 | F6a dense 6x6 map 9 (re-frozen 2026-09-14: its condition maximum sees the extended amplification factors; was 32 at 2.394e+00 | 2.900e+00)
         :k_trace_cubic => 512,  # 4.643e+01 | 4.643e+01 | F6a dense 6x6 map 11
         :c_caller_symplecticity => 8,  # 4.037e-01 | 5.258e-01 | F6b dense 4x4 map 5
         :c_physical_normalizer_symplecticity => 64,  # 3.306e+00 | 2.161e+00 | F6b dense 4x4 map 4 (re-measured: kappa ||U||^2 cond(U))
@@ -134,7 +138,7 @@ function _default_identity_multipliers()
         :c_projector_sum => 64,  # 5.109e+00 | 3.497e+00 | F6b dense 4x4 map 4 (re-measured: kappa ||U||^2 cond(U))
         :c_projector_idempotence => 8,  # 6.310e-01 | 4.280e-01 | F6b dense 4x4 map 4 (re-measured: kappa ||U||^4 cond(U))
         :c_covariance_symmetry_caller => 8,  # 4.917e-01 | 4.068e-01 | F8 coasting map
-        :c_d14_graph_invariance => 1024,  # 5.213e+01 | 6.709e+01 | F6a dense 6x6 map 12
+        :c_d14_graph_invariance => 16,  # 1.291e+00 | 9.425e-01 | F6a dense 6x6 map 2 | map 20 (re-frozen 2026-09-14 under _kappa_route; was 1024 at 5.213e+01 | 6.709e+01 | map 12 under the landed kappa)
         :c_d8_round_trip => 8,  # 5.000e-01 | 5.000e-01 | F5 DBA + RF + crab
         :c_d3_symplecticity => 8,  # 2.206e-01 | 1.676e-01 | F6a dense 6x6 map 20
         :c_d3_determinant => 8,  # 3.523e-03 | 3.701e-03 | F6a dense 6x6 map 13
@@ -424,9 +428,10 @@ non-symplectic dense map under `nonsymplectic = :flag` (the must-reject
 fixture: `:failed`) and under `strict = true` (throws
 `OpticsAnalysisError`); the displaced closed orbit (`closed_orbit =
 :require` throws, `:warn` degrades); the weak-cavity map whose
-`:polynomial` route is `:not_invariant` with a coefficient condition above
-1e3 (measured: the eigenplane primary route is `:not_invariant` too, so the
-verdict is `:failed`); the identity map (`:singular_coefficient`, the
+`:polynomial` route is accepted (`:none`) under the re-derived (I1) floor
+while its reported amplification factor stays above 1e3 (measured
+2026-09-14 in both CPU arms: 1.1e8, every route `:none`, the verdict
+`:degraded`); the identity map (`:singular_coefficient`, the
 coasting branch); the negative-h map `M_cal(1.5 e_x, e_px) blockrot(0.73,
 1.41, -0.9) M_cal^-1` (design row 465, second half: `h = -0.5` and the Ohmi
 factor is `:form_inadmissible` while the separation stays unique). Not
@@ -515,17 +520,20 @@ function _identity_contract_diagnostics(contract::TwissDispersionIdentityContrac
     co = _identity_contract_coasting(contract.seed)
     Mc = _identity_contract_mcal(zeros(4), co.eta)
     weak = Mc * bd(co.A4, [1.0 0.7; -1e-6 1 - 0.7e-6]) * _symplectic_inverse(Mc)
-    # D12 as measured through analyze in BOTH CPU arms (the stage 6 history section records the probe): the :polynomial
-    # route is :not_invariant with coefficient condition 2.3e6 (normalized residual 1.1e-10) in both arms; the
-    # :eigenplane primary route sits at the edge of its own tolerance (normalized residual 2.0e-13 native ->
-    # :not_invariant and a :failed verdict; 1.0e-13 haswell -> :none and a :degraded verdict), so the row asserts
-    # the polynomial diagnostic and `status != :passed`, never the arm-dependent eigenplane verdict.
-    push!(rows, (name="D12 weak-cavity coasting-like map (ill-conditioned Sylvester: the polynomial route reports its condition)", input=weak,
+    # D12 under the derived route kappa (_kappa_route, 2026-09-14), measured through analyze in BOTH CPU arms (2026-09-14;
+    # the kappa_route history section): every route is :none. The polynomial route's formed graph (normalized residual
+    # 1.16e-10 native | 1.10e-10 haswell) is accepted at ratio 1.7e-3 native | 1.7e-3 haswell of eps kappa_route, kappa_route
+    # = max(1, ||M_s||_F) times its amplification factor ||M_s||_F^2 / sigma_min(A_s) = 1.1e8 in both arms (cond(A_s) was
+    # 2.3e6 on the scaled matrix), and the eigenplane primary route, whose floor now carries its cond(U_ls) = 673, sits at
+    # ratio 0.49 native | 0.25 haswell (under the landed kappa it sat at the edge of its tolerance: 2.0e-13 native ->
+    # :not_invariant and a :failed verdict, 1.0e-13 haswell -> :none and :degraded, so the row could not assert the verdict).
+    # The verdict is :degraded in both arms with no failure named. The row asserts the polynomial diagnostic and the verdict.
+    push!(rows, (name="D12 weak-cavity coasting-like map (ill-conditioned Sylvester: the polynomial route's formed graph and its amplification factor)", input=weak,
                  analysis=a6(dispersion_routes=(:eigenplane, :polynomial, :newton, :fixed_point)),
                  expect=(r, err) -> isres(r, err) && begin
                      poly = findfirst(x -> x.route === :polynomial, r.diagnostics.routes)
-                     poly !== nothing && r.diagnostics.routes[poly].status === :not_invariant &&
-                         r.diagnostics.routes[poly].coefficient_condition > 1e3 && r.status !== :passed
+                     poly !== nothing && r.diagnostics.routes[poly].status === :none &&
+                         r.diagnostics.routes[poly].coefficient_condition > 1e3 && r.status === :degraded
                  end))
     push!(rows, (name="D13 identity map (the marker's map)", input=Matrix(1.0I, 6, 6), analysis=a6(),
                  expect=(r, err) -> isres(r, err) && fr(r) === :singular_coefficient && r.status !== :failed && isempty(r.physical.tunes)))
@@ -670,13 +678,27 @@ function _identity_contract_record!(metrics::Dict{Symbol,Any}, slug::Symbol, val
 end
 
 """
+    _identity_contract_primary_condition(dr::DispersionRoutes) -> Determined{Float64}
+
+The reported `coefficient_condition` of the primary route `dr.primary` in `dr.routes` (the route's roundoff
+amplification into its graph, the `gamma` of `_kappa_route`); unavailable with `:not_derived_for_cluster` when
+the primary route is not in the list.
+"""
+function _identity_contract_primary_condition(dr::DispersionRoutes)
+    k = findfirst(rt -> rt.route === dr.primary, dr.routes)
+    k === nothing && return Determined{Float64}(:not_derived_for_cluster, "primary route not in the list")
+    return dr.routes[k].coefficient_condition
+end
+
+"""
     _identity_contract_reported_rows!(result, name, metrics, contract, failures) -> Nothing
 
 Layer 1: every triple of `result.diagnostics.residuals` re-judged on its
 VALUE through `_identity_contract_record!` with the contract's kappa (dossier
 H4: `rho_M1 / eps` for the rho-scaled rows, `cond(U)` factors read from the
 scaled normalizers, `kappa_sep = max(1, ||Ms||) ||T|| ||T^-1||`, the route
-kappa `max(1, ||Ms||) max(1, opnorm(D))^2`), and the verdict re-derivation
+kappa `_kappa_route(Ms, D, cc_primary)` with `cc_primary` the primary route's
+reported `coefficient_condition`), and the verdict re-derivation
 V1: the names whose value exceeds the REPORTED tolerance among
 `_VERDICT_RESIDUALS` must be exactly the names in `result.failures`
 (`metrics[:verdicts_consistent]` / `[:verdicts_inconsistent]`, the latter a
@@ -696,7 +718,9 @@ function _identity_contract_reported_rows!(result::TwissDispersionResult, name::
     kappa_sep = sep_ok ? max(1.0, norm(Ms)) * norm(determined_value(result.separation).transformation) *
                          norm(determined_value(result.separation).inverse) : 1.0
     graph_ok = result.dispersion !== nothing && is_determined(result.dispersion.graph)
-    kappa_route = graph_ok ? max(1.0, norm(Ms)) * max(1.0, opnorm(determined_value(result.dispersion.graph)))^2 : 1.0
+    # the kernel's kappa through the same helper: the scaled matrix the routes ran on, the primary graph, the primary
+    # route's reported amplification factor (the Determined method counts an unavailable condition as 1)
+    kappa_route = graph_ok ? _kappa_route(Ms, determined_value(result.dispersion.graph), _identity_contract_primary_condition(result.dispersion)) : 1.0
     sigma_norm = is_determined(result.covariance) ? max(1.0, norm(determined_value(result.covariance))) : 1.0
     condU = U6 !== nothing ? cond(U6) : (U4 !== nothing ? cond(U4) : 1.0)
     k14_scale = po_ok ? max(1.0, maximum(abs(determined_value(result.projected_optics).covariances[j][5, 5]) for j in 1:2)) : 1.0
@@ -898,7 +922,18 @@ function _identity_contract_recomputed_rows!(result::TwissDispersionResult, name
         D = determined_value(ph.graph); nD = max(1.0, norm(D))
         Mrr = M[1:4, 1:4]; Mrl = M[1:4, 5:6]; Mlr = M[5:6, 1:4]; Mll = M[5:6, 5:6]
         lhs = Mrr * D + Mrl; rhs = D * (Mlr * D + Mll)
-        rec(:c_d14_graph_invariance, norm(lhs - rhs) / max(1.0, norm(Mrr * D), norm(Mrl), norm(rhs)), nD^2)
+        # (D14) in the caller's coordinates: the route kappa of the primary graph (derivation 4c, 2026-09-14) with the
+        # PHYSICAL normalizer N of this residual (M is the caller's matrix), ||Ms||_F as the map norm (the routes ran on
+        # Ms), the primary route's amplification factor, and the back-transformation's own amplification gamma_C =
+        # c_r c_l max(1, c_r c_l) from the condition numbers of the transverse and longitudinal blocks of the scaling
+        # matrix C (D_phys = C_r^-1 D_s C_l; a :none scaling gives gamma_C = 1 exactly).
+        C = _scaling_matrix(result.scaling)
+        C_r = Matrix(Diagonal([C[k, k] for k in 1:4])); C_l = Matrix(Diagonal([C[k, k] for k in 5:6]))
+        c_r = cond(C_r); c_l = cond(C_l); gamma_C = c_r * c_l * max(1.0, c_r * c_l)
+        cc_primary = result.dispersion === nothing ? Determined{Float64}(:not_derived_for_cluster, "no dispersion routes") :
+                     _identity_contract_primary_condition(result.dispersion)
+        rec(:c_d14_graph_invariance, norm(lhs - rhs) / max(1.0, norm(Mrr * D), norm(Mrl), norm(rhs)),
+            gamma_C * _kappa_route(M, D, cc_primary; map_norm=norm(result.matrix_scaled)))
         if is_determined(ph.zeta) && is_determined(ph.eta) && is_determined(ph.h)
             zeta = determined_value(ph.zeta); eta = determined_value(ph.eta); h = determined_value(ph.h)
             S4 = _symplectic_form(4)
