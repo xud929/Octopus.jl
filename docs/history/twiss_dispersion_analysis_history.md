@@ -13960,3 +13960,174 @@ Provenance paragraph declares: 60838d0 rewrote
 716-718 resolve at 35a3585 only; the other anchored files keep their line
 counts through this commit (the docstring edit four lines for four, the two
 comment blocks three for three).
+
+## 2026-09-14: full gate on the second carried batch (five commits on b19003b, final tree b4e4f85), in two CPU arms
+
+The five commits of the second carried batch, on top of origin/main b19003b
+(the pushed tree of CI run 439; b19003b is itself the record of the first
+carried gate, the section "2026-09-14: full gate on the carried batch (seven
+commits on 180ce70, final tree 7e08248), in two CPU arms"), each named this
+run as their gate: AGENTS.md owes the full gate before the PUSH, not before
+every commit (owner decision 2026-09-04, commit 6ac8d61); the owner held the
+first of them in a batch on 2026-09-14 (ask before the push, no gate for a
+commit alone) and declared the batch final after the fifth; every batch
+section's Checks paragraph reads that the two-arm full gate is owed on the
+final tree of the batch before the push (three of the four add: recorded in
+its own section; 43ac3aa's message says the same of the batch policy). The
+batch, oldest first:
+
+- 5873e58 `feat(validation): the TW-TENTH count line; carried items 2 and 3
+  decided (the freezing set stays 20 + 5, 0.25 stands); CI run 439 recorded`
+  (the identity script's TW-TENTH line and the dry-run testset's two added
+  assertions; the section "2026-09-14: carried items 2 and 3 decided, the
+  freezing set stays the contract's 20 + 5 (option a) and 0.25 stands as the
+  re-open threshold; the TW-TENTH line; CI run 439 recorded (feat(validation)
+  commit)").
+- 35a3585 `docs(analysis): carried item 4 decided, the landed kappa stays,
+  the ladder's false FAIL is an accepted limitation, the resolution kappa
+  declined; the derivation pass recorded` (two docstrings and one comment of
+  `src/analysis/twiss_dispersion_analysis.jl`, no executable line; the
+  section "2026-09-14: carried item 4 decided, the landed kappa rho_M1
+  cond(U) stays for the (E7) and U_6 symplecticity tests, the near-degenerate
+  ladder's false FAIL is an accepted limitation, the resolution kappa is
+  declined; the read-only derivation pass (docs(analysis) commit)").
+- 43ac3aa `feat(validation): track the stage 4a acceptance-window measurement
+  driver and its oracle tables` (`validation/` only: the driver
+  `twiss_dispersion_acceptance_windows.jl`, the two oracle tables and their
+  provenance file under `validation/reference/`, the README section "Twiss
+  and Dispersion Acceptance Windows"; no `src/`, no `test/`; its record is
+  its commit message and that README section, and the kappa_route section's
+  Derivation paragraph names it as the tree the derivation's line numbers do
+  not depend on).
+- 60838d0 `fix(analysis): kappa_route re-derived: one helper in place of
+  three formulas, the weak cavity's polynomial graph accepted, r_primary,
+  c_d14 and k_route_agreement re-frozen` (items 6 and 12: `_kappa_route`
+  defined and called at the (I1) floor in `src/analysis/dispersion_routes.jl`,
+  one helper in place of three formulas, the mirror in
+  `twiss_dispersion_analysis.jl`, the contract's E5, E7 and D12 sites and
+  three re-frozen rows in `src/contracts/twiss_dispersion_identity.jl`, four
+  nested testsets and the M1 testset's floor regime in `test/runtests.jl`,
+  the route dump script; the section "2026-09-14: kappa_route re-derived
+  (stage 7 items 6 and 12; fix(analysis))").
+- b4e4f85 `docs(analysis): the item 4 derivation pass condensed into the
+  history; the scratch-path citations in five tracked files repointed to
+  tracked records; the README's analysis blurbs brought to stage 7` (a
+  docstring, two `.jl` comment blocks and one test comment, no executable
+  line; the section "2026-09-14: the carried item 4 derivation pass,
+  condensed record ((E7) frame, U_6 symplecticity, U_6 reconstruction)").
+
+The gate ran on the clean tree at b4e4f85 (the final tree of the push), CUDA
+active, four threads, both arms one after the other from one detached script
+(result/gates/run_full_gate_carried2_both_arms.sh, `setsid nohup`) with the
+depot otherwise idle (no other julia process compiling or testing; the
+owner's long-lived IJulia kernels only):
+
+    # native arm (the Verification Matrix's gate)
+    julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
+    # AVX2 arm (CI-runner parity: OpenBLAS Haswell kernels, LLVM target haswell)
+    OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4", "-C", "haswell"])'
+
+The reference for every comparison below is the first carried gate (the
+section named above), run on 7e08248, the tree b19003b records and differs
+from by that record's two markdown files alone: 317 rows and 148344/148344
+in each arm.
+
+| item | native arm | AVX2 arm |
+|---|---|---|
+| tree | b4e4f85 (`git status` clean) | same |
+| start / end / wall | 21:44:22 / 22:30:00 EDT / 45 min 38 s (the first carried gate: 43 min 58 s) | 22:30:00 / 23:15:03 EDT / 45 min 03 s (the first carried gate: 43 min 25 s) |
+| exit code | 0 (`Testing Octopus tests passed`) | 0 (`Testing Octopus tests passed`) |
+| test summary | 317 top-level testset rows, every one `Pass == Total`; summed 148378 passed of 148378 (the first carried gate: 317 rows, 148344); no Fail, Error or Broken column anywhere | 317 rows, every one `Pass == Total`; summed 148378 passed of 148378; no Fail, Error or Broken column anywhere; every row's counts equal to the native arm's (0 differing counts in the row-by-row comparison) |
+| the rows the batch touches | the vocabulary-pin testset `Dispersion routes: vocabulary pin and the dense elliptic maps (all five routes, agreement, cubic roots, labels)` 11792/11792 (1.2s) (the first carried gate: 11761/11761 (0.7s); +31 in 60838d0: four nested testsets on dense map 0, the helper's definition, monotonicity, `Determined` method, `map_norm` and guards; the bracket bounded on scaled graphs where the landed `||D||_F^2` form is not; the two extended coefficient conditions as the routes' amplification factors; the diagnostics mirror of the (I1) floor through `analyze`; 32 assertions in the kappa_route section's first extract, 31 after the check's fixes replaced the projector's two vacuous bounds by one exact pin; the testset's dense-map floor assertion is rewritten one for one on the helper); the M1 regression testset `Dispersion routes: an unconverged iterate is :not_invariant whatever the (I1) floor says (M1, 2026-09-13)` 68/68 (0.6s) (the first carried gate: 67/67 (0.8s); +1 in 60838d0: the big-graph regime, where the landed kappa put the floor above 3 (vacuous, the normalized residual being at most 3) and the formed big graph passed as `:none`, has the floor below 1e-6 under the helper, so three assertions (the floor above 3, the residual under it, a `:none` status pin on the formed graph) became four: the floor's magnitude, the residual above it, the formed route `:not_invariant` and converged with its graph determined, and the residual above the floor with "exceeds the floor" in its detail); the dry-run testset `validation/twiss_dispersion_identities.jl: the reporting code on a fake result (dry run)` 15/15 (2.8s) (the first carried gate: 13/13 (2.3s); +2 in 5873e58: the `TW-TENTH` line pinned exactly as line 5 of the fake's report and its presence in the report without the normalizer keys, `TW-DIAG`, `TW-KINDS` and `TW-DIGEST` moving to lines 6-8); the stage 6 contract testset `Stage 6: the identity contract passes on the tree with pinned metrics, and every negative is red` 167/167 (57.7s) (the first carried gate: 167/167 (57.9s); 60838d0 re-froze three rows and changed the E5, E7 and D12 code behind the pinned metrics, no assertion added or removed); the E13 route testset `Dispersion routes: route selection, newton_max_iterations READ, rho_M1 READ, scaling (E13)` 52/52 (3.1s) (the first carried gate: 52/52 (3.1s); untouched); the helper testset `TwissDispersionAnalysis: _with_longitudinal_mode carries every other option` 29/29 (0.2s) (the first carried gate: 29/29 (0.2s); untouched); `Physics contracts` 17/17 (1m50.5s) (the first carried gate: 17/17 (1m48.0s); untouched) | 11792/11792 (1.2s) (the first carried gate: 11761/11761 (0.7s)); 68/68 (0.7s) (67/67 (0.9s)); 15/15 (2.9s) (13/13 (2.3s)); 167/167 (57.8s) (167/167 (59.5s)); 52/52 (3.1s) (52/52 (3.0s)); 29/29 (0.2s) (29/29 (0.2s)); 17/17 (1m52.1s) (17/17 (1m50.7s)) |
+| skipped or unrunnable | none: no `LANE SKIP` banner (full lane); the heavyweight sections ran (`The multi-process seam runs under an MPI launcher` 1710/1710 (8m59.8s); `The developer harnesses run divided under an MPI launcher` 4/4 (1m34.4s); `4D eigenmodes: (E7), (E8), projectors, signed areas and (M5) on 200 manufactured maps` 12602/12602 (0.2s); `Mode clusters: 200 + 200 manufactured stable maps are resolved singletons` 11406/11406 (1.5s); `CPU solver stack is thread-count invariant` 118/118 (6.5s); the example runner `Every example script runs against the current interface` 6/6 (7m59.2s)) | none: no `LANE SKIP` banner (full lane); the heavyweight sections ran (`The multi-process seam runs under an MPI launcher` 1710/1710 (8m47.8s); `The developer harnesses run divided under an MPI launcher` 4/4 (1m33.0s); `4D eigenmodes: (E7), (E8), projectors, signed areas and (M5) on 200 manufactured maps` 12602/12602 (0.2s); `Mode clusters: 200 + 200 manufactured stable maps are resolved singletons` 11406/11406 (1.5s); `CPU solver stack is thread-count invariant` 118/118 (6.2s); the example runner `Every example script runs against the current interface` 6/6 (7m51.9s)) |
+| CUDA | active (`CUDA coverage status` 1/1) | active (`CUDA coverage status` 1/1) |
+| warnings | 44 non-fatal warning lines of 14 distinct texts (numbers normalized; the first carried gate's native arm: 42 of 12); new to this log: `WARNING: Use of CUDA.CUSOLVER is deprecated, use cuSOLVER instead.`; `WARNING: Use of CUDA.CUSPARSE is deprecated, use cuSPARSE instead.` (the 2 `deprecated` lines are CUDA.jl notices printed by the live precompile of `ArrayInterfaceCUDAExt` inside the test process, log lines 236-243, `1 dependency successfully precompiled`, after `Testing Running tests...` and before the first `Test Summary:`; the first carried gate's native arm had that extension precompiled already; the batch changes no Project or Manifest file) | 44 non-fatal warning lines of 14 distinct texts (numbers normalized; the first carried gate's AVX2 arm: 41 of 11); new to this log: `WARNING: Use of CUDA.CUSOLVER is deprecated, use cuSOLVER instead.`; `WARNING: Use of CUDA.CUSPARSE is deprecated, use cuSPARSE instead.`; `Warning: particles were lost with no aperture responsible; a coordinate went non-finite wh` (the 2 `deprecated` lines are CUDA.jl notices printed by the live precompile of `ArrayInterfaceCUDAExt` inside the test process, log lines 236-243, `1 dependency successfully precompiled`, after `Testing Running tests...` and before the first `Test Summary:`; the first carried gate's AVX2 arm had that extension precompiled already; the batch changes no Project or Manifest file) (the `particles were lost` text is the intermittent one of this arm: present in the first carried gate's native arm and absent from its AVX2 arm (that record's warnings row), present in both arms here, printed once by `_report_losses` (src/tasks/Tasks.jl:730; `unattributed = 1`, `dead = 1`, `logged = 0`) between the rows `A crashed execute! still delivers its loss artifacts` and `ParamMeta alternatives derive Symbol perturbations` in every log that carries it; the batch touches no tracking code) |
+| log | `result/gates/full_gate_carried2_native_2026_09_14.log` | `result/gates/full_gate_carried2_avx2_2026_09_14.log` |
+
+Row arithmetic: the batch adds no top-level testset and moves none; it adds 31
+assertions to the vocabulary-pin testset (60838d0, the four nested testsets,
+11761 -> 11792), one to the M1 regression testset (60838d0, the big-graph
+regime, 67 -> 68) and two to the dry-run testset (5873e58, the `TW-TENTH`
+line, 13 -> 15), and changes no other testset's count: 35a3585 and b4e4f85
+touch no executable line (docstrings and comments; `using Octopus` loaded on
+each tree); 43ac3aa touches `validation/` only, and the suite runs none of its
+five files (the suite reaches the identity script through the dry-run testset,
+not the driver); 60838d0's other test edits replace assertions one for one
+(the dense-map floor and the singular-projection floor written on the helper,
+the weak cavity's polynomial route `:none` instead of `:not_invariant` with
+its coefficient condition still above 1e3, the M1 testset's floor on the
+helper), and the extract of its ten testsets on that commit's final tree
+(`kr_extract.jl`, 12976 assertions per arm, its section's Checks) gives the
+counts this gate must show for them: 9, 11792, 124, 61, 41, 78, 52, 68, 584,
+167; the three re-frozen multipliers change no count, the D12 predicate is a
+diagnostics row, and `_st6_pin_lines` still finds exactly three `_ST6_PIN`
+lines. The expected totals are therefore the first carried gate's plus 31 + 1
++ 2 = 34: 317 rows and 148378 in both arms, with exactly THREE differing rows
+against that gate's native log (the vocabulary-pin testset, 11761 to 11792;
+the M1 testset, 67 to 68; the dry-run testset, 13 to 15), no row new, none
+gone, and none differing between the two arms; measured: exactly as expected: 317 rows and 148378/148378 in each arm, THREE differing counts against the first carried gate's native log (`Dispersion routes: vocabulary pin and the dense elliptic maps (all five routes, agreement, cubic roots, labels)` 11761 to 11792; `Dispersion routes: an unconverged iterate is :not_invariant whatever the (I1) floor says (M1, 2026-09-13)` 67 to 68; `validation/twiss_dispersion_identities.jl: the reporting code on a fake result (dry run)` 13 to 15), no row new, none gone, and 0 differing counts between the two arms (`Stage 6: the identity contract passes on the tree with pinned metrics, and every negative is red` keeps its 167/167 and `Physics contracts` its 17/17; every other row its first carried gate count). The
+gate logs were read by
+result/gates/carried2/ledgers/summarize_carried2_gate.py (a scratch reader,
+read-only) (317 rows in both logs, `grep -c 'Test Summary:'` agreeing with the parsed row count in each, no header interleaved with stderr output; no signal was sent to either test process and both logs are test output only).
+
+Before the gate, each commit's change was verified standalone, recorded in
+its own section or message: the dry-run testset lifted from the suite ran
+standalone on 5873e58's tree (15 of 15) and the identity script ran in both
+arms; `using Octopus` loaded on 35a3585 and on b4e4f85 (their `.jl` edits
+docstrings and comments); the tracked driver ran in both arms on 43ac3aa
+(17:25-17:27 EDT), each arm's table identical to that arm's pre-edit
+fingerprint table of 35a3585 apart from the header line; 60838d0 ran the
+extract of its ten testsets (12976 per arm on its final tree, 20:05-20:08
+EDT), the extract of the Prescribed h = 0.05 and Physics contracts testsets
+(25 + 17 per arm), the weak-cavity smoke, the two-arm fingerprint
+(18:38-18:48 EDT) and the re-freeze run (18:50-19:00 EDT). This gate is the
+first run of the whole suite on any tree of the batch, and the only run of
+the per-push lane the batch owes.
+
+What this gate measures and what it does not: both arms are the two MEASURED
+CPU classes (native AVX-512 Sapphire Rapids; the AVX2 emulation
+`OPENBLAS_CORETYPE=Haswell julia -C haswell`), so a gate here confirms the
+counts, the assertion structure and the identity rows on the tree at both
+classes; it cannot measure the runner's third class (CI run 439 on b19003b:
+host `sapphirerapids`, an identity table no local configuration reproduces,
+worst row `k_longitudinal_block_symplecticity` 0.1537 at c = 16, the 5873e58
+section). Three things of the batch are first seen on the push's CI run: the
+three re-frozen rows of 60838d0 at the runner's class
+(`r_primary_route_invariance_i1` 32, `c_d14_graph_invariance` 16,
+`k_route_agreement` 8, frozen by H15 from the two arms' multiplier-1 maxima
+1.884 | 1.666, 1.291 | 0.942 and 0.317 | 0.384, so that c is at least ten
+times the larger measured arm and the 0.25 re-open threshold is reached
+only by a runner ratio above 2.5 times it); the 57-row `::notice` table with
+those three rows moved; and the dry-run testset's `TW-TENTH` assertions
+under the runner's `Pkg.test` (the dry-run testset includes the identity
+script in-process with its measurement run switched off, so its reporting
+code, the `TW-TENTH` line included, does run in CI on the testset's fake
+result; the script's own measurement, the tracked driver and the route dump
+do not). Any runner row above 0.25 re-opens the pin decision (the rule on
+the tree beside `_ST6_PIN`; 0.25 confirmed by carried item 3, 5873e58).
+
+The validation row of AGENTS.md's Verification Matrix (line 160) reads
+"full, before the commit carrying the claim". The two `feat(validation)`
+commits of this batch (5873e58, 43ac3aa) and the `fix(analysis)` commit
+60838d0 (the route dump script, its edits to the driver and the README)
+carried their claims with no full gate on their own trees: 5873e58's section
+reads the row as the item 5 commit read it (the script runs are the
+reproduction, the record is committed, and the full lane is the next push's
+gate); 43ac3aa's message and 60838d0's Checks read the change class and the
+batch policy to the same end. The precise statement is again that the clause
+is SUPERSEDED for this batch by the per-push rule (owner decision 2026-09-04,
+commit 6ac8d61; the hold decision of 2026-09-14), not met on 5873e58's,
+43ac3aa's or 60838d0's tree; this gate, on the final tree, is the one every
+batch section named. Carried item 14 (the owner's) still asks for the row's
+text to be reconciled with the per-push rule.
+
+This section is the only change between the gated tree and the pushed tree
+(with the todo row's sentence); the commit carrying it is markdown-only and
+finishes with the fast lane on its own tree (matrix row "markdown only"),
+`result/gates/fast_lane_gate_record_carried2_2026_09_14.log`
+(exit 0, 23:25:28-23:42:55 EDT (17 min 27 s), `Testing Octopus tests passed`, 302 rows, 146376/146376, the usual 15 heavyweight sections skipped by the lane (15 skip banners), the first carried record's fast lane's rows and counts (302 rows, 146342) plus the batch's own: the vocabulary-pin testset 11761 to 11792, the M1 testset 67 to 68 and the dry-run testset 13 to 15, no row new or gone, every other row's count equal; the parser reads 301 rows directly on this log: the `Test Summary:` header at log line 593 is interleaved with stderr output, its row `BPMObserver artifact mode buffers by the artifact capacity` 5/5 standing at line 694, and `grep -c` finds all 302 headers).
+It is the LAST commit before the push, which the owner approved on
+2026-09-14 at 22:24 EDT conditional on a green gate ("Push if gate green"):
+the push carries the five batch commits and this record (six commits on
+b19003b), and the CI run on the new HEAD is the check of the batch at the
+runner's CPU class.
