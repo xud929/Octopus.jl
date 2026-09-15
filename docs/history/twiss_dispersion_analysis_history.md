@@ -14589,3 +14589,101 @@ in this tree, after the review of the contract): status `passed`, 691 rows
 `worst_TOL_D` 0.006708795741161566, `worst_TOL_F` 0.3567635076251463,
 `worst_assert` 0.0, `worst_witness` 0.048872424440737916. The two-arm gate
 of the batch is recorded in its closing section.
+
+## 2026-09-15: stage 8 closed, the external benchmark batch gated
+
+### What landed in the batch
+
+Five commits: benchmark A (MAD-X twiss; TW-MADX-DIGEST 387 0
+0.40503179603364126), benchmark B (PTC ptc_twiss; TW-PTC-DIGEST 257 0
+0.59499739575161859), benchmark C (xtrack 0.112.0; TW-XSUITE-DIGEST 1060 0
+0.99100645626558559), the light suite contract
+`src/contracts/twiss_external_reference.jl` reading the three committed
+tables at their tolerance classes, and this closing record. The contract
+certifies 691 rows (madx 81, ptc 111, xtrack 499), 0 failed, worst ratio
+0.3567635076251463 at xtrack Rd_1e-3 ET_bety_edw_teng (class TOL-F); its
+own section above carries the per-class worst ratios. The tracked record
+`docs/history/twiss_external_benchmarks_2026_09_15.md` (D18) condenses the
+untracked stage 8 plan, probes and decisions into one place: the measured
+conventions, the beam pin and the per-benchmark digests; the per-commit
+sections above carry the TW-* lines.
+
+### Decisions
+
+- D1: theory section 12.2 keeps its sentence "requirements, not passed
+  tests"; items 3 and 7 receive a parenthetical naming the benchmark that
+  discharges them, and one status sentence follows the list.
+- D2: the contract is light: it re-reads the committed tables and re-runs
+  the analysis on the exported maps; the generators stay validation-only.
+- D5: C3 was included and gated (branch (a)); the T6 witnesses passed at
+  TOL-D (r56 4.8872424440737916e-09, r65 2.4129431785979705e-10, r66
+  9.0847185330034108e-10; the benchmark C section above).
+- D11: three per-benchmark history sections plus this closing one.
+- D12: item 11(b) of the stage 7 carried list: see Carried forward, item
+  11, where the recorded state is corrected.
+- D18: the tracked record file is the one citation target for the README
+  and the design note.
+- D19: the PTC internal proton mass 0.938272081358 GeV is a measured
+  convention, recorded in the PTC table header and in
+  `docs/experiences.md` (the external-codes lesson).
+
+### Not verified
+
+- The identity validation script still exits 1 natively at defaults (map
+  98 `c_scaling_invariance`, pre-existing; the section "2026-09-14:
+  kappa_route re-derived (stage 7 items 6 and 12; fix(analysis))" above,
+  lines 13301-13303, and its gate table line 13471 "exit 1 | 0"); the AVX2
+  arm exits 0. Stage 8 did not touch it; stage 7 carried item 1 stays
+  answered "not by this batch".
+- The Xsuite C2 TOL-E band is marginal on U2 (diff 0.29730193687967565
+  against the bound 0.29999999999999999).
+- The nst=32 residuals of the MAD-X ladder (1.2613734057254078e-08 on U2)
+  and the PTC DISP1 rows are recorded, not gated.
+- Only MAD-X 5.03.06, its PTC, and xtrack 0.112.0 were measured.
+
+### Carried forward (the stage 7 list, one line each, state at this close)
+
+1. The `:fixed_point` route's stall is reported as `:none` (stage 6 M1);
+   the identity script's native exit 1 at defaults (map 98
+   `c_scaling_invariance`): open, unchanged by stage 8; haswell exits 0.
+2. The multipliers on the script's 200 + 20 set (stage 6 M3): decided in
+   the second carried batch (option a, the freezing set stays the
+   contract's 20 + 5); nothing left for stage 8.
+3. CI headroom on the 0.1 test pins (stage 6 R2): decided in the second
+   carried batch (0.25 as the re-open threshold); closed.
+4. The (E7) / U_6-symplecticity kappa: decided (the landed kappa stays);
+   its job (e), the kappa change, remains open.
+5. The normalizer multiplier (4b item 4): closed in the second carried
+   batch.
+6. Arm-dependent verdicts at the analysis's floors: landed (`kappa_route`,
+   commit 60838d0).
+7. Result-shape items for the owner: open; 7b and 7d remain owner items,
+   7a and 7c were closed in the batch.
+8. Sharper kappas left as measured (below 100): open (owner item,
+   unchanged).
+9. Test-side gaps recorded (no negative for `kinds_failed_example`, the
+   unpinned last diagnostic row, i3, T2's cold cost, the example runner's
+   subprocess): open, unchanged.
+10. Design paragraphs to reconcile in the note (docs-only): open (owner
+    item, unchanged).
+11. Owner notes carried unchanged: 11(a) the AVX2 arm in the Verification
+    Matrix: open. 11(b) the `_with_longitudinal_mode` keyword copy: LANDED
+    2026-09-14 in the refactor(analysis) commit (history section
+    "2026-09-14: _with_longitudinal_mode (refactor(analysis) commit)"), so
+    the batch's D12 wording "not taken; stays carried" is corrected here to
+    "landed 2026-09-14; nothing carried".
+12. Later stages: the `kappa_route` coefficient-condition clause landed
+    (commit 60838d0); the external benchmarks landed with this batch; still
+    open: seeding the iterative routes on the selected branch; transport,
+    scans, covariance-based mode selection, a public closed-orbit finder;
+    the post-campaign neighbour audit, now the next ledger row
+    (`docs/todo.md` row 20).
+13. Process items from stage 6 (plus stage 7's tree-naming rule): open
+    (owner items, unchanged); stage 8 adds one, recorded in
+    `docs/experiences.md`: a code's conventions, its internal constants
+    included, are measured, never read.
+14. The stale `src/` comment (stage 7 review F2): closed in stage 7.
+Also open from the second batch's owner list: F3, F4, item 4's kappa job
+(e), the M3 driver's six missing columns.
+New from stage 8: the FD dispersion witness gate (A), the DISP1 gate and a
+time=true row (B), the C2 TOL-E band and the generator sha256 gate (C).

@@ -67,9 +67,11 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   benchmarks; seven staged commits plus an external-benchmark stage (MAD-X,
   PTC, Xsuite); rejected alternatives. Landing record:
   [`history/twiss_dispersion_analysis_history.md`](history/twiss_dispersion_analysis_history.md)
-  (stages 1 to 7 landed 2026-09-11 to 2026-09-13, each push full-gated; the
-  stage 7 carried items are being worked 2026-09-14 in a recorded batch;
-  stage 8, the external benchmarks, is next).
+  (stages 1 to 7 landed 2026-09-11 to 2026-09-13 and the stage 7 carried
+  batch 2026-09-14, each push full-gated; stage 8, the external benchmarks
+  against MAD-X twiss, PTC ptc_twiss and xtrack 0.112.0, landed 2026-09-15;
+  the measured conventions and digests are in
+  [`history/twiss_external_benchmarks_2026_09_15.md`](history/twiss_external_benchmarks_2026_09_15.md)).
 - [`survey_and_reference_channel.md`](design/survey_and_reference_channel.md) —
   the channel telling a runtime element its place on the reference trajectory:
   static survey values (`s_elem`, later `P0`) baked at compile via the line
@@ -126,8 +128,11 @@ reference material, not API docs; the implementing code links back to them.
   `history/twiss_dispersion_analysis_history.md`): the kernels and the
   analysis object under `src/analysis/`, the identity contract under
   `src/contracts/` with `validation/twiss_dispersion_identities.jl` pinning
-  57 of the note's identities; the external benchmarks (stage 8: MAD-X, PTC,
-  Xsuite) are the open ledger row.
+  57 of the note's identities; the external benchmarks (stage 8) pin the
+  analysis against MAD-X twiss, PTC ptc_twiss and xtrack 0.112.0 through the
+  committed tables under `validation/reference/` and the light contract
+  `src/contracts/twiss_external_reference.jl`; the neighbour audit is the
+  open ledger row.
 - [`arc_survey_and_velocity_slip.md`](theory/arc_survey_and_velocity_slip.md) —
   what the survey coordinate is (arc length; bend `L` *is* the arc, so
   curvature changes nothing; the patch and kept-whole-line caveats), why the
@@ -383,7 +388,12 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   effectiveness contract) landed 2026-09-12; stage 5 (the element
   declaration), stage 6 (the identity contract, its validation script, the
   DBA-ring example) and stage 7 (the `lattice_cells.jl` refactor) landed
-  2026-09-13; the stage 7 carried items follow from 2026-09-14 onward.
+  2026-09-13; the stage 7 carried batch landed 2026-09-14 and stage 8 (the
+  three external benchmarks, five commits) 2026-09-15.
+- [`twiss_external_benchmarks_2026_09_15.md`](history/twiss_external_benchmarks_2026_09_15.md) —
+  the stage 8 external benchmark record: the conversion law per code (MAD-X
+  J0 and slip, PTC F, xtrack slip), the beam pin, the PTC internal mass, the
+  three digests and the tolerance classes.
 - [`audit_twiss_dispersion_literature_2026_09_09.md`](history/audit_twiss_dispersion_literature_2026_09_09.md) —
   Parzen, Glukhov, and Dieci–Friedman review; direct 6D projectors and
   continuation checks; GLSF application removed from the active design.

@@ -2,29 +2,36 @@
 
 **Status: decided 2026-09-11 (design review, three judged designs, four
 adversarial verifications; the owner adopted every recommendation);
-implemented through Staging item 7 (stages 1-7, landed 2026-09-11 to
-2026-09-13).** `TwissDispersionAnalysis`, `analyze`, `analysis_option_schema`,
+implemented through Staging item 8 (stages 1-7 landed 2026-09-11 to
+2026-09-13, the stage 7 carried batch 2026-09-14, stage 8 2026-09-15).**
+`TwissDispersionAnalysis`, `analyze`, `analysis_option_schema`,
 `TwissDispersionResult`, `OpticsAnalysisError`, `NormalMode`,
 `ANALYSIS_STATUSES`, `matched_covariance`, `normal_mode`,
 `AnalysisOptionEffectivenessContract` and `TwissDispersionIdentityContract`
 (the physics identity contract, `src/contracts/twiss_dispersion_identity.jl`)
-exist in the source with the kernel files of `src/analysis/`; the identity
-contract is mirrored by the validation script
+and `TwissExternalReferenceContract`
+(`src/contracts/twiss_external_reference.jl`), the light contract on the
+three committed external tables, exist in the source with the kernel files
+of `src/analysis/`; the identity contract is mirrored by the validation script
 `validation/twiss_dispersion_identities.jl` and the analysis by the executable
 example `examples/twiss_dispersion_dba_ring.jl`; the analysis is declared on
 the 22 linear-map kinds plus `:line` under the Discovery rule below, with the
 two set tripwires, and `PlaceholderAnalysis` remains the declaration of the
-eight kinds without an analysis. Staging item 8 (the external benchmarks) is
-open. The stage 7 carried items (the history's stage 7 section, "Carried
-forward to stage 8") are being worked in a batch of commits recorded in the
-campaign history from its section "2026-09-14: the stage 7 carried list,
-corrected before the batch (item 10)" onward, which also names the body
-facts this note leaves stale because the body is frozen (the Discovery
-paragraph's "five kinds declaring only the non-symplectic method" beside
-this paragraph's eight kinds without an analysis, the stage 5 record's
-finding M3; "Octopus has none of this yet"; the false-graph and
-isotropic-graph verification rows, which are kernel-level and not reachable
-through `analyze`). The amendments the implementation
+eight kinds without an analysis. Staging item 8 (the external benchmarks)
+landed 2026-09-15: `validation/twiss_madx_benchmark.jl`,
+`validation/twiss_ptc_benchmark.jl` and `validation/twiss_xsuite_benchmark.jl`
+on the shared fixtures of `validation/twiss_benchmark_cells.jl`, with the
+record `docs/history/twiss_external_benchmarks_2026_09_15.md`. The stage 7
+carried batch landed 2026-09-14 (the campaign history from its section
+"2026-09-14: the stage 7 carried list, corrected before the batch (item 10)"
+onward, which also names the body facts this note leaves stale because the
+body is frozen: the Discovery paragraph's "five kinds declaring only the
+non-symplectic method" beside this paragraph's eight kinds without an
+analysis, the stage 5 record's finding M3; "Octopus has none of this yet";
+the false-graph and isotropic-graph verification rows, which are
+kernel-level and not reachable through `analyze`); the remaining owner
+items and the neighbour audit are listed in the history's stage 8 closing
+section. The amendments the implementation
 forced on this note's tables are recorded in
 [the campaign history](../history/twiss_dispersion_analysis_history.md), not
 edited into the body. This note records which architecture was chosen and why.

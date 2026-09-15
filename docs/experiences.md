@@ -210,6 +210,12 @@ liability.
   MAD8_WEDGE branch hardcodes (1,2). Both are now declared behavior in
   `wedge_coeff`'s metadata because they were measured, not because any manual
   says so.
+- PTC ptc_twiss carries its own proton mass (0.938272081358 GeV, measured
+  2026-09-15 from a thin-cavity M65 that missed the header-beta0 formula by
+  3.4670291637617368e-10 and closed to 1.1102230246251565e-16 at the
+  effective beam); MAD-X twiss scales its (T, PT) by beta0 and omits the
+  slip; xtrack's (zeta, delta) needs only the slip shear Sh(-C/gamma0^2).
+  The conversion law per code is now a table header line, not prose.
 
 ## Mechanics that bit more than once
 
