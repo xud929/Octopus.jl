@@ -1055,6 +1055,136 @@ Overrides: `OCTOPUS_LATTICE_N`, `OCTOPUS_LATTICE_TURNS`, `OCTOPUS_LATTICE_LONG`.
 Outputs `result/lattice_cells.tsv`. Derivations for every map:
 `../docs/theory/lattice_hamiltonian_and_conventions.md`.
 
+## Twiss Benchmark Against MAD-X Twiss
+
+**Script:** validation/twiss_madx_benchmark.jl (744 lines, consumer) and
+validation/generate_madx_twiss_reference.jl (495 lines, generator).
+**Shared fixture module:** validation/twiss_benchmark_cells.jl (533 lines).
+**Committed tables:** validation/reference/twiss_madx_5.03.06.tsv (92 lines: a
+67-line header, one column row, 24 data rows, 56 columns) and
+validation/reference/twiss_benchmark_maps.tsv (66 lines: a 20-line header, one
+column row, 45 data rows, 42 columns).
+
+**External tool:** MAD-X 5.03.06 (binary at /usr/local/bin/madx, overridable),
+run only by the generator. The consumer reads the two committed tables and
+never calls MAD-X, so the suite runs on a machine without it; the generator is
+rerun only to re-freeze the tables (see Overrides), and in regenerate mode it
+compares every cell of a fresh run against the committed file
+(MADX-REGENERATE-DIFF differing_cells=0 on both arms, EXIT=0; the lines
+are quoted in the history section named below).
+
+**The shared fixture module.** validation/twiss_benchmark_cells.jl is the one
+place the fixtures live: it builds each cell for Octopus (bare and task compile
+modes), writes the MAD-X and PTC sequence text, and exports the Octopus one-turn
+maps into twiss_benchmark_maps.tsv, which the MAD-X, PTC and Xsuite benchmarks
+all read. Fixtures (from the maps table header, lines 1-20): S0 (a pure drift,
+degenerate, the slip witness), U1 and U2 (uncoupled FODO cells, U2 with
+dispersion), K1 (a skew-quadrupole coupled cell, K_TILT 0.05), K2 (a coupled
+cell with dispersion), R_0 and R_pi4 (rolled FODO, the theory's section 13.10
+family; R_pi4 has no periodic MAD-X solution), the Rd_ family (near-degenerate
+cells Rd_1e-3, Rd_1e-6), D6_3 and D8_3 (definite degenerate fixtures at
+tolerance class TOL-F), W1 and W2 (thin-kick witnesses), B4, B4K (6D cells with
+a cavity) and G6_2.0MV, G6_0.2MV (6D cells at strength V/E_total
+0.00066666666666666664 for the 2.0 MV cell; the header records that the twin
+M65 sits 1.9e-9 relative below the PTC beam value). All Octopus maps are
+symplectic to 6.6770871777275224e-15 at most (measured 2026-09-15 on the
+fixture module's own check, history section).
+
+**Flags used by the generator** (from the MAD-X table header, lines 1-12):
+option, -echo -info -warn; beam pinned at beta0 0.9498330546994187 (the
+campaign's beam pin; header vs pin residual over all rows
+1.1102230246251565e-16, consumer run line 2, quoted in the history
+section); rbarc=false; set, format="22.16e"; use, period=cell; twiss with
+betx=1 bety=1 rmatrix for the non-periodic witnesses and twiss rmatrix for the
+periodic cells; deltap=+-0.0001 for the finite-difference dispersion witness.
+S0 and W2 have no periodic file and R_pi4 has no periodic solution; those rows
+are witnesses, not gated.
+
+**Measured conventions** (all from the MAD-X table header and the
+generator run whose lines the history section quotes). MAD-X's sixth coordinate is (T, PT) in the time-like
+sense with the canonical pair scaled by beta0, and its RE_56 does not carry the
+Octopus slip term. The conversion law the consumer applies is
+M_oct = Sh(-C/gamma0^2) . J0 . M_madx . J0^-1 with J0 = diag(1,1,1,1,beta0,
+1/beta0) and no reflection (F = I). Numbers that pin it: the S0 witness RE56 is
+1.0842277723823459 against the analytic drift formula, difference 0; the W2
+sign witness is 5.5511151231257827e-17 in the chosen sense and
+0.40000533333615529 in the other; the U2 finite-difference dispersion divided
+by DX gives 0.94983305085229297 against the pinned beta0 0.94983305469941881,
+difference 3.8471258401173714e-09 (the deltap step's truncation, so the FD
+witness is recorded, not gated); the U2 partnership witness
+converted_(5,6)_vs_octopus_bare_(5,6) reads -0.081412323090219285 against
+-0.081412323096546585, difference 6.3272997952168453e-12 (consumer run line
+25); and the K1 block entries r11..r22 are 0.86201121670608871,
+-0.020416340718808941, -0.19140492597569572, 1.0534161426817839 (generator run),
+matched by the consumer at TOL-A (consumer run lines 114-115).
+
+**Metric and tolerance classes.** Each gated line prints
+TW-MADX <fixture> <quantity> <octopus> <external> <|diff|> <tol> <class>
+PASS|FAIL. TOL-A is 1e-12 relative on Twiss functions (1e-13 absolute on cos
+mu and sin mu), e.g. TW-MADX K1 ET_bety 38.365210045104469 38.365210045102693
+1.7763568394002505e-12 9.9999999999999998e-13 TOL-A PASS (consumer run line
+108); TOL-B is 1e-12 relative on beta0*DX; TOL-E is the fitted convergence
+order 4.0 +- 0.3 of the nst ladder (4, 8, 16, 32, 64) together with a frozen
+nst=64 cap, e.g. TW-MADX-ORDER U1 4.0013414895306783 (line 161) with the model
+residual at nst=64 2.0827214952667816e-10 (line 160), U2 3.9988016758485325,
+K1 4.0004537849572168, K2 3.9987980534024454 (lines 169, 177, 185); TOL-F is
+1e-10 absolute on the degenerate fixture, e.g. TW-MADX R_0
+exported_cos_mu_vs_theory_13.10_constant 0.97440039720586424
+0.97440039720586435 1.1102230246251565e-16 (line 187; the anchor is
+computed in the script from the fixture's own L=0.2, k=+-1 and drift 1.0 by
+rolled_exact_anchor, never a pinned digit, and the exact q row agrees to
+8.3266726846886741e-17, line 188). The run ends with
+TW-MADX-DIGEST <rows> <fails> <worst ratio>; the committed run prints
+TW-MADX-DIGEST 387 0 0.40503179603364126 (line 365) on both arms and exits 0.
+Counts after the review fix: 98 gated rows, 121 WITNESS lines, 110 RECORDED
+lines (history section, benchmark A).
+
+**Recorded, not gated** (consumer run): the Rd_1e-6 fixture (analyze returns
+:failed; its E7 residual 1.785672875796623e-9 against the Rd_1e-3 value
+3.009598136315693e-12) and the nst=32 U2 and K2 residuals
+1.2613734057254078e-08 and 1.2555206652109518e-08 against the 1e-9 model
+tolerance, which is why only nst=64 is capped.
+
+**Injected defects** (stage 8 decision D16): OCTOPUS_STAGE8_DEFECT=drop_J omits the
+beta0 scaling J0 and prints TW-MADX-DIGEST 35 4 10605609037863.729 with EXIT=1
+(drop_J run, quoted in the history section; the partnership witness reads
+-0.034559825812292666 against -0.081412323096546585); transpose_R transposes
+the coupling block and prints TW-MADX K1 r12 -0.19140492597569261
+-0.020416340718808941 0.17098858525688368 ... FAIL and TW-MADX-DIGEST 387 2
+170988585256.88458 with EXIT=1 (transpose_R run, quoted in the history section).
+
+**Run** (from the repository root; the consumer first, then the generator,
+which needs MAD-X):
+
+```bash
+env CUDA_VISIBLE_DEVICES="" julia --project=. validation/twiss_madx_benchmark.jl
+env CUDA_VISIBLE_DEVICES="" OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. validation/twiss_madx_benchmark.jl
+env CUDA_VISIBLE_DEVICES="" julia --project=. validation/generate_madx_twiss_reference.jl
+env CUDA_VISIBLE_DEVICES="" OCTOPUS_STAGE8_REGENERATE=1 julia --project=. validation/generate_madx_twiss_reference.jl
+```
+
+**Overrides:**
+
+- OCTOPUS_STAGE8_DEFECT=none|drop_J|transpose_R (consumer; default none).
+- OCTOPUS_STAGE8_REGENERATE=1 (generator; compare a fresh MAD-X run cell by
+  cell against the committed table instead of writing it; prints
+  MADX-REGENERATE-DIFF differing_cells=N).
+- OCTOPUS_MADX (generator; the MAD-X binary, default /usr/local/bin/madx).
+- OCTOPUS_STAGE8_WORKDIR (generator; scratch directory, default
+  result/twiss_madx_reference_work).
+
+**Outputs:** the consumer writes result/twiss_madx_benchmark.tsv (one row per
+printed line) and prints the TW-MADX lines with the digest and EXIT code; the
+generator writes validation/reference/twiss_madx_5.03.06.tsv and
+validation/reference/twiss_benchmark_maps.tsv (or, in regenerate mode, only
+the diff line) and its 183 MADX-GATE self-checks (table header line 22).
+
+**Theory and design:** ../docs/theory/twiss_dispersion.md section 12.2 items 1,
+2, 3 and 9 (the requirements this benchmark discharges against MAD-X) and
+section 13.10 (the rolled FODO constant); ../docs/design/twiss_dispersion_analysis.md
+(Staging item 8); ../docs/history/twiss_dispersion_analysis_history.md
+(the 2026-09-15 stage 8 benchmark A section).
+
 ## Twiss and Dispersion Identities
 
 `twiss_dispersion_identities.jl` checks the tagged Twiss and dispersion

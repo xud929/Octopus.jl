@@ -14131,3 +14131,128 @@ It is the LAST commit before the push, which the owner approved on
 the push carries the five batch commits and this record (six commits on
 b19003b), and the CI run on the new HEAD is the check of the batch at the
 runner's CPU class.
+
+## 2026-09-15: stage 8, benchmark A, the twiss analysis against MAD-X twiss on its exported one-turn maps
+
+### What landed
+
+- validation/twiss_benchmark_cells.jl (533 lines): the shared fixture module
+  (dossier D15) that builds every stage 8 cell for Octopus in the bare and
+  task compile modes, writes the MAD-X and PTC sequence text and exports the
+  Octopus one-turn maps to validation/reference/twiss_benchmark_maps.tsv (66
+  lines: 20 header lines, one column row, 45 data rows, 42 columns).
+- validation/generate_madx_twiss_reference.jl (495 lines): runs MAD-X
+  5.03.06 and freezes validation/reference/twiss_madx_5.03.06.tsv (92 lines:
+  67 header lines, one column row, 24 data rows, 56 columns); regenerate
+  mode (D17) diffs a fresh run cell by cell.
+- validation/twiss_madx_benchmark.jl (744 lines): the consumer; converts the
+  exported MAD-X maps by M_oct = Sh(-C/gamma0^2) . J0 . M_madx . J0^-1,
+  J0 = diag(1,1,1,1,beta0,1/beta0), runs the analysis and prints the TW-MADX
+  lines.
+- validation/README.md: the section "Twiss Benchmark Against MAD-X Twiss";
+  docs/todo.md row 20: one sentence appended.
+
+### Standalone verification
+
+Native arm [stage8/impl/A/run_native.log]:
+
+    TW-MADX-CONFIG table=twiss_madx_5.03.06.tsv version=5.03.06 defect=none analysis=TwissDispersionAnalysis(strict=false, scaling=:none) ladder=(4, 8, 16, 32, 64)
+    TW-MADX-WITNESS U2_partnership_converted_(5,6)_vs_octopus_bare_(5,6) -0.081412323090219285 -0.081412323096546585 6.3272997952168453e-12 PASS
+    TW-MADX K1 ET_bety 38.365210045104469 38.365210045102693 1.7763568394002505e-12 9.9999999999999998e-13 TOL-A PASS
+    TW-MADX-MODEL U1 64 2.0827214952667816e-10
+    TW-MADX-ORDER U1 4.0013414895306783 7.8839690331733436e-09 PASS
+    TW-MADX R_0 exported_cos_mu_vs_theory_13.10_constant 0.97440039720586424 0.97440039720586435 1.1102230246251565e-16 1e-10 TOL-F PASS
+    TW-MADX-DIGEST 387 0 0.40503179603364126
+    EXIT=0
+
+AVX2 arm (OPENBLAS_CORETYPE=Haswell, -C haswell) [stage8/impl/A/run_haswell.log]:
+the digest line 365 is identical, TW-MADX-DIGEST 387 0 0.40503179603364126,
+EXIT=0. Fitted orders on both arms: U1 4.0013414895306783, U2
+3.9988016758485325, K1 4.0004537849572168, K2 3.9987980534024454, with
+nst=64 model residuals 2.0827214952667816e-10, 7.8839690331733436e-10,
+3.4806602045023283e-12, 7.8473405551449105e-10 [run_native.log lines
+160-185]. The beta0 pin residual over all table rows is
+1.1102230246251565e-16 [line 2]. Regenerate mode on both arms:
+MADX-REGENERATE-DIFF differing_cells=0, EXIT=0 [stage8/impl/A/regen_native.log,
+regen_haswell.log]. Counts after the review fix: 98 gated rows, 121 WITNESS
+lines, 110 RECORDED lines [stage8/review/fix_A.md].
+
+### Decisions
+
+- D13: the beam is pinned at beta0 0.9498330546994187 in every generator.
+- D15: one fixture module shared by the three benchmarks; the maps table is
+  the interface, its header (20 lines) names the consumers, flags nst=64
+  order 4, the beam, the compile modes and the conversion law.
+- D8/D9: the rolled FODO rows carry reason symbols and the MAD-X directional
+  sentinel (R_pi4 has no periodic solution; S0 and W2 have no periodic
+  file) [table header lines 20-22].
+- D16: two injected defects, drop_J and transpose_R.
+- D17: regenerate mode is OCTOPUS_STAGE8_REGENERATE=1.
+- The U2 finite-difference dispersion witness is recorded, not gated: FD/DX
+  0.94983305085229297 against the pin 0.94983305469941881, difference
+  3.8471258401173714e-09, the deltap=+-0.0001 truncation
+  [stage8/impl/A/gen_native.log].
+
+### Tables
+
+- validation/reference/twiss_madx_5.03.06.tsv, md5
+  33f9d3ebc60553b978775065cf3d822d; header lines 1-12 record option -echo
+  -info -warn, rbarc=false, set format="22.16e", use period=cell, twiss
+  betx=1 bety=1 rmatrix / twiss rmatrix, deltap=+-0.0001; line 22 records
+  183 MADX-GATE checks.
+- validation/reference/twiss_benchmark_maps.tsv, md5
+  def5fe389c74d203b6fd9792c62b592c after the benchmark B rework re-froze the
+  G6 rows (see the benchmark B section) and the final fix repointed header
+  lines 1, 12 and 19 to tracked records (MAPS-DIFF cells=1890 differing=0,
+  every data row bit-identical [stage8/review/final_fix_runs/regen_maps.log]);
+  the MAD-X consumer does not read the G6 rows.
+
+### Injected defects
+
+- OCTOPUS_STAGE8_DEFECT=drop_J: four witnesses fail (the partnership witness
+  reads -0.034559825812292666 against -0.081412323096546585, difference
+  0.046852497284253919); TW-MADX-DIGEST 35 4 10605609037863.729; EXIT=1
+  [stage8/impl/A/defect_drop_J.log].
+- OCTOPUS_STAGE8_DEFECT=transpose_R: TW-MADX K1 r12 -0.19140492597569261
+  -0.020416340718808941 0.17098858525688368 ... FAIL and r21
+  0.17098858525688457 FAIL; TW-MADX-DIGEST 387 2 170988585256.88458; EXIT=1
+  [stage8/impl/A/defect_transpose_R.log].
+
+### Review findings and fixes
+
+[stage8/review/fix_A.md] The review moved the K1 block-entry comparison to
+the gated set (r11..r22 = 0.86201121670608871, -0.020416340718808941,
+-0.19140492597569572, 1.0534161426817839 from the generator, matched at
+TOL-A), demoted the Rd_1e-6 fixture to recorded (analyze returns :failed;
+E7 1.785672875796623e-9 against 3.009598136315693e-12 on Rd_1e-3) and the
+nst=32 residuals to recorded (U2 1.2613734057254078e-08, K2
+1.2555206652109518e-08 against 1e-9), which is why only the nst=64 point is
+capped (D6). fix_A reports the consumer at 723 lines; the final fix
+[stage8/review/final_fix_8.md] replaced the two pinned A3 anchor literals
+(0.9744003972058644, 0.0360896443733161, read off a run) by
+rolled_exact_anchor, which evaluates cos mu = tr(Dr Qd Dr Qf)/2 from the
+fixture's own thick-quadrupole and drift 2x2 blocks (L=0.2, k=+-1, drift
+1.0): cos mu 0.97440039720586435 (0 from the literal), q
+0.036089644373316153 (5.6e-17 from the literal); the gated rows read
+1.1102230246251565e-16 on cos mu and 8.3266726846886741e-17 on q [line
+187-188], the digest is unchanged, and the consumer is 744 lines.
+
+### Not verified
+
+- The MAD-X 5.03.06 binary is the only version measured; a later MAD-X may
+  print different digits in the 22.16e format and the regenerate diff would
+  then report cells, not a physics change.
+- The FD dispersion witness is only recorded (3.8471258401173714e-09).
+- The Rd_1e-6 fixture is recorded, not gated (analyze :failed).
+
+### Carried forward
+
+- The nst=32 residuals sit above the 1e-9 model tolerance
+  (1.2613734057254078e-08 on U2); only nst=64 is capped. A finer ladder or a
+  tighter MAD-X integrator flag would make the whole ladder gateable.
+- The FD dispersion witness could be gated at a coarser class once a
+  deltap-independent extraction (a Richardson pair at deltap 1e-4 and 5e-5)
+  is frozen.
+- The maps table is shared: any fixture change re-freezes it and every
+  consumer's provenance line (the Xsuite sidecar gates its sha256).
+
