@@ -54,8 +54,8 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   constraints, capacity posture, crash-recovery cursor, live text mirror,
   and the migration order behind the current APIs.
 - [`twiss_dispersion_analysis.md`](design/twiss_dispersion_analysis.md) — the
-  first analysis (decided 2026-09-11; stages 1 to 7 landed 2026-09-11 to
-  2026-09-13, stage 8 open): one non-parametric `AbstractAnalysis` object
+  first analysis (decided 2026-09-11; stages 1 to 8 landed 2026-09-11 to
+  2026-09-15): one non-parametric `AbstractAnalysis` object
   with an `analyze` verb and six pure-math kernels; input by matrix or
   one-turn Jacobian (complex step, finite difference, ForwardDiff through the
   extension); reciprocal canonical scaling; a cluster-first pipeline with the
@@ -131,8 +131,11 @@ reference material, not API docs; the implementing code links back to them.
   57 of the note's identities; the external benchmarks (stage 8) pin the
   analysis against MAD-X twiss, PTC ptc_twiss and xtrack 0.112.0 through the
   committed tables under `validation/reference/` and the light contract
-  `src/contracts/twiss_external_reference.jl`; the neighbour audit is the
-  open ledger row.
+  `src/contracts/twiss_external_reference.jl`; the stage 9 neighbour audit
+  (2026-09-16, the last section of the history file) closed the ledger
+  row: two majors fixed (a vacuous (I1) invariance floor, the real-class
+  floor's misplaced square root), seventeen moderates, ninety-three minor
+  and style edits, four owner items left.
 - [`arc_survey_and_velocity_slip.md`](theory/arc_survey_and_velocity_slip.md) —
   what the survey coordinate is (arc length; bend `L` *is* the arc, so
   curvature changes nothing; the patch and kept-whole-line caveats), why the
@@ -388,8 +391,13 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   effectiveness contract) landed 2026-09-12; stage 5 (the element
   declaration), stage 6 (the identity contract, its validation script, the
   DBA-ring example) and stage 7 (the `lattice_cells.jl` refactor) landed
-  2026-09-13; the stage 7 carried batch landed 2026-09-14 and stage 8 (the
-  three external benchmarks, seven commits) 2026-09-15.
+  2026-09-13; the stage 7 carried batch landed 2026-09-14, stage 8 (the
+  three external benchmarks, seven commits) 2026-09-15, and stage 9 (the
+  post-campaign targeted neighbour audit of 93e1720..7711a8a: 44 units,
+  220 leads, two majors fixed, seventeen moderates fixed, ninety-three
+  minor and style edits, the rest ledgered) 2026-09-16; that last section
+  is the newest neighbour-audit precedent, recorded inside this file
+  rather than as a standalone `neighbour_audit_*.md`.
 - [`twiss_external_benchmarks_2026_09_15.md`](history/twiss_external_benchmarks_2026_09_15.md) —
   the stage 8 external benchmark record: the conversion law per code (MAD-X
   J0 and slip, PTC F, xtrack slip), the beam pin, the PTC internal mass, the
@@ -613,6 +621,18 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   defect the audit missed -- the spectral solver never routed through the
   memoized schedule consult, so a stateful schedule made its gate and its
   solver disagree on every turn),
+  the stage 9 section (2026-09-16) of
+  [`twiss_dispersion_analysis_history.md`](history/twiss_dispersion_analysis_history.md)
+  (the newest: the Twiss/dispersion campaign's post-campaign targeted
+  neighbour audit of 93e1720..7711a8a, recorded inside the campaign's one
+  history file -- 44 units, 220 leads, three skeptics per lead, a critic
+  round 2 over the unread regions; two majors fixed: the (I1) invariance
+  floor `c_inv eps kappa_route` could reach the normalized residual's
+  bound 3 and certify any graph, and the real-class floor took the square
+  root of `rho` alone where the theory takes it over `rho max(1, ||M||)`;
+  seventeen moderates fixed, ninety-three minor and style edits, every fix
+  with a test shown red on the unfixed tree, the remainder ledgered with
+  four owner items),
   [`neighbour_audit_2026_09_06.md`](history/neighbour_audit_2026_09_06.md)
   (the multi-process campaign's neighbour audit, deferred by owner decision
   until the last solver divided: twelve classes swept, three majors — the

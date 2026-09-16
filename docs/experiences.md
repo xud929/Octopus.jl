@@ -1374,6 +1374,85 @@ minutes, against ninety owed again after a red); a red gate's logs are kept
 under a name that says red and names the tree, and the run on the fixed tree
 is the gate of record.
 
+## A subagent inherits its parent's working directory, not its prompt's
+
+The stage 9 neighbour audit's first workflow run (2026-09-16) lost 15 of its
+18 agents to the same refusal: the session's shell had been pinned outside
+the worktree by one `cd` into the shared checkout's `result/` directory, and
+every agent spawned after that inherited the pinned directory. Their prompts
+began every command with `cd <worktree> && ...`, and the isolation hook
+judged the process's working directory, not the command text, so the prefix
+changed nothing; the three agents that recovered were the ones that found
+the re-entry tool on their own. The run was stopped, the partial output moved
+aside, one ground rule added ("if refused with 'resolved to the shared
+checkout', call EnterWorktree once with the worktree path, then continue"),
+and the relaunch had zero refusals.
+
+Rules adopted: an orchestrator never changes the shell's directory out of the
+worktree, not even for a read-only command on an absolute path (address
+outside files by absolute path from inside the worktree); before launching a
+workflow it runs one trivial command and checks that it was not refused; a
+workflow's ground rules name the recovery tool for the one refusal its agents
+can meet, because an agent that cannot run any command produces a report
+that says "unchecked" or nothing at all, and a sweep that ran no command is
+not coverage.
+
+## A floor that can reach the residual's own bound is not a floor
+
+The (I1) invariance acceptance of every dispersion route was `normalized
+residual <= c_inv eps kappa_route`, with `kappa_route` carrying the route's
+amplification, the reciprocal of the trace differences in its denominators.
+The normalized residual is bounded by 3 (the triangle inequality; 2.19 is
+the largest seen over 3000 random pairs), and nothing bounded the floor. A
+map whose synchrotron trace lies 1e-7 from a betatron trace has
+amplification 5e14 and a floor of 70.7: a garbage graph with residual 0.24
+was certified. No fixture found it, because no benchmark fixture brings two
+traces that close; the audit's floor-multiplier lens (S2) found it by asking,
+for each floor, what the quantity it bounds can be at most.
+
+The rule: every tolerance on a normalized residual is written beside the
+residual's range, and when the floor can reach the top of that range the
+acceptance refuses with the value reported instead of certifying
+(`_INVARIANCE_RESIDUAL_CAP`, stage 9, 2026-09-16). The suite pins a fixture
+that drives the floor past the cap. A floor in [1, 3) still admits the zero
+graph (residual exactly 1); where the acceptance should stop below the cap
+is a design question the record carries for the owner.
+
+## The workflow's synthesis is code, and a lead's Repro is a command
+
+Two things failed the same way in the stage 9 audit workflow. The
+ledger-scribe agent, handed 220 leads with their three verdicts, died twice
+with "Prompt is too long"; the ledger was regenerated in minutes by a script
+over the workflow's returned result object. And the completeness critic
+found eight leads whose Repro field was a pointer to a log column or a
+paraphrase of the claim; their L1 skeptics could not run anything and had to
+construct a reproduction before judging.
+
+The rules: a workflow returns structured results and the orchestrator
+writes the ledger, the coverage table and the totals in code, never through
+an agent whose prompt would have to hold everything (the same lesson as the
+watchdog-sized reading lists, one level up). And a sweep prompt demands that
+Repro be a runnable command or an exact text quote, with the critic
+rejecting a lead that has neither; a lead nobody can re-run is a claim, not a
+finding.
+
+## A red check is test code, and it must be red for the defect's reason
+
+Three of the batch's red checks failed for their own reasons, not the
+defect's: `[[true, 6]]` promotes to `Vector{Int}` and raises nothing, so the
+"Bool stand-in" case passed on the unfixed tree for the wrong reason; a
+`Vector` handed as `dispersion_routes` reaches the "must be a tuple" check
+before the unknown-route check, so the expected message never appeared; and
+the moderates mirror built its clusters on a different matrix than it passed
+to `_dispersion_routes`, so its one "fail" was an `ArgumentError` of the
+mirror, not of the code. Each was caught only because the check ran on both
+trees and its failure text was read, not counted.
+
+The rule: a regression test is run red on the unfixed tree and green on the
+fixed one, and the red failure text is read to confirm it fails for the
+defect (the message the defect produces), not for the test. A red count
+alone certifies nothing.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

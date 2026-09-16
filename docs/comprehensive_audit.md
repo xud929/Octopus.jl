@@ -41,8 +41,12 @@ read them front to back. The budget that works:
   the end of this document. At the time of writing the newest full record is
   [`comprehensive_audit_2026_08_05_b.md`](history/comprehensive_audit_2026_08_05_b.md),
   and the post-campaign precedents are the `history/neighbour_audit_*.md`
-  records (newest `neighbour_audit_2026_08_18_b.md`); check `docs/history/`
-  for anything later.
+  records (newest standalone `neighbour_audit_2026_09_06.md`; a campaign
+  whose records live in one history file records its audit there, and the
+  newest of all is the stage 9 section of
+  `history/twiss_dispersion_analysis_history.md`, 2026-09-16); check
+  `docs/history/` and the neighbour-audit list in `docs/README.md` for
+  anything later.
 - During the audit: consult a record's deeper sections, or the archived
   per-unit reports beside it, only when a lead touches the region they
   cover.
