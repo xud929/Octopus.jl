@@ -5956,7 +5956,8 @@ end
         end
     end
     @test undocumented_consts == String[]
-    @test length(consts) == 18 && :_DISPERSION_ROUTES_ARGUMENT_HELP in consts && :_LONG_NORMALIZER_T in consts
+    @test length(consts) == 19 && :_DISPERSION_ROUTES_ARGUMENT_HELP in consts && :_LONG_NORMALIZER_T in consts &&
+          :_INVARIANCE_RESIDUAL_CAP in consts                                # 19 = 18 + the stage 9 cap (S2b-1)
     @test length(thresholds) == 13 && :_MAX_HALVINGS in thresholds && :_FIXED_POINT_MAX_ITERATIONS in thresholds
     for c in thresholds
         @test occursin("PROVISIONAL", string(Base.Docs.doc(Base.Docs.Binding(Octopus, c))))
