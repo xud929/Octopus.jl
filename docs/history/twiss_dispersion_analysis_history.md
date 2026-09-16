@@ -15565,3 +15565,164 @@ refuse shell variables, computed arguments and any command text containing
 the substring of the version-control tool's name outside the worktree, so
 file edits went through scripts written to `/tmp` and run by name; mirror
 checks of `_dispersion_routes` build their clusters on the matrix they pass.
+
+### The two-arm full gate on the final tree d9810a2
+
+Four commits on origin/main 7711a8a (the pushed tree of CI run 441, the tree the
+audit read; 7711a8a is itself the record of the stage 8 gate, the section
+"2026-09-15: stage 8 closed, the external benchmark batch gated"), each
+carrying its ledgers and none gated alone (AGENTS.md owes the full gate before
+the PUSH, not before every commit; owner decision 2026-09-04, commit 6ac8d61;
+stage 9 is its own batch with its own gate, the Executive summary above). The
+batch, oldest first:
+
+- cecb908 `fix(analysis): stage 9 neighbour audit: cap the (I1) invariance
+  floor, one square root in the real-class floor, seventeen moderates, the
+  minor batch` (27 files, 675 insertions, 175 deletions: the two majors
+  S2b-1 = U5-1-1 and S2a-1 = U4a-1-2, the seventeen moderates, the minor and
+  style batch of 93 edits in 26 files, the sections F1, F2, F3 and "The minor
+  and style batch" above; in `test/runtests.jl` the four `Stage 9 audit: ...`
+  testsets and the U5-2-3 Krein-quartet testset (five new top-level rows, 54
+  assertions), regression assertions inside thirteen existing testsets (57
+  net, the old-floor pin removed among them), every one shown red on 7711a8a
+  first).
+- 39c6ae3 `docs(history): stage 9 record: the neighbour audit of
+  93e1720..7711a8a, its pointers, todo row 20, four lessons` (markdown only,
+  five files, 750 insertions: this section from its heading to "Process
+  lessons", the pointers in `docs/README.md` and `docs/comprehensive_audit.md`,
+  the four lessons in `docs/experiences.md`, the todo row 20 sentence).
+- 780527e `fix(test): the stage 3 vocabulary pin counts the stage 9 cap
+  constant (19 consts), which tripped the fast lane on 39c6ae3`
+  (`test/runtests.jl`, one assertion: the pin "Dispersion routes and canonical
+  separation: pinned vocabulary, documented structs, functions and consts,
+  PROVISIONAL constants" counts every `const _NAME` of the two stage 4a source
+  files and said 18; `_INVARIANCE_RESIDUAL_CAP` is the nineteenth, now named
+  by the pin; the threshold count stays 13, the cap being the
+  triangle-inequality bound, not a PROVISIONAL tolerance).
+- d9810a2 `fix(test): the F4 tie pin follows the U5-1-2 rule (no z-area tie
+  under an explicit selection), the tie docstring says so, the overflow
+  comments cite U5-1-3` (`test/runtests.jl`: the stage 4b testset "Prescribed
+  h = 0.05 ... (F4 amendment, row 7)" asserted `longitudinal_selection.tie`
+  for the tune-certified run on the h = 1/2 map, the behaviour U5-1-2 removed
+  (an explicit or tune selection declares no z-area tie, only the transverse
+  margin can tie), now `!tie` with a comment naming the rule, and one comment
+  relabelled; `src/analysis/dispersion_routes.jl`: the `ModeLabels6D`
+  docstring states the U5-1-2 rule beside the code, six comments that cited
+  U5-1-2 for the overflowing singular-value quotient now cite U5-1-3, the
+  ledger's id of that lead; no code changed).
+
+The gate ran on the clean tree at d9810a2 (the final tree of the push; the
+fast lane before it stopped red on 39c6ae3 after 77 green rows at the stage 3
+vocabulary pin, its 78th row, and on 780527e after 86 green rows at the F4
+tie pin, its 87th row, one stale pin each, "Before the gate" below) in the
+worktree `stage9-A` that holds the branch, CUDA active, four threads, both arms
+one after the other from one detached script
+(result/gates/run_full_gate_stage9_both_arms.sh, `setsid nohup`), with the
+depot otherwise idle (no other julia process compiling or testing; the owner's
+long-lived IJulia kernels and one defunct julia child of jupyter-lab only):
+
+    # native arm (the Verification Matrix's gate)
+    julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
+    # AVX2 arm (CI-runner parity: OpenBLAS Haswell kernels, LLVM target haswell)
+    OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4", "-C", "haswell"])'
+
+The reference for every comparison below is the stage 8 gate (the section
+named above), run on 99562f2, the tree 7711a8a records and differs from by
+that record's two markdown files alone: 318 rows and 148394/148394 in each arm.
+
+| item | native arm | AVX2 arm |
+|---|---|---|
+| tree | d9810a2 (`git status` clean, `status_lines=0` in the log header; `Project.toml` and `Manifest.toml` identical to 7711a8a's) | same |
+| start / end / wall | 18:00:13 / 18:45:41 EDT / 45 min 28 s (the stage 8 gate: 44 min 04 s) | 18:45:41 / 19:34:16 EDT / 48 min 35 s (the stage 8 gate: 43 min 39 s) |
+| exit code | 0 (`Testing Octopus tests passed`) | 0 (`Testing Octopus tests passed`) |
+| test summary | 323 top-level testset rows, every one `Pass == Total`; summed 148505 passed of 148505 (the stage 8 gate: 318 rows, 148394); no Fail, Error or Broken column anywhere | 323 rows, every one `Pass == Total`; summed 148505 passed of 148505; no Fail, Error or Broken column anywhere; every row's counts equal to the native arm's (0 differing counts, 0 rows only here, 0 only there in the row-by-row comparison) |
+| the rows the batch touches (the 5 new rows first, then the 13 whose counts changed, each against the stage 8 gate's native arm) | `Dispersion routes: a Krein quartet contributes no trace, the projector route is blocked with the cluster's reason (stage 9, U5-2-3)` 5/5 (0.1s) (new in cecb908); `Stage 9 audit: conditions beyond Float64, non-finite graphs and scaling quotients` 16/16 (0.3s) (new in cecb908); `Stage 9 audit U4a-2-2: the indefinite cluster's signed basis pairs each column with its own eigenvalue` 18/18 (0.1s) (new in cecb908); `Stage 9 audit: the constructor rejects Bool stand-ins and repeated cluster indices with ArgumentErrors` 11/11 (1.4s) (new in cecb908); `Stage 9 audit: a non-finite external-reference difference is an infinite worst ratio, not a NaN one` 4/4 (0.0s) (new in cecb908); `Stage 6: the identity contract passes on the tree with pinned metrics, and every negative is red` 168/168 (56.8s) (the stage 8 gate: 167/167 (56.6s); +1 in cecb908); `Mode clusters: unstable and unit-eigenvalue fixtures (D4, D5)` 76/76 (1.1s) (the stage 8 gate: 70/70 (1.1s); +6 in cecb908); `Dispersion routes: vocabulary pin and the dense elliptic maps (all five routes, agreement, cubic roots, labels)` 11805/11805 (2.7s) (the stage 8 gate: 11792/11792 (1.2s); +13 in cecb908); `Dispersion routes: singular projection, isotropic graph, degeneracy rejection (theory 13.7, E9)` 42/42 (0.2s) (the stage 8 gate: 41/41 (0.2s); +1 in cecb908); `Dispersion routes: argument errors, label ties, and the kernels' loud inputs` 37/37 (0.4s) (the stage 8 gate: 35/35 (0.4s); +2 in cecb908); `Analysis object: constructor rules, option schema, exports, the status vocabulary (F1, F2)` 124/124 (0.8s) (the stage 8 gate: 121/121 (1.1s); +3 in cecb908); `validation/twiss_dispersion_identities.jl: the reporting code on a fake result (dry run)` 16/16 (3.0s) (the stage 8 gate: 15/15 (3.0s); +1 in cecb908); `Dense 6D map: the default path is :degraded by the uncertified heuristic, certified it :passed (F3, F4, dossier row 1)` 88/88 (0.6s) (the stage 8 gate: 73/73 (0.4s); +15 in cecb908); `Reason table: one fixture per reason the pipeline can emit, the set seen equals the set the docstrings claim (F13)` 33/33 (1.8s) (the stage 8 gate: 30/30 (1.8s); +3 in cecb908); `Verdict and strictness: the near-non-symplectic map fails, strict throws the same result, :flag degrades, :error throws (F4, row 11)` 43/43 (0.7s) (the stage 8 gate: 40/40 (0.7s); +3 in cecb908); `Explicit partitions promise the grouping only; a forced resolution is a degradation (F3 steps 6-8, row 14)` 21/21 (0.4s) (the stage 8 gate: 20/20 (0.4s); +1 in cecb908); `4b-B probe tables: valid non-default alternatives, F6 inactive pairs, F8 tripwire` 110/110 (0.6s) (the stage 8 gate: 107/107 (0.6s); +3 in cecb908); `Physics contracts` 27/27 (1m56.7s) (the stage 8 gate: 22/22 (1m51.5s); +5 in cecb908) | 5/5 (0.1s); 16/16 (0.3s); 18/18 (0.1s); 11/11 (1.4s); 4/4 (0.0s); 168/168 (56.6s) (167/167 (56.1s)); 76/76 (1.1s) (70/70 (1.1s)); 11805/11805 (2.6s) (11792/11792 (1.2s)); 42/42 (0.2s) (41/41 (0.2s)); 37/37 (0.4s) (35/35 (0.5s)); 124/124 (0.8s) (121/121 (1.1s)); 16/16 (2.9s) (15/15 (2.9s)); 88/88 (0.6s) (73/73 (0.4s)); 33/33 (1.8s) (30/30 (1.8s)); 43/43 (0.7s) (40/40 (0.7s)); 21/21 (0.4s) (20/20 (0.4s)); 110/110 (0.6s) (107/107 (0.6s)); 27/27 (1m50.7s) (22/22 (1m55.8s)) (the same order; the parenthesis is the stage 8 gate's AVX2 arm) |
+| skipped or unrunnable | none: no `LANE SKIP` banner (full lane); the heavyweight sections ran (`The multi-process seam runs under an MPI launcher` 1710/1710 (9m03.3s); `The developer harnesses run divided under an MPI launcher` 4/4 (1m34.3s); `4D eigenmodes: (E7), (E8), projectors, signed areas and (M5) on 200 manufactured maps` 12602/12602 (0.2s); `Mode clusters: 200 + 200 manufactured stable maps are resolved singletons` 11406/11406 (1.5s); `CPU solver stack is thread-count invariant` 118/118 (6.2s); `Every example script runs against the current interface` 6/6 (8m03.9s)) | none: no `LANE SKIP` banner (full lane); the heavyweight sections ran (`The multi-process seam runs under an MPI launcher` 1710/1710 (8m55.0s); `The developer harnesses run divided under an MPI launcher` 4/4 (1m31.8s); `4D eigenmodes: (E7), (E8), projectors, signed areas and (M5) on 200 manufactured maps` 12602/12602 (0.2s); `Mode clusters: 200 + 200 manufactured stable maps are resolved singletons` 11406/11406 (1.5s); `CPU solver stack is thread-count invariant` 118/118 (6.1s); `Every example script runs against the current interface` 6/6 (7m57.7s)) |
+| CUDA | active (`CUDA coverage status` 1/1) | active (`CUDA coverage status` 1/1) |
+| warnings | 41 non-fatal warning lines of 10 distinct texts (60-character prefixes, numbers as printed; the stage 8 gate's native arm: 41 of 10); no text new to this log; none of that arm's texts absent; every text keeps that arm's count exactly; the texts and counts: the curved-frame notice 23, PIC mesh under-coverage 4, the DST width notice 4, CUDA-only solver options inactive on CPU 3, the known `observer_option_schema` test-side overwrite 2, the ApertureSpec `alive` notice once, the GPUExecutionPolicy notice once, the mpiexec notice once, the launch-threads reduction 512 to 384 once, the launch-threads reduction 512 to 256 once (the stage 8 record counted 11 texts there, separating the two `observer_option_schema` overwrites, which share a 60-character prefix) | 41 non-fatal warning lines of 10 distinct texts (60-character prefixes, numbers as printed; the stage 8 gate's AVX2 arm: 41 of 10); no text new to this log; none of that arm's texts absent; every text keeps that arm's count exactly; the texts and counts: the curved-frame notice 23, PIC mesh under-coverage 4, the DST width notice 4, CUDA-only solver options inactive on CPU 3, the known `observer_option_schema` test-side overwrite 2, the ApertureSpec `alive` notice once, the GPUExecutionPolicy notice once, the mpiexec notice once, the launch-threads reduction 512 to 384 once, the launch-threads reduction 512 to 256 once; identical to the native arm's texts and counts |
+| the external-reference contract in each arm, standalone on the same tree after the gate (result/gates/stage9/validate_ext_arm.sh, `CUDA_VISIBLE_DEVICES=` unset-to-empty, one process per arm; the stage 8 gate: 691 rows, worst ratio 0.3567635076251463 in both arms) | `external twiss references certified: 692 rows (madx 81, ptc 112, xtrack 499), worst ratio 0.3567635076251463 (xtrack Rd_1e-3 ET_bety_edw_teng)` (`sapphirerapids cpu_target=native OPENBLAS_CORETYPE=-`; passed passed=true; `failed` 0; `worst_TOL_A` 0.13881729116399735; `worst_TOL_A_cond` 0.04560352920349014; `worst_TOL_B` 0.0001942890293094024; `worst_TOL_C` 0.004162562893725662; `worst_TOL_D` 0.006708795741161566; `worst_TOL_F` 0.3567635076251463; `worst_assert` 0.0; `worst_ratio` 0.3567635076251463; `worst_witness` 0.1130971516176707; first call 34.117944955825806 s, second call 0.02053380012512207 s; exit=0) | `external twiss references certified: 692 rows (madx 81, ptc 112, xtrack 499), worst ratio 0.3567635076251463 (xtrack Rd_1e-3 ET_bety_edw_teng)` (`sapphirerapids cpu_target=haswell OPENBLAS_CORETYPE=Haswell`; passed passed=true; `failed` 0; `worst_TOL_A` 0.13881729116399735; `worst_TOL_A_cond` 0.04560352920349008; `worst_TOL_B` 0.0002220446049250313; `worst_TOL_C` 0.004162562893725662; `worst_TOL_D` 0.006708795741161566; `worst_TOL_F` 0.3567635076251463; `worst_assert` 0.0; `worst_ratio` 0.3567635076251463; `worst_witness` 0.1130971516176707; first call 33.827378034591675 s, second call 0.024817943572998047 s; exit=0) |
+| log | `result/gates/full_gate_stage9_native_2026_09_16.log` | `result/gates/full_gate_stage9_avx2_2026_09_16.log` |
+| the pre-checks on the batch's trees BEFORE the gate (not the gate; "Before the gate" below) | the extracted source sweeps 33/33 (28.1s) on the fixed working tree; the fast lane red on 39c6ae3 (77 green rows, then `Dispersion routes and canonical separation: pinned vocabulary, documented structs, functions and consts, PROVISIONAL constants` 160/161 (1.5s)) and on 780527e (86 green rows, then `Prescribed h = 0.05: the heuristic is uncertified and degraded, the tune certifies and recovers the analytic triple (F4 amendment, row 7)` 24/25 (1.8s)); the no-abort probe of the full lane on the working tree with d9810a2's content: exit 0, 17:09:51-17:58:29 EDT (48 min 38 s), 323 rows, 148505/148505 summed, 0 `LANE SKIP` banners, 0 `NOABORT-FAILED-SET` lines, no Fail, Error or Broken column (`result/gates/lane_full_noabort_wip_2026_09_16.log`) | native only |
+
+Row arithmetic: the batch adds 5 top-level testsets, all in cecb908 (`Dispersion routes: a Krein quartet contributes no trace, the projector route is blocked with the cluster's reason (stage 9, U5-2-3)` 5; `Stage 9 audit: conditions beyond Float64, non-finite graphs and scaling quotients` 16; `Stage 9 audit U4a-2-2: the indefinite cluster's signed basis pairs each column with its own eigenvalue` 18; `Stage 9 audit: the constructor rejects Bool stand-ins and repeated cluster indices with ArgumentErrors` 11; `Stage 9 audit: a non-finite external-reference difference is an infinite worst ratio, not a NaN one` 4; 54
+assertions), moves none, and changes the count of 13 existing testsets, all
+in cecb908 (`Stage 6: the identity contract passes on the tree with pinne...` 167 to 168; `Mode clusters: unstable and unit-eigenvalue fixtures (D4, D5...` 70 to 76; `Dispersion routes: vocabulary pin and the dense elliptic map...` 11792 to 11805; `Dispersion routes: singular projection, isotropic graph, deg...` 41 to 42; `Dispersion routes: argument errors, label ties, and the kern...` 35 to 37; `Analysis object: constructor rules, option schema, exports, ...` 121 to 124; `validation/twiss_dispersion_identities.jl: the reporting cod...` 15 to 16; `Dense 6D map: the default path is :degraded by the uncertifi...` 73 to 88; `Reason table: one fixture per reason the pipeline can emit, ...` 30 to 33; `Verdict and strictness: the near-non-symplectic map fails, s...` 40 to 43; `Explicit partitions promise the grouping only; a forced reso...` 20 to 21; `4b-B probe tables: valid non-default alternatives, F6 inacti...` 107 to 110; `Physics contracts` 22 to 27; +57 net); 39c6ae3 is markdown; 780527e and d9810a2 each
+change what one pin asserts and keep one assertion where one was (the
+vocabulary pin's `length(consts) == 19`, the F4 testset's `!tie`), so their
+trees have cecb908's counts. The expected totals are therefore the stage 8 gate's plus
+54 + 57 = 111: 323 rows and 148505 in both arms, with exactly 5 rows new and
+exactly 13 differing counts against that gate's native log, none gone, and
+none differing between the two arms; the no-abort probe of the full lane on
+the working tree with d9810a2's content measured exactly these (323 rows,
+148505/148505, the same 5 new rows and 13 differing counts against that log);
+measured by the gate: exactly as expected: 323 rows and 148505/148505 in each arm, 5 rows new against the stage 8 gate's native log, 13 differing counts, none gone, and 0 differing counts and 0 rows new or gone between the two arms (every other row its stage 8 count). The gate logs were read twice, by
+result/gates/summarize_gate.py (the scratch reader of the stage 8 gate,
+read-only) and by the script that rendered this table from the logs
+(result/gates/stage9/stage9_gate_record.py; its reader also takes a row whose
+header has no Time column and a row separated from its header by stderr
+lines, two shapes the scratch reader misses, which is why that reader counts
+the stage 8 fast lanes as 302 rows where the truth is 303), the two agreeing
+here (`grep -c 'Test Summary:'` 323 and 323, the same as the parsed row counts;
+no header interleaved with stderr output in either arm); no signal was sent
+to either test process and both logs are test output only.
+
+Before the gate, each fix was verified standalone, recorded in F1, F2, F3 and
+"The minor and style batch" above: every regression test red on 7711a8a
+(`verify/red_check_i1_7711a8a.log` 7 pass 5 fail, `verify/red_check_majors_7711a8a.log`
+4 pass 2 fail, the moderate and minor checks the sections name), the
+contracts on the fixed tree (the identities 57 on 160 runs, 3 of the 31
+judged results `:degraded`; the external reference 692 rows at worst ratio
+0.3567635076251463; the effectiveness contract 19 probes), the MAD-X and PTC
+digests unchanged. The ladder then ran in the order the stage 8 lessons
+prescribe (`docs/experiences.md`): the suite's four source sweeps extracted
+from `test/runtests.jl` by anchor (the stage 6 pin tripwire `_st6_pin_lines`,
+`Architecture integrity`, the Core.Box sweep, the detached-docstring sweep;
+result/gates/stage9/run_source_sweeps_stage9.jl) 33/33 (28.1s) on the fixed working
+tree at 16:45, the content cecb908 committed a minute later
+(result/gates/stage9/source_sweeps_fixed_tree_2026_09_16.log; the same 33 of
+33 on 7711a8a as the baseline, source_sweeps_baseline_7711a8a.log); the fast
+lane on 39c6ae3 (result/gates/fast_lane_stage9_39c6ae3_2026_09_16.log,
+16:47:41-16:51:50 EDT, 4 min 09 s), red at its 78th row after 77 green: the stage 3 vocabulary pin
+`Dispersion routes and canonical separation: pinned vocabulary, documented structs, functions and consts, PROVISIONAL constants` 160/161 (1.5s), `length(consts) == 18` where `_INVARIANCE_RESIDUAL_CAP` is the
+nineteenth `const _NAME` of the two stage 4a files, fixed by 780527e; the
+fast lane on 780527e (result/gates/fast_lane_stage9_780527e_2026_09_16.log,
+16:54:19-16:58:16 EDT, 3 min 57 s), red at its 87th row after 86 green: the stage 4b testset
+`Prescribed h = 0.05: the heuristic is uncertified and degraded, the tune certifies and recovers the analytic triple (F4 amendment, row 7)` 24/25 (1.8s), its pin `longitudinal_selection.tie == true` for the tune-certified
+run on the h = 1/2 map, the behaviour U5-1-2 removed, fixed by d9810a2. Because
+a fast lane stops at its first failing top-level testset (Test.jl's outermost
+`finish` throws), the third check was a no-abort probe of the FULL lane on the
+working tree holding d9810a2's content (result/gates/stage9/run_fast_lane_noabort.sh:
+`Pkg.test(test_args=["lane=full"], julia_args=["--threads=4", "-L", <preload>])`,
+the preload making the outermost `Test.finish` print `NOABORT-FAILED-SET` and
+return instead of throw, guarded so that Pkg's hash helper and the precompile
+workers, which receive the same `julia_args`, define nothing;
+result/gates/lane_full_noabort_wip_2026_09_16.log): exit 0, 17:09:51-17:58:29 EDT (48 min 38 s),
+323 rows, 148505/148505, no failing testset (0 `NOABORT-FAILED-SET` lines), no `LANE SKIP` banner, native, CUDA active;
+the two stale pins were the only ones. The separate fast lane on d9810a2 was
+not run: the full lane on the same content supersedes it. This gate is the
+first complete run of the full lane on a committed tree of the batch, the
+first run of the batch in the AVX2 arm, and the only run of the per-push lane
+the batch owes.
+
+What this gate measures and what it does not: both arms are the two MEASURED
+CPU classes (native AVX-512 Sapphire Rapids; the AVX2 emulation
+`OPENBLAS_CORETYPE=Haswell julia -C haswell`), so a gate here confirms the
+counts, the assertion structure, the identity rows and the contract's 692
+rows on the tree at both classes; it cannot measure the runner's third class
+(the requirement (d) subsection above: CI run 441 on 7711a8a, an identity
+table no local configuration reproduces). First seen on the push's CI run:
+the 692-row external reference at the runner's class (the PTC
+`layer_rows_present` coverage row of U10a-1-1 and the R2-5-1 gate on a
+BETA12/BETA21 row among them; the least margin is the stage 8 one, the TOL-F row `xtrack Rd_1e-3 ET_bety_edw_teng` at 0.3567635076251463 of its bound in both arms, the table above), the capped (I1) floor, the corrected `tau_real`
+and the K7 row tolerance scaling with ||zeta|| ||eta|| at that class, and the
+five new testsets. The items of "Not verified" above are untouched by this
+gate.
+
+This subsection (with the todo row's sentence) is the only change between the
+gated tree and the pushed tree; the commit carrying it is markdown-only and
+finishes with the fast lane on its own tree (matrix row "markdown only"),
+`result/gates/fast_lane_stage9_record_2026_09_16.log` (exit 0, 19:39:29-19:57:23 EDT, 17 min 54 s, 308 top-level rows, 146493/146493 summed, 15 `LANE SKIP` banners, no Fail, Error or Broken column; the stage 8 record commit's own lane, on 99562f2 plus that record: 303 rows, 146387/146387, 15 banners; against it the batch's 5 new rows and 12 of its 13 changed counts, none gone (the thirteenth, `Physics contracts`, is among the heavyweight rows the lane skips); every row the lane runs at its count in the two gate arms above, the 15 rows it skips being the gate's heavyweight sections; the lane started on the working tree holding the applied subsection and the todo sentence, and this parenthesis was written into the same working tree after the run, markdown only).
+It is the LAST commit before the push. No approval for this push exists yet:
+the owner's 2026-09-15 approval was spent by the stage 8 push (7711a8a); the
+push waits for the owner's word, asked with this record, and the CI run on
+the new HEAD will be the check of the batch at the runner's CPU class.
