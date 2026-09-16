@@ -1568,13 +1568,15 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    SymplecticityContract(; step=3.0e-7, default_tolerance=5.0e-8, lorentz_angle=0.01)
+    SymplecticityContract(; step=3.0e-7, default_tolerance=1.0e-11, lorentz_angle=0.01)
 
 Finite-difference symplecticity of the six-dimensional runtime maps: for each
 checked element the Jacobian `J` of the map at a reference phase-space point
-must satisfy `norm(J' * S * J - S) <= tol`. Covers the `Symplectic6DMap`
-elements (`Linear6D`, `CrabDispersion`, `MomentumDispersion`, `XYCoupling`,
-`ThinCrabCavity`, `ChromaticityKick`) and the weak-strong beam-beam maps
+must satisfy `norm(J' * S * J - S, Inf) <= max(case tolerance, default_tolerance)`.
+Covers the `Symplectic6DMap` elements (`Linear6D`, `CrabDispersion`,
+`MomentumDispersion`, `XYCoupling`, `ThinCrabCavity`, `ChromaticityKick`), the
+thick lattice magnets, the thin kickers and multipoles, the marker and the thin
+RF cavity (27 cases since the 2026-08-05_b audit) and the weak-strong beam-beam maps
 (`ThinStrongBeam`, `GaussianStrongBeam`, whose synchro-beam slingshot term
 exists precisely to keep the sliced 6D kick symplectic). Hirata's crossing
 Lorentz maps are checked separately as *quasi*-symplectic: exact inverse
@@ -1731,7 +1733,8 @@ function _symplecticity_contract_cases()
         # Tolerances are ~100x the measured residual rather than the file's
         # older round numbers, so they can actually catch a break: measured
         # here, thin elements 1.3e-13, drift/quad/sext/oct/multipole 2.0e-11 to
-        # 7.8e-11, sbend 2.6e-10, thin RF cavity 5.5e-11.
+        # 7.8e-11, sbend 2.6e-10, thin RF cavity 5.5e-11 on the old inconsistent
+        # pair (below 2e-13 on the consistent pair, see the cavity case).
         (name=:Drift, element=compile_runtime(DriftSpec(L=0.35, h=0.02)),
          q0=q0, tolerance=1.0e-8),
         (name=:Quadrupole,

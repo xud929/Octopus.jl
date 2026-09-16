@@ -44,8 +44,10 @@ The certified `longitudinal_mode` alternative of the contract: the canonical
 eigenvalue index of the dense 6D fixture's longitudinal mode. The fixture is
 seeded (`_analysis_contract_fixtures(UInt64(20260911))`), so the index is a
 property of the data; the contract's `validate` asserts that the `:analysis_labels`
-receipt of the certified run selects this index, so a drift of the fixture
-shows as a failed probe rather than a silent mis-selection. Measured by
+receipt of the certified run echoes the requested index (it pins the receipt
+to the request, not the constant to the fixture: a drift of the fixture that
+moves its longitudinal mode is the identity contract's business, stage 9
+U8b-4). Measured by
 `_analysis_contract_longitudinal_index()` on the fixture at construction of
 the tables (see the report of stage 4b Part B).
 """
@@ -59,7 +61,9 @@ the probe inputs (design: inactivity is a predicate on the branch taken):
 `closed_orbit`, `closed_orbit_atol` on `:matrix` inputs; `longitudinal_mode`,
 `dispersion_routes`, `newton_max_iterations` on `:matrix4` and on `:coasting`;
 `newton_max_iterations` whenever `:newton` is not executed; `preferred_form`
-when the transverse optics are unavailable; `emittances` when `nothing`. The
+when the transverse optics are unavailable (a branch no probe input of this
+contract takes, so no `preferred_form` pair is in its table, stage 9 S3-7);
+`emittances` when `nothing`. The
 contract asserts the probe run's configuration report says
 `:inactive_dependency` for each declared entry; a declared entry that the
 report calls `:resolved` is a STALE exemption and FAILS.
@@ -600,7 +604,8 @@ function _analysis_contract_branch_probe(contract::AnalysisOptionEffectivenessCo
     metrics[:observables_moved] += 1; metrics[:checked] += 1
     # (2) :error throws, :flag returns flagged
     _, _, err = _analysis_contract_run(run, TwissDispersionAnalysis(symplectic_rtol=1e-9, strict=false), fixtures.failing)
-    is_arg(err) || return fail("nonsymplectic = :error on the failing fixture at symplectic_rtol = 1e-9 did not throw an ArgumentError")
+    is_arg(err) || return fail("nonsymplectic = :error on the failing fixture at symplectic_rtol = 1e-9 did not throw an ArgumentError " *
+                                (err === nothing ? "(it returned a result)" : "(it threw " * sprint(showerror, err) * ")"))
     res, rec, err = _analysis_contract_run(run, TwissDispersionAnalysis(nonsymplectic=:flag, symplectic_rtol=1e-9, strict=false), fixtures.failing)
     err === nothing || return fail("nonsymplectic = :flag on the failing fixture threw: " * sprint(showerror, err))
     _analysis_contract_receipt_carries(rec, :analysis_symplectic_check, :action, :flagged) ||

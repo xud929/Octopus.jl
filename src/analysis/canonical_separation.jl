@@ -196,7 +196,7 @@ end
 (`U_6 diag(eps) U_6'`), `by_modes` (`sum_j eps_j G_j`, and
 `decomposition_residual` its difference from `sigma`), `closure_residual`
 (`||M sigma M' - sigma||_F`), `symmetry_residual`, `min_eigenvalue` (PSD
-margin), `bunch_length_squared` (`sum_j eps_j (G_j)_zz`), `k14_residual`
+margin), `bunch_length_squared` (`sum_j eps_j (G_j)_zz`, in the scaled coordinates of the map handed in, `a_3^2 sigma_z^2` under a scaling; the physical `Sigma` is `physical.covariance`, stage 9), `k14_residual`
 (the largest `|(G_j)_zz - eta' S_4 Gbar_j S_4' eta|` over the betatron
 modes, from the barred 4D covariances), `emittances`.
 """

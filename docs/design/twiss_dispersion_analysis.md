@@ -374,7 +374,11 @@ measurement protocol of the next subsection has run.
    max(1, gamma) max(1, ||D||_F^2 / N(D))`, gamma the route's reported
    amplification factor (its `coefficient_condition`) and N the residual's
    own normalizer (`_kappa_route`, re-derived 2026-09-14; the history
-   section of that date).
+   section of that date). The normalized residual is at most 3 by the
+   triangle inequality, so a tolerance at or above 3 accepts every graph:
+   a converged graph reaching it is refused as `:singular_coefficient`
+   with the graph reported (`_INVARIANCE_RESIDUAL_CAP`, stage 9,
+   2026-09-16).
 10. **Separation** (D3), (K2), (K4), (K5), (K7); the Ohmi factor when h > 0;
     the 4D pipeline (E1–E8) on the barred betatron block with its
     reconstruction residual; the closed-form check (E10–E14) skipped with a

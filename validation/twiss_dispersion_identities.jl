@@ -163,7 +163,7 @@ when the result lacks the key), then one `TW-TENTH` line (the number of
 identity rows whose `ratio=` exceeds 0.1, 0.25, 0.5 and 1, out of the rows
 printed, and the rows above 0.1 in stable order; strict inequalities, so a
 row at exactly one tenth is not counted), then `TW-DIAG`, `TW-KINDS`,
-`TW-DIGEST`, the status and the message. `multipliers` is the contract's `c` per slug (the
+`TW-PINS` (the fixture-set coverage pins), `TW-DIGEST`, the status and the message. `multipliers` is the contract's `c` per slug (the
 contract owns it; the result does not carry it). Returns the digest, which
 is over the identity rows only.
 """
@@ -207,6 +207,10 @@ function report_identities(result, io::IO; multipliers, slugs,
             get(m, :kinds_declaring, 0), get(m, :kinds_analyzed, 0),
             get(m, :kinds_refused, 0), get(m, :kinds_failed_example, 0),
             get(m, :kinds_declaring_without_result, 0), get(m, :kinds_without_example, 0))
+    # the coverage pins of the contract's fixture set, which no other line of the report carries (stage 9)
+    pins = join([string(k, "=", haskey(m, k) ? string(m[k]) : "NA") for k in
+                 (:dense6_unresolved, :dense4_skipped, :verdicts_consistent, :verdicts_inconsistent, :absolute_pins_checked)], " ")
+    println(io, "TW-PINS ", pins)
     digest = identity_digest(result, ordered)
     @printf(io, "TW-DIGEST 0x%016x  (%d identities, seed %d, maps %d + %d)\n",
             digest, length(ordered), seed, maps, maps4)

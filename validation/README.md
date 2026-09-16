@@ -1076,8 +1076,9 @@ are quoted in the history section named below).
 **The shared fixture module.** validation/twiss_benchmark_cells.jl is the one
 place the fixtures live: it builds each cell for Octopus (bare and task compile
 modes), writes the MAD-X and PTC sequence text, and exports the Octopus one-turn
-maps into twiss_benchmark_maps.tsv, which the MAD-X, PTC and Xsuite benchmarks
-all read. Fixtures (from the maps table header, lines 1-20): S0 (a pure drift,
+maps into twiss_benchmark_maps.tsv, which only the Xsuite benchmark reads (the
+MAD-X and PTC scripts rebuild the maps from the module; the table documents them,
+stage 9). Fixtures (from the maps table header, lines 1-20): S0 (a pure drift,
 degenerate, the slip witness), U1 and U2 (uncoupled FODO cells, U2 with
 dispersion), K1 (a skew-quadrupole coupled cell, K_TILT 0.05), K2 (a coupled
 cell with dispersion), R_0 and R_pi4 (rolled FODO, the theory's section 13.10
@@ -1175,9 +1176,9 @@ env CUDA_VISIBLE_DEVICES="" OCTOPUS_STAGE8_REGENERATE=1 julia --project=. valida
 
 **Outputs:** the consumer writes result/twiss_madx_benchmark.tsv (one row per
 printed line) and prints the TW-MADX lines with the digest and EXIT code; the
-generator writes validation/reference/twiss_madx_5.03.06.tsv and
-validation/reference/twiss_benchmark_maps.tsv (or, in regenerate mode, only
-the diff line) and its 183 MADX-GATE self-checks (table header line 22).
+generator writes validation/reference/twiss_madx_5.03.06.tsv (or, in
+regenerate mode, only the diff line; validation/reference/twiss_benchmark_maps.tsv
+is written by `write_benchmark_maps` of validation/twiss_benchmark_cells.jl) and its 183 MADX-GATE self-checks (table header line 22).
 
 **Theory and design:** ../docs/theory/twiss_dispersion.md section 12.2 items 1,
 2, 3 and 9 (the requirements this benchmark discharges against MAD-X) and
@@ -1242,7 +1243,8 @@ j = plane, k = mode (header line 15, where the wrong order misses by
 
 **Fixtures:** builders from validation/twiss_benchmark_cells.jl; the ten
 table rows U1, U2, K2, B4, B4K, G6_2.0MV, G6_0.2MV
-plus the witnesses S0, W1 (thin cavity) and the method=2 ladder row
+plus the witnesses S0, S0_pt (pt = 1e-3) and W1 (thin cavity); the method=2
+ladder is header line 5 of the table, not a row
 (TW-PTC table table_rows_present 10 10 0 0 TOL-C PASS, line 8).
 
 **Metric and tolerance classes.** Lines print TW-PTC <fixture> <quantity>
@@ -1475,7 +1477,8 @@ two `normalizer_u6_*` rows) and prints one `TW-IDENT` line per identity, two
 symplecticity residuals at multiplier 1 against the suite's pins; reported,
 not gated), one `TW-TENTH` line (the machine count of identity rows above
 one tenth, one quarter, one half and one of their frozen multiplier, the
-rows above one tenth named; reported, not gated), `TW-DIAG`, `TW-KINDS` and
+rows above one tenth named; reported, not gated), `TW-DIAG`, `TW-KINDS`,
+`TW-PINS` (the fixture-set coverage pins) and
 a bitwise `TW-DIGEST` of the identity maxima so two CPU arms can be diffed.
 The multipliers are frozen on the contract's default 20 + 5 maps (the
 freezing set, kept by owner decision 2026-09-14 with the M3 table in hand);
@@ -1545,7 +1548,7 @@ _ST4_SEED` to the first `Dispersion routes:` testset, plus the named `_st3_`
 helpers): renaming one of them breaks this script loudly, never silently.
 
 ```bash
-julia --startup-file=no --project=. --threads=4 validation/twiss_dispersion_acceptance_windows.jl
+julia --startup-file=no --project=. validation/twiss_dispersion_acceptance_windows.jl
 ```
 
 Optional positional arguments: the oracle maps TSV, the reference TSV and the
@@ -1577,7 +1580,7 @@ acceptance floor of `src/analysis/dispersion_routes.jl` (`_kappa_route`,
 re-derived 2026-09-14; the kappa_route section of the history): one TSV row
 per FORMED dispersion route over the identity contract's 6x6 matrix fixtures
 (the 200 dense maps; the tuple and BeamLine fixtures, the 4x4 maps and the
-coasting map add no row) plus the suite's weak-cavity map, each through
+coasting map add no row) plus the identity contract's D12 weak-cavity map, each through
 `analyze` with the default scaling, in whichever CPU arm the caller sets.
 A row carries the route's status and `converged` flag, its normalized and
 raw (I1) residuals, the three normalizer terms, the scaled matrix's and the

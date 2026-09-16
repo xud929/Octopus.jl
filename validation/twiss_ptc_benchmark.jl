@@ -247,8 +247,8 @@ function print_tw(r::BenchRow)
     return r
 end
 
-"Ratio |diff| / tol_effective, the digest's worst-ratio operand (0 for ungated rows)."
-row_ratio(r::BenchRow) = r.kind in (:gated, :witness) && r.tol > 0 ? r.diff / r.tol : 0.0
+"Ratio |diff| / tol_effective, the digest's worst-ratio operand (0 for recorded and model rows; the gated ladder row counts, stage 9)."
+row_ratio(r::BenchRow) = r.kind in (:gated, :witness, :order) && r.tol > 0 ? r.diff / r.tol : 0.0
 
 """
 A gated comparison. metric = :rel judges |diff| <= tol * max(1, |ext|)
@@ -304,7 +304,9 @@ end
 
 """
 B0: the convention witnesses, run before any optics row. Every expected value
-is a FORMULA in the row's own header beta0/gamma0 and C (the stage 8 witness rule W).
+is a FORMULA in the row's own header beta0/gamma0 and C (the stage 8 witness rule W),
+except W1, whose voltage law (D19) is formed from the module constants `PTC_BETA0` and
+`BENCH_E_TOTAL_EV` (the beam of header line 14; stage 9).
 Returns true when every gated witness passed.
 """
 function witness_rows(tab)
@@ -385,9 +387,11 @@ function analyze_converted(M::AbstractMatrix, label::AbstractString; mu_s=nothin
     # 6D rows only: nonsymplectic=:flag, because PTC's printed precision on the 6-cell ring (3.75e-14 after F) exceeds
     # the analysis's default row-ratio rule (measured row ratio 2.83 on G6_2.0MV, which would throw); the defect is
     # printed instead. The 5D rows keep the default guard armed (measured row ratios 0.051, 0.100, 0.056 on U1, U2, K2).
-    an = mu_s === nothing ? TwissDispersionAnalysis(strict=false, scaling=:none) :
-                            TwissDispersionAnalysis(strict=false, scaling=:none, nonsymplectic=:flag, longitudinal_mode=Float64(mu_s))
     res = try
+        # the constructor validates mu_s (a tune must lie in (0, pi)): inside the try so that a bad header value
+        # is a recorded failure of this row, not an abort of the script (stage 9)
+        an = mu_s === nothing ? TwissDispersionAnalysis(strict=false, scaling=:none) :
+                                TwissDispersionAnalysis(strict=false, scaling=:none, nonsymplectic=:flag, longitudinal_mode=Float64(mu_s))
         analyze(an, Matrix{Float64}(M))
     catch e
         msg = sprint(showerror, e)
@@ -481,7 +485,8 @@ end
 B3: the BETA_jk index order, decided on a coupled row. bm[j, k] is the
 Octopus physical.beta[mode, plane]; jx, jy the modes of planes x, y.
 Both readings are printed; the one within TOL-C is adopted when the other
-misses by more than 1e-3; otherwise the row is a recorded finding.
+misses by more than 1e-3; when both miss TOL-C the closer one is gated and
+fails (stage 9, R2-5-1); otherwise the row is a recorded finding.
 """
 function index_order_rows(id, row, bm, jx, jy)   # jx, jy = the Octopus modes matched to PTC modes 1, 2 (j1, j2)
     b12 = rowf(row, "BETA12_start"); b21 = rowf(row, "BETA21_start")
@@ -501,6 +506,13 @@ function index_order_rows(id, row, bm, jx, jy)   # jx, jy = the Octopus modes ma
         note(id, " BETA_jk index order DECIDED: (j = plane, k = mode); the (mode, plane) reading misses by ", fmt(miss_mp))
         compare_row(id, "BETA12", bm[jy, 1], b12, TOL_C_REL, "TOL-C"); compare_row(id, "BETA21", bm[jx, 2], b21, TOL_C_REL, "TOL-C")
         return :plane_mode
+    end
+    if miss_mp > TOL_C_REL && miss_pm > TOL_C_REL
+        # neither reading matches: the closer one is gated and fails by construction (the contract twin does the same; stage 9, R2-5-1)
+        closer_mp = miss_mp <= miss_pm
+        note(id, " BETA_jk index order: BOTH readings miss TOL-C, the closer one is gated and fails: misses (mode,plane) ", fmt(miss_mp), " (plane,mode) ", fmt(miss_pm))
+        compare_row(id, "BETA12", closer_mp ? bm[jx, 2] : bm[jy, 1], b12, TOL_C_REL, "TOL-C"); compare_row(id, "BETA21", closer_mp ? bm[jy, 1] : bm[jx, 2], b21, TOL_C_REL, "TOL-C")
+        return :both_miss
     end
     note(id, " BETA_jk index order NOT decided (recorded finding): misses (mode,plane) ", fmt(miss_mp), " (plane,mode) ", fmt(miss_pm))
     return :undecided

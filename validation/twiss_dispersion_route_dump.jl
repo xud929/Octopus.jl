@@ -2,7 +2,7 @@
 # src/analysis/dispersion_routes.jl (`_kappa_route`, re-derived 2026-09-14; stage 7 carried items 6/12 of the
 # Twiss/dispersion campaign). Purpose: one TSV row per FORMED dispersion route over the identity contract's 6x6 matrix
 # fixtures (the 200 dense maps; the tuple and BeamLine fixtures F1-F5, the 20 dense 4x4 maps and the coasting map F8
-# add no row) plus the suite's weak-cavity map, through `analyze` with the default scaling (:auto), so that the ratio
+# add no row) plus the identity contract's D12 weak-cavity map (`_identity_contract_coasting(seed)`, not the suite testset's `Mw`), through `analyze` with the default scaling (:auto), so that the ratio
 # normalized / (eps kappa_route) of every accepted and rejected graph can be read in both CPU arms and the floor's
 # window recomputed offline (the stage 4a driver validation/twiss_dispersion_acceptance_windows.jl measures the window
 # itself; this dump is the raw material).
@@ -46,6 +46,7 @@ println(out, join(["fixture", "route", "primary", "status", "converged", "iterat
                    "nD_F", "nD_2", "cc", "trace_residual", "area", "tune1", "tune2", "tune3", "result_status", "recomputed_normalized",
                    "kappa_route", "ratio"], "\t"))
 n = 0
+with_rows = Set{String}()   # the fixtures that produced at least one row (stage 9: the closing line counted every fixture of the list)
 for f in fx
     x = f.input
     (x isa AbstractMatrix && size(x) == (6, 6)) || continue
@@ -74,7 +75,8 @@ for f in fx
                 f.name, rt.route, rt.route === r.dispersion.primary ? 1 : 0, rt.status, rt.converged ? 1 : 0, rt.iterations, res.normalized, res.raw,
                 norm(A), norm(Mrl), norm(B), norm(Ms), opnorm(Ms), norm(D), opnorm(D), cc, tr_res, area, tunes[1], tunes[2], tunes[3], r.status, rec, kr, ratio)
         global n += 1
+        push!(with_rows, f.name)
     end
 end
 close(out)
-println("wrote ", ARGS[1], ": ", n, " route rows over ", length(fx), " fixtures; arm ", get(ENV, "OPENBLAS_CORETYPE", "native"), " host ", Sys.CPU_NAME)
+println("wrote ", ARGS[1], ": ", n, " route rows over ", length(with_rows), " row-producing fixtures (", length(fx), " in the list); arm ", get(ENV, "OPENBLAS_CORETYPE", "native"), " host ", Sys.CPU_NAME)

@@ -197,12 +197,12 @@ function compare_row(layer, fixture, quantity, oct::Real, ext::Real, tol::Real, 
 end
 
 # ---------------------------------------------------------------- printed lines
-function witness_row(name, value::Real, expected::Real, tol::Real; rel::Bool=false, fixture="witness")
+function witness_row(name, value::Real, expected::Real, tol::Real; rel::Bool=false, fixture="witness", layer="A0")
     diff = abs(Float64(value) - Float64(expected))
     bound = rel ? tol * max(abs(Float64(expected)), eps()) : tol
     status = (isfinite(diff) && diff <= bound) ? "PASS" : "FAIL"
     println("TW-MADX-WITNESS ", name, " ", fmt(value), " ", fmt(expected), " ", fmt(diff), " ", status)
-    record!("A0", fixture, name, value, expected, diff, tol, rel ? "witness-rel" : "witness-abs", status)
+    record!(layer, fixture, name, value, expected, diff, tol, rel ? "witness-rel" : "witness-abs", status)
     push!(RATIOS, bound > 0 ? diff / bound : (diff == 0 ? 0.0 : Inf))
     return status == "PASS"
 end
@@ -221,7 +221,7 @@ end
 
 "A boolean assertion printed as a witness with value 1/0 and expected 1."
 assert_row(name, ok::Bool; fixture="witness", layer="A0") =
-    witness_row(name, ok ? 1.0 : 0.0, 1.0, 0.0; fixture=fixture)
+    witness_row(name, ok ? 1.0 : 0.0, 1.0, 0.0; fixture=fixture, layer=layer)   # the caller's layer reaches the table (stage 9)
 
 # ---------------------------------------------------------------- 4x4 algebra
 adj2(B::AbstractMatrix) = [B[2, 2] -B[1, 2]; -B[2, 1] B[1, 1]]   # symplectic conjugate of a 2x2
@@ -535,6 +535,9 @@ function model_ladder(fixture::AbstractString)
     println("TW-MADX-ORDER ", fixture, " ", fmt(order), " ", fmt(NST64_CAP), " ", ok ? "PASS" : "FAIL")
     record!("A2", fixture, "fitted_order", order, ORDER_TARGET, abs(order - ORDER_TARGET), ORDER_BAND, "TOL-E", ok ? "PASS" : "FAIL")
     record!("A2", fixture, "nst64_residual_vs_cap", residuals[end], NST64_CAP, residuals[end], NST64_CAP, "TOL-E", residuals[end] <= NST64_CAP ? "PASS" : "FAIL")
+    # the two gated ladder rows enter the digest's worst ratio like every other gated row (stage 9)
+    push!(RATIOS, abs(order - ORDER_TARGET) / ORDER_BAND)
+    push!(RATIOS, residuals[end] / NST64_CAP)
     recorded_row("A2", fixture, "nst32_residual(1e-9_design_reference,recorded_per_D6)", residuals[end-1], 1e-9)
     return ok
 end

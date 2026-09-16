@@ -99,7 +99,10 @@ slip(C; gamma0=BENCH_GAMMA0) = C / gamma0^2
 
 # Cell element numbers (once). Quadrupole kn[2] is K1 in 1/m^2.
 const RF_FREQUENCY_HZ = 400.0e6
-const RF_STRENGTH = 0.02             # qV/(P0 c); V = 0.02 * p0c = 56.989983281965137 MV
+# qV/(P0 c) of the thin cavity. Two voltage conventions meet here (stage 9): the Xsuite side reads
+# V = RF_STRENGTH * p0c = 56.989983281965137 MV, the PTC/MAD-X side (witness W1, law D19) volt = RF_STRENGTH * E_total
+# = 60 MV; the :cavity_57MV defect injects the former into the latter's table on purpose.
+const RF_STRENGTH = 0.02
 const CRAB_STRENGTH = 0.05           # linear crab coefficient d(px)/dz in 1/m
 const TASK_MARKER_STRENGTH = 1e-30   # marker cavity of task_map on cavity-free cells
 const G6_CELLS = 6
@@ -278,7 +281,7 @@ function symplectic_residual(M::AbstractMatrix)
 end
 "The six (or four) |eigenvalue| sorted descending."
 eigen_moduli(M::AbstractMatrix) = sort(abs.(eigvals(Matrix{Float64}(M))); rev=true)
-"Eigenvalue angles / 2pi in (-1/2, 1/2], one per conjugate pair (positive member), sorted by |angle|."
+"Eigenvalue angles / 2pi in (-1/2, 1/2], sorted by |angle|: the members with imag >= 0 are kept (one per complex pair; a real eigenvalue passes on its own, so a hyperbolic pair contributes two entries). No benchmark gates on this (stage 9)."
 function eigen_tunes(M::AbstractMatrix)
     lam = eigvals(Matrix{Float64}(M))
     phi = [angle(l) / (2pi) for l in lam if imag(l) >= 0]
@@ -501,7 +504,7 @@ function write_benchmark_maps(path::AbstractString; nst=DEFAULT_NST, integrator_
     header = [
         "Octopus one-turn maps of the stage 8 twiss benchmark fixtures (fixture table: docs/history/twiss_dispersion_analysis_history.md, the 2026-09-15 stage 8 sections)",
         "purpose: the Octopus side of the MAD-X / PTC / Xsuite twiss benchmarks at the matrix level;",
-        "consumers: validation/twiss_madx_benchmark.jl, validation/twiss_xsuite_benchmark.jl; documented for, not read by, validation/twiss_ptc_benchmark.jl",
+        "consumers: validation/twiss_xsuite_benchmark.jl (by sha256 against its sidecar); documented for, not read by, validation/twiss_madx_benchmark.jl and validation/twiss_ptc_benchmark.jl, which rebuild the maps from this module",
         "producer: validation/twiss_benchmark_cells.jl write_benchmark_maps (Octopus tree of the commit that carries this file)",
         "flags: every thick magnet nst=$(nst), integrator_order=$(integrator_order); ComplexStepLinearization at the origin",
         "beam: protons, mass $(BENCH_MASS_GEV_STRING) GeV, total energy 3.0 GeV, beta0 $(_cell_string(BENCH_BETA0)), gamma0 $(_cell_string(BENCH_GAMMA0)), p0c $(_cell_string(BENCH_P0C_EV)) eV",

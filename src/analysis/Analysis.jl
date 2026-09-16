@@ -75,7 +75,9 @@ lists exactly the declared members.
     area weight.
   * `:zero_projection` -- a relative phase whose position projection vanishes.
   * `:singular_coefficient` -- a linear solve's coefficient matrix is singular
-    or too ill conditioned to trust.
+    or too ill conditioned to trust (a route whose amplification lifts the (I1)
+    floor to the residual's cap, `_INVARIANCE_RESIDUAL_CAP`, is refused with it:
+    the graph is reported, nothing is certified).
   * `:not_invariant` -- a candidate graph or eigenpair failed the normalized
     (I1) invariance residual.
   * `:not_derived_for_cluster` -- a per-mode derived quantity the analysis
@@ -324,7 +326,7 @@ function Base.show(io::IO, d::Determined{T}) where {T}
         print(io, "Determined(", d.value, ")")
     elseif is_ambiguous(d)
         print(io, "Determined{", T, "}(:ambiguous_set, :", d.reason,
-              ", multiplicity=", d.set.multiplicity, ", ", d.set.kind, ")")
+              ", multiplicity=", d.set.multiplicity, ", :", d.set.kind, ")")
     else
         print(io, "Determined{", T, "}(:unavailable, :", d.reason, ")")
     end

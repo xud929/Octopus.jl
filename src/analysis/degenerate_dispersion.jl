@@ -38,8 +38,9 @@ the FODO's 1e-12 detuned control, whose gap 2.1e-12 is real. Measured in Part
 B (OUT/probes_B/measure_B.log, names printed from the rows): largest accepted
 gap / rho_M1 = 0.587 (the exact rolled FODO, 4 x 4; its 6D embedding and the
 30 conjugated pairs are below), smallest rejected = 681 (the 1e-12 control),
-so the one-tenth / ten window is [5.87, 68.1] and the value 10 sits inside;
-Part D re-measures and freezes it.
+so the one-tenth / ten window is [5.87, 68.1] and the value 10 sits inside.
+The re-measurement Part D announced is not on record; 10 stands on the Part B
+measurement above (stage 9).
 """
 const _EXACT_SET_MULTIPLIER = 10.0
 
@@ -170,7 +171,7 @@ rank `r` is the count above `tol_psd`, asserted `r <= columns` (an
 `F = V_r sqrt(Lambda_r)` padded with zero columns to `columns`. Also returned:
 `shape = F F^T` (symmetrized), the positive-semidefinite part of `A` with its
 roundoff-null eigenvalues zeroed, and `dropped = ||A_sym - shape||_F <=
-tol_psd`. The caller reports `shape`, not `A_sym`, as the set's shape so that
+sqrt(n - r) tol_psd` (the Frobenius norm of the dropped eigenvalues). The caller reports `shape`, not `A_sym`, as the set's shape so that
 `shape == factor factor'` holds BY CONSTRUCTION and the `AmbiguitySet`
 constructor's own consistency check (a roundoff bound on `F F' - shape`,
 which is smaller than `tol_psd` on the measured fixtures) can never refuse a
@@ -322,9 +323,10 @@ function _dispersion_ambiguity_set(P_c::AbstractMatrix{<:Real}, G_c::AbstractMat
         "_dispersion_ambiguity_set: G_c must be symmetric to roundoff (asymmetry $(asym))"))
     # P_c = -Im(U U') S carries roundoff of order eps ||U||^2 = eps kappa per
     # entry, and ||G_c||_2 = ||U||_2^2 up to the imaginary part, so the
-    # idempotency tolerance is the shared c eps kappa form with kappa read
-    # from G_c (the FODO cluster of theory 13.10 has kappa = 1 / 0.0838 = 11.9
-    # and ||P^2 - P|| = 58 eps there; ||P||_2 = 1 would be the wrong scale).
+    # idempotency tolerance is c eps 6 max(gscale, ||P||_2^2) with gscale =
+    # max(1, ||G_c||_2^2), the square of the kappa read from G_c (the FODO
+    # cluster of theory 13.10 has kappa = 1 / 0.0838 = 11.9 and ||P^2 - P|| =
+    # 58 eps there; ||P||_2 = 1 alone would be the wrong scale).
     idem = norm(P * P - P)
     idem_tol = _AMBIGUITY_PSD_MULTIPLIER * eps(Float64) * 6 * max(gscale, opnorm(P, 2)^2)
     idem <= idem_tol || throw(ArgumentError(

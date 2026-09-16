@@ -125,8 +125,13 @@ Properties: `kappa_route >= max(1, ||M||_F)`, so `c_stop <= c_inv` still puts a 
 floor; it equals the landed form `max(1, ||M||_F) max(1, ||D||_F)^2` exactly at `N = 1`, which is the RAW
 residual's kappa and the wrong one for the normalized residual (multiplier-1 ratio 174.2 on accepted rows of
 the derivation's corpus, above the campaign's ">100 means the kappa is wrong" line); and it is bounded on
-garbage graphs because `N` grows with `||D||_F` (over 160 stalled rows per arm `||D||_F` reaches 1.74e21 while
-the bracket reaches 42.6), so the floor is no longer vacuous for a diverged iterate. A 6x6 `M`, a 4x2 `D`, a
+garbage graphs whose `M_lr D` does not vanish, because there `N = max(1, ||M_rr D||, ||M_rl||, ||D (M_lr D + M_ll)||)`
+grows with `||D||_F^2` (over 160 stalled rows per arm `||D||_F` reaches 1.74e21 while the bracket reaches 42.6),
+so the floor is no longer vacuous for a diverged iterate there. For `D` in `ker(M_lr)` every non-constant term
+of `N` is linear in `||D||_F` and the bracket grows as `||D||_F` (on the stage 9 probe's `M_lr = 0` family
+`kappa_route = 2.45 ||D||_F` and a garbage graph's normalized residual crosses its floor near `||D||_F = 3.47e12`;
+with `||M_lr|| = 1e-8` the bracket saturates near 7.68e8): that end is what `_route_from_graph`'s residual cap
+`_INVARIANCE_RESIDUAL_CAP` refuses (stage 9, S2b-1 and S2b-3). A 6x6 `M`, a 4x2 `D`, a
 finite non-negative `gamma` and a finite non-negative `map_norm` are required (`ArgumentError` otherwise).
 """
 function _kappa_route(M::AbstractMatrix{<:Real}, D::AbstractMatrix{<:Real}, gamma::Real; map_norm::Real=norm(M))
@@ -175,9 +180,37 @@ near its rejecting edge: a coverage gap, carried), and the identity contract's
 H15 formula would give `max(8, 2^ceil(log2(10 * 5.34))) = 64`. The constant
 stays 256 until the owner decides from that measurement (an acceptance constant
 is frozen by the window rule, not by H15). The converged flag, not this floor,
-is the iterative routes' acceptance (see `_route_from_graph`).
+is the iterative routes' acceptance (see `_route_from_graph`). A floor at or
+above `_INVARIANCE_RESIDUAL_CAP` judges nothing and is refused there.
 """
 const _ROUTE_INVARIANCE_MULTIPLIER = 256.0
+
+"""
+    _INVARIANCE_RESIDUAL_CAP
+
+The cap of the normalized (I1) residual, a DERIVED constant (not a measured
+one): `_graph_invariance_residual` divides the raw residual `||M_rr D + M_rl -
+D (M_lr D + M_ll)||_F` by `N = max(1, ||M_rr D||_F, ||M_rl||_F, ||D (M_lr D +
+M_ll)||_F)`, and the triangle inequality bounds the quotient by 3 for EVERY
+`(M, D)` (worst 2.19 over 3000 random pairs with `||D||_F` from 1e-8 to 1e8,
+stage9/verify/orch_major_v1.jl). A floor `c_inv eps kappa_route` at or above
+the cap accepts every graph, the garbage and the zero graph included, so
+`_route_from_graph` refuses to judge with it: `:singular_coefficient`, the
+graph and its residuals reported, zeta, eta, h unavailable. The amplification
+that drives `kappa_route` to `3 / (256 eps) = 5.3e13` is a singular linear
+solve in all but name: the projector route's `gamma = cc^2 ||P_s|| / |h|`
+reaches it at `cc ~ 5e14` (a synchrotron trace 1e-7 from a betatron trace, the
+condition guard admits `cc` up to `1 / (64 rho_M1) ~ 1e13`), the polynomial
+route at `cc ~ 5e13` (traces 1e-13 apart). Stage 9 (S2b-1 = U5-1-1,
+2026-09-16): on that fixture the floor was 70.7 and a garbage graph with
+normalized residual 0.24 was `:none`; in the unfixed tree's route dump (1005
+rows, 227 fixtures) exactly one row sat above the cap, the weak cavity's
+projector (`cc = 5.1e14`, floor 78; its own residual 6.7e-10 and its status
+`:none` were right, the certificate was not). A floor in [1, 3) still admits
+the zero graph (`D = 0` has normalized residual at most 1, the first two terms
+vanish): an observation for the owner beside K11, not gated here.
+"""
+const _INVARIANCE_RESIDUAL_CAP = 3.0
 
 """
     _ITERATION_STOP_MULTIPLIER
@@ -367,7 +400,7 @@ residual, coefficient condition, iteration count, canonical area)"). Fields:
 unique and invariant, else the `DETERMINATION_REASONS` member:
 `:singular_longitudinal_projection`, `:singular_coefficient`,
 `:graph_isotropic`, `:not_invariant`, `:cluster_unresolved`,
-`:route_not_selected`) and `detail`; `graph` (4x2, (D7)), `zeta`, `eta`
+`:unstable_spectrum`, `:coasting_structure`, `:route_not_selected`) and `detail`; `graph` (4x2, (D7)), `zeta`, `eta`
 (4-vectors), `h`, `canonical_area` (`1 + D[:, 1]' S_4 D[:, 2]`), each a
 `Determined`; `invariance_residual` (the (I1) graph form, normalized and
 raw, available whenever a graph was formed, invariant or not);
@@ -532,7 +565,8 @@ end
 `sylvester(A, B, C)` solves `A X + X B + C = 0`, pitfall 1), and the 2-norm
 condition of the (D16) operator `I_2 kron M_rr - M_ll' kron I_4` (8x8),
 whose smallest singular value also enters the fixed-point contraction
-condition of 8.6. An `ArgumentError` names the singular operator (spectra of
+condition of 8.6. The condition is a `Determined` (unavailable with
+`:singular_coefficient` when it is not a finite Float64, stage 9 U5-1-2). An `ArgumentError` names the singular operator (spectra of
 `M_rr` and `M_ll` not disjoint) when LAPACK refuses the solve.
 """
 function _sylvester_initializer(M::AbstractMatrix{<:Real})
@@ -546,7 +580,7 @@ function _sylvester_initializer(M::AbstractMatrix{<:Real})
         throw(ArgumentError("_sylvester_initializer: the (D15) operator is singular (the spectra of M_rr and M_ll share " *
             "an eigenvalue; LAPACK $(err.info)); no weak-coupling initializer exists"))
     end
-    return (D0=Matrix{Float64}(D0), condition=cond(op))
+    return (D0=Matrix{Float64}(D0), condition=_operator_condition(op, "the (D16) Sylvester operator"))
 end
 
 """
@@ -582,8 +616,11 @@ column sums reported; the longitudinal mode is the row with the largest
 z-area unless `longitudinal` (an index into `vectors`) is given (`rule`
 `:max_signed_z_area` or `:explicit`); the two transverse modes are ordered
 by stage 2's `_mode_label_order` on their x-areas (mode 1 = larger x-area).
-`tie` is set when the longitudinal margin or the transverse margin is at or
-below `tie_multiplier * eps * kappa_frame`; a tie keeps the given order.
+`tie` is set when the transverse margin, or under `:max_signed_z_area` the
+longitudinal margin, is at or below `tie_multiplier * eps * kappa_frame`; a
+tie keeps the given order. An explicit selection is never a longitudinal tie:
+its z-area margin may be negative (a certified mode with less z-area than a
+betatron mode, (K12)) and does not decide the transverse order.
 """
 function _mode_labels_6d(vectors::AbstractVector{<:AbstractVector{<:Complex}}, tunes::AbstractVector{<:Real};
                          longitudinal=nothing, kappa_frame::Real=1.0, tie_multiplier::Real=_LABEL_TIE_MULTIPLIER)
@@ -615,7 +652,9 @@ function _mode_labels_6d(vectors::AbstractVector{<:AbstractVector{<:Complex}}, t
     first_pos, second_pos, trans_margin = _mode_label_order(kappa[rest[1], 1], kappa[rest[2], 1])
     transverse = (rest[first_pos], rest[second_pos])
     tie_tolerance = tie_multiplier * eps(Float64) * kappa_frame
-    tie = long_margin <= tie_tolerance || trans_margin <= tie_tolerance
+    # the longitudinal margin is judged under the z-area rule only: an explicit selection with a negative z-area
+    # margin is not a tie and keeps the x-area order of its transverse modes (stage 9, U5-1-2)
+    tie = (rule === :max_signed_z_area && long_margin <= tie_tolerance) || trans_margin <= tie_tolerance
     if tie
         transverse = (rest[1], rest[2])   # a tie keeps the given order
     end
@@ -688,12 +727,33 @@ end
 
 The 2-norm condition `sigma_max / sigma_min` of a linear solve or trace separation as a `Determined`:
 unique when `sigma_min > 0`, unavailable with `:singular_coefficient` (detail naming `what`) when it is
-exactly zero (the mathematical condition is infinite; the dossier forbids an `Inf` standing in for it).
+exactly zero (the mathematical condition is infinite; the dossier forbids an `Inf` standing in for it). A
+quotient that overflows Float64 is unavailable the same way (stage 9, U5-1-2).
 """
 function _condition_number(sigma_max::Real, sigma_min::Real, what::AbstractString)
-    sigma_min > 0 && return Determined(Float64(sigma_max) / Float64(sigma_min))
+    if sigma_min > 0
+        q = Float64(sigma_max) / Float64(sigma_min)
+        isfinite(q) && return Determined(q)
+        return Determined{Float64}(:singular_coefficient,
+            "$(what) has a condition number beyond the largest Float64 (smallest singular value (or gap) $(sigma_min) against $(sigma_max)): singular to working precision")
+    end
     return Determined{Float64}(:singular_coefficient, "$(what) has smallest singular value (or gap) exactly 0: the condition number is infinite")
 end
+
+"""
+    _operator_condition(op, what) -> Determined{Float64}
+
+The 2-norm condition of a matrix operator through [`_condition_number`](@ref): `cond(op)` returns `Inf` for a
+singular operator, which the dossier forbids as a value, so the quotient of the extreme singular values is formed
+under the same rule as every other condition of the analysis (stage 9, U5-1-2).
+"""
+function _operator_condition(op::AbstractMatrix, what::AbstractString)
+    sv = svdvals(Matrix{Float64}(op))
+    return _condition_number(sv[1], sv[end], what)
+end
+
+"The condition as text for a route detail: the value, or `infinite` when it is unavailable."
+_condition_text(c::Determined{Float64}) = is_determined(c) ? string(determined_value(c)) : "infinite"
 
 # Shared assembly of a route result (dossier E4, E8): the isotropy floor, (D8), the residuals and the status.
 
@@ -720,15 +780,16 @@ end
     _route_from_graph(route, M, D, tau_s; rho_M1, coefficient_condition, h_alternative, singular_values, detail, iterations, halvings, converged=true, check_branch=false) -> DispersionRoute
 
 Dossier E4 and E8 for a FORMED 4x2 graph `D`: `graph`, `canonical_area`, `invariance_residual` and
-`trace_residual` are always unique; `:graph_isotropic` when `|area| <= _ISOTROPY_MULTIPLIER * rho_M1
-* max(1, ||D||_2^2)`; else `(zeta, eta, h)` by (D8); `:not_invariant` when `converged` is false OR the
+`trace_residual` are always unique; `:graph_isotropic` when `converged` and `|area| <= _ISOTROPY_MULTIPLIER * rho_M1
+* max(1, ||D||_2^2)` (a non-converged iterate is `:not_invariant` whatever its area); else `(zeta, eta, h)` by (D8); `:not_invariant` when `converged` is false OR the
 normalized (I1) residual exceeds `_ROUTE_INVARIANCE_MULTIPLIER * eps * kappa_route`, `kappa_route =
 _kappa_route(M, D, coefficient_condition) = max(1, ||M||_F) * max(1, gamma) * max(1, ||D||_F^2 / N(D))` with
 `gamma` the route's reported `coefficient_condition` (1 when unavailable) and `N` the residual's normalizer
 (the `detail` says which of the two fired). An iteration that stopped short of its stop floor (a stall or
 the cap, `converged = false`) is `:not_invariant` whatever the floor says: the floor is bounded on garbage
-graphs (`N` grows with `||D||_F`, so a diverged iterate is no longer inside it by construction as it was
-under the landed `||D||_F^2` kappa, M1, 2026-09-13), but it cannot judge a stall on its own (the trial-011
+graphs with `M_lr D != 0` (`N` grows with `||D||_F^2` there, so a diverged iterate is no longer inside it by
+construction as it was under the landed `||D||_F^2` kappa, M1, 2026-09-13; for `D` in `ker(M_lr)` the bracket
+grows as `||D||_F` and the residual cap above refuses the floor, stage 9 S2b-3), but it cannot judge a stall on its own (the trial-011
 crab stall sits at ratio 3.60 of `eps kappa_route` in both arms, inside the accepted band), so the converged flag STAYS
 the iterative routes' acceptance. Convergence to the stop floor is that acceptance (a converged iterate is
 within the (I1) floor by construction: `c_stop <= c_inv` and `kappa_route >= max(1, ||M||_F)`), the (I1)
@@ -736,6 +797,10 @@ floor the direct routes' (they call with the default `converged = true`). In eve
 `zeta`, `eta`, `h` are unavailable with the status's reason and the graph stays reported.
 With `check_branch` (the iterative routes) a CONVERGED graph whose `trace_residual` exceeds
 `inv_floor * max(1, ||M||_F)` is `:not_invariant` too: it is an invariant plane of another mode (theory 8.6).
+Before any of these, a CONVERGED graph whose floor is at or above `_INVARIANCE_RESIDUAL_CAP` (3, the normalized
+residual's triangle-inequality cap) is `:singular_coefficient` with the graph reported and zeta, eta, h
+unavailable: such a floor accepts every graph, so it certifies none (stage 9, S2b-1, 2026-09-16); an unconverged
+iterate keeps the flag's `:not_invariant`.
 """
 function _route_from_graph(route::Symbol, M::AbstractMatrix{<:Real}, D::AbstractMatrix{<:Real}, tau_s::Real; rho_M1::Real,
                            coefficient_condition::Determined{Float64}=Determined{Float64}(:not_derived_for_cluster, "no linear solve in this route"),
@@ -743,6 +808,12 @@ function _route_from_graph(route::Symbol, M::AbstractMatrix{<:Real}, D::Abstract
                            singular_values::Vector{Float64}=Float64[], detail::AbstractString="", iterations::Integer=0,
                            halvings::Integer=0, converged::Bool=true, check_branch::Bool=false)
     Df = Matrix{Float64}(D)
+    # a graph with a non-finite entry (an overflowed solve or iterate) has no residual to judge: refused up front,
+    # never handed to the floors below, whose comparisons would all be false (stage 9, U5-1-4)
+    all(isfinite, Df) || return _unavailable_route(route, :singular_coefficient,
+        "the graph has a non-finite entry" * (isempty(detail) ? "" : "; " * detail);
+        coefficient_condition=coefficient_condition, singular_values=singular_values, iterations=iterations,
+        halvings=halvings, converged=false)
     res = _route_residuals(M, Df, tau_s)
     inv_res = Determined{_ROUTE_RESIDUAL_T}(:unique, res.invariance, nothing, :none, "")
     kappa_route = _kappa_route(M, Df, coefficient_condition)
@@ -750,7 +821,21 @@ function _route_from_graph(route::Symbol, M::AbstractMatrix{<:Real}, D::Abstract
     iso_floor = _ISOTROPY_MULTIPLIER * rho_M1 * max(1.0, opnorm(Df)^2)
     common = (Determined(Df), Determined(res.area), inv_res, Determined(res.trace_residual), coefficient_condition, h_alternative,
               singular_values, Int(iterations), Int(halvings), converged)
-    if abs(res.area) <= iso_floor
+    if converged && (!isfinite(inv_floor) || inv_floor >= _INVARIANCE_RESIDUAL_CAP)
+        # The normalized residual is at most _INVARIANCE_RESIDUAL_CAP for every graph, so this floor cannot reject
+        # one: the route's amplification has made the (I1) acceptance vacuous (stage 9, S2b-1). Refuse, report. A
+        # non-finite floor (an overflowed kappa_route) is refused here too: every comparison below would be false
+        # and the graph would fall through to :none (stage 9, U5-1-4).
+        reason = :singular_coefficient
+        gamma_text = is_determined(coefficient_condition) ? string(determined_value(coefficient_condition)) : "unavailable"
+        d = "the (I1) floor c_inv eps kappa_route = $(inv_floor) " * (isfinite(inv_floor) ? "is at or above" : "is not finite, so it cannot fall below") * " the normalized residual's cap $(_INVARIANCE_RESIDUAL_CAP) (kappa_route = $(kappa_route), amplification $(gamma_text)): the acceptance cannot fail, so the graph is reported but not certified as a dispersion" *
+            (isempty(detail) ? "" : "; " * detail)
+        return DispersionRoute(route, reason, d, common[1], Determined{Vector{Float64}}(reason, d), Determined{Vector{Float64}}(reason, d),
+                               Determined{Float64}(reason, d), common[2:end]...)
+    end
+    if converged && abs(res.area) <= iso_floor
+        # an iterate that stopped short of its stop floor is :not_invariant below whatever its area: the stall,
+        # not a property of the garbage graph, is the finding (M1; stage 9, U5-2-1)
         reason = :graph_isotropic
         d = "canonical area $(res.area) at or below the isotropy floor $(iso_floor); no canonical normalization exists" *
             (isempty(detail) ? "" : "; " * detail)
@@ -768,7 +853,8 @@ function _route_from_graph(route::Symbol, M::AbstractMatrix{<:Real}, D::Abstract
     end
     if !converged || res.invariance.normalized > inv_floor
         # An iterate that stopped short of its stop floor is judged by convergence, not by the (I1) floor: the floor
-        # is bounded on garbage graphs (_kappa_route), but a stall can sit inside the accepted band (M1, 2026-09-13).
+        # is bounded on garbage graphs with M_lr D != 0 (_kappa_route; the ker(M_lr) end is the cap refusal above), but a
+        # stall can sit inside the accepted band (M1, 2026-09-13).
         reason = :not_invariant
         d = (converged ? "normalized (I1) residual $(res.invariance.normalized) exceeds the floor $(inv_floor) (kappa_route = $(kappa_route)); the graph is reported but is not a dispersion" :
                          "the iteration stopped short of the stop floor (converged = false): normalized (I1) residual $(res.invariance.normalized) against the floor $(inv_floor) (kappa_route = $(kappa_route)); the graph is reported but is not a dispersion") *
@@ -946,13 +1032,14 @@ end
 
 The common start of the iterative routes (dossier E7): `D0` when given (a finite 4x2 matrix, else an
 `ArgumentError`), otherwise the Sylvester initializer (D15); `condition` is the (D16) operator's 2-norm
-condition in both cases; a LAPACK-singular (D15) operator returns `D = nothing` with the named detail
+condition as a `Determined` in both cases (unavailable with `:singular_coefficient` when it is not a finite
+Float64, stage 9 U5-1-2); a LAPACK-singular (D15) operator returns `D = nothing` with the named detail
 (the caller reports `:singular_coefficient`).
 """
 function _iteration_start(M::AbstractMatrix{<:Real}, D0, who::AbstractString)
     Mrr = M[1:4, 1:4]; Mll = M[5:6, 5:6]
     op = kron(Matrix{Float64}(I, 2, 2), Mrr) - kron(transpose(Mll), Matrix{Float64}(I, 4, 4))
-    condition = cond(op)
+    condition = _operator_condition(op, "the (D16) Sylvester operator")
     if D0 !== nothing
         (D0 isa AbstractMatrix && size(D0) == (4, 2) && all(isfinite, D0)) || throw(ArgumentError(
             "$(who): D0 must be a finite 4x2 matrix"))
@@ -995,17 +1082,23 @@ function _newton_route(M::AbstractMatrix{<:Real}, tau_s::Real; rho_M1::Real, max
     Mf = Matrix{Float64}(M)
     Mrr = Mf[1:4, 1:4]; Mrl = Mf[1:4, 5:6]; Mlr = Mf[5:6, 1:4]; Mll = Mf[5:6, 5:6]
     start = _iteration_start(Mf, D0, "_newton_route")
-    start.D === nothing && return _unavailable_route(:newton, :singular_coefficient, start.detail)
+    start.D === nothing && return _unavailable_route(:newton, :singular_coefficient, start.detail;
+                                                     coefficient_condition=start.condition, converged=false)
     D = start.D
     stop = _ITERATION_STOP_MULTIPLIER * eps(Float64) * max(1.0, norm(Mf))
     F(X) = Mrr * X + Mrl - X * (Mlr * X + Mll)
     current = _graph_invariance_residual(Mf, D).normalized
     iterations = 0; halvings = 0; converged = current <= stop; stalled = false
-    condition = Determined(start.condition)
+    condition = start.condition
     while !converged && iterations < max_iterations
         Aop = Mrr - D * Mlr; Bop = Mll + Mlr * D
         op = kron(Matrix{Float64}(I, 2, 2), Aop) - kron(transpose(Bop), Matrix{Float64}(I, 4, 4))
-        condition = Determined(cond(op))
+        condition = _operator_condition(op, "the (D21) Sylvester operator at iteration $(iterations + 1)")
+        # a condition beyond Float64 is the singular operator of the LAPACK branch below, refused before the solve
+        # with the same reason and the operator's own condition (stage 9, U5-1-2)
+        is_determined(condition) || return _unavailable_route(:newton, :singular_coefficient, condition.detail;
+                                                              coefficient_condition=condition, iterations=iterations,
+                                                              halvings=halvings, converged=false)
         delta = try
             sylvester(Aop, -Bop, F(D))              # (D21): (M_rr - D M_lr) delta - delta (M_ll + M_lr D) = -F(D)
         catch err
@@ -1033,7 +1126,7 @@ function _newton_route(M::AbstractMatrix{<:Real}, tau_s::Real; rho_M1::Real, max
         end
         converged = current <= stop
     end
-    detail = "Newton from $(start.source) (initializer condition $(start.condition)); final normalized (I1) residual $(current), stop floor $(stop)" *
+    detail = "Newton from $(start.source) (initializer condition $(_condition_text(start.condition))); final normalized (I1) residual $(current), stop floor $(stop)" *
              (converged ? "; converged" : stalled ? "; stalled: no trial of step $(iterations) decreased the residual within $(max_halvings) halvings ($(halvings) halved trials in all)" : "; iteration cap $(max_iterations) reached")
     r = _route_from_graph(:newton, Mf, D, tau_s; rho_M1=rho_M1, coefficient_condition=condition, detail=detail,
                           iterations=iterations, halvings=halvings, converged=converged, check_branch=true)
@@ -1060,11 +1153,17 @@ function _fixed_point_route(M::AbstractMatrix{<:Real}, tau_s::Real; rho_M1::Real
     Mf = Matrix{Float64}(M)
     Mrr = Mf[1:4, 1:4]; Mrl = Mf[1:4, 5:6]; Mlr = Mf[5:6, 1:4]; Mll = Mf[5:6, 5:6]
     start = _iteration_start(Mf, D0, "_fixed_point_route")
-    start.D === nothing && return _unavailable_route(:fixed_point, :singular_coefficient, start.detail)
+    start.D === nothing && return _unavailable_route(:fixed_point, :singular_coefficient, start.detail;
+                                                     coefficient_condition=start.condition, converged=false)
     D = start.D
     op = kron(Matrix{Float64}(I, 2, 2), Mrr) - kron(transpose(Mll), Matrix{Float64}(I, 4, 4))
     sigma_min = svdvals(op)[end]
-    condition = Determined(start.condition)
+    condition = start.condition
+    # the (D20) iteration solves with this operator at every step and its contraction ratio divides by sigma_min:
+    # a condition beyond Float64 is refused up front, the same way the LAPACK-singular solve below is (stage 9, U5-1-2)
+    is_determined(condition) || return _unavailable_route(:fixed_point, :singular_coefficient,
+        "the (D16) Sylvester operator is singular to working precision: " * condition.detail;
+        coefficient_condition=condition, converged=false)
     stop = _ITERATION_STOP_MULTIPLIER * eps(Float64) * max(1.0, norm(Mf))
     current = _graph_invariance_residual(Mf, D).normalized
     iterations = 0; converged = current <= stop; stalled = false
@@ -1087,7 +1186,7 @@ function _fixed_point_route(M::AbstractMatrix{<:Real}, tau_s::Real; rho_M1::Real
         converged = current <= stop
     end
     ratio = sigma_min > 0 ? 2 * opnorm(Mlr) * opnorm(D) / sigma_min : Inf
-    detail = "fixed point from $(start.source) (operator condition $(start.condition)); contraction ratio 2 ||M_lr|| ||D|| / sigma_min(op) = $(ratio); " *
+    detail = "fixed point from $(start.source) (operator condition $(_condition_text(start.condition))); contraction ratio 2 ||M_lr|| ||D|| / sigma_min(op) = $(ratio); " *
              "final normalized (I1) residual $(current), stop floor $(stop)" *
              (converged ? "; converged" : stalled ? "; stalled (the step did not decrease the residual)" : "; iteration cap $(max_iterations) reached")
     return _route_from_graph(:fixed_point, Mf, D, tau_s; rho_M1=rho_M1, coefficient_condition=condition, detail=detail,
@@ -1104,8 +1203,11 @@ _signed_z_area(u::AbstractVector{<:Complex}) = -imag(conj(u[5]) * u[6])
 """
     _cluster_trace(c) -> Float64
 
-The trace `tau = Re(rho + 1 / rho)` shared by the half members of a cluster (`2 cos mu` on the unit
-circle); the projector route's factor `(Z - tau I)` annihilates the cluster's modes for any modulus.
+The trace `tau = Re(rho + 1 / rho)` of the cluster's first eigenvalue (`2 cos mu` on the unit circle,
+shared by the half members of a definite, unresolved or defective cluster); the projector route's factor
+`(Z - tau I)` annihilates the cluster's modes when `rho + 1 / rho` is real, i.e. on the unit circle and
+for a real hyperbolic pair. Not for a Krein quartet: there `Im(rho + 1 / rho) = (|rho| - 1 / |rho|) sin mu`
+is non-zero, so `_dispersion_routes` takes no trace from an `:unstable` cluster (stage 9, U5-2-3).
 """
 function _cluster_trace(c::ModeCluster)
     isempty(c.eigenvalues) && throw(ArgumentError("_cluster_trace: cluster $(c.members) has no eigenvalues"))
@@ -1275,7 +1377,12 @@ function _dispersion_routes(M::AbstractMatrix{<:Real}, clusters::ModeClusters; l
     # A single multiple cluster (an unresolved or defective pair) gets its common trace from the trace identity
     # tr M = sum_j tau_j instead of its computed eigenvalues (a defective eigenvalue is only sqrt(eps) accurate;
     # tr M and the resolved singletons' traces are eps accurate, so the retained repeated factor stays exact).
-    cluster_tau = [isempty(c.eigenvalues) ? NaN : _cluster_trace(c) for c in clusters.clusters]
+    # An :unstable cluster contributes no trace. A Krein quartet (complex rho off the unit circle) has two half
+    # members and a shared Re(rho + 1 / rho), but rho + 1 / rho itself is not real, so (Z - tau I) annihilates none
+    # of its modes; a three-trace count built from it let the projector route run on a non-projector and report
+    # :not_invariant where the real hyperbolic pair reports :unstable_spectrum (stage 9, U5-2-3). The blocker
+    # below now names the cluster's reason for both.
+    cluster_tau = [(isempty(c.eigenvalues) || c.classification === :unstable) ? NaN : _cluster_trace(c) for c in clusters.clusters]
     multiples = [ci for (ci, c) in enumerate(clusters.clusters) if length(c.half_members) >= 2]
     if length(multiples) == 1 && all(!isnan, cluster_tau) && sum(length(c.half_members) for c in clusters.clusters) == 3
         mi = multiples[1]

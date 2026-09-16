@@ -158,7 +158,7 @@ struct Eigenmodes4D
 end
 
 # ---------------------------------------------------------------------------
-# Kernels shared by the eigenvector route and the closed-form check.
+# Kernel of the eigenvector route's orientation and the closed-form check: no caller in src since stage 3 (the suite pins it).
 
 """
     _orient_eigenvector(v, S) -> (u, s, flipped)

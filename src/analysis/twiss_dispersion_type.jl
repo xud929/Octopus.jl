@@ -57,7 +57,8 @@ listed in the result's configuration report ([`configuration_report`](@ref)).
     larger area weight, ties to form 1), `1` or `2`. Both forms are always
     computed; this selects the one PRESENTED.
   * `dispersion_routes`: a non-empty tuple of distinct members of
-    `DISPERSION_ROUTES`; `:eigenplane` is always the primary route.
+    `DISPERSION_ROUTES` that includes `:eigenplane`, the primary route (an
+    `ArgumentError` without it).
   * `newton_max_iterations`: the Newton route's iteration cap (inactive when
     `:newton` is not selected and on `4x4` input).
   * `emittances`: `nothing`, or rms mode emittances `(eps_1, eps_2[, eps_s])`

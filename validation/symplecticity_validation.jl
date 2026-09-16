@@ -8,20 +8,17 @@ Run from the project root:
 Controls:
 
     OCTOPUS_SYMPLECTICITY_STEP=3e-7
-    OCTOPUS_SYMPLECTICITY_TOL=5e-8
+    OCTOPUS_SYMPLECTICITY_TOL=1e-11
 
-The script checks the 12 cases `SymplecticityContract` declares -- it derives
-that list rather than copying it -- which covers 7 of the 22 registered kinds
-whose metadata declares `Symplectic6DMap`, plus the weak-strong beam-beam maps
-and the Lorentz pair. It is NOT a sweep of every symplectic runtime map: the
-whole thick lattice-magnet family (drift, quadrupole, sextupole, octupole,
-multipole, sbend), the thin kickers and multipoles, the marker and the thin RF
-cavity have no case here. The lattice magnets are covered against PTC instead,
-which is a different claim (agreement with an external code, not
-||J'SJ - S|| <= tol); the thin kickers, marker and RF cavity are covered by
-neither. Counted, not assumed (2026-08-05_b audit, U24-3); this paragraph
-previously read "checks runtime maps that are registered as `Symplectic6DMap`",
-which a reader reasonably took as all of them. Stochastic radiation maps are intentionally excluded. Hirata's
+The script checks the 27 cases `SymplecticityContract` declares -- it derives
+that list rather than copying it: the `Symplectic6DMap` elements, the weak-strong
+beam-beam maps, the Lorentz pair and, since the 2026-08-05_b audit, the whole
+thick lattice-magnet family (drift, quadrupole, sextupole, octupole, multipole,
+sbend), the thin kickers and multipoles, the marker and the thin RF cavity, each
+with a measured per-case tolerance floored at DEFAULT_TOL. Counted, not assumed
+(2026-08-05_b audit, U24-3); this paragraph read until 2026-09-16 (stage 9) that
+the magnets, kickers, marker and cavity "have no case here", the 12-case list of
+the earlier audit, stale once that audit added them. Stochastic radiation maps are intentionally excluded. Hirata's
 crossing-angle Lorentz maps are reported separately: they are exact inverse
 coordinate transformations, but only *quasi*-symplectic in accelerator
 coordinates. Their determinants are `sec(angle)^3` and `cos(angle)^3`, so

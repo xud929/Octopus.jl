@@ -85,8 +85,9 @@ its constructor, option schema and `analyze` method in
 `src/analysis/twiss_dispersion_analysis.jl`): a
 non-parametric analysis object whose options are public configuration
 (`analysis_option_schema`, `configuration_report`), executed by `analyze` on
-a real symplectic 4x4 or 6x6 matrix, a `LinearizedMap`, a compiled line or an
-element tuple, returning a `TwissDispersionResult`; its option probe table is
+a real symplectic 4x4 or 6x6 matrix, a `LinearizedMap`, or anything
+`one_turn_matrix` accepts (a callable, a tuple of compiled maps, a compiled
+line, an element spec), returning a `TwissDispersionResult`; its option probe table is
 `AnalysisOptionEffectivenessContract`. The element declaration is a mixed
 state: every element kind whose `tracking_methods` contain `Symplectic6DMap`
 by exact identity and not `NonSymplectic6DMap`, plus `:line`, declares

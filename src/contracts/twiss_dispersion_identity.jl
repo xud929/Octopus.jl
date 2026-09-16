@@ -373,7 +373,10 @@ Dense 6x6 maps: `contract.dense_maps` draws of
 dense fixture); dense 4x4 maps: `contract.dense_maps_4d` draws AFTER them
 from the same `rng` (a draw whose frame is not unique is counted in
 `metrics[:dense4_skipped]` by the probe and replaced by the next; at most
-`4 * dense_maps_4d` draws).
+`4 * dense_maps_4d` draws). The folded verdict of every judged result is
+counted in `metrics[:folded_passed]` / `metrics[:folded_degraded]` (the F6a
+dense maps whose Newton route found another invariant plane are `:degraded`
+and still judged) and the pass message names the degraded count.
 """
 function _identity_contract_fixtures(contract::TwissDispersionIdentityContract)
     em6 = contract.emittances; em4 = (1.0, 1.0)
@@ -408,7 +411,10 @@ analysis::TwissDispersionAnalysis, expect::Function)` where `expect(result,
 err)` returns `true` when the expected diagnostic FIRED (`err` is the
 exception `analyze` threw, or `nothing`). A false predicate is a silent
 diagnostic and fails the contract. Rows assert REASON SYMBOLS and statuses
-(the vocabulary of the design note, "Availability"), never message texts.
+(the vocabulary of the design note, "Availability"), never message texts, with
+two exceptions that look for one word each: D10 finds `nonsymplectic = :flag`
+in a degradation and D11 finds `closed_orbit` in an error message (stage 9,
+U9-1-3).
 Rows (17, every predicate probed before it was written; the probe outputs are
 in the stage 6 history section): the unstable 4x4 map; the exact symmetric FODO
 (`:cluster_unresolved`); the rolled equal-tune FODO (`:cluster_unresolved`
@@ -999,7 +1005,7 @@ The two-result rows: `kind = :scaling` compares the `:auto` run with the
 run of the same input (`c_scaling_invariance`: the largest relative
 difference over tunes, `physical.beta/alpha/gamma`, `zeta`, `eta`, `h`,
 `graph`, `projectors`, `covariances`, `covariance`; kappa
-`max(a_i^2, a_i^-2)^2 max(1, ||U||^2)` over the largest factors among the
+`max(a_i^2, a_i^-2)^2 max(1, ||U||^2) cond(U)` over the largest factors among the
 runs); `kind = :line` compares the `BeamLine` result with the tuple result
 of the DBA (`c_line_equals_matrix`: the matrix, the tunes, the betas).
 """
@@ -1178,7 +1184,7 @@ function _identity_contract_result(contract::TwissDispersionIdentityContract, me
     delete!(metrics, :failure_texts)
     passed = isempty(failures)
     message = passed ?
-        "twiss identities certified: $(metrics[:identities]) identities on $(metrics[:fixtures]) fixture runs, worst ratio $(metrics[:worst_ratio]) ($(worst_slug)); $(metrics[:diagnostics_expected]) expected diagnostics fired; $(metrics[:kinds_analyzed]) kinds analyzed, $(metrics[:kinds_refused]) refused for the documented closed-orbit reason" :
+        "twiss identities certified: $(metrics[:identities]) identities on $(metrics[:fixtures]) fixture runs ($(metrics[:folded_degraded]) of the $(metrics[:folded_passed] + metrics[:folded_degraded]) judged results :degraded), worst ratio $(metrics[:worst_ratio]) ($(worst_slug)); $(metrics[:diagnostics_expected]) expected diagnostics fired; $(metrics[:kinds_analyzed]) kinds analyzed, $(metrics[:kinds_refused]) refused for the documented closed-orbit reason" :
         "TwissDispersionIdentityContract failed ($(length(failures)) findings): " * first(failures)
     return ContractResult(passed, message; residual=metrics[:worst_ratio], metrics=metrics)
 end
@@ -1206,7 +1212,7 @@ function _identity_contract_probe(contract::TwissDispersionIdentityContract, fix
     metrics[:failure_texts] = failures
     for key in (:fixtures, :verdicts_consistent, :verdicts_inconsistent, :diagnostics_expected, :diagnostics_silent,
                 :kinds_declaring, :kinds_analyzed, :kinds_refused, :kinds_failed_example, :kinds_declaring_without_result,
-                :kinds_without_example, :dense6_unresolved, :dense4_skipped)
+                :kinds_without_example, :dense6_unresolved, :dense4_skipped, :folded_passed, :folded_degraded)
         metrics[key] = 0
     end
     metrics[:identities] = length(_IDENTITY_CONTRACT_SLUGS)
@@ -1257,6 +1263,10 @@ function _identity_contract_probe(contract::TwissDispersionIdentityContract, fix
             end
             continue
         end
+        # the folded verdict of every judged result is counted (`:folded_<status>`), so the message can say how many
+        # rows were read off a :degraded result (3 of 31 on the default fixtures: the F6a dense maps whose Newton
+        # route converged to another invariant plane; stage 9, U9-2-1)
+        metrics[Symbol(:folded_, r.status)] = get(metrics, Symbol(:folded_, r.status), 0) + 1
         _identity_contract_reported_rows!(r, fx.name, metrics, contract, failures)
         _identity_contract_kernel_rows!(r, fx.name, metrics, contract, failures)
         _identity_contract_recomputed_rows!(r, fx.name, metrics, contract, failures)
@@ -1268,7 +1278,9 @@ function _identity_contract_probe(contract::TwissDispersionIdentityContract, fix
         lm = index == 0 ? a.longitudinal_mode : index
         alts = TwissDispersionResult[r]
         for sc in (:none, size(r.matrix, 1) == 4 ? (2.0, 0.5) : (2.0, 0.5, 3.0))
-            alt = TwissDispersionAnalysis(scaling=sc, strict=false, emittances=a.emittances, longitudinal_mode=lm)
+            # every other keyword of the fixture's analysis is kept, so the alternate scaling is the only change (stage 9, U9-2-5)
+            kept = (f => getfield(a, f) for f in fieldnames(TwissDispersionAnalysis) if !(f in (:scaling, :strict, :longitudinal_mode)))
+            alt = TwissDispersionAnalysis(; kept..., scaling=sc, strict=false, longitudinal_mode=lm)
             ra, erra = _identity_contract_run(run, alt, fx.input)
             metrics[:fixtures] += 1
             (erra === nothing && ra isa TwissDispersionResult) ? push!(alts, ra) :

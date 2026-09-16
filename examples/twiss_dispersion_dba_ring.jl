@@ -9,8 +9,8 @@ twice:
 
 1. With the default options the 6D result is `:degraded`: the longitudinal
    mode was selected by the `:max_signed_z_area` heuristic, which the
-   analysis does not certify on its own (theory (K12): kappa_sz = h, so the
-   rule is ambiguous for h < 1/2). The result names the selected canonical
+   analysis does not certify on its own, whatever h (theory (K12): kappa_sz = h,
+   so for h < 1/2 a betatron mode can carry more z-area). The result names the selected canonical
    eigenvalue.
 2. Passing that index back as `longitudinal_mode` certifies the selection and
    the result is `:passed`: tunes, canonical crab and momentum dispersion,

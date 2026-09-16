@@ -83,21 +83,40 @@ const _DEFAULT_RESOLUTION_CHORD = 1.0e-3
 """
     _REAL_CLASS_MULTIPLIER
 
-`c_real` of `tau_real = c_real * sqrt(rho_M1) * max(1, ||M||_2)`: an
+`c_real` of `tau_real = c_real * sqrt(rho_M1 * max(1, ||M||_2))`: an
 eigenvalue with `|Im rho| <= tau_real` is real-class (self-conjugate, no
 Krein orientation; dossier D2). The square root: a +-1 Jordan pair (a
-drift's (z, pz) block) splits by the square root of the perturbation.
-PROVISIONAL (a measured multiplier, re-measured whenever the fixture table
-changes); measured 2026-09-12 (Part D1, OUT/measure/measure_stage3.jl, package mode;
-ratio = |Im rho| / (sqrt(rho_M1) max(1, ||M||_2)) over every eigenvalue of
-the chord table's 464 fixtures and the docstring fixtures, names printed
-from the rows): largest accepted (real-class) ratio 0.0204 at the rotated
-drift `W4 ([1 3; 0 1] (+) R(1.2)) W4^-1` (its +1 Jordan pair splits into a
-complex pair of size sqrt(roundoff)); smallest rejected (complex-class)
-ratio 33.6 at `R(1e-6) (+) R(1.2)` (the detuned FODO controls and the crab
-ladder sit at 1e6 and above). Window by the one-tenth / ten rule
-[0.204, 3.36]; A1's provisional `4` lay outside it (rejected margin 8.4 < 10)
-and was moved to `1` (margins: accepted 49, rejected 33.6).
+drift's (z, pz) block) splits by the square root of the perturbation; the
+sharp bound for a Jordan block `[1 g; 0 1]` under a perturbation of size `e`
+is `sqrt(g e)` with `g <= ||M||_2` and `e <= rho_M1`, and `rho_M1 =
+max(rho_M0, Schur backward error)` is ABSOLUTE (`rho_M0 >= d eps ||M||_2`),
+so ONE square root covers the product. Corrected 2026-09-16 (stage 9, S2a-1 =
+U4a-1-2): the landed `sqrt(rho_M1) * max(1, ||M||_2)` was the relative-rho
+form applied to an absolute rho, one power of `||M||_2` too many, and masked
+genuine complex pairs once `||M||_2 >~ 10`: on `R(1e-5) (+) B R(1.2) B^-1`,
+`B = diag(10, 0.1)`, `||M||_2 = 93`, the pair with `|Im rho| = 1e-5` sat at
+0.37 of the landed floor (real-class, the cluster `:unresolved`) and sits at
+3.6 of the corrected one (complex, `:definite`); the two forms coincide at
+`||M||_2 <= 1`. PROVISIONAL (a measured multiplier, re-measured whenever the
+fixture table changes). First measurement 2026-09-12 (Part D1,
+OUT/measure/measure_stage3.jl, the chord table's 464 fixtures and the
+docstring fixtures, under the landed form): accepted extreme 0.0204 at the
+rotated drift `W4 ([1 3; 0 1] (+) R(1.2)) W4^-1` (its +1 Jordan pair splits
+into a complex pair of size sqrt(roundoff)), rejected extreme 33.6 at `R(1e-6)
+(+) R(1.2)` (the detuned FODO controls and the crab ladder sit at 1e6 and
+above), window [0.204, 3.36]; A1's provisional `4` lay outside it and was moved
+to `1`. Re-measured 2026-09-16 under the corrected form
+(stage9/verify/orch_major_v3.jl: the two argmax rows, then rotated +1 Jordan
+pairs of three drift families x conjugation strengths 0.2 .. 1.5 x 8 seeds,
+`||M||_2` up to 673): accepted extreme 0.0541 on the table's argmax row and
+0.387 on the extended family (seed 5, strength 1.5, `||M||_2 = 673`: under the
+sharp form a rotated Jordan pair sits at a norm-free fraction of the floor,
+the landed form let it fall as `1 / sqrt(||M||_2)`), no Jordan pair rejected;
+rejected extreme 33.6 unchanged (`||M||_2 = 1`). Window by the one-tenth / ten
+rule: [0.541, 3.36] on the table's rows (1 inside; margins 18.5 accepted, 33.6
+rejected), and [3.87, 3.36], EMPTY on the accepted side by the margin 2.6, once
+the extended family counts. The constant stays 1 until the owner decides from
+that measurement (an acceptance constant is frozen by the window rule).
 """
 const _REAL_CLASS_MULTIPLIER = 1.0
 
@@ -271,11 +290,12 @@ design "Pipeline" steps 4-7; dossier D4-D8). Fields:
     of an indefinite cluster, each normalized to `-2i` after conjugating the
     negative-sign ones (13.8); unavailable with `:not_derived_for_cluster`
     for a definite cluster. The `eigenvalues` are paired with the columns of
-    `frame` or `signed_basis` BY INDEX; that pairing is an eigen-pairing
-    only when the cluster is resolved or `internal_gap` is at the map error
-    (`frame_residuals.eigenvector` reports the (I1) residual of the pairing;
-    for a split group the columns are a basis of the invariant subspace,
-    not eigenvectors, 13.8). `projector`: the real Schur
+    `frame` (by the mode recovery, when resolved) or of `signed_basis` (by
+    nearest Rayleigh quotient, each member used once; stage 9, U4a-2-2), so
+    a column is an eigenvector of its eigenvalue whenever the Gram form
+    separates the members (`frame_residuals.eigenvector` reports the (I1)
+    residual of the pairing: at the map error then, of order the mixing for
+    members the form does not separate, 13.8). `projector`: the real Schur
     spectral projector `P_c = 2 Re Pi_c` (N9), unique for every stable
     complex-class cluster; `projector_n5_difference`: `||P_c(N5) - P_c(Schur)||_F`
     for a definite cluster; `covariance`: `G_c` (N5), definite only;
@@ -348,13 +368,16 @@ to this order); `conjugate_partner` (index of each eigenvalue's conjugate
 partner, `0` for a real-class eigenvalue); `real_class` (mask, dossier D2);
 `tau_real`; `schur_backward_error` (`||M Z - Z T||_F` of the one complex
 Schur decomposition); `rho_M0` (the caller's first perturbation scale);
-`rho_M1` (the largest per-cluster second scale); `resolution_chord`;
+`rho_M1` (the largest per-cluster second scale); `resolution_chord` (as
+given; under `Inf` the agglomeration merged at `_DEFAULT_RESOLUTION_CHORD` and
+the receipt's `merged` flags refer to that chord, stage 9 U4a-1-1);
 `partition_source` (`:auto` or `:explicit`); `clusters`;
 `resolution_receipt` (every candidate merge evaluated: the two components,
 their gap, the kappa used and its source `:frame`, `:eigenvectors` or
 `:none`, `rho_M1`, the chord, and whether they merged; empty under an
 explicit partition); `inter_cluster_chords` (the last round's chord between
-every pair of final clusters, zero diagonal); `degeneracy_status`, the worst
+every pair of final clusters, zero diagonal; all zero under an explicit
+partition, which runs no agglomeration round, stage 9 U4a-2-1); `degeneracy_status`, the worst
 case present in order `:all_resolved < :degenerate < :indefinite <
 :unresolved < :unit_eigenvalue < :unstable` (`:degenerate` = a definite
 cluster that did not resolve).
@@ -1044,7 +1067,8 @@ function _mode_clusters(M::AbstractMatrix{<:Real}; rho_M0::Real, resolution_chor
     spec = _canonical_spectrum(Mf)
     rho = spec.eigenvalues
     rho_M1_global = max(float(rho_M0), spec.backward_error)
-    tau_real = _REAL_CLASS_MULTIPLIER * sqrt(rho_M1_global) * max(1.0, opnorm(Mf, 2))
+    # one square root over the product: sqrt(g e) with g <= ||M||_2 and e <= rho_M1 (absolute); stage 9, S2a-1
+    tau_real = _REAL_CLASS_MULTIPLIER * sqrt(rho_M1_global * max(1.0, opnorm(Mf, 2)))
     real_class = _real_class_mask(rho, tau_real)
     pairing = _conjugate_pairs(rho, real_class, tau_real)
     partner = pairing.partner
@@ -1299,13 +1323,42 @@ function _complex_cluster(M::AbstractMatrix{<:Real}, spec, rho::AbstractVector{<
         for i in 1:m
             w = ev.Q * V[:, i] / sqrt(abs(lam[i]))
             W[:, i] = lam[i] < 0 ? conj(w) : w
-            evals[i] = lam[i] < 0 ? conj(ev.values[i]) : ev.values[i]
+        end
+        # Pairing (stage 9, U4a-2-2): `eigen` orders the Gram form's eigenvalues by
+        # value, so column i of W is not in general the i-th member of `ev.values`
+        # (for a split group the form is diagonal in the member basis and V is a
+        # permutation). Each column takes the member eigenvalue nearest its own
+        # Rayleigh quotient (conjugated for a Krein-negative column, whose vector
+        # was conjugated above), each member used once: greedy on the distance,
+        # and at exact degeneracy every assignment is equivalent.
+        dist = zeros(Float64, m, m)
+        for i in 1:m
+            w = W[:, i]
+            rq = dot(w, M * w) / dot(w, w)
+            for j in 1:m
+                dist[i, j] = abs(rq - (lam[i] < 0 ? conj(ev.values[j]) : ev.values[j]))
+            end
+        end
+        free_i = trues(m); free_j = trues(m)
+        for _ in 1:m
+            bi = 0; bj = 0; bd = Inf
+            for i in 1:m, j in 1:m
+                if free_i[i] && free_j[j] && dist[i, j] < bd
+                    bi = i; bj = j; bd = dist[i, j]
+                end
+            end
+            if bi == 0
+                bi = findfirst(free_i); bj = findfirst(free_j)
+            end
+            evals[bi] = lam[bi] < 0 ? conj(ev.values[bj]) : ev.values[bj]
+            free_i[bi] = false; free_j[bj] = false
         end
         Tw = (im / 2) * (W' * S * M * W)
-        # The 13.8 reconstruction check: the columns are eigenvectors of their
-        # by-index eigenvalues only at exact degeneracy (internal_gap at the map
-        # error); for a split group they are a Krein-signed basis of the
-        # invariant subspace and this residual is of order the split.
+        # The 13.8 reconstruction check: with the pairing above the columns are
+        # eigenvectors of their eigenvalues whenever the Gram form separates the
+        # members (a split group with distinct eigenvalues, or exact degeneracy
+        # where any basis serves), so the residual is at the map error then and
+        # of order the mixing only for members the form does not separate.
         frame_res = Determined((normalization=norm(W' * S * W + 2im * I(m)), isotropy=norm(transpose(W) * S * W),
                                 unitarity=norm(Tw' * Tw - I(m)), eigenvector=_column_eigenvector_residual(M, W, evals)))
         signed = Determined(W)

@@ -49,8 +49,9 @@ Indices are `[j, a]`: mode `j` in `1:2`, plane `a` in `1:2` for `(x, y)`.
     area partition `u = kappa_1y = kappa_2x` (M4) and their difference. `u` is
     the mode-1 evaluation.
   * `phases` -- per mode the relative phase factors `(cos nu_j, sin nu_j)` of
-    (M6) as `Determined`; unavailable with `:zero_projection` when either
-    position projection of that mode is below `projection_rtol ||u_j||^2`
+    (M6) as `Determined`; unavailable with `:zero_projection` when the
+    geometric mean `sqrt(beta_jx beta_jy)` of that mode's position projections
+    is at or below `projection_rtol ||u_j||^2`
     (the design: "the phase fix applies only to nonzero position components").
   * `phase_valid` -- the two flags, `is_determined.(phases)`.
   * `vectors` -- the eigenvectors rephased to the (M7) convention (`u_1x > 0`,
@@ -249,8 +250,12 @@ end
 `alpha = (Mbar_11 - Mbar_22) / (2 sin mu)`, `gamma = -Mbar_21 / sin mu`,
 `mu = mod(atan2(sin, cos), 2 pi)`. Unavailable with `:unstable_spectrum` when
 `|tr| >= 2` (the theory: a significantly unstable trace must not be clipped),
-and with `:singular_coefficient` when `sin mu` vanishes (the extraction divides
-by it; `mu = 0` or `pi` is the ill-conditioned point the theory names).
+and with `:singular_coefficient` when `sin mu` vanishes with `|tr| < 2`, i.e.
+`Mbar_12 = 0` (the extraction divides by `sin mu`). On a symplectic block
+`|tr| < 2` forces `Mbar_12 != 0` (`Mbar_12 = 0` gives `tr = Mbar_11 + 1 / Mbar_11`),
+so that branch is reached only by a non-symplectic block; the ill-conditioned
+points `mu = 0` and `pi` have `|tr| = 2` and are answered by `:unstable_spectrum`
+(stage 9, U3b-1-1).
 """
 function _twiss_from_block(Mbar::AbstractMatrix{<:Real})
     size(Mbar) == (2, 2) || throw(ArgumentError("a normal block is 2x2, got $(size(Mbar))"))

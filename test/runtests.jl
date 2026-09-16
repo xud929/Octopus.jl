@@ -1223,6 +1223,8 @@ end
     @test r.passed && r.status === :passed
     @test occursin("certified", r.message)
     m = r.metrics
+    # every judged result's folded verdict is counted and the message names the :degraded count (stage 9, U9-2-1)
+    @test m[:folded_passed] + m[:folded_degraded] >= 1 && occursin("($(m[:folded_degraded]) of the $(m[:folded_passed] + m[:folded_degraded]) judged results :degraded)", r.message)
     # the pin `_ST6_PIN` (one half; its comment above the testset) on the worst row, named on failure
     @testset let worst = m[:worst_identity]
         @test m[:worst_ratio] <= _ST6_PIN
@@ -2970,7 +2972,7 @@ end
 # cluster covariance of (N5), `nothing` when the cluster has no frame) plus
 # the cluster and the whole report.
 # The stage 3 block's ONE derivation of rho_M0 (A1's `_mc_rho0` is an alias of it). It repeats stage 2's
-# `_eig4d_rho` (line ~981) on purpose: the block is extracted standalone by OUT/run_stage3_block.jl.
+# `_eig4d_rho` (defined in the stage 2 block above) on purpose: the block is extracted standalone by OUT/run_stage3_block.jl.
 _st3_rho(M) = Octopus._perturbation_scale(M, Octopus._symplectic_defect(M).frobenius).scale
 function _st3_cluster(M::AbstractMatrix{<:Real}, center::Number, radius::Real;
                       explicit::Bool=false, rho_M0::Real=_st3_rho(M), kw...)
@@ -3495,6 +3497,25 @@ end
     @test count(rd.real_class) == 2 && rd.degeneracy_status === :unit_eigenvalue
     ru = rd.clusters[findfirst(c -> isempty(c.half_members), rd.clusters)]
     @test ru.classification === :unit_eigenvalue && maximum(ru.unit_circle_departures) > Octopus._STABILITY_MULTIPLIER * ru.rho_M1   # measured 108 times
+    # Stage 9 (S2a-1 = U4a-1-2, 2026-09-16): the floor is sqrt(rho_M1 ||M||_2), ONE root over the product (the Jordan-split
+    # bound sqrt(g e), g <= ||M||_2, e <= rho_M1 absolute). The landed sqrt(rho_M1) ||M||_2 masked a genuine complex pair on a
+    # map with ||M||_2 = 93: |Im rho| = 1e-5 sat at 0.37 of that floor (real-class, the cluster :unresolved); under the
+    # corrected floor it sits at 3.6 (complex, :definite, :all_resolved). Both floors are recomputed here so the fixture is
+    # shown to tell them apart.
+    Bm = Diagonal([10.0, 0.1])
+    Mm = _mc_bd(_mc_R(1e-5), Bm * _mc_R(1.2) / Bm)
+    @test opnorm(Mm) > 90
+    rmk = _mc_run(Mm)
+    @test rmk.tau_real == Octopus._REAL_CLASS_MULTIPLIER * sqrt(max(rmk.rho_M0, rmk.schur_backward_error) * max(1, opnorm(rmk.matrix)))
+    @test rmk.tau_real < 1e-5 < Octopus._REAL_CLASS_MULTIPLIER * sqrt(rmk.rho_M1) * max(1, opnorm(rmk.matrix))
+    @test !any(rmk.real_class) && all(c.classification === :definite for c in rmk.clusters) && rmk.degeneracy_status === :all_resolved
+    # negative control: rotated +1 Jordan pairs stay real-class under the corrected floor at the conjugation strengths where it
+    # is sharper (ratio 0.054 at strength 0.2 above, 0.39 at strength 1.5 where ||M||_2 = 673: a norm-free fraction of the floor)
+    for sc in (1.0, 1.5)
+        Ws = _mc_randsymp(MersenneTwister(_MC_SEED + 500), 4, sc)
+        rds = _mc_run(Ws * _mc_bd([1.0 3.0; 0 1], _mc_R(1.2)) * inv(Ws))
+        @test count(rds.real_class) == 2 && rds.degeneracy_status === :unit_eigenvalue
+    end
     # D4's third branch, reached: one pair at +1 exactly and a hyperbolic pair off by tau_real / 2 (derived from
     # the identity's own tau_real so the fixture follows _REAL_CLASS_MULTIPLIER: 1.5e-8 at c_real = 1, far above
     # the stability scale 64 rho_M1) form ONE real-class component whose members straddle the circle: :unresolved
@@ -3678,16 +3699,16 @@ end
     @test Set(Set.([vcat(e.first, e.second) for e in r.resolution_receipt])) == Set(Set.([[1, 6, 2, 5], [1, 6, 3, 4], [2, 5, 3, 4]]))
     @test all(e -> e.kappa_source === :frame && e.chord == r.inter_cluster_chords[findfirst(c -> c.members == e.first, r.clusters), findfirst(c -> c.members == e.second, r.clusters)], r.resolution_receipt)
     # Receipt on a merging 6D map: round one has three candidates (one merged), round two has one.
-    rm = _mc_run(_mc_bd(_mc_R(0.73), _mc_R(1.41), _mc_R(0.73)))
+    Mrm = _mc_bd(_mc_R(0.73), _mc_R(1.41), _mc_R(0.73)); rm = _mc_run(Mrm)
     @test length(rm.resolution_receipt) == 4 && count(e -> e.merged, rm.resolution_receipt) == 1
     @test rm.resolution_receipt[end].first == [1, 2, 5, 6] && rm.resolution_receipt[end].second == [3, 4]
     @test !rm.resolution_receipt[end].merged
     @test size(rm.inter_cluster_chords) == (2, 2) && rm.inter_cluster_chords[1, 2] == rm.resolution_receipt[end].chord
     # The report fields: eigenvalues in canonical order, partners a perfect matching, a copy of the matrix.
     @test issorted(mod.(angle.(rm.eigenvalues), 2pi))
-    @test rm.matrix == _mc_bd(_mc_R(0.73), _mc_R(1.41), _mc_R(0.73)) && rm.matrix !== M
+    @test rm.matrix == Mrm && rm.matrix !== Mrm   # a copy of the matrix actually passed, not of an unrelated one (stage 9, R2-2-1)
     @test rm.rho_M1 >= rm.rho_M0 && rm.schur_backward_error <= 64 * _MC_EPS * norm(rm.matrix)
-    @test rm.tau_real == Octopus._REAL_CLASS_MULTIPLIER * sqrt(max(rm.rho_M0, rm.schur_backward_error)) * max(1, opnorm(rm.matrix))
+    @test rm.tau_real == Octopus._REAL_CLASS_MULTIPLIER * sqrt(max(rm.rho_M0, rm.schur_backward_error) * max(1, opnorm(rm.matrix)))   # one root over the product (stage 9)
 end
 # Stage 3 Part B: the dispersion ambiguity set of theory 13.6
 # (src/analysis/degenerate_dispersion.jl). Every tolerance is `c eps kappa`
@@ -4507,6 +4528,47 @@ _st4_wrap(mu) = mod(mu, 2pi)
             @test landed >= 10 * kb
         end
     end
+    @testset "a vacuous (I1) floor is a refusal: c_inv eps kappa_route at or above the residual's cap is :singular_coefficient (stage 9, S2b-1)" begin
+        # The normalized (I1) residual is at most 3 by the triangle inequality (worst 2.19 over 3000 random pairs, 2026-09-16),
+        # so a floor at or above _INVARIANCE_RESIDUAL_CAP accepts every graph. On this fixture (an M_cal-folded map whose
+        # synchrotron trace is 1e-7 from a betatron trace) the projector route's amplification reaches 5e14 and its floor 70.7;
+        # on 7711a8a a garbage graph with normalized residual 0.24 was :none there.
+        @test Octopus._INVARIANCE_RESIDUAL_CAP == 3.0
+        rng = MersenneTwister(20260916)
+        @test maximum(Octopus._graph_invariance_residual(randn(rng, 6, 6), randn(rng, 4, 2) * 10.0^k).normalized for _ in 1:100, k in -8:4:8) <= 3
+        rot(mu) = Octopus._rotation2(mu)
+        Mcal = Octopus._dispersion_transformation(zeros(4), [0.3, 0.0, 0.1, 0.0]).M_cal
+        Mw = Mcal * cat(rot(0.61), rot(0.43), rot(0.43 + 1e-7); dims=(1, 2)) * Octopus._symplectic_inverse(Mcal)
+        r = analyze(TwissDispersionAnalysis(strict=false, dispersion_routes=(:eigenplane, :projector)), Mw)
+        pr = _st4_route(r.dispersion, :projector)
+        @test _st4_route(r.dispersion, :eigenplane).status === :none
+        @test pr.status === :singular_coefficient && occursin("cannot fail", pr.detail) && !Octopus.is_determined(pr.zeta)
+        @test Octopus.is_determined(pr.graph) && Octopus.is_determined(pr.invariance_residual)     # reported beside the refusal, as for :not_invariant
+        @test _st4_val(pr.coefficient_condition) > 1e13
+        @test r.dispersion.primary === :eigenplane && Octopus.is_determined(r.dispersion.eta)
+        # the kernel on the same map: an amplification of 1e15 refuses even the exact graph, 1e10 judges (exact :none, garbage :not_invariant)
+        Ms = r.matrix_scaled; tau_s = 2cos(0.43 + 1e-7); Dx = _st4_val(_st4_route(r.dispersion, :eigenplane).graph)
+        Dg = [1.0 2.0; -3.0 0.5; 0.7 -1.1; 2.2 0.9]
+        rho1 = r.clusters.rho_M1
+        kernel(D, g; kw...) = Octopus._route_from_graph(:projector, Ms, D, tau_s; rho_M1=rho1, coefficient_condition=Octopus.Determined(g), kw...).status
+        @test kernel(Dx, 1e15) === :singular_coefficient && kernel(Dg, 1e15) === :singular_coefficient
+        @test kernel(Dx, 1e10) === :none && kernel(Dg, 1e10) === :not_invariant
+        # the edge: the guard fires exactly where c_inv eps kappa_route reaches the cap
+        g_edge = Octopus._INVARIANCE_RESIDUAL_CAP / (Octopus._ROUTE_INVARIANCE_MULTIPLIER * eps() * Octopus._kappa_route(Ms, Dx, 1.0))
+        @test kernel(Dx, 1.01 * g_edge) === :singular_coefficient && kernel(Dx, 0.99 * g_edge) === :none
+        # an UNCONVERGED iterate keeps the flag's verdict whatever the floor (M1's rule, 2026-09-13)
+        @test kernel(Dx, 1e15; converged=false) === :not_invariant
+        # the polynomial route: traces 1e-13 apart give amplification 4.7e13 and floor 6.6 (a graph with normalized residual
+        # 3.8e-4 was :none on 7711a8a); at 1e-1 apart the solve is well conditioned and the route is accepted (negative control)
+        S6 = Octopus._symplectic_form(6)
+        G = zeros(6, 6); G[1, 6] = G[6, 1] = 0.25; G[2, 5] = G[5, 2] = -0.1; G[3, 6] = G[6, 3] = 0.07
+        Mc = exp(S6 * G)
+        M13 = Mc * cat(rot(0.73), rot(1.41), rot(0.73 + 1e-13); dims=(1, 2)) * inv(Mc)
+        p13 = Octopus._polynomial_route(M13, 2cos(0.73 + 1e-13); rho_M1=1.5e-15)
+        @test p13.status === :singular_coefficient && _st4_val(p13.coefficient_condition) > 1e13 && Octopus.is_determined(p13.graph)
+        M1 = Mc * cat(rot(0.73), rot(1.41), rot(0.83); dims=(1, 2)) * inv(Mc)
+        @test Octopus._polynomial_route(M1, 2cos(0.83); rho_M1=1.5e-15).status === :none
+    end
     @testset "the two extended coefficient conditions are the routes' amplification factors (dense map 0)" begin
         f = _st4_dense(0)
         cl = _st4_clusters(f.M)
@@ -4649,6 +4711,109 @@ end
     @test rep.labels.reason === :unresolved_defective
 end
 
+@testset "Dispersion routes: a Krein quartet contributes no trace, the projector route is blocked with the cluster's reason (stage 9, U5-2-3)" begin
+    S4 = Octopus._symplectic_form(4); S6 = Octopus._symplectic_form(6)
+    rng = MersenneTwister(4); A4 = randn(rng, 4, 4); A4 = (A4 + A4') / 2
+    Q4 = exp(0.4 * S4 * A4)                                   # a Krein quartet: complex eigenvalues off the unit circle
+    @test all(abs(abs(l) - 1) > 0.1 && abs(imag(l)) > 0.1 for l in eigvals(Q4))
+    rng = MersenneTwister(11); A6 = randn(rng, 6, 6); A6 = (A6 + A6') / 2; T = exp(0.05 * S6 * A6)
+    M = T * _st4_block_diag(Q4, _st4_rot(-0.94)) * inv(T)
+    cl = _st4_clusters(M)
+    qi = findfirst(c -> length(c.members) == 4, cl.clusters)
+    @test qi !== nothing && cl.clusters[qi].classification === :unstable && length(cl.clusters[qi].half_members) == 2
+    # Re(rho + 1 / rho) is shared by the quartet, but rho + 1 / rho is not real: (Z - tau I) annihilates none of its modes
+    rho = cl.clusters[qi].eigenvalues[1]
+    @test abs(imag(rho + 1 / rho)) > 1e-3 && all(abs(real(l + 1 / l) - real(rho + 1 / rho)) <= 1e-8 for l in cl.clusters[qi].eigenvalues)
+    r = _st4_route(Octopus._dispersion_routes(M, cl), :projector)
+    @test r.status === :unstable_spectrum && occursin("needs three mode traces, found 1", r.detail) && occursin("is unstable", r.detail)
+    # the control: the real hyperbolic pair keeps the reason it always had
+    Hx = [cosh(0.5) sinh(0.5); sinh(0.5) cosh(0.5)]
+    Mh = T * _st4_block_diag(Hx, _st4_rot(1.74), _st4_rot(-0.94)) * inv(T)
+    rh = _st4_route(Octopus._dispersion_routes(Mh, _st4_clusters(Mh)), :projector)
+    @test rh.status === :unstable_spectrum && occursin("needs three mode traces, found 2", rh.detail)
+end
+
+@testset "Stage 9 audit: conditions beyond Float64, non-finite graphs and scaling quotients" begin
+    # U5-1-2: a quotient of singular values that overflows Float64 is unavailable, never an Inf value
+    c = Octopus._condition_number(1.0, 5e-324, "x")
+    @test !Octopus.is_determined(c) && c.reason === :singular_coefficient && occursin("beyond the largest Float64", c.detail)
+    @test Octopus.determined_value(Octopus._condition_number(2.0, 1.0, "x")) == 2.0
+    @test !Octopus.is_determined(Octopus._operator_condition([1e200 0.0; 0.0 1e-200], "d"))
+    z = Octopus._operator_condition(zeros(2, 2), "z")
+    @test !Octopus.is_determined(z) && z.reason === :singular_coefficient && occursin("exactly 0", z.detail)
+    @test Octopus.determined_value(Octopus._operator_condition([3.0 0.0; 0.0 1.0], "d")) == 3.0
+    @test Octopus._condition_text(Octopus.Determined(2.5)) == "2.5" && Octopus._condition_text(z) == "infinite"
+    # the identity map: the (D16) operator I kron I - I kron I is exactly zero, so both iterative routes refuse up
+    # front with the operator's own condition and converged = false (the refusal used to drop the condition and
+    # report converged = true, and the fixed point went on to divide by sigma_min = 0)
+    I6 = Matrix(1.0I, 6, 6); tau = 2cos(0.7)
+    for (f, name) in ((Octopus._newton_route, :newton), (Octopus._fixed_point_route, :fixed_point))
+        rt = f(I6, tau; rho_M1=1e-15)
+        @test rt.route === name && rt.status === :singular_coefficient && !rt.converged && rt.iterations == 0
+        @test !Octopus.is_determined(rt.coefficient_condition) && rt.coefficient_condition.reason === :singular_coefficient
+    end
+    rfp = Octopus._fixed_point_route(I6, tau; rho_M1=1e-15, D0=zeros(4, 2))
+    @test rfp.status === :singular_coefficient && !rfp.converged && occursin("singular to working precision", rfp.detail)
+    rnw = Octopus._newton_route(I6, tau; rho_M1=1e-15, D0=zeros(4, 2))
+    @test rnw.iterations == 0 && !Octopus.is_determined(rnw.coefficient_condition)   # converged at the start; the condition is carried, not invented
+    # U5-1-4: a graph with a non-finite entry is refused at the door of _route_from_graph
+    rn = Octopus._route_from_graph(:eigenplane, I6, fill(NaN, 4, 2), tau; rho_M1=1e-15)
+    @test rn.status === :singular_coefficient && !rn.converged && occursin("non-finite entry", rn.detail) && !Octopus.is_determined(rn.graph)
+    # U2a-1: a row pair whose norm quotient overflows keeps the factor 1 (the zero-row convention), not Inf
+    Mo = Matrix(1.0I, 4, 4); Mo[1, :] .= 1e-200; Mo[2, :] .= 1e200
+    @test Octopus._auto_scaling_factors(Mo) == [1.0, 1.0]
+    @test Octopus._auto_scaling_factors(Matrix(Diagonal([1.0, 4.0, 1.0, 1.0]))) == [2.0, 1.0]
+    # U2a-5: a non-square M is an ArgumentError, not a DimensionMismatch deep in the product
+    @test_throws ArgumentError Octopus._invariance_residual(ones(2, 3), ones(3, 1), ones(1, 1))
+end
+
+@testset "Stage 9 audit U4a-2-2: the indefinite cluster's signed basis pairs each column with its own eigenvalue" begin
+    for Mi in (_mc_bd(_mc_R(0.73), _mc_R(1.41), _mc_R(-0.73 - 1e-9)), _mc_bd(_mc_R(-0.73 - 1e-9), _mc_R(1.41), _mc_R(0.73)))
+        ri = Octopus._mode_clusters(Mi; rho_M0=1e-12)
+        ci = ri.clusters[findfirst(c -> length(c.half_members) == 2, ri.clusters)]
+        @test ci.classification === :indefinite && length(ci.members) == 4
+        Wb = Octopus.determined_value(ci.signed_basis)
+        # the by-index pairing put this residual at the split (1e-9); every column is now an eigenvector of the
+        # eigenvalue it is paired with, at the map error
+        @test Octopus.determined_value(ci.frame_residuals).eigenvector <= 64 * _MC_EPS
+        @test length(ci.eigenvalues) == size(Wb, 2)
+        for k in 1:size(Wb, 2)
+            @test norm(Mi * Wb[:, k] - ci.eigenvalues[k] * Wb[:, k]) <= 64 * _MC_EPS * norm(Wb[:, k])
+            @test abs(abs(ci.eigenvalues[k]) - 1) <= 64 * _MC_EPS
+            @test any(abs(abs(angle(ci.eigenvalues[k])) - t) <= 1e-11 for t in (0.73, 0.73 + 1e-9))
+        end
+    end
+end
+
+@testset "Stage 9 audit: the constructor rejects Bool stand-ins and repeated cluster indices with ArgumentErrors" begin
+    for (kw, msg) in ((Dict(:strict => 1), "strict must be true or false"), (Dict(:strict => :yes), "strict must be true or false"),
+                      (Dict(:preferred_form => true), "preferred_form"), (Dict(:longitudinal_mode => true), "longitudinal_mode must be"),
+                      (Dict(:newton_max_iterations => true), "newton_max_iterations must be an integer"),
+                      (Dict(:clusters => [[1, 6], [1, 5], [3, 4]]), "clusters repeats an index"),
+                      (Dict(:clusters => [Any[true, 6]]), "vectors of positive integers"),
+                      (Dict(:longitudinal_mode => 4.0), "synchrotron tune must lie in (0, pi)"),
+                      (Dict(:dispersion_routes => (:eigenplane, :nope)), "names an unknown route :nope"),
+                      (Dict(:dispersion_routes => [:eigenplane]), "non-empty tuple of route symbols"))
+        err = try
+            TwissDispersionAnalysis(; kw...); nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin(msg, err.msg)
+    end
+    @test TwissDispersionAnalysis(strict=false).strict === false && TwissDispersionAnalysis(clusters=[[1, 6], [2, 5], [3, 4]]).clusters == [[1, 6], [2, 5], [3, 4]]
+end
+
+@testset "Stage 9 audit: a non-finite external-reference difference is an infinite worst ratio, not a NaN one" begin
+    rows = Octopus._ExtRefRow[]
+    contract = TwissExternalReferenceContract()
+    @test !Octopus._extref_compare!(rows, contract, :madx, "fx", "q_nan", NaN, 1.0, 1e-9, "TOL-A"; rel=true)
+    @test Octopus._extref_compare!(rows, contract, :madx, "fx", "q_ok", 1.0, 1.0, 1e-9, "TOL-A"; rel=true)
+    res = Octopus._extref_result(rows, Dict{Symbol,String}())
+    @test res.metrics[:worst_ratio] == Inf && res.metrics[:worst_TOL_A] == Inf && res.metrics[:failed] == 1
+    @test occursin("q_nan", res.metrics[:worst_row])
+end
+
 @testset "Dispersion routes: coasting maps, the weak cavity, and the DBA cell at delta = +-1e-4" begin
     # c measured: coasting eta <= 0.03 eps kappa (kappa includes cond(I - M_rr)), shear exact, M_rr symplectic <= 0.43 eps
     for s in (-0.4, 0.0, 0.7)
@@ -4778,6 +4943,10 @@ end
     @test r.status === :graph_isotropic && Octopus.is_determined(r.graph) && Octopus.is_determined(r.canonical_area)
     @test _st4_val(r.canonical_area) == 0 && !Octopus.is_determined(r.h) && r.h.reason === :graph_isotropic
     @test Octopus.is_determined(r.invariance_residual) && Octopus.is_determined(r.trace_residual)
+    # a stalled iterate is judged by convergence before isotropy: the same isotropic graph with converged = false is
+    # :not_invariant, not :graph_isotropic (M1; stage 9, U5-2-1)
+    rs = Octopus._route_from_graph(:eigenplane, Md, Diso, 2cos(0.73); rho_M1=1e-15, converged=false)
+    @test rs.status === :not_invariant && !rs.converged && occursin("stopped short", rs.detail) && _st4_val(rs.canonical_area) == 0
     # degeneracy rejection: the false graph [diag(1, -0.5); 0] solves the polynomial kernel but not (D14)
     Dfalse = [1.0 0.0; 0.0 -0.5; 0.0 0.0; 0.0 0.0]
     res = Octopus._route_residuals(Md, Dfalse, 2cos(0.73))
@@ -5210,6 +5379,11 @@ end
     @test lb.longitudinal_margin == 1.0 && lb.transverse_margin == 1.0 && lb.tie_tolerance == Octopus._LABEL_TIE_MULTIPLIER * eps()
     lb = Octopus._mode_labels_6d([u2, u1, u3], [1.41, 0.73, 5.4]; longitudinal=1)
     @test lb.rule === :explicit && lb.longitudinal == 1 && lb.longitudinal_margin == -1.0 && lb.transverse == (2, 3)
+    # an explicit selection with a negative z-area margin is not a tie: the transverse order follows the x-areas (stage 9, U5-1-2)
+    lb = Octopus._mode_labels_6d([u2, u3, u1], [1.41, 5.4, 0.73]; longitudinal=1)
+    @test lb.rule === :explicit && !lb.tie && lb.longitudinal_margin == -1.0 && lb.transverse_margin == 1.0 && lb.transverse == (3, 2)
+    lb = Octopus._mode_labels_6d([u1, u1, u3], [0.73, 0.73, 5.4]; longitudinal=3)     # a transverse tie still keeps the given order
+    @test lb.tie && lb.transverse_margin == 0 && lb.transverse == (1, 2) && lb.longitudinal_margin == 1.0
     # a longitudinal tie: two modes with equal z-area (a 45-degree y-z roll)
     w2 = (u2 + u3) / sqrt(2); w3 = (u2 - u3) / sqrt(2)
     lb = Octopus._mode_labels_6d([u1, w2, w3], [0.73, 1.41, 5.4])
@@ -6068,6 +6242,9 @@ end
     @test_throws ArgumentError TwissDispersionAnalysis(dispersion_routes=(:eigenplane, :eigenplane))
     @test_throws ArgumentError TwissDispersionAnalysis(dispersion_routes=(:eigenplane, :secant))
     @test_throws ArgumentError TwissDispersionAnalysis(dispersion_routes=[:eigenplane])
+    @test_throws ArgumentError TwissDispersionAnalysis(dispersion_routes=(:polynomial,))                  # the primary route is required (stage 9, S3-3)
+    @test_throws ArgumentError TwissDispersionAnalysis(dispersion_routes=(:polynomial, :projector))
+    @test TwissDispersionAnalysis(dispersion_routes=(:polynomial, :eigenplane)).dispersion_routes == (:polynomial, :eigenplane)
     @test_throws ArgumentError TwissDispersionAnalysis(newton_max_iterations=0)
     @test_throws ArgumentError TwissDispersionAnalysis(emittances=(1e-9,))
     @test_throws ArgumentError TwissDispersionAnalysis(emittances=(1e-9, -1e-9))
@@ -6137,7 +6314,8 @@ end
     @test lines[3] == "TW-NORMALIZER u6_reconstruction ratio=3.500000e+00 c=64"
     @test lines[4] == "TW-NORMALIZER u6_symplecticity  ratio=1.250000e+00 c=32"
     @test lines[5] == "TW-TENTH above_tenth=1 above_quarter=0 above_half=0 above_one=0 of 2 [b_row]"
-    @test startswith(lines[6], "TW-DIAG") && startswith(lines[7], "TW-KINDS") && startswith(lines[8], "TW-DIGEST")
+    @test startswith(lines[6], "TW-DIAG") && startswith(lines[7], "TW-KINDS") && startswith(lines[8], "TW-PINS")
+    @test lines[8] == "TW-PINS dense6_unresolved=NA dense4_skipped=NA verdicts_consistent=NA verdicts_inconsistent=NA absolute_pins_checked=NA" && startswith(lines[9], "TW-DIGEST")
     path = joinpath(mktempdir(), "dry.tsv")
     @test dry.write_identities_tsv(fake, path; multipliers=mult, slugs=slugs) == 4
     rows = readlines(path)
@@ -6197,8 +6375,14 @@ end
     @test _st4b_a_val(r.physical.h) == Octopus._unscale_longitudinal_factor(rec, _st4b_a_val(r.separation).h)
     @test size(_st4b_a_val(r.physical.beta)) == (3, 3) && length(_st4b_a_val(r.physical.projectors)) == 3
     @test r.physical.tunes == collect(_st4b_a_val(r.projected_optics).tunes)
-    Ms = r.matrix_scaled; D = hcat(_st4b_a_val(r.separation).zeta, _st4b_a_val(r.separation).eta ./ _st4b_a_val(r.separation).h)
-    @test Octopus.is_determined(r.physical.graph) && size(_st4b_a_val(r.physical.graph)) == (4, 2)
+    # the physical graph: the back-transformed scaled graph, invariant under the physical matrix, consistent with
+    # the physical zeta, eta and h (stage 9, U11b-1-1: the two lines here used to compute a scaled graph and drop it)
+    sep = _st4b_a_val(r.separation); ph = r.physical
+    @test Octopus.is_determined(ph.graph) && size(_st4b_a_val(ph.graph)) == (4, 2)
+    Dp = _st4b_a_val(ph.graph)
+    @test Dp == Octopus._unscale_graph(rec, hcat(sep.zeta, sep.eta ./ sep.h))
+    @test Octopus._graph_invariance_residual(M6, Dp).normalized <= 64 * eps(Float64)
+    @test isapprox(Dp, hcat(_st4b_a_val(ph.zeta), _st4b_a_val(ph.eta) ./ _st4b_a_val(ph.h)); rtol=1e-12)
     # normal modes: three, the third the synchrotron one, every vector an eigenvector of the scaled matrix
     for j in 1:3
         nm = normal_mode(r, j)
@@ -6237,6 +6421,17 @@ end
         @test chords[1] > 0.5 * chords[3]                                  # the data: no half-gap margin (the partner is chords[2] or worse)
         efar = try; analyze(TwissDispersionAnalysis(longitudinal_mode=far), M6); nothing; catch e; e; end
         @test efar isa ArgumentError && occursin("identifies no mode", efar.msg) && occursin(string(round(r.physical.tunes[1]; digits=6))[1:6], efar.msg)
+    end
+    # a tune on a coasting map: the option is inactive there (its schema), so no tune is refused and the map is
+    # analyzed as coasting exactly as under the default rule (stage 9, U7-1-6)
+    Mco = _st4b_a_coasting(0.3).M
+    rco0 = analyze(TwissDispersionAnalysis(), Mco)
+    for lm in (0.05, 0.3, 1.5)
+        rco = analyze(TwissDispersionAnalysis(longitudinal_mode=lm), Mco)
+        @test rco.status === :passed && rco.coasting.holds && rco.dispersion.longitudinal == 0
+        @test rco.diagnostics.longitudinal_selection.reason === :coasting_structure
+        @test _st4b_a_entry(rco, :longitudinal_mode).status === _st4b_a_entry(rco0, :longitudinal_mode).status
+        @test _st4b_a_val(rco.physical.eta) == _st4b_a_val(rco0.physical.eta)
     end
     rct = analyze(TwissDispersionAnalysis(longitudinal_mode=mu_s), M6)
     tc = _st4b_a_val(rct.diagnostics.longitudinal_selection).tune_chords
@@ -6584,7 +6779,9 @@ end
 @testset "Reason table: one fixture per reason the pipeline can emit, the set seen equals the set the docstrings claim (F13)" begin
     claimed = Set([:not_requested, :cluster_unresolved, :indefinite_cluster, :unstable_spectrum, :unit_eigenvalue,
                    :coasting_structure, :form_inadmissible, :singular_coefficient, :not_invariant, :route_not_selected,
-                   :singular_longitudinal_projection])
+                   :singular_longitudinal_projection, :unresolved_defective])
+    # the other three members of DETERMINATION_REASONS (:graph_isotropic, :zero_projection, :not_derived_for_cluster) have
+    # no analyze-level fixture in this table; their kernels are tested where they are emitted (stage 9, U11b-2-3)
     seen = Set{Symbol}()
     function collect!(r)
         for f in (r.closed_orbit, r.transverse, r.separation, r.projected_optics, r.ohmi, r.covariance_6d, r.covariance,
@@ -6622,6 +6819,13 @@ end
         @test any(s -> occursin(":$(reason)", s), r.degradations)
         @test !r.coasting.holds
     end
+    # the defective spectator (stage 3's Jordan pair inside a coupled 6x6 map): :unresolved_defective on the frame, the
+    # normalizer and the presented form, while the dispersion is unique (the longitudinal cluster is resolved) (stage 9, U11b-2-3)
+    Wd = Octopus._manufactured_symplectic_map(MersenneTwister(_ST4_SEED + 2000), 6; scale=0.1).M
+    rdef = collect!(analyze(a, Wd * _st4_block_diag(_st3_defective_spectator(0.9), _st4_rot(-1.3)) * Octopus._symplectic_inverse(Wd)))
+    @test rdef.status === :degraded && rdef.projected_optics.reason === :unresolved_defective && rdef.physical.normalizer.reason === :unresolved_defective
+    @test Octopus.is_determined(rdef.dispersion.eta) && any(s -> occursin(":unresolved_defective", s), rdef.degradations)
+    @test _st4b_a_val(rdef.transverse).frame.reason === :unresolved_defective && _st4b_a_entry(rdef, :preferred_form).status === :inactive_dependency
     # singular projection (h = 0): the primary route's reason, the polynomial route :singular_coefficient, no separation
     Msg = _st4b_a_singular()
     rsg = collect!(analyze(TwissDispersionAnalysis(longitudinal_mode=0.9, strict=false), Msg))
@@ -6723,6 +6927,14 @@ end
     for name in ("(K14) zz identity", "separation off-diagonal (K5)", "triple consistency (K7)", "primary route invariance (I1)")
         @test any(x -> x[1] == name, d6.residuals)
         @test Octopus._analysis_verdict(r6e.analysis, rebuild(d6, [(n, n == name ? 2t : v, t) for (n, v, t) in d6.residuals]), String[])[1] === :passed
+    end
+    # the (K7) row carries the tolerance its kernel used, c_K7 eps max(1, ||zeta|| ||eta||), not the K5 kappa (stage 9, U6-2)
+    let s6 = _st4b_a_val(r6e.separation)
+        k7 = d6.residuals[findfirst(x -> x[1] == "triple consistency (K7)", d6.residuals)]
+        k5 = d6.residuals[findfirst(x -> x[1] == "separation off-diagonal (K5)", d6.residuals)]
+        @test k7[3] == Octopus._TRIPLE_CONSISTENCY_MULTIPLIER * eps() * max(1.0, norm(s6.zeta) * norm(s6.eta)) && k7[2] <= k7[3]
+        @test k5[3] == Octopus._SEPARATION_RESIDUAL_MULTIPLIER * eps() * max(1.0, norm(r6e.clusters.matrix)) * norm(s6.transformation) * norm(s6.inverse)
+        @test k7[3] < k5[3]
     end
 end
 
@@ -6882,7 +7094,9 @@ end
     Mi4 = _st4b_a_bd(_st4b_a_rot(0.73), _st4b_a_rot(-0.73))
     ri4 = analyze(TwissDispersionAnalysis(strict=false), Mi4)
     @test ri4.status === :degraded
-    @test !Octopus.is_determined(_st4b_a_val(ri4.transverse).frame) || Octopus.is_determined(_st4b_a_val(ri4.transverse).frame)
+    # stage 9, U11b-2-1: the earlier line here was a tautology; the frame and the presented form carry the cluster's reason
+    @test !Octopus.is_determined(_st4b_a_val(ri4.transverse).frame) && _st4b_a_val(ri4.transverse).frame.reason === :indefinite_cluster
+    @test _st4b_a_val(ri4.transverse).preferred_form.reason === :indefinite_cluster && ri4.physical.normalizer.reason === :indefinite_cluster
     # forced: resolution_chord = Inf resolves the repeated betatron pair and the result says so
     rf = analyze(TwissDispersionAnalysis(resolution_chord=Inf, strict=false), _st4b_a_repeated())
     @test any(c.forced for c in rf.clusters.clusters) && rf.status === :degraded
@@ -6960,8 +7174,9 @@ end
     @test alt[:clusters] == [[1, 6], [2, 5], [3, 4]]
     @test alt[:longitudinal_mode] === Octopus._ANALYSIS_CONTRACT_LONGITUDINAL_INDEX
     # every F6 inactivity is declared with a non-empty reason
-    for pair in ((:matrix, :closed_orbit), (:matrix, :closed_orbit_atol), (:matrix4, :closed_orbit),
-                 (:coasting, :closed_orbit), (:matrix4, :longitudinal_mode), (:matrix4, :dispersion_routes),
+    @test length(ina) == 16   # every inactive pair of the receipt is named below (stage 9, U11b-2-4)
+    for pair in ((:matrix, :closed_orbit), (:matrix, :closed_orbit_atol), (:matrix4, :closed_orbit), (:matrix4, :closed_orbit_atol),
+                 (:coasting, :closed_orbit), (:coasting, :closed_orbit_atol), (:matrix4, :longitudinal_mode), (:matrix4, :dispersion_routes),
                  (:matrix4, :newton_max_iterations), (:coasting, :longitudinal_mode),
                  (:coasting, :dispersion_routes), (:coasting, :newton_max_iterations),
                  (:matrix, :emittances), (:linearized, :emittances), (:matrix4, :emittances), (:coasting, :emittances))
@@ -22791,6 +23006,30 @@ if _lane_gate("Physics contracts")
     @test ext.metrics[:rows_ptc] > 0
     @test ext.metrics[:rows_xtrack] > 0
     @test ext.metrics[:failed] == 0
+    # every PTC row is read by one layer (stage 9, U10a-1-1): the coverage row fails when a layer label is not one the
+    # reader knows, where before the rows vanished silently (97 of 111 in the stage 9 probe)
+    let dir = Octopus._extref_reference_dir(TwissExternalReferenceContract()), c = TwissExternalReferenceContract()
+        tab = Octopus._extref_read_wide(Octopus._extref_table_path(dir, "ptc_twiss_madx_"))
+        rows0 = Octopus._ExtRefRow[]; Octopus._extref_ptc_rows!(rows0, c, tab)
+        cov0 = rows0[findfirst(x -> x.quantity == "layer_rows_present", rows0)]
+        @test cov0.passed && cov0.octopus == cov0.external == length(tab.rows) && length(tab.rows) == 10
+        rows1 = Dict{String,String}[Dict(k => (k == "layer" && v == "5d" ? "5D" : v) for (k, v) in row) for row in tab.rows]
+        rows = Octopus._ExtRefRow[]; Octopus._extref_ptc_rows!(rows, c, Octopus._ExtRefTable(tab.path, tab.header, tab.columns, rows1))
+        cov = rows[findfirst(x -> x.quantity == "layer_rows_present", rows)]
+        @test !cov.passed && cov.octopus == length(tab.rows) - 3 && cov.external == length(tab.rows) && length(rows) < length(rows0)
+    end
+    # the coupled rows' BETA12/BETA21 index-order gate fails when neither reading matches (stage 9, R2-5-1)
+    let c = TwissExternalReferenceContract(), bm = [1.0 5.0; 7.0 1.0]
+        rows = Octopus._ExtRefRow[]
+        Octopus._extref_ptc_index_order_rows!(rows, c, "K2", Dict("BETA12_start" => "5", "BETA21_start" => "7"), bm, 1, 2)
+        @test length(rows) == 2 && all(x.passed for x in rows)                  # decided (mode, plane) at TOL-C
+        rows = Octopus._ExtRefRow[]
+        Octopus._extref_ptc_index_order_rows!(rows, c, "K2", Dict("BETA12_start" => "2", "BETA21_start" => "3"), bm, 1, 2)
+        @test length(rows) == 2 && !any(x.passed for x in rows)                 # both readings miss: the closer one is gated and fails
+        rows = Octopus._ExtRefRow[]
+        Octopus._extref_ptc_index_order_rows!(rows, c, "K2", Dict("BETA12_start" => "5", "BETA21_start" => "5"), [1.0 5.0; 5.0 1.0], 1, 2)
+        @test isempty(rows)                                                     # both readings match: undecided, no gated row, as before
+    end
     # No ratio pin here: `passed` requires `failed == 0`, and a row fails when
     # its difference exceeds its own class bound, so the worst ratio is at most
     # one by construction. `_st6_pin_lines` reads this block and requires every

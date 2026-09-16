@@ -1,7 +1,7 @@
 # Twiss / dispersion acceptance windows: the stage 4a measurement driver of the Twiss/dispersion campaign
 # (Part D1, 2026-09-12), tracked 2026-09-14 so that the measurement behind every acceptance multiplier of
 # src/analysis/dispersion_routes.jl is reproducible from the tree. Package mode, from the tree under test:
-#   julia --startup-file=no --project=. --threads=4 validation/twiss_dispersion_acceptance_windows.jl [oracle_maps.tsv] [oracle_reference.tsv] [out.md]
+#   julia --startup-file=no --project=. validation/twiss_dispersion_acceptance_windows.jl [oracle_maps.tsv] [oracle_reference.tsv] [out.md]
 # Defaults: validation/reference/twiss_oracle_maps.tsv, validation/reference/twiss_oracle_reference.tsv,
 # result/twiss_dispersion_acceptance_windows.md. Sections of the table:
 # (1) the ORACLE AGREEMENT TABLE: every route of `_dispersion_routes` on the 39 oracle maps of the
@@ -330,7 +330,8 @@ function collect_route_ratios!(tag, M, cl, rep)
             occursin("another branch", r.detail) || rej!("c_inv_unconditioned", "$(tag) [$(r.route)]", v * max(1.0, cr))
         end
     end
-    # c_stop: converged iterates' final residual / (eps max(1, ||M||_F)) accepted; the iterate one step short rejected
+    # c_stop: the converged iterate's final residual / (eps max(1, ||M||_F)) and, for newton, the iterate one step
+    # short of it, both RECORDED with unl! (the window is the maximum over both; stage 9)
     for r in (new, fp)
         (r.converged && is_determined(r.invariance_residual)) || continue
         unl!("c_stop", "$(tag) [$(r.route) final iterate]", dv(r.invariance_residual).normalized / (EPS * max(1.0, norm(M))))
@@ -575,8 +576,8 @@ function rejected_side_section(reports)
     # F3: cubic roots vs 2 cos mu_j; defect: a non-symplectic 1e-8 perturbation of M (the trace identities no longer hold on a symplectic spectrum)
     Mp = M + 1e-8 * randn(MersenneTwister(1), 6, 6)
     rts = Octopus._trace_cubic_roots(Mp); taus = sort(2cos.(rep.tunes))
-    fam!("trace-cubic roots vs 2 cos mu_j", 64, "max(1,||M||)", f.name, rep.trace_cubic_residual / (EPS * max(1, norm(M))),
-         "M + 1e-8 N (non-symplectic)", maximum(abs.(sort(real.(rts)) - taus)) / (EPS * max(1, norm(M))))
+    fam!("trace-cubic roots vs 2 cos mu_j", 64, "max(1,||M||)^3", f.name, rep.trace_cubic_residual / (EPS * max(1, norm(M))^3),   # the suite's kappa (stage 9, U13b-1)
+         "M + 1e-8 N (non-symplectic)", maximum(abs.(sort(real.(rts)) - taus)) / (EPS * max(1, norm(M))^3))
     # F4: (K4) off-diagonal; defect: the reversed factor order M_eta M_zeta (the dossier's NEVER)
     sep = Octopus._canonical_separation(M, rep); ks = _st4_kappa_sep(sep, M)
     fac = Octopus._dispersion_factors(sep.zeta, sep.eta); Mrev = fac.M_eta * fac.M_zeta
@@ -585,7 +586,7 @@ function rejected_side_section(reports)
          "factor order reversed to M_eta M_zeta", off_rev / (EPS * ks))
     # F5: (K1) symplecticity of M_cal; defect: the pz row of M_zeta with the wrong sign
     Mz_bad = copy(fac.M_zeta); Mz_bad[6, 1:4] .= -Mz_bad[6, 1:4]; Mc_bad = Mz_bad * fac.M_eta
-    fam!("(K1) M_cal symplecticity", 64, "||M_cal||^2", f.name, sep.symplecticity / (EPS * norm(sep.transformation)^2),
+    fam!("(K1) M_cal symplecticity", 16, "||M_cal||^2", f.name, sep.symplecticity / (EPS * norm(sep.transformation)^2),   # c = 16 as the suite pins it (stage 9, U13b-2)
          "M_zeta pz-row sign flipped", Octopus._symplectic_defect(Mc_bad).frobenius / (EPS * norm(Mc_bad)^2))
     # F6: (K5) block symplecticity; defect: the non-symplectic M + 1e-8 N separated with the same triple
     sep_p = Octopus._canonical_separation(Mp, sep.zeta, sep.eta, sep.h)
@@ -631,8 +632,8 @@ function rejected_side_section_2(reports)
     kap = max(1, norm(fc.M)) * max(1, norm(fc.eta))^2 * dv(c.coefficient_condition)
     fam!("coasting (D24) eta vs construction", 4, "max(1,||M||) max(1,||eta||)^2 cond(I - M_rr)", rc.f.name, norm(dv(c.eta) - fc.eta, Inf) / (EPS * kap),
          "eta = M[1:4, 6] (no (D24) solve)", norm(fc.M[1:4, 6] - fc.eta, Inf) / (EPS * kap))
-    # F14: the shear (D25); defect: M[5, 6] alone taken as the shear
-    fam!("coasting shear (D25)", 16, "max(1,||M||) max(1,||eta||)^2 cond", rc.f.name, abs(c.shear - fc.shear) / (EPS * kap), "shear = M[5, 6] alone", abs(fc.M[5, 6] - fc.shear) / (EPS * kap))
+    # F14: the shear (D25); defect: M[5, 6] alone taken as the shear (c = 4 as the suite pins it; stage 9, U13b-3)
+    fam!("coasting shear (D25)", 4, "max(1,||M||) max(1,||eta||)^2 cond", rc.f.name, abs(c.shear - fc.shear) / (EPS * kap), "shear = M[5, 6] alone", abs(fc.M[5, 6] - fc.shear) / (EPS * kap))
     # F15: trial-011 analytic eta_+; defect: the sign of k in the analytic formula
     kc = _st3_crab_kc(); k = kc * (1 - 1e-3); rk = reports[findfirst(r -> r.f.name == "trial-011 crab k=kc(1-0.001)", reports)]
     d = (cos(0.85) - cos(-0.75))^2 + k^2 * sin(0.85) * sin(-0.75); eta_plus = [0.0, -k * sin(-0.75), 0.0, 0.0] / (2sqrt(d))
@@ -643,9 +644,11 @@ function rejected_side_section_2(reports)
     rp = reports[4]; f = rp.f; a = (2.0, 0.5, 4.0)
     Cr = Diagonal([a[1], 1 / a[1], a[2], 1 / a[2]]); Cl = Diagonal([a[3], 1 / a[3]]); C6 = Diagonal(vcat(diag(Cr), diag(Cl)))
     Ms = C6 * f.M * inv(C6); cls = _st4_clusters(Ms); reps = Octopus._dispersion_routes(Ms, cls; longitudinal=certified_index(cls, f.mu_s))
-    Ds = dv(reps.graph); kap_s = max(1, norm(f.M)) * max(1, norm(f.zeta), norm(f.eta))^2 * cond(Matrix(C6))
+    # the suite's kappa for the back-transformation: the scaled map and graph, and max(fac)^2 / min(fac)^2 for the
+    # similarity (stage 9, U13b-4; the earlier max(1,||M||) max(1,||D||)^2 cond(C) at c = 64 was not the suite's window)
+    Ds = dv(reps.graph); kap_s = max(1, norm(Ms)) * max(1, norm(Ds))^2 * maximum(a)^2 / minimum(a)^2
     D_exact = hcat(f.zeta, f.eta ./ f.h)
-    fam!("scaling back-transformation D_phys = C_r^-1 D C_l", 64, "max(1,||M||) max(1,||D||)^2 cond(C)", f.name * " scaled by (2, 0.5, 4)", norm(inv(Cr) * Ds * Cl - D_exact, Inf) / (EPS * kap_s),
+    fam!("scaling back-transformation D_phys = C_r^-1 D C_l", 16, "max(1,||M_s||) max(1,||D_s||)^2 max(fac)^2/min(fac)^2", f.name * " scaled by (2, 0.5, 4)", norm(inv(Cr) * Ds * Cl - D_exact, Inf) / (EPS * kap_s),
          "C_r D C_l^-1 (exponents reversed)", norm(Cr * Ds * inv(Cl) - D_exact, Inf) / (EPS * kap_s))
     # F17: DBA coasting eta against the closed-orbit central difference (FD tolerance 4 step^2 + 1e-12 / step); defect: a one-sided difference
     NST = 4; ORDER = 4
@@ -724,7 +727,7 @@ function main()
     oracle = load_oracle_maps(ORACLE_TSV); ref = load_reference(REF_TSV)
     dump_log = joinpath(@__DIR__, "reference", "twiss_oracle_reference_provenance.txt")   # the reference dump's log (seed, python / numpy / scipy, the helper's sha256, the check_map counts)
     pr("# Stage 4a measurement table (Part D1)\n")
-    pr("Produced by $(basename(@__FILE__)) (package mode, main tree). Julia $(VERSION); threads $(Threads.nthreads()); seed $(_ST4_SEED); oracle TSV $(relp(ORACLE_TSV)); reference TSV $(relp(REF_TSV)).")
+    pr("Produced by $(basename(@__FILE__)) (package mode, main tree). Julia $(VERSION); seed $(_ST4_SEED); oracle TSV $(relp(ORACLE_TSV)); reference TSV $(relp(REF_TSV)).")
     isfile(dump_log) && pr("Reference dump: " * join(strip.(readlines(dump_log)[end-2:end]), " / "))
     pr("Source constants at run time: c_graph = $(Octopus._GRAPH_SINGULARITY_MULTIPLIER), c_iso = $(Octopus._ISOTROPY_MULTIPLIER), c_coef = $(Octopus._COEFFICIENT_CONDITION_MULTIPLIER), c_inv = $(Octopus._ROUTE_INVARIANCE_MULTIPLIER), c_stop = $(Octopus._ITERATION_STOP_MULTIPLIER), c_coast = $(Octopus._COASTING_MULTIPLIER), c_tie = $(Octopus._LABEL_TIE_MULTIPLIER), c_sep = $(Octopus._SEPARATION_RESIDUAL_MULTIPLIER), c_triple = $(Octopus._TRIPLE_CONSISTENCY_MULTIPLIER), c_ell = $(Octopus._LONGITUDINAL_ELLIPTIC_MULTIPLIER), c_ohmi = $(Octopus._OHMI_POSITIVITY_MULTIPLIER), _MAX_HALVINGS = $(Octopus._MAX_HALVINGS), _FIXED_POINT_MAX_ITERATIONS = $(Octopus._FIXED_POINT_MAX_ITERATIONS). Every fixture name in this file is produced by the code that built the fixture; none is typed into the text.")
     rows = oracle_section(oracle, ref); certified_section(oracle, ref, rows)

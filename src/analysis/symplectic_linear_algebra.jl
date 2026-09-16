@@ -170,7 +170,10 @@ function _auto_scaling_factors(M::AbstractMatrix{<:Real})
         q = norm(view(M, 2i - 1, :))
         p = norm(view(M, 2i, :))
         if q > 0 && p > 0 && isfinite(q) && isfinite(p)
-            a[i] = sqrt(p / q)
+            # the quotient of two finite norms can still overflow or underflow Float64 (stage 9, U2a-1): such a
+            # pair keeps the factor 1, the same "no scaling" the zero and non-finite rows get
+            s = sqrt(p / q)
+            (isfinite(s) && s > 0) && (a[i] = s)
         end
     end
     return a
@@ -378,6 +381,7 @@ vectors). Both values are returned so the normalized one is never mislabelled
 as the raw one; the design accepts a route on the NORMALIZED value only.
 """
 function _invariance_residual(M::AbstractMatrix, U::AbstractMatrix, R::AbstractMatrix)
+    size(M, 1) == size(M, 2) || throw(ArgumentError("_invariance_residual: M must be square, got $(size(M))"))
     size(M, 2) == size(U, 1) || throw(ArgumentError(
         "_invariance_residual: M is $(size(M)) but U has $(size(U, 1)) rows"))
     size(R) == (size(U, 2), size(U, 2)) || throw(ArgumentError(

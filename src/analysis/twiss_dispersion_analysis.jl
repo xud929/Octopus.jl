@@ -276,7 +276,10 @@ function TwissDispersionAnalysis(; scaling=:auto, symplectic_rtol=nothing, nonsy
                                  resolution_chord=_DEFAULT_RESOLUTION_CHORD, clusters=:auto,
                                  longitudinal_mode=:max_signed_z_area, preferred_form=:auto,
                                  dispersion_routes=DISPERSION_ROUTES, newton_max_iterations::Integer=50,
-                                 emittances=nothing, strict::Bool=true)
+                                 emittances=nothing, strict=true)
+    # every rejected keyword is an ArgumentError naming it (stage 9): a Bool is not an integer choice, a non-Bool
+    # is not a strictness flag, and a keyword type mismatch would otherwise surface as a MethodError or TypeError
+    strict isa Bool || throw(ArgumentError("TwissDispersionAnalysis: strict must be true or false, got $(strict)"))
     if scaling isa Symbol
         scaling in (:auto, :none) || throw(ArgumentError("TwissDispersionAnalysis: scaling must be :auto, :none or a tuple of positive factors, got :$(scaling)"))
         sc = scaling
@@ -298,11 +301,13 @@ function TwissDispersionAnalysis(; scaling=:auto, symplectic_rtol=nothing, nonsy
     if clusters isa Symbol
         clusters === :auto || throw(ArgumentError("TwissDispersionAnalysis: clusters must be :auto or a vector of index vectors, got :$(clusters)"))
         cl = clusters
-    elseif clusters isa AbstractVector && all(g -> g isa AbstractVector && !isempty(g) && all(i -> i isa Integer && i >= 1, g), clusters) && !isempty(clusters)
+    elseif clusters isa AbstractVector && all(g -> g isa AbstractVector && !isempty(g) && all(i -> i isa Integer && !(i isa Bool) && i >= 1, g), clusters) && !isempty(clusters)
         cl = [Int.(collect(g)) for g in clusters]
+        allunique(reduce(vcat, cl)) || throw(ArgumentError("TwissDispersionAnalysis: clusters repeats an index (a partition holds every index once), got $(clusters)"))
     else
         throw(ArgumentError("TwissDispersionAnalysis: clusters must be :auto or a non-empty vector of non-empty vectors of positive integers, got $(clusters)"))
     end
+    longitudinal_mode isa Bool && throw(ArgumentError("TwissDispersionAnalysis: longitudinal_mode must be a rule symbol, an eigenvalue index or a synchrotron tune, got $(longitudinal_mode)"))
     if longitudinal_mode isa Symbol
         longitudinal_mode in _LONGITUDINAL_RULES || throw(ArgumentError("TwissDispersionAnalysis: longitudinal_mode must be one of $(_LONGITUDINAL_RULES), an eigenvalue index or a synchrotron tune, got :$(longitudinal_mode)"))
         lm = longitudinal_mode
@@ -310,7 +315,7 @@ function TwissDispersionAnalysis(; scaling=:auto, symplectic_rtol=nothing, nonsy
         longitudinal_mode >= 1 || throw(ArgumentError("TwissDispersionAnalysis: an explicit longitudinal_mode index must be positive, got $(longitudinal_mode)"))
         lm = Int(longitudinal_mode)
     elseif longitudinal_mode isa Real
-        (isfinite(longitudinal_mode) && 0 < longitudinal_mode < pi) || throw(ArgumentError("TwissDispersionAnalysis: a synchrotron tune must lie in (0, pi) radians per turn, got $(longitudinal_mode)"))
+        (isfinite(longitudinal_mode) && 0 < longitudinal_mode < pi) || throw(ArgumentError("TwissDispersionAnalysis: longitudinal_mode as a synchrotron tune must lie in (0, pi) radians per turn, got $(longitudinal_mode)"))
         lm = Float64(longitudinal_mode)
     else
         throw(ArgumentError("TwissDispersionAnalysis: longitudinal_mode must be a rule symbol, an eigenvalue index or a synchrotron tune, got $(longitudinal_mode)"))
@@ -318,7 +323,7 @@ function TwissDispersionAnalysis(; scaling=:auto, symplectic_rtol=nothing, nonsy
     if preferred_form isa Symbol
         preferred_form === :auto || throw(ArgumentError("TwissDispersionAnalysis: preferred_form must be :auto, 1 or 2, got :$(preferred_form)"))
         pf = preferred_form
-    elseif preferred_form isa Integer && preferred_form in (1, 2)
+    elseif preferred_form isa Integer && !(preferred_form isa Bool) && preferred_form in (1, 2)
         pf = Int(preferred_form)
     else
         throw(ArgumentError("TwissDispersionAnalysis: preferred_form must be :auto, 1 or 2, got $(preferred_form)"))
@@ -326,9 +331,11 @@ function TwissDispersionAnalysis(; scaling=:auto, symplectic_rtol=nothing, nonsy
     (dispersion_routes isa Tuple && !isempty(dispersion_routes) && all(r -> r isa Symbol, dispersion_routes)) ||
         throw(ArgumentError("TwissDispersionAnalysis: dispersion_routes must be a non-empty tuple of route symbols, got $(dispersion_routes)"))
     for r in dispersion_routes
-        r in DISPERSION_ROUTES || throw(ArgumentError("TwissDispersionAnalysis: unknown dispersion route :$(r); the routes are $(DISPERSION_ROUTES)"))
+        r in DISPERSION_ROUTES || throw(ArgumentError("TwissDispersionAnalysis: dispersion_routes names an unknown route :$(r); the routes are $(DISPERSION_ROUTES)"))
     end
     length(unique(dispersion_routes)) == length(dispersion_routes) || throw(ArgumentError("TwissDispersionAnalysis: dispersion_routes repeats a route: $(dispersion_routes)"))
+    :eigenplane in dispersion_routes || throw(ArgumentError("TwissDispersionAnalysis: dispersion_routes must include :eigenplane, the primary route, got $(dispersion_routes)"))
+    newton_max_iterations isa Bool && throw(ArgumentError("TwissDispersionAnalysis: newton_max_iterations must be an integer >= 1, got $(newton_max_iterations)"))
     newton_max_iterations >= 1 || throw(ArgumentError("TwissDispersionAnalysis: newton_max_iterations must be at least 1, got $(newton_max_iterations)"))
     if emittances === nothing
         em = nothing
@@ -384,13 +391,13 @@ const _TWISS_DISPERSION_OPTION_SCHEMA = (
         category=:physics, supported_backends=(CPUThreadsBackend,), dependencies=(:resolution_chord,),
         consumer=:analysis_cluster_resolution),
     longitudinal_mode=ConfigurationOptionMeta(Union{Symbol,Int,Float64}, :max_signed_z_area,
-        "Which mode is the synchrotron mode of a 6x6 map. :max_signed_z_area is stage 4a's heuristic (UNCERTIFIED: by (K12) kappa_sz = h and kappa_1z + kappa_2z = 1 - h, so a betatron mode CAN carry more z-area and the 3x3 array cannot distinguish a row permutation); an Int names a canonical eigenvalue index; a Float64 is the synchrotron tune mu_s in (0, pi), selecting the mode whose eigenvalue pair contains the one nearest exp(-i mu_s) (the chord must be below half the chord to the runner-up, else an ArgumentError). Inactive on 4x4 input and on a coasting map.";
+        "Which mode is the synchrotron mode of a 6x6 map. :max_signed_z_area is stage 4a's heuristic (UNCERTIFIED: by (K12) kappa_sz = h and kappa_1z + kappa_2z = 1 - h, so a betatron mode CAN carry more z-area and the 3x3 array cannot distinguish a row permutation); an Int names a canonical eigenvalue index; a Float64 is the synchrotron tune mu_s in (0, pi), selecting the mode whose eigenvalue pair contains the one nearest exp(-i mu_s) (the chord must be below max(half the chord to the runner-up, _TUNE_CHORD_FLOOR_MULTIPLIER rho_M1), else an ArgumentError). Inactive on 4x4 input and on a coasting map.";
         category=:physics, supported_backends=(CPUThreadsBackend,), consumer=:analysis_labels),
     preferred_form=ConfigurationOptionMeta(Union{Symbol,Int}, :auto,
         "Which Edwards-Teng form the result PRESENTS as preferred (both are always computed): :auto takes the admissible form with the larger area weight (ties to form 1); 1 or 2 name a form. Inactive when the transverse optics are unavailable.";
         category=:physics, supported_backends=(CPUThreadsBackend,), consumer=:analysis_edwards_teng),
     dispersion_routes=ConfigurationOptionMeta(Tuple{Vararg{Symbol}}, DISPERSION_ROUTES,
-        "The dispersion routes to execute on a 6x6 map, a non-empty tuple of distinct members of DISPERSION_ROUTES; :eigenplane is always the primary. Inactive on 4x4 input and on a coasting map (no synchrotron mode); on a bunched map whose longitudinal cluster is blocked the requested tuple is still read (receipt :analysis_dispersion_routes), so the option stays resolved.";
+        "The dispersion routes to execute on a 6x6 map, a non-empty tuple of distinct members of DISPERSION_ROUTES that includes :eigenplane, the primary route (an ArgumentError without it). Inactive on 4x4 input and on a coasting map (no synchrotron mode); on a bunched map whose longitudinal cluster is blocked the requested tuple is still read (receipt :analysis_dispersion_routes), so the option stays resolved.";
         category=:physics, supported_backends=(CPUThreadsBackend,), consumer=:analysis_dispersion_routes),
     newton_max_iterations=ConfigurationOptionMeta(Int, 50,
         "Iteration cap of the Newton dispersion route. Inactive unless :newton is among the executed routes.";
@@ -625,6 +632,8 @@ object and its schema are the stable surface). Fields:
   * `dispersion`, `separation`, `projected_optics`, `ohmi`,
     `covariance_6d`: the stage 4a reports (6x6 only; `nothing` on 4x4
     input); the `Determined` ones carry the reason that blocked them.
+    `covariance_6d` is the matched `Sigma` of the SCALED map (the Ohmi
+    input); the physical one is `physical.covariance` (stage 9).
   * `covariance`: the matched covariance `Sigma` (scaled) when emittances
     were given, else unavailable `:not_requested`.
   * `physical`: the back-transformed quantities. `diagnostics`: see
@@ -697,11 +706,12 @@ end
     normal_mode(result::TwissDispersionResult, j::Integer) -> NormalMode
 
 The `j`-th labelled normal mode of the result, in scaled coordinates: for a
-4x4 map (or a 6x6 map whose transverse frame is unique) modes 1 and 2 come
-from the `NormalModeFrame4D` of `result.transverse`; for a 6x6 map with a
-unique `projected_optics` the three modes come from `ProjectedOptics6D`
-(vectors, tunes, `beta`/`alpha`/`gamma`/`signed_areas` rows, projectors,
-covariances), mode 3 being the synchrotron mode. Throws
+6x6 map with a unique `projected_optics` the three modes come from
+`ProjectedOptics6D` (vectors, tunes, `beta`/`alpha`/`gamma`/`signed_areas`
+rows, projectors, covariances), mode 3 being the synchrotron mode; otherwise
+(a 4x4 map, or a 6x6 map whose 6D optics are unavailable but whose transverse
+frame is unique) modes 1 and 2 come from the `NormalModeFrame4D` of
+`result.transverse`, in that order of precedence (stage 9). Throws
 `UndeterminedQuantityError` with the reason when the frame (or the 6D optics
 for `j = 3`) is not unique, and `ArgumentError` for an index outside the
 mode list.
@@ -944,8 +954,8 @@ end
 """
     _analysis_transverse(analysis, M4, clusters, rho_M0; rho_M1) -> TransverseOptics4D
 
-Step 8 (4x4 path) and the transverse half of step 8 (6x6 path, called on
-`Mbar_beta` or `M_rr` through `_transverse_optics_6d`): the bundle of
+Step 8 on the 4x4 path (the 6x6 path forms its transverse bundle on
+`Mbar_beta` or `M_rr` through `_analysis_transverse_from_6d`): the bundle of
 [`TransverseOptics4D`](@ref) with `min_trace_gap = _TRACE_GAP_MULTIPLIER *
 rho_M1 * max(1, ||M4||_F)` and `stability_atol = _STABILITY_ATOL_MULTIPLIER *
 rho_M1`. On 4x4 input under an explicit partition the frame's availability
@@ -1036,8 +1046,8 @@ function _preferred_form_selection(analysis::TwissDispersionAnalysis, pair::Dete
         selected = Int(requested)
         f = forms[selected]
         form = f.admissible ? Determined(selected) : Determined{Int}(:form_inadmissible,
-                   "Edwards-Teng form $(selected) is not admissible (area weight $(f.area_weight)); " *
-                   (is_determined(f.R) ? "" : f.R.detail))
+                   "Edwards-Teng form $(selected) is not admissible (area weight $(f.area_weight))" *
+                   (is_determined(f.R) ? "" : "; " * f.R.detail))
     end
     reported = is_determined(form) ? determined_value(form) : 0
     diagnostic = Determined(_EDWARDS_TENG_DIAGNOSTIC_T((requested, reported, admissible, weights, p.route)))
@@ -1086,6 +1096,11 @@ function _analysis_6d(analysis::TwissDispersionAnalysis, Ms::AbstractMatrix{<:Re
         lm <= length(clusters.eigenvalues) || throw(ArgumentError(
             "analyze: longitudinal_mode = $(lm) is not a canonical eigenvalue index of a 6x6 map (1:$(length(clusters.eigenvalues)))"))
         longitudinal = lm; certified = true
+    elseif _coasting_structure(Ms; rho_M1=rho_M1).holds
+        # A tune on a coasting map identifies nothing and refuses nothing: the option is inactive there (its
+        # schema: "Inactive on 4x4 input and on a coasting map"); this is the test `_dispersion_routes` runs to
+        # report :coasting_structure, so the two agree (stage 9, U7-1-6)
+        longitudinal = nothing; certified = false
     else
         # A tune identifies a mode only when it is unambiguously nearest to one
         # eigenvalue pair: the chord to the nearest eigenvalue must be at most
@@ -1103,7 +1118,8 @@ function _analysis_6d(analysis::TwissDispersionAnalysis, Ms::AbstractMatrix{<:Re
             tunes = sort(unique(round.(abs.(angle.(clusters.eigenvalues)); digits=12)))
             throw(ArgumentError("analyze: longitudinal_mode = $(lm) (a synchrotron tune) identifies no mode: the nearest eigenvalue " *
                                 "(tune $(abs(angle(clusters.eigenvalues[nearest])))) is at chord $(chords[nearest]) from exp(-i mu_s), " *
-                                "above half the chord $(runner_up) to the runner-up; the tunes of the map are $(tunes) radians per turn; " *
+                                "above the acceptance max(0.5 * $(runner_up) (half the chord to the runner-up), $(_TUNE_CHORD_FLOOR_MULTIPLIER * rho_M1) (the rho_M1 floor)); " *
+                                "the tunes of the map are $(tunes) radians per turn; " *
                                 "pass one of them or the canonical eigenvalue index"))
         end
         longitudinal = nearest
@@ -1361,7 +1377,11 @@ function _analysis_diagnostics(input::_ANALYSIS_INPUT_T, defect::_DEFECT_T, rule
         s = determined_value(separation)
         kappa_sep = max(1.0, norm(clusters.matrix)) * norm(s.transformation) * norm(s.inverse)
         push!(residuals, ("separation off-diagonal (K5)", s.off_diagonal_residual, _SEPARATION_RESIDUAL_MULTIPLIER * eps() * kappa_sep))
-        push!(residuals, ("triple consistency (K7)", s.triple_consistency, _TRIPLE_CONSISTENCY_MULTIPLIER * eps() * kappa_sep))
+        # the (K7) row carries the tolerance its kernel used, c_K7 eps max(1, ||zeta|| ||eta||) (canonical_separation.jl),
+        # not the K5 kappa: the two differ by 51x on the DBA cell, and a reader recomputing the acceptance from the
+        # triple would judge the wrong bound (stage 9, U6-2)
+        push!(residuals, ("triple consistency (K7)", s.triple_consistency,
+                          _TRIPLE_CONSISTENCY_MULTIPLIER * eps() * max(1.0, norm(s.zeta) * norm(s.eta))))
     end
     if projected_optics !== nothing && is_determined(projected_optics)
         o = determined_value(projected_optics)

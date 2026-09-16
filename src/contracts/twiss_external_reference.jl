@@ -36,11 +36,11 @@ and 1e-13 absolute on cos mu, sin mu; TOL-B 1e-12 on beta0 DX; TOL-C 1e-9
 relative and 1e-10 on cos mu for PTC; TOL-D 1e-7 on anything touching rows or
 columns 5-6 of an xtrack finite-difference map; TOL-F 1e-10 absolute on the
 degenerate rolled cells), each multiplied by `tolerance_scale`, plus `assert`
-(an exact 1-vs-1 at tolerance 0 for the scripts' `assert_row` calls and the PTC
-`table_rows_present` count), `witness` (the scripts' `witness_row` calls:
+(an exact 1-vs-1 at tolerance 0 for the scripts' `assert_row` calls; the PTC
+`table_rows_present` count is a TOL-C row at tolerance 0), `witness` (the scripts' `witness_row` calls:
 1e-12 absolute on the S0/S0_pt pins, the symplectic residuals and the T6 C
 pin, 1e-13 on the form-1 twiss mu, 1e-10 on the W1 cavity law, 1e-7 relative
-on the T6 longitudinal block) and `TOL-A-cond` (TOL-A widened to
+on the T6 longitudinal block, floored at `eps()` per entry like the script's own row) and `TOL-A-cond` (TOL-A widened to
 10 kappa(U)^2 eps_mach on the manufactured dense maps). `metrics` carries
 `rows`, `rows_<code>`, `failed`, `failed_<code>`, `worst_ratio`, `worst_row`,
 `worst_<class>` (the class with `-` replaced by `_`: `worst_TOL_A`,
@@ -461,6 +461,12 @@ function _extref_ptc_rows!(rows::Vector{_ExtRefRow}, contract::TwissExternalRefe
     for row in _extref_select(tab, "layer", "6d")
         _extref_ptc_row_6d!(rows, contract, row)
     end
+    # every row of the table is read by one of the three layers: the selections above turn an unknown layer label
+    # into an empty loop, so a relabelled column would drop its rows silently while the id guard stays green
+    # (97 of 111 rows vanished in the stage 9 probe); the coverage row fails instead (stage 9, U10a-1-1)
+    n_layer = sum(length(_extref_select(tab, "layer", layer)) for layer in ("witness", "5d", "6d"))
+    _extref_compare!(rows, contract, :ptc, "table", "layer_rows_present", Float64(n_layer), Float64(length(tab.rows)),
+                     0.0, "TOL-C"; rel=false)
     return nothing
 end
 
@@ -583,7 +589,10 @@ end
 The script's B3 decision on a coupled row: BETA12, BETA21 read both as
 (mode, plane) and as (plane, mode) against beta[mode, plane]; the reading
 within TOL-C is gated when the other misses by more than 1e-3 (the table
-decides j = plane, k = mode); an undecided row produces no gated row.
+decides j = plane, k = mode); a row both of whose readings miss TOL-C gates
+the closer reading, which fails by construction (stage 9, R2-5-1); a row
+that neither decides nor misses (both readings within TOL-C, or one within
+TOL-C and the other within 1e-3) produces no gated row.
 jx, jy = the Octopus modes matched to PTC modes 1, 2.
 """
 function _extref_ptc_index_order_rows!(rows, contract, id, row, bm, jx, jy)
@@ -596,6 +605,12 @@ function _extref_ptc_index_order_rows!(rows, contract, id, row, bm, jx, jy)
     elseif miss_pm <= _EXTREF_TOL_C_REL && miss_mp > 1e-3
         _extref_compare!(rows, contract, :ptc, id, "BETA12", bm[jy, 1], b12, _EXTREF_TOL_C_REL, "TOL-C")
         _extref_compare!(rows, contract, :ptc, id, "BETA21", bm[jx, 2], b21, _EXTREF_TOL_C_REL, "TOL-C")
+    elseif miss_mp > _EXTREF_TOL_C_REL && miss_pm > _EXTREF_TOL_C_REL
+        # neither reading matches: the closer one is gated and fails by construction (the miss above is the row's own
+        # relative rule), so the coupled betas cannot go ungated when the table and the analysis disagree (stage 9, R2-5-1)
+        closer_mp = miss_mp <= miss_pm
+        _extref_compare!(rows, contract, :ptc, id, "BETA12", closer_mp ? bm[jx, 2] : bm[jy, 1], b12, _EXTREF_TOL_C_REL, "TOL-C")
+        _extref_compare!(rows, contract, :ptc, id, "BETA21", closer_mp ? bm[jy, 1] : bm[jx, 2], b21, _EXTREF_TOL_C_REL, "TOL-C")
     end
     return nothing
 end
@@ -920,7 +935,7 @@ function _extref_xtrack_c3!(rows, contract, tab::_ExtRefLongTable, maps::_ExtRef
     _extref_compare!(rows, contract, :xtrack, f, "T6_C_vs_maps_table_C", cell("C"), oct.C, _EXTREF_TOL_WITNESS, "witness"; rel=false)
     Mconv = _extref_convert(:xtrack, R; beta0=oct.beta0, gamma0=oct.gamma0, C=cell("C"), target=:task)
     for (i, j) in ((5, 5), (5, 6), (6, 5), (6, 6))
-        _extref_compare!(rows, contract, :xtrack, f, "T6_longitudinal_r$(i)$(j)_vs_task_m$(i)$(j)(TOL-D_rel)", Mconv[i, j], oct.M[i, j], _EXTREF_TOL_D_REL, "witness"; rel=true)
+        _extref_compare!(rows, contract, :xtrack, f, "T6_longitudinal_r$(i)$(j)_vs_task_m$(i)$(j)(TOL-D_rel)", Mconv[i, j], oct.M[i, j], _EXTREF_TOL_D_REL * max(abs(oct.M[i, j]), eps()), "witness"; rel=false)
     end
     an = _extref_analyze(oct.M; mu_s=2pi * abs(cell("tw6_qs")))
     lam1 = complex(cell("tw6_cos_mux"), cell("tw6_sin_mux")); lam2 = complex(cell("tw6_cos_muy"), cell("tw6_sin_muy"))
@@ -959,7 +974,7 @@ function _extref_result(rows::Vector{_ExtRefRow}, paths::Dict{Symbol,String})
     end
     worst = -Inf; worst_row = "none"
     for r in rows
-        ratio = r.bound > 0 ? r.diff / r.bound : (r.diff == 0 ? 0.0 : Inf)
+        ratio = !isfinite(r.diff) ? Inf : r.bound > 0 ? r.diff / r.bound : (r.diff == 0 ? 0.0 : Inf)   # a NaN diff is a failed row, never a NaN worst ratio (stage 9)
         key = Symbol("worst_", replace(r.class, "-" => "_"))
         metrics[key] = max(get(metrics, key, 0.0), ratio)
         if ratio > worst
