@@ -320,9 +320,10 @@ the `row_sums` (one per mode, (K12)) and `column_sums` (one per plane); the
 caller passed, `rule` says which: `:max_signed_z_area` or `:explicit`); the
 `transverse` pair `(mode 1, mode 2)` by stage 2's rule on the x column (mode 1
 has the larger x-area); `longitudinal_margin` (the winning z-area minus the
-runner-up) and `transverse_margin` (the x-area difference); `tie` when either
-margin is at or below `tie_tolerance` (design: ties are declared and leave the
-modes unlabelled; a tie keeps the given order and is flagged).
+runner-up) and `transverse_margin` (the x-area difference); `tie` when the
+transverse margin, or under `:max_signed_z_area` the longitudinal margin, is at or
+below `tie_tolerance`; an explicit selection has no z-area tie, stage 9 U5-1-2 (design: ties are
+declared and leave the modes unlabelled; a tie keeps the given order and is flagged).
 
 The default rule is a HEURISTIC, not a certification (theory 10.4, 13.5:
 "a small tune is not a universal longitudinal-mode identifier", and no
@@ -566,7 +567,7 @@ end
 condition of the (D16) operator `I_2 kron M_rr - M_ll' kron I_4` (8x8),
 whose smallest singular value also enters the fixed-point contraction
 condition of 8.6. The condition is a `Determined` (unavailable with
-`:singular_coefficient` when it is not a finite Float64, stage 9 U5-1-2). An `ArgumentError` names the singular operator (spectra of
+`:singular_coefficient` when it is not a finite Float64, stage 9 U5-1-3). An `ArgumentError` names the singular operator (spectra of
 `M_rr` and `M_ll` not disjoint) when LAPACK refuses the solve.
 """
 function _sylvester_initializer(M::AbstractMatrix{<:Real})
@@ -728,7 +729,7 @@ end
 The 2-norm condition `sigma_max / sigma_min` of a linear solve or trace separation as a `Determined`:
 unique when `sigma_min > 0`, unavailable with `:singular_coefficient` (detail naming `what`) when it is
 exactly zero (the mathematical condition is infinite; the dossier forbids an `Inf` standing in for it). A
-quotient that overflows Float64 is unavailable the same way (stage 9, U5-1-2).
+quotient that overflows Float64 is unavailable the same way (stage 9, U5-1-3).
 """
 function _condition_number(sigma_max::Real, sigma_min::Real, what::AbstractString)
     if sigma_min > 0
@@ -745,7 +746,7 @@ end
 
 The 2-norm condition of a matrix operator through [`_condition_number`](@ref): `cond(op)` returns `Inf` for a
 singular operator, which the dossier forbids as a value, so the quotient of the extreme singular values is formed
-under the same rule as every other condition of the analysis (stage 9, U5-1-2).
+under the same rule as every other condition of the analysis (stage 9, U5-1-3).
 """
 function _operator_condition(op::AbstractMatrix, what::AbstractString)
     sv = svdvals(Matrix{Float64}(op))
@@ -1033,7 +1034,7 @@ end
 The common start of the iterative routes (dossier E7): `D0` when given (a finite 4x2 matrix, else an
 `ArgumentError`), otherwise the Sylvester initializer (D15); `condition` is the (D16) operator's 2-norm
 condition as a `Determined` in both cases (unavailable with `:singular_coefficient` when it is not a finite
-Float64, stage 9 U5-1-2); a LAPACK-singular (D15) operator returns `D = nothing` with the named detail
+Float64, stage 9 U5-1-3); a LAPACK-singular (D15) operator returns `D = nothing` with the named detail
 (the caller reports `:singular_coefficient`).
 """
 function _iteration_start(M::AbstractMatrix{<:Real}, D0, who::AbstractString)
@@ -1095,7 +1096,7 @@ function _newton_route(M::AbstractMatrix{<:Real}, tau_s::Real; rho_M1::Real, max
         op = kron(Matrix{Float64}(I, 2, 2), Aop) - kron(transpose(Bop), Matrix{Float64}(I, 4, 4))
         condition = _operator_condition(op, "the (D21) Sylvester operator at iteration $(iterations + 1)")
         # a condition beyond Float64 is the singular operator of the LAPACK branch below, refused before the solve
-        # with the same reason and the operator's own condition (stage 9, U5-1-2)
+        # with the same reason and the operator's own condition (stage 9, U5-1-3)
         is_determined(condition) || return _unavailable_route(:newton, :singular_coefficient, condition.detail;
                                                               coefficient_condition=condition, iterations=iterations,
                                                               halvings=halvings, converged=false)
@@ -1160,7 +1161,7 @@ function _fixed_point_route(M::AbstractMatrix{<:Real}, tau_s::Real; rho_M1::Real
     sigma_min = svdvals(op)[end]
     condition = start.condition
     # the (D20) iteration solves with this operator at every step and its contraction ratio divides by sigma_min:
-    # a condition beyond Float64 is refused up front, the same way the LAPACK-singular solve below is (stage 9, U5-1-2)
+    # a condition beyond Float64 is refused up front, the same way the LAPACK-singular solve below is (stage 9, U5-1-3)
     is_determined(condition) || return _unavailable_route(:fixed_point, :singular_coefficient,
         "the (D16) Sylvester operator is singular to working precision: " * condition.detail;
         coefficient_condition=condition, converged=false)

@@ -4734,7 +4734,7 @@ end
 end
 
 @testset "Stage 9 audit: conditions beyond Float64, non-finite graphs and scaling quotients" begin
-    # U5-1-2: a quotient of singular values that overflows Float64 is unavailable, never an Inf value
+    # U5-1-3: a quotient of singular values that overflows Float64 is unavailable, never an Inf value
     c = Octopus._condition_number(1.0, 5e-324, "x")
     @test !Octopus.is_determined(c) && c.reason === :singular_coefficient && occursin("beyond the largest Float64", c.detail)
     @test Octopus.determined_value(Octopus._condition_number(2.0, 1.0, "x")) == 2.0
@@ -6730,13 +6730,13 @@ end
     rc = analyze(TwissDispersionAnalysis(longitudinal_mode=mu_s), p.M)
     # the certified run is :degraded by exactly the "another branch" Newton degradation (record item 2; pinned, no escape)
     @test rc.status === :degraded && length(rc.degradations) == 1 && occursin("another invariant plane", rc.degradations[1]) && occursin(":newton", rc.degradations[1])
-    @test !any(occursin("label tie", s) for s in rc.degradations)          # a tie limits the heuristic only; the flag stays in the diagnostics
+    @test !any(occursin("label tie", s) for s in rc.degradations)          # a tie limits the heuristic only; under the tune rule no z-area tie is declared (stage 9, U5-1-2)
     # the tie has a positive fixture: h = 1/2 gives z-areas (1/2, 1/2, 0), the heuristic declares the tie and is degraded by it
     r_tie = analyze(TwissDispersionAnalysis(strict=false), _st4b_a_prescribed(0.5).M)
     @test r_tie.status === :degraded && count(s -> occursin("label tie", s), r_tie.degradations) == 1
     @test _st4b_a_val(r_tie.diagnostics.longitudinal_selection).tie && !_st4b_a_val(r_tie.diagnostics.longitudinal_selection).certified
     r_tie_c = analyze(TwissDispersionAnalysis(longitudinal_mode=mu_s, strict=false), _st4b_a_prescribed(0.5).M)
-    @test !any(occursin("label tie", s) for s in r_tie_c.degradations) && _st4b_a_val(r_tie_c.diagnostics.longitudinal_selection).tie
+    @test !any(occursin("label tie", s) for s in r_tie_c.degradations) && !_st4b_a_val(r_tie_c.diagnostics.longitudinal_selection).tie   # explicit selection: no z-area tie (U5-1-2)
     @test _st4b_a_val(rc.diagnostics.longitudinal_selection).certified
     @test abs(abs(angle(rc.clusters.eigenvalues[rc.dispersion.longitudinal])) - mu_s) <= 64eps()
     sep = _st4b_a_val(rc.separation)
