@@ -16009,3 +16009,52 @@ diff after it is `diff_post_review.patch`.
   prescribed-h family is extended.
 - The push of the batch (a fresh owner approval is required; none is held at
   the time of writing).
+
+### The two-arm full gate on the final tree ce0bdf2
+
+Two commits on origin/main 480f173 (the record of CI run 442, pushed 2026-09-16
+22:22 EDT; CI run 443 ran on it green, host `znver3`, its stage 6 identity table
+run 442's row for row, and, 480f173 being markdown only, no subsection was
+owed for it; result/gates/stage9/ci_run443_vs_run442.md): 828ccef
+`fix(analysis): example-check batch: unconditional heuristic message,
+pair-index semantics, run-1 guard` (six files, +155/-36, "What changed"
+above) and ce0bdf2 `docs(history): record the DBA-ring example check batch:
+four findings, the review's major and moderate, the ladder` (this section
+without this subsection, the three in-place corrections). Neither was gated
+alone (AGENTS.md owes the full gate before the PUSH, not before every commit).
+Both arms ran on ce0bdf2 with a clean tree, sequentially from one script
+(`result/gates/run_full_gate_fixbatch_both_arms.sh`), CUDA active, four
+threads, no other julia process on the depot:
+
+- native (the Verification Matrix's gate; `result/gates/full_gate_fixbatch_native_2026_09_17.log`):
+  exit 0, 10:33:05-11:17:23 EDT (44 min 18 s), 324 top-level rows,
+  148544/148544, no Fail, Error or Broken column, no `LANE SKIP` banner,
+  "Testing Octopus tests passed".
+- AVX2 (CI-runner parity, `OPENBLAS_CORETYPE=Haswell julia -C haswell`;
+  `full_gate_fixbatch_avx2_2026_09_17.log`): exit 0, 11:17:23-12:01:28 EDT
+  (44 min 5 s), 324 rows, 148544/148544, every row's count equal to the
+  native arm's (0 rows differ, none new or gone between the arms).
+- Against the stage 9 gate on d9810a2 (323 rows, 148505/148505 in both arms):
+  exactly one new row, `Stage 9 follow-up (the DBA-ring example check): the heuristi...` (39/39), no row gone, no count
+  changed; the no-abort probe of the working tree ("Evidence" above) predicted
+  these counts row for row (0 differences).
+
+What this gate measures: the two measured CPU classes (native AVX-512 Sapphire
+Rapids; the AVX2 emulation), so it confirms the counts, the assertion
+structure and the identity rows of this tree at both classes; the runner's
+third class is seen only on the push's CI run (the requirement (d) subsections
+of the stage 9 section). First run in both arms here: the 39-assertion
+example-check testset (the message and docstring pins on three fixtures, the
+ring and reversed-ring index pins, the coasting and unstable-RF guard
+premises) and the edited example under the lane's example runner (`Every
+example script runs against the current interface`, 6/6, which asserts exit 0
+of each script's subprocess). No behaviour of the analysis changed in this
+batch, and no identity or contract row moved. The items of "Not verified"
+above other than the gate are untouched by it.
+
+This subsection (with the todo row's clause) is the only change between the
+gated tree and the pushed tree; the commit carrying it is markdown-only and
+finishes with the fast lane on its own tree (matrix row "markdown only"),
+`result/gates/fast_lane_fixbatch_record_2026_09_17.log` (exit 0, 12:08:58-12:26:50 EDT, 17 min 52 s, 309 top-level rows, 146532/146532 summed, 15 `LANE SKIP` banners, no Fail, Error or Broken column; the stage 9 record commit's own lane, on d9810a2 plus that record: 308 rows, 146493/146493, 15 banners; against it exactly the batch's one new row, none gone, no count changed; every row the lane runs at its count in the two gate arms above, the 15 rows it skips being the gate's heavyweight sections; the lane started on the working tree holding the applied subsection and the todo clause, and this parenthesis and the CI run 443 clause of the first paragraph were written into the same working tree after the run, markdown only). It is the LAST commit before the push. No approval for
+this push exists yet: the owner's approval of 2026-09-16 was spent by the
+push of 480f173; the push waits for the owner's word, asked with this record.
