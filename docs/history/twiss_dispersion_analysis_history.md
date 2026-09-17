@@ -14988,6 +14988,9 @@ what helps a human or a future agent moves from `result/` into `docs/`.
   ratio. The extracted source sweeps, the fast lane and the one two-arm full
   gate on the final tree are the gate subsection appended after the run,
   the stage 8 pattern.
+  The batch was pushed 2026-09-16 20:25 EDT as be5260c on the owner's approval;
+  CI run 442 is green at the runner's class (`znver4`), its identity table the
+  run 441 table unchanged (the run 442 subsection, the last of this section).
 
 ### Coverage ledger
 
@@ -15524,6 +15527,7 @@ unchanged in value, multiplier and argmax.
 - The AVX2 arm and the runner's third CPU class on the fixed tree: the gate
   subsection that follows carries the two local arms; the runner's table is
   read from CI after the push.
+  Done: the run 442 subsection (host `znver4`, the run 441 table unchanged).
 - The re-measurement behind F2 is one extended family (seed 5, strength
   1.5); the empty window is a fact about that family, not a measurement over
   the fixture population.
@@ -15547,6 +15551,9 @@ U8a-5 verdict shape, U8a-1 = S3-1 the `resolved` slot, U8b-1 and U8b-2 the
 effectiveness controls, U10b-1 generator hygiene, S2b-5 the measurement
 record). Next after the gate: the owner's decision on the push (the stage 8
 approval was spent on that push).
+Done: pushed 2026-09-16 20:25 EDT as be5260c on the owner's approval, CI run 442
+green (the run 442 subsection); K12 also gains the run 442 table (a `znver4`
+runner prints the `znver3` table; the batch moved no row).
 
 ### Process lessons
 
@@ -15726,3 +15733,69 @@ It is the LAST commit before the push. No approval for this push exists yet:
 the owner's 2026-09-15 approval was spent by the stage 8 push (7711a8a); the
 push waits for the owner's word, asked with this record, and the CI run on
 the new HEAD will be the check of the batch at the runner's CPU class.
+(Written before the push. Done: pushed 20:25 EDT on the owner's approval; CI run
+442 green, the subsection below.)
+
+### CI run 442 on the pushed tree be5260c: the runner's identity table (requirement (d))
+
+The push of the stage 9 batch (five commits on 7711a8a, HEAD be5260c, pushed 2026-09-16 20:25 EDT on the owner's approval, the one asked for with the gate record and spent by this push) ran CI run 442 (https://github.com/xud929/Octopus.jl/actions/runs/35166527809), job 105028747853 `Julia 1.12 CPU full-lane tests` (runner `ubuntu-latest`, conclusion success, 31 min 31 s, 20:25:56-20:57:27 EDT; run 441 on 7711a8a took about 39 min). Every step succeeded, so the full lane is green at the runner's CPU class, the first run of the batch there: the five new stage 9 testsets, the 692-row external reference through `TwissExternalReferenceContract`, the capped (I1) floor, the corrected `tau_real` and the K7 tolerance scaling included; the step logs stay walled (HTTP 403 without a token), so the runner's row count is not readable here, only the step conclusions and the annotations. The record's requirement (d), the runner's identity table of each push read from the public annotations, as for run 441: the stage 6 testset's printed pin table reached the check run as six `::notice` annotations titled `stage 6 identity pins k/6 (znver4)`: the host label is `znver4` (AMD Zen 4) (run 441: `znver3`; runs 436-439 `sapphirerapids`, run 440 `znver5`), so the runner's CPU class changed once more between two consecutive pushes. Read from the public check-run annotations (result/gates/stage9/ci_run_35166527809_annotations.txt, fetched by result/gates/stage9/ci_annotations_stage9.sh from the public API without a token, and ci_run442_vs_run441.md, rendered from it and the run 441 dump by stage9_ci_compare.py in the same directory; both untracked scratch; the step logs stay walled), 57 rows at the runner's printed precision (four significant figures), sorted as printed, worst first; the run 441 column is the runner table of the previous push (the subsection "CI run 441 on the pushed tree 7711a8a" above). No row is above the 0.25 re-open threshold (stage 6 R2, decided in the second carried batch); against run 441, 57 rows are equal within 0.1% and 0 differ (argmax fixture moved on 0 rows, c on 0), the worst row `k_longitudinal_block_symplecticity` 0.1537 at c = 16 on `F5 DBA + RF + crab` unchanged from run 441 in value, multiplier and argmax. The table is run 441's as printed: all 57 values, multipliers and argmax fixtures coincide at four figures, so a `znver4` runner prints the `znver3` table, where the Zen 5 run 440 and the Sapphire Rapids run 439 each printed a different one (run 442 against run 440: 9 rows equal within 0.1%, 48 differ; against run 439 on the 54 rows frozen at the same c: 9 equal, 45 differ; tables result/gates/ci_carried2_run440_table.md and ci_carried_run439_table.md); it stays a table no local configuration reproduces. What the batch did to this table: nothing measurable locally. The same table printed by the stage 9 gate's two arms is row for row the stage 8 gate's (0 of 57 rows moved in the native arm, 0 in the AVX2 arm, 0.1% tolerance at four printed figures: on the pin fixtures the batch's changed floors and pins leave every ratio at its stage 8 value), so any difference between run 442 and run 441 would have been the runner's, not the batch's, and there is none: the batch left the runner's table unchanged as well. The runner against the stage 9 gate's arms: equal to the native arm on 8 rows, to the AVX2 arm on 27 (7 of them equal to both arms), unlike both on 29 (6 above both, max x2.0 `c_d8_round_trip`), the stage 8 pattern (run 441 against the stage 8 arms: 8, 27, 7 equal to both).
+
+| row (stage 6 slug) | run 442 | c | argmax fixture (442) | run 441 |
+|---|---|---|---|---|
+| k_longitudinal_block_symplecticity | 0.1537 | 16 | F5 DBA + RF + crab | 0.1537 |
+| c_d8_round_trip | 0.125 | 8 | F4 DBA + RF | 0.125 |
+| k_ohmi_chart_change_block_symplecticity | 0.1149 | 8 | F6a dense 6x6 map 20 | 0.1149 |
+| k_trace_cubic | 0.09068 | 512 | F6a dense 6x6 map 11 | 0.09068 |
+| k_k8_residual | 0.08308 | 8 | F6a dense 6x6 map 11 | 0.08308 |
+| r_separation_off_diagonal_k5 | 0.07781 | 128 | F6a dense 6x6 map 12 | 0.07781 |
+| c_covariance_closure_caller | 0.07561 | 64 | F6a dense 6x6 map 9 | 0.07561 |
+| k_frame_u_difference | 0.07332 | 8 | F6a dense 6x6 map 20 | 0.07332 |
+| k_frame_column_sums | 0.06997 | 16 | F6b dense 4x4 map 4 | 0.06997 |
+| c_tune_consistency | 0.06755 | 32 | F6a dense 6x6 map 18 | 0.06755 |
+| c_caller_symplecticity | 0.06573 | 8 | F6b dense 4x4 map 5 | 0.06573 |
+| k_k7_difference | 0.0643 | 64 | F6a dense 6x6 map 12 | 0.0643 |
+| c_scaling_invariance | 0.06284 | 8 | F6b dense 4x4 map 5 | 0.06284 |
+| c_d14_graph_invariance | 0.06102 | 16 | F6a dense 6x6 map 20 | 0.06102 |
+| k_transverse_block_symplecticity | 0.05958 | 16 | F6a dense 6x6 map 13 | 0.05958 |
+| k_frame_row_sums | 0.05737 | 8 | F6a dense 6x6 map 20 | 0.05737 |
+| r_covariance_closure | 0.05645 | 8 | F6a dense 6x6 map 18 | 0.05645 |
+| k_ohmi_separated_off_diagonal | 0.05512 | 512 | F6a dense 6x6 map 12 | 0.05512 |
+| c_projector_sum | 0.05465 | 64 | F6b dense 4x4 map 4 | 0.05465 |
+| c_projector_idempotence | 0.05349 | 8 | F6b dense 4x4 map 4 | 0.05349 |
+| k_ohmi_symplecticity | 0.05156 | 8 | F6a dense 6x6 map 20 | 0.05156 |
+| k_frame_normalization | 0.05132 | 16 | F6a dense 6x6 map 12 | 0.05132 |
+| r_primary_route_invariance_i1 | 0.0504 | 32 | F6a dense 6x6 map 20 | 0.0504 |
+| c_covariance_symmetry_caller | 0.04825 | 8 | F6a dense 6x6 map 12 | 0.04825 |
+| k_route_agreement | 0.04801 | 8 | F6a dense 6x6 map 9 | 0.04801 |
+| r_u6_symplecticity | 0.04645 | 32 | F6a dense 6x6 map 14 | 0.04645 |
+| c_e8_reconstruction_caller | 0.04599 | 32 | F6a dense 6x6 map 18 | 0.04599 |
+| k_u6_column_sums | 0.04542 | 8 | F6a dense 6x6 map 11 | 0.04542 |
+| r_u6_reconstruction | 0.04465 | 64 | F6a dense 6x6 map 12 | 0.04465 |
+| k_covariance_decomposition | 0.04183 | 16 | F6a dense 6x6 map 20 | 0.04183 |
+| r_frame_symplecticity_e7 | 0.03587 | 64 | F6b dense 4x4 map 4 | 0.03587 |
+| c_physical_normalizer_symplecticity | 0.03377 | 64 | F6b dense 4x4 map 4 | 0.03377 |
+| k_ohmi_graph_difference | 0.03308 | 8 | F6a dense 6x6 map 2 | 0.03308 |
+| r_frame_reconstruction_i1 | 0.03046 | 64 | F6a dense 6x6 map 9 | 0.03046 |
+| k_u6_row_sums | 0.02876 | 8 | F6a dense 6x6 map 3 | 0.02876 |
+| c_k4_block_diagonality | 0.02758 | 512 | F6a dense 6x6 map 12 | 0.02758 |
+| k_separation_inverse | 0.02554 | 8 | F6a dense 6x6 map 20 | 0.02554 |
+| k_k13_residual | 0.02537 | 32 | F6a dense 6x6 map 18 | 0.02537 |
+| k_separation_symplecticity | 0.0241 | 8 | F6a dense 6x6 map 20 | 0.0241 |
+| c_d3_symplecticity | 0.02389 | 8 | F6a dense 6x6 map 20 | 0.02389 |
+| k_ohmi_chart_change_off_diagonal | 0.01912 | 8 | F6a dense 6x6 map 11 | 0.01912 |
+| c_d24_coasting_caller | 0.01595 | 8 | F1 DBA cell (tuple) | 0.01595 |
+| k_kappa_sz_minus_h | 0.0136 | 8 | F6a dense 6x6 map 20 | 0.0136 |
+| c_x2_graph_readout | 0.01161 | 8 | F6a dense 6x6 map 8 | 0.01161 |
+| k_m5_residual_6d | 0.009778 | 8 | F6a dense 6x6 map 12 | 0.009778 |
+| k_mais_ripken_m5 | 0.00877 | 8 | F8 coasting map | 0.00877 |
+| c_normal_mode_kappa | 0.008264 | 8 | F6b dense 4x4 map 3 | 0.008264 |
+| k_coasting_solve_residual | 0.007973 | 8 | F1 DBA cell (tuple) | 0.007973 |
+| r_k14_zz_identity | 0.006515 | 8 | F6a dense 6x6 map 14 | 0.006515 |
+| r_triple_consistency_k7 | 0.005138 | 8 | F6a dense 6x6 map 16 | 0.005138 |
+| k_coasting_symplectic_consistency | 0.00254 | 8 | F8 coasting map | 0.00254 |
+| c_d3_determinant | 0.0004626 | 8 | F6a dense 6x6 map 13 | 0.0004626 |
+| c_normal_mode_tunes | 0.0 | 8 | F1 DBA cell (tuple) | 0.0 |
+| k_covariance_psd | 0.0 | 8 | F4 DBA + RF | 0.0 |
+| c_line_equals_matrix | 0.0 | 8 | F2 DBA cell (BeamLine) | 0.0 |
+| c_matched_covariance_accessor | 0.0 | 8 | F4 DBA + RF | 0.0 |
+| k_covariance_symmetry | 0.0 | 8 | F4 DBA + RF | 0.0 |
