@@ -15139,7 +15139,7 @@ pin `rm.tau_real == ...` is gone.
 | U5-2-3 | the projector route | a Krein quartet (an `:unstable` cluster) contributed the real part of its complex trace as a mode trace (1.170655 with Im 0.70 dropped, probe P6) | `:unstable` clusters contribute no trace; the route is blocked with the cluster's reason, "needs three mode traces, found 1 ... is unstable" | `verify/orch_moderate_probes_b.log` P6; fixed `verify/red_u523.log` 5 of 5 |
 | S3-3 | `TwissDispersionAnalysis` constructor | Bool stand-ins for `strict`, `preferred_form`, `longitudinal_mode`, `newton_max_iterations`, repeated cluster indices, a routes tuple without `:eigenplane` and a tune outside (0, pi) were accepted | `ArgumentError`s with the messages the suite now pins | "Stage 9 audit: constructor ArgumentErrors" testset, `verify/red_minors2.log` 11 of 11 |
 | U7-1-6 | `analyze` | a synchrotron-tune `longitudinal_mode` on a coasting map (the DBA without RF) threw "identifies no mode" for 0.05 and 1.5 | inactive when `_coasting_structure(Ms; rho_M1).holds`, receipt `:inactive_dependency` | `verify/probe_moderates_pre.log`, `verify/fix_drafts.md` Draft B |
-| U6-2 = U8a-2 = S2b-2 | the K7 row | the triple-consistency tolerance was an absolute `eps()` on `zeta . eta`; the DBA ring sat at 51.19 of it | `_TRIPLE_CONSISTENCY_MULTIPLIER * eps() * max(1, \|\|zeta\|\| \|\|eta\|\|)` | `verify/fix_drafts.md` Draft A |
+| U6-2 = U8a-2 = S2b-2 | the K7 row | the triple-consistency tolerance was `_TRIPLE_CONSISTENCY_MULTIPLIER * eps() * kappa_sep`, the K5 row's conditioning factor `max(1, \|\|M\|\|) \|\|T\|\| \|\|T^-1\|\|` (51.19 on the DBA ring), so the row accepted 51 times the kernel's own acceptance; the example's printed (K7) tolerance moved from 7.27e-13 to 64 eps = 1.42e-14 against a residual of 6.2e-17 (CORRECTED 2026-09-17, the example check's finding 4; the old wording is quoted in that section) | `_TRIPLE_CONSISTENCY_MULTIPLIER * eps() * max(1, \|\|zeta\|\| \|\|eta\|\|)` | `verify/fix_drafts.md` Draft A |
 | U9-2-1 | `twiss_dispersion_identity.jl` | the folded verdicts of the judged results were not counted anywhere | `metrics[:folded_passed]` / `[:folded_degraded]`, the pass message names the degraded count (3 of the 31 judged results) | the message before the fix |
 | U10a-1-1 | `twiss_external_reference.jl` | an unknown layer label emptied the PTC selection silently: 97 of 111 rows vanished in the probe while the id guard stayed green | the `layer_rows_present` TOL-C coverage row (rows 691 to 692) | the probe in the ledger entry |
 | R2-5-1 | the PTC `BETA12` / `BETA21` reading (contract and script twin) | a row both of whose readings miss TOL-C produced no gated row | the closer reading is gated and fails by construction | the ledger entry |
@@ -15191,7 +15191,10 @@ docstrings.
   Part B measurement; the announced re-measurement is not on record); the
   4D eigenmodes header (no caller in `src` since stage 3); the guide's
   `analyze` inputs; TOL-C's `GAMA_jk` carried, not gated (S4-1); the
-  example's K12 sentence; the maps-table readers in `validation/README.md`.
+  example's K12 sentence (made unconditional: the heuristic is uncertified for
+  every h, the old text read as conditional on h < 1/2; this reason was added
+  2026-09-17, the example check's finding 4); the maps-table readers
+  in `validation/README.md`.
 - **Tests.** Four "Stage 9 audit: ..." testsets (conditions, non-finite
   graphs and scaling quotients; U4a-2-2 pairing; constructor
   `ArgumentError`s; the external reference NaN row), the `TW-PINS` dry test,
@@ -15324,7 +15327,7 @@ tripwire families of K5), none of which changes a number or a verdict.
 | `docs/design/twiss_dispersion_analysis.md` | the (I1) cap sentence |
 | `docs/guides/contracts_and_analyses.md` | `analyze` accepts anything `one_turn_matrix` accepts |
 | `docs/history/twiss_external_benchmarks_2026_09_15.md` | TOL-C: `GAMA_jk` carried, not gated (S4-1) |
-| `examples/twiss_dispersion_dba_ring.jl` | the K12 sentence |
+| `examples/twiss_dispersion_dba_ring.jl` | the K12 sentence (the heuristic is uncertified for every h; the old "ambiguous for h < 1/2" read as conditional; reason added 2026-09-17, the example check's finding 4) |
 | `docs/README.md`, `docs/todo.md`, `docs/experiences.md`, `docs/comprehensive_audit.md` | the stage dates; the stage 9 pointer in the neighbour-audit list and the precedent lookup; row 20 closed to the owner items; four lessons |
 
 ### The brief and the workflow's rules
@@ -15799,3 +15802,210 @@ The push of the stage 9 batch (five commits on 7711a8a, HEAD be5260c, pushed 202
 | c_line_equals_matrix | 0.0 | 8 | F2 DBA cell (BeamLine) | 0.0 |
 | c_matched_covariance_accessor | 0.0 | 8 | F4 DBA + RF | 0.0 |
 | k_covariance_symmetry | 0.0 | 8 | F4 DBA + RF | 0.0 |
+
+## 2026-09-17: the DBA-ring example check, four findings fixed
+
+The owner asked whether the Twiss/dispersion example had been checked. It
+was run on 480f173 (exit 0, `result/twiss_impl_2026_09_11/stage9/example_check/`)
+and read by a read-only workflow (wf_c5f92f35-20a, 8 agents, 0 errors); four
+findings and a style list came back, none applied. The owner then said "Fix
+all of them." This section records the fix batch (commit 828ccef), its
+read-only review, the review's own corrections to the batch, and the ladder
+below it. The two-arm gate gets its own subsection once it has run.
+
+### The four findings
+
+1. Moderate, wording. The run-1 degradation message said "by (K12)
+   kappa_sz = h, so the rule is uncertified for h < 1/2" while the code never
+   certifies the heuristic for any h (`lm isa Symbol -> certified = false`);
+   the example printed it beside h = 1.03 and status degraded, so it read as
+   a false alarm. The `_LONGITUDINAL_RULES` docstring and the ModeLabels6D
+   docstring ("for h <= 1/2 a betatron mode carries the larger z-area and is
+   selected") carried the same conditional. The physics: kappa_sz = h and
+   the three signed z-areas sum to 1 (the (K12) column sum), so the betatron
+   z-areas sum to 1 - h; the larger of them is at least (1 - h)/2, which
+   exceeds h iff h < 1/3. For 1/3 <= h < 1/2 a betatron win needs an uneven
+   split, for h >= 1/2 a negative betatron z-area. The old "h < 1/2" failed
+   both ways: at h = 0.4 the split (0.3, 0.3) gives the synchrotron mode the
+   larger area, and the h = 1/2 fixture is the declared tie (z-areas
+   (1/2, 1/2, 0), runtests.jl "Prescribed h" testset).
+2. Moderate, usability. `longitudinal_mode::Int` is a canonical eigenvalue
+   index (the position in `result.clusters.eigenvalues`, ascending
+   mod(angle, 2pi)) while the example printed the synchrotron mode as "mode
+   3" (`normal_mode` order: transverse 1, 2, synchrotron 3). Passing 3 is
+   accepted as a certified selection of a betatron eigenvalue (h = -0.03,
+   degraded) with no message naming the confusion.
+3. Minor. With rf_strength = 0.0 the ring is coasting, run 1 selects nothing
+   (`dispersion.longitudinal == 0`) and run 2 threw an ArgumentError (index
+   must be positive); the script assumed a bunched ring without saying so.
+4. Minor, record. The stage 9 F3 row for U6-2 = U8a-2 = S2b-2 described the
+   old K7 tolerance as "an absolute `eps()` on `zeta . eta`; the DBA ring sat
+   at 51.19 of it". It was `_TRIPLE_CONSISTENCY_MULTIPLIER * eps() *
+   kappa_sep`, kappa_sep the K5 row's factor (51.19 on this ring), against a
+   residual of 6.2e-17 (the corrected row, R4 (a) confirmed). The record
+   also gave no reason for the example's K12-sentence edit in the minor
+   batch. The row is marked CORRECTED 2026-09-17 in place; the two notes
+   name this section.
+
+### What changed (commit 828ccef, six files, +155/-36)
+
+- `src/analysis/twiss_dispersion_analysis.jl`: the message (line ~1152)
+  reads "the heuristic is never certified on its own, whatever h (by (K12)
+  kappa_sz = h and the three signed z-areas sum to 1, so a betatron mode can
+  carry more z-area, and must for h < 1/3; the theory labels the synchrotron
+  mode by continuation, 10.4, 13.5, which no endpoint-map rule supplies):
+  pass longitudinal_mode = <canonical eigenvalue index, the position in
+  result.clusters.eigenvalues, not the normal_mode number; either member of
+  the mode's conjugate pair names it> or the synchrotron tune mu_s to
+  certify it". The `_LONGITUDINAL_RULES` docstring (~236-252) carries the
+  same statement with the derivation; the NormalMode docstring (~447-452)
+  says its `index` is not the canonical eigenvalue index.
+- `src/analysis/dispersion_routes.jl`: the ModeLabels6D docstring (~328-337)
+  names h = 0.05 and every negative h as the betatron-win fixtures and
+  h = 1/2 as the declared tie; the labels detail string (~1365) carries the
+  theory clause; the DispersionRoutes docstring (~452-455) says
+  `longitudinal` is the selected pair's member with positive imaginary part
+  (the cluster half's member), whichever member was named. No behaviour
+  changed in either file.
+- `examples/twiss_dispersion_dba_ring.jl` (177 -> 191 lines): the header
+  requires a stable synchrotron mode and states the index semantics
+  including the pair; the rf_strength comment (~56) names both failure
+  modes; the run-1 guard (~106-117) repeats the analysis's own reason
+  (`diagnostics.longitudinal_selection`: the coasting structure at 0.0, "no
+  longitudinal mode could be selected" with the unstable-cluster degradation
+  at -0.02); the run-2 comment; the "Normal modes" block (~164-176) prints
+  (echoed member, partner) beside each mode and errors if the synchrotron
+  mode's pair does not start with the certified selection. Output on the
+  ring: pairs (3, 4), (2, 5), (1, 6); run 2 passes longitudinal_mode = 1.
+- `test/runtests.jl`: the testset "Stage 9 follow-up (the DBA-ring example
+  check)" (~6781-6835, 39 assertions, ungated): the message and docstring
+  pins on three fixtures (the ring at h = 1.03, prescribed h = 0.05, the
+  dense 6x6 map), the ring and reversed-ring index pins, the coasting and
+  unstable-RF guard premises. Two comments in the prescribed-h testset
+  (~4654-4656, ~4659) now state the fixture's threshold as the fixture's
+  (betatron z-areas (1 - h, 0): a betatron pick iff h < 1/2, tie at 1/2),
+  not the rule's.
+- `docs/design/twiss_dispersion_analysis.md` :185 and :356: "an explicit
+  canonical eigenvalue index (either member of the mode's conjugate pair in
+  the canonical spectrum; not the normal-mode number)"; the old text was
+  "an explicit mode index" / "by explicit index".
+- `docs/todo.md` row 20: "can select a betatron mode (it did on the
+  prescribed-h maps with h < 1/2 and tied at h = 1/2)"; the old clause was
+  "selects a betatron mode when h < 1/2".
+- This file (the history commit on top of 828ccef): the F3 row (finding
+  4) and the two notes above, plus this section.
+
+### The review of the batch (wf_c6ea7028-38b)
+
+Read-only, on the tree after the first three apply passes (the diff is
+`stage9/example_fix/diff_pre_review.patch`): four reviewers (R1 physics, R2
+wiring with two julia probes, R3 tests with one, R4 docs) and nine skeptics,
+one per refuted or moderate-or-worse finding; 13 agents, 0 errors, 890k
+tokens, 21.8 min; 65 claims checked, 41 reported: 34 confirmed, 8 refuted (1
+major, 6 minor, 1 style); the nine skeptics all upheld the reviewers. The
+script, the result and the digest are in `stage9/example_fix/`
+(`workflow_review_fix_batch.js`, `review_result_wf_c6ea7028.json`,
+`review_digest_wf_c6ea7028.txt`). Everything below was fixed by the
+orchestrator in a fourth apply pass (`fix_batch_apply4.py`, `4b`), the
+diff after it is `diff_post_review.patch`.
+
+- MAJOR (R2 f, skeptic upheld). The example's check `k ==
+  r.dispersion.longitudinal`, with k the index of the oriented synchrotron
+  eigenvalue exp(-i mu_3) in `clusters.eigenvalues`, and the testset's pin of
+  the same equality, held only because this ring's mu_s = 6.009 > pi.
+  `dispersion.longitudinal` echoes the cluster half's member, the pair member
+  with Im > 0 (`_half_of`, mode_clusters.jl), and `_dispersion_routes` maps
+  either member of the pair to it (dispersion_routes.jl ~1240-1253). The
+  oriented eigenvalue exp(-i mu) has Im > 0 iff mu > pi, so on the reversed
+  ring inv(M) (mu_s = 0.274) the oriented member is 6 and the echoed index 1:
+  the old check would have thrown on a legitimate ring, and the DispersionRoutes
+  docstring's "the selected oriented longitudinal member" was wrong. Fixed:
+  the example prints the pair and checks membership; the testset runs the
+  ring and the reversed ring and pins Im > 0 of the echoed index, the
+  oriented member's side of pi, membership of the echoed index in the pair,
+  and that the partner certifies the same mode (status passed, same echoed
+  index, h equal to 1e-12); the docstring says which member is echoed.
+- MODERATE (R2 d, confirmed with a caveat the skeptic upheld).
+  `longitudinal == 0` for every "none selected" reason; with rf_strength =
+  -0.02 the ring is not coasting (status degraded, "the longitudinal
+  candidate cluster [1] is unstable") yet the old guard said "the ring is
+  coasting; set config.rf_strength to a nonzero value". Fixed: the guard
+  repeats the analysis's reason and names both cases; the testset pins both
+  premises (rf 0.0: status passed, longitudinal 0, selection reason
+  `:coasting_structure`; rf -0.02: status degraded, longitudinal 0, another
+  reason, an "unstable" degradation).
+- Minor, six. "no endpoint-map rule identifies the synchrotron mode (theory
+  10.4, 13.5)" attributed to the theory a general sentence it does not state
+  (10.4: a small tune is not a universal longitudinal-mode identifier, the
+  mode is labelled by synchrotron continuation; 13.5: inside a degenerate
+  group the endpoint map alone does not select the plane; the general
+  sentence is this campaign's inference, stage 4a "Carried forward" item 1)
+  -> reworded at four sites (R1 c). The ModeLabels6D docstring listed h = 0.5
+  among the fixtures where a betatron mode wins the z-area; it is the tie
+  (R1 b4). Two test comments at ~4654 and ~4658 stated the fixture's h < 1/2
+  threshold as the heuristic's behaviour (R1 e-sweep, R3). The design note's
+  "explicit mode index" beside "explicit partition of oriented-eigenvalue
+  indices" read as a different index (R4 c). The guard premise had no
+  ungated suite pin (R3). The strict comment's "the `failures` list below"
+  is run 2's list (R2 e). R4 (b) is the same two test comments.
+- Style. The record's inline "Corrected 2026-09-17" note had no precedent
+  (the record marks in-place corrections in uppercase and quotes the old
+  wording in a new dated section) -> the row carries "CORRECTED 2026-09-17",
+  the old wording is quoted in finding 4 above (R4 f). The testset analysed
+  the ring twice (R3) -> the second result now feeds the reversed-ring
+  matrix and the h pin.
+- Accepted without change: ModeClusters is internal and unexported, the
+  message points at `result.clusters.eigenvalues`, documented on the result
+  field (R4 d, confirmed minor); the example's (E5)/(E8) tune gloss is
+  faithful and its own (R1 d); the guide and README still match the example
+  (R4 e); the five hedged sites agree with each other and with the code
+  (R1 e).
+
+### Evidence
+
+- Red, then green (`stage9/example_fix/`): `redrun_msg_red.log` on the
+  unmodified source (the ten message/docstring assertions fail, every
+  structural one passes; R3 (b) confirmed); `redrun_pass4.log`: the old
+  equality pin is false on the reversed ring (oriented member 6, echoed 1,
+  mu_s = 0.274 vs 6.009 on the ring), rf -0.02 gives status degraded,
+  longitudinal 0, `coasting.holds` false; the testset 39/39 evaluated from
+  runtests.jl by anchor.
+- The extracted source sweeps 33/33 on the final tree
+  (`result/gates/stage9/source_sweeps_fixbatch_pass4_2026_09_17.log`).
+- The example exits 0 (`example_dba_ring_pass4.log`); a coasting copy and an
+  unstable-RF copy stop after run 1 with the analysis's reason
+  (`example_pass4_rf0.log`, `example_pass4_rfneg.log`).
+- The no-abort full-lane probe on the working tree holding the batch (result/gates/lane_full_noabort_fixbatch_2026_09_17.log, `sh /tmp/run_lane_noabort_0917.sh fixbatch full`, the stage 9 preload): exit 0, 09:40:36-10:24:40 EDT (44 min 4 s), 324 top-level rows, 148544/148544, no `NOABORT-FAILED-SET` line, no `LANE SKIP` banner, native, CUDA active; against the stage 9 probe of d9810a2's content (323 rows, 148505/148505) exactly one new row (the example-check testset, 39) and no other count moved.
+
+### Decisions
+
+- The echoed index keeps its meaning (the pair member with Im > 0); the
+  batch documents it and pins it (`imag(eigenvalues[L]) > 0`) instead of
+  changing the analysis. Either member names the mode, so a caller who reads
+  the oriented eigenvalue's index and passes it back is served either way.
+- A normal-mode number passed as `longitudinal_mode` is still accepted (it
+  is a valid canonical index of another mode). The message, the docstrings
+  and the example now name the two numberings side by side; a distinct index
+  type would make the confusion impossible and is carried as a design item.
+- The theory is cited for what it says (continuation labelling, the
+  degenerate-group statement); the sentence "no endpoint-map rule supplies
+  the label" stays as the campaign's own inference at every site.
+
+### Not verified
+
+- The two-arm gate on the final tree (its subsection below, added after
+  the run).
+- The reversed-ring case is one ring; the statement "echoed member = oriented
+  member iff mu > pi" is the definition of the half (Im exp(-i mu) = -sin mu
+  > 0 iff mu in (pi, 2pi)), not a measurement.
+- The h = 1/3 boundary (a tie is possible there) has no fixture.
+
+### Carried forward
+
+- A distinct type for the canonical eigenvalue index (so a normal-mode
+  number cannot be passed as `longitudinal_mode`); design item beside the
+  fifteen ledgered moderates of the stage 9 close.
+- A fixture at h = 1/3 (the tie boundary of the heuristic) if the
+  prescribed-h family is extended.
+- The push of the batch (a fresh owner approval is required; none is held at
+  the time of writing).
