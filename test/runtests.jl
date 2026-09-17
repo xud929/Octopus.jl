@@ -4651,11 +4651,12 @@ end
         if h in (1.0, 2.0)
             @test _st4_route(rep, :newton).status === :none && _st4_route(rep, :fixed_point).status === :none
         end
-        # the default rule (largest signed z-area) is a heuristic: for h < 0.5 a betatron mode carries more z-area
+        # the default rule (largest signed z-area) is a heuristic: on this fixture the betatron z-areas are (1 - h, 0), so it
+        # picks a betatron mode iff h < 1/2 and ties at h = 1/2 (in general a betatron win is forced only for h < 1/3)
         repd = Octopus._dispersion_routes(f.M, cl)
         lb = _st4_val(repd.labels)
         @test lb.rule === :max_signed_z_area
-        # the mis-selection for h <= 1/2 is (K12) kappa_sz = h at work; the report says so (theory 10.4, 13.5)
+        # the mis-selection on this fixture is (K12) kappa_sz = h at work; the report says so (theory 10.4, 13.5)
         @test occursin("uncertified heuristic", repd.labels.detail) && occursin("kappa_sz = h", repd.labels.detail)
         @test (repd.longitudinal == idx) == (h > 0.5) || h == 0.5
         @test abs(lb.signed_areas[findfirst(m -> m == idx || cl.conjugate_partner[m] == idx, [mm.index for c in cl.clusters for mm in _st4_val(c.modes)]), 3] - h) <= 64 * eps() * max(1, norm(f.M_cal)^2)
@@ -6775,6 +6776,62 @@ end
     proj = _st4b_a_val(rc.diagnostics.projection)
     @test abs(proj.h_report - p.h) <= 64 * eps() * kappa && proj.h_separation == sep.h
     @test length(rc.diagnostics.routes) == 5 && all(row.coefficient_condition >= 0 for row in rc.diagnostics.routes)
+end
+
+@testset "Stage 9 follow-up (the DBA-ring example check): the heuristic's degradation message is unconditional and names the index semantics" begin
+    # Finding 1 of the example check (2026-09-16): the message said "uncertified for h < 1/2" while the code never certifies
+    # the heuristic for any h (`lm isa Symbol -> certified = false`); the example printed it beside h = 1.03. It now says so
+    # unconditionally, and says which index `longitudinal_mode` takes (finding 2: the canonical eigenvalue index, the
+    # position in result.clusters.eigenvalues, not the normal_mode number). Three fixtures: h = 1.03 (the example's ring,
+    # the DBA cell closed by a thin RF cavity), h = 0.05 (a betatron mode wins the z-area) and the dense stable map.
+    beta0, gamma0 = reference_beta_gamma(3.0e9, PMASS_EV)
+    ring = (_st4b_a_dba()..., compile_runtime(ThinRFCavitySpec(400.0e6; strength=0.02, beta0=beta0, gamma0=gamma0)))
+    for M in (ring, _st4b_a_prescribed(0.05).M, _st4b_a_dense6())
+        r = analyze(TwissDispersionAnalysis(strict=false), M)
+        @test r.status === :degraded && isempty(r.failures)
+        unc = filter(s -> occursin("uncertified longitudinal selection", s), r.degradations)
+        @test length(unc) == 1
+        @test occursin("never certified on its own, whatever h", unc[1])
+        @test !occursin("uncertified for h", unc[1])
+        @test occursin("canonical eigenvalue index, the position in result.clusters.eigenvalues, not the normal_mode number", unc[1])
+        @test occursin("canonical eigenvalue $(r.dispersion.longitudinal) (cluster", unc[1]) && occursin("z-area", unc[1])
+        sel = _st4b_a_val(r.diagnostics.longitudinal_selection)
+        @test !sel.certified && "uncertified longitudinal selection: " * sel.detail == unc[1]
+    end
+    # h = 1.03 on the ring: the heuristic's pick IS the synchrotron mode (normal_mode 3). The reported index is the pair
+    # member with Im > 0 (the cluster half, mode_clusters.jl), which is the oriented eigenvalue exp(-i mu_3) only when
+    # mu_3 > pi: true on the ring (mu_s = 6.01), false on the reversed ring (inv(M), mu_s = 0.27), where the oriented
+    # member is the partner (the review of the example check, R2 major). The example prints the pair (echoed member,
+    # partner) and checks membership, not equality; either member certifies the same mode.
+    rr = analyze(TwissDispersionAnalysis(strict=false), ring)
+    @test _st4b_a_val(rr.physical.h) > 0.5
+    for (M, above_pi) in ((ring, true), (inv(rr.matrix), false))
+        r = analyze(TwissDispersionAnalysis(strict=false), M)
+        L = r.dispersion.longitudinal
+        @test L > 0 && imag(r.clusters.eigenvalues[L]) > 0
+        rc = analyze(TwissDispersionAnalysis(strict=false, longitudinal_mode=L), M)
+        @test rc.status === :passed && rc.dispersion.longitudinal == L
+        m3 = normal_mode(rc, 3)
+        k3 = argmin(abs.(rc.clusters.eigenvalues .- m3.eigenvalue))
+        @test (m3.tune > pi) == above_pi
+        @test (k3 == L) == above_pi && L in (k3, rc.clusters.conjugate_partner[k3])
+        rp = analyze(TwissDispersionAnalysis(strict=false, longitudinal_mode=rc.clusters.conjugate_partner[L]), M)
+        @test rp.status === :passed && rp.dispersion.longitudinal == L
+        @test isapprox(_st4b_a_val(rp.physical.h), _st4b_a_val(rc.physical.h); rtol=1e-12)
+    end
+    # the example's guard (finding 3): with no RF the DBA cell is coasting and nothing is selected (longitudinal == 0,
+    # the selection unavailable with :coasting_structure); with the opposite RF sign the longitudinal cluster is
+    # unstable and again nothing is selected, so the guard reports the analysis's reason instead of calling it coasting
+    r0 = analyze(TwissDispersionAnalysis(strict=false), _st4b_a_dba())
+    @test r0.status === :passed && r0.dispersion.longitudinal == 0
+    @test r0.diagnostics.longitudinal_selection.reason === :coasting_structure
+    rneg = analyze(TwissDispersionAnalysis(strict=false),
+                   (_st4b_a_dba()..., compile_runtime(ThinRFCavitySpec(400.0e6; strength=-0.02, beta0=beta0, gamma0=gamma0))))
+    @test rneg.status === :degraded && rneg.dispersion.longitudinal == 0
+    @test rneg.diagnostics.longitudinal_selection.reason !== :coasting_structure && any(s -> occursin("unstable", s), rneg.degradations)
+    # the rule constant's docstring carries the same two statements
+    doc = string(Base.Docs.doc(Base.Docs.Binding(Octopus, :_LONGITUDINAL_RULES)))
+    @test occursin("NEVER certified on its own", doc) && occursin("not the `normal_mode` number", doc)
 end
 
 @testset "Reason table: one fixture per reason the pipeline can emit, the set seen equals the set the docstrings claim (F13)" begin

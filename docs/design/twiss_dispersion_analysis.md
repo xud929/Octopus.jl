@@ -182,7 +182,7 @@ their defaults:
 | map_uncertainty | `0.0` | user-declared map error, folded into ρ_M |
 | resolution_chord | `1e-4`, provisional | see the resolution criterion |
 | clusters | `:auto` | or an explicit partition of oriented-eigenvalue indices |
-| longitudinal_mode | maximum signed longitudinal area | or an explicit mode index |
+| longitudinal_mode | maximum signed longitudinal area | or an explicit canonical eigenvalue index (either member of the mode's conjugate pair in the canonical spectrum; not the normal-mode number) |
 | preferred_form | `:auto` | Edwards–Teng form 1 or 2 |
 | dispersion_routes | eigenplane, polynomial, projector, newton, fixed_point | eigenplane is always primary |
 | newton_max_iterations | 50 | inactive unless a Newton route is selected |
@@ -353,7 +353,7 @@ measurement protocol of the next subsection has run.
 8. **Labels** (K12, 10.4). Signed areas `κ_ja = −Im(u_ja* u_j,pa)`; the row
    and column sums of the signed array are checked; labels by maximum-weight
    assignment on the signed array; the longitudinal mode by maximum signed
-   longitudinal area, or by explicit index. Ties are declared with their own
+   longitudinal area, or by an explicit canonical eigenvalue index. Ties are declared with their own
    tolerance and leave the modes unlabelled. Labelling is a heuristic recorded
    in the diagnostics; it never feeds a Twiss value.
 9. **Dispersion.** Primary eigenplane route: graph by (D10) with a linear solve,

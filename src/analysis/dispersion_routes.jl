@@ -328,9 +328,11 @@ declared and leave the modes unlabelled; a tie keeps the given order and is flag
 The default rule is a HEURISTIC, not a certification (theory 10.4, 13.5:
 "a small tune is not a universal longitudinal-mode identifier", and no
 endpoint-map rule is): by (K12) `kappa_sz = h`, the synchrotron mode's z-area
-IS `h` and the two betatron z-areas sum to `1 - h`, so for `h <= 1/2` a
-betatron mode carries the larger z-area and is selected (the prescribed-h
-fixtures with `h = 0.05, 0.5` and every negative `h`). Labelling never feeds
+IS `h` and the two betatron z-areas sum to `1 - h`, so a betatron mode can
+carry the larger z-area and be selected, and must for `h < 1/3` (the
+prescribed-h fixtures with `h = 0.05` and every negative `h`; the `h = 1/2`
+fixture, z-areas (1/2, 1/2, 0), is the declared tie; a negative betatron
+z-area lets it happen at larger `h`). Labelling never feeds
 a Twiss value; the caller's explicit index certifies the selection.
 """
 struct ModeLabels6D
@@ -448,8 +450,9 @@ What [`_dispersion_routes`](@ref) returns (design return table, rows 1, 2,
 exist, its `detail` naming the default rule a heuristic (see
 [`ModeLabels6D`](@ref)); unavailable with the blocking cluster's reason
 otherwise); `longitudinal`
-(the canonical eigenvalue index of the selected oriented longitudinal
-member, 0 when none was selected) and `longitudinal_cluster` (its cluster's
+(the canonical eigenvalue index of the selected longitudinal pair's member
+with positive imaginary part, the cluster half's member, whichever member of
+the pair was named; 0 when none was selected) and `longitudinal_cluster` (its cluster's
 position in `clusters.clusters`); `tau_s` (`2 cos mu_s`), `tunes` (the
 three oriented tunes in label order when labelled); `trace_cubic_roots` (the
 three roots of (D17) from the trace identities) and `trace_cubic_residual`
@@ -1359,7 +1362,7 @@ function _dispersion_routes(M::AbstractMatrix{<:Real}, clusters::ModeClusters; l
         li = (longitudinal === nothing || cand.mode === nothing) ? nothing : findfirst(m -> m.index == cand.mode.index, resolved_modes)
         lb = _mode_labels_6d([m.vector for m in resolved_modes], resolved_tunes; longitudinal=li, kappa_frame=max(1.0, kf))
         d_lb = lb.rule === :explicit ? "longitudinal mode named by the caller (canonical index $(cand.index)); the transverse labels by the x-area rule are a heuristic" :
-            "uncertified heuristic: the longitudinal mode is the largest signed z-area, but by (K12) kappa_sz = h a betatron mode carries more z-area when h < 1/2 (theory 10.4, 13.5); an explicit `longitudinal` index certifies the selection"
+            "uncertified heuristic: the longitudinal mode is the largest signed z-area, but by (K12) kappa_sz = h a betatron mode can carry more z-area (it must for h < 1/3) and the theory labels the synchrotron mode by continuation (10.4, 13.5), which no endpoint-map rule supplies; an explicit `longitudinal` index certifies the selection"
         Determined{ModeLabels6D}(:unique, lb, nothing, :none, d_lb)
     else
         blocker = findfirst(c -> !c.resolved, clusters.clusters)

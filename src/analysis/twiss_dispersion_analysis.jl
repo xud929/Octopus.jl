@@ -236,11 +236,19 @@ const _TUNE_CHORD_FLOOR_MULTIPLIER = 64.0
     _LONGITUDINAL_RULES
 
 The symbolic values `longitudinal_mode` accepts: `:max_signed_z_area`, stage
-4a's labelling heuristic (largest signed z-area of the (K12) table). By (K12)
-`kappa_sz = h`, so for `h < 1/2` a betatron mode can carry more z-area and
-the rule is UNCERTIFIED (campaign record, stage 4a "Carried forward" item
-1); an explicit eigenvalue index (`Int`) or a synchrotron tune (`Float64`,
-the mode whose eigenvalue is nearest `exp(-i mu_s)`) certifies the choice.
+4a's labelling heuristic (largest signed z-area of the (K12) table). The
+heuristic is NEVER certified on its own, whatever `h`: by (K12) `kappa_sz =
+h` and the three signed z-areas sum to 1, so a betatron mode can carry more
+z-area than the synchrotron mode (it must for `h < 1/3`, since the two
+betatron areas sum to `1 - h`), and the theory labels the synchrotron mode
+by continuation (10.4: a small tune is not a universal identifier; 13.5: at
+a degenerate group the endpoint map alone does not select the plane), which
+no endpoint-map rule supplies (campaign record, stage 4a "Carried forward"
+item 1). An explicit canonical eigenvalue index (`Int`, the position in
+`result.clusters.eigenvalues` of either member of the mode's conjugate pair,
+not the `normal_mode` number; the result echoes the member with positive
+imaginary part) or a synchrotron tune (`Float64`, the mode whose eigenvalue
+is nearest `exp(-i mu_s)`) certifies the choice.
 """
 const _LONGITUDINAL_RULES = (:max_signed_z_area,)
 
@@ -439,7 +447,10 @@ analysis_option_schema(::PlaceholderAnalysis) = NamedTuple()
 One labelled normal mode of the analysed map (design "Types and
 availability", the normal-modes struct): `index` (its position in the
 result's mode list: 1, 2 for a 4x4 map; 1, 2 transverse and 3 synchrotron
-for a 6x6 map), `eigenvalue` (the oriented eigenvalue `exp(-i mu)`), `tune`
+for a 6x6 map; not the canonical eigenvalue index that `longitudinal_mode`
+takes, which is the position of the mode's eigenvalue pair in
+`result.clusters.eigenvalues`), `eigenvalue` (the oriented eigenvalue
+`exp(-i mu)`), `tune`
 (`mu` in radians per turn), `vector` (the complex mode vector, `u' S u =
 -2i`), `real_pair` (`Re u`, `-Im u`), `projector` (`P_j = -Im(u u') S`),
 `covariance` (`G_j = Re(u u')`), `beta`, `alpha`, `gamma`, `signed_area`
@@ -1144,7 +1155,7 @@ function _analysis_6d(analysis::TwissDispersionAnalysis, Ms::AbstractMatrix{<:Re
         else
             zarea_text = isempty(weights) ? "the signed z-areas are unavailable: $(labels.reason), $(labels.detail)" :
                 "signed z-area $(weights[routes.longitudinal_cluster == 0 ? 1 : min(routes.longitudinal_cluster, length(weights))])"
-            "the :max_signed_z_area heuristic selected canonical eigenvalue $(routes.longitudinal) (cluster $(routes.longitudinal_cluster); $(zarea_text)); by (K12) kappa_sz = h, so the rule is uncertified for h < 1/2: pass longitudinal_mode = <index> or the synchrotron tune mu_s to certify it"
+            "the :max_signed_z_area heuristic selected canonical eigenvalue $(routes.longitudinal) (cluster $(routes.longitudinal_cluster); $(zarea_text)); the heuristic is never certified on its own, whatever h (by (K12) kappa_sz = h and the three signed z-areas sum to 1, so a betatron mode can carry more z-area than the synchrotron mode, and must for h < 1/3; the theory labels the synchrotron mode by continuation, 10.4, 13.5, which no endpoint-map rule supplies): pass longitudinal_mode = <canonical eigenvalue index, the position in result.clusters.eigenvalues, not the normal_mode number; either member of the mode's conjugate pair names it> or the synchrotron tune mu_s to certify it"
         end
         selection = Determined(_LONGITUDINAL_SELECTION_T((rule, certified, routes.longitudinal, routes.longitudinal_cluster,
                                                           weights, tie, tune_chords, detail)))
