@@ -82,6 +82,19 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   ramping-as-knob-epochs); and where Octopus follows versus departs from
   Bmad's bookkeeping-plus-rampers strategy. Prerequisite design for the F16
   velocity-slip fix and RF Scope B.
+- [`turn_modulation.md`](design/turn_modulation.md) — turn-by-turn lattice
+  modulation, crab cavity phase and amplitude noise first (decided 2026-10-12,
+  pre-implementation): why the variation is element-owned per-turn state
+  realised on the host rather than a per-particle kernel draw or a knob
+  retune; the per-turn hook made a pure, type-preserving `update` with the
+  fused tuple rebuilt each turn (measured 20 ns per 40 elements, zero
+  allocation, and why `map` over a long tuple is not that); the `TurnModulated`
+  compile-time wrapper beside `MisalignedElement` and `RefTilted`, nominal and
+  realised kept apart so the contextless path stays noiseless; the rule
+  interface and catalogue (white, Voss-McCartney pink, FIR, IIR, per-turn
+  table) with measured spectra; the owner's producer/consumer boundary for the
+  table rule; the million-turn synthesis example; the verification plan and
+  staging; open questions and references.
 
 ## Development guides (`guides/`)
 
