@@ -342,7 +342,10 @@ public path a run tracks -- a `ThinCrabCavitySpec{1}` carrying the rule as
 turn with `realize`, as `update` does inside `execute!` -- so the sequence is
 exactly the one a tracking run would apply. The power per octave band of the
 periodogram (bins `2^i .. 2^(i+1) - 1` of the mean-subtracted sequence),
-normalised to the top octave, is printed as the note's table; the two lowest
+normalised to the top octave, is printed as the note's table, each band
+labelled by its bin frequencies `(2^i - 1)/N .. (2^(i+1) - 2)/N` in `f_rev`
+units (the labels printed until 2026-10-13 were one bin high, `2^i/N ..
+2^(i+1)/N`; no verdict reads them -- neighbour audit, U7-5); the two lowest
 bands (2 and 4 bins) are printed but excluded from every slope, as the note
 says.
 
@@ -353,11 +356,24 @@ pink (the note's test 9 tolerances; the construction's ripple, about a factor
 top octave for the shipped rule at 65536 turns, is band-to-band scatter the
 fit averages); the pink sequence's rms about zero for `sigma = 1` lies in
 `[0.8, 1.25]` (the script's own bound: the K octave generators are
-independent unit normals, so the expectation is exactly 1 at any length, but
-the slow generators take one or two values in a run and move the sample rms
-by several percent either way; measured `0.9054` at 65536 turns and `0.8799`
-at 16384, both deterministic at seed 42); and the pink offset on one turn
-computed alone from a fresh compile equals the sequence's entry exactly. The
+independent unit normals, so the expectation of `rms^2` is exactly 1 at any
+length, but the slow generators take one or two values in a run and the
+sample rms of one run scatters with a one-sigma of 7.6 % at 65536 turns and
+13.8 % at 16384, `Var[rms^2] = (2/(K^2 N)) sum_k 2^k (2K - 1 - 2k)`, with a
+heavy upper tail -- Monte Carlo over 2048 streams: 0.6 % of streams fall
+outside the band at 65536 turns and 5.9 % at 16384; measured `0.9054` at
+65536 turns and `0.8799` at 16384, both deterministic at seed 42); and the
+pink offset on one turn computed alone from a fresh compile equals the
+sequence's entry exactly. Beside the rms the script prints the sample
+standard deviation about the run's mean with its expectation
+`E[s^2] = (N/(N-1)) (1 - (1/K) sum_k min(2^k, N)/N)` (generator `k`
+contributes `2^k/N` to the variance of the mean while `2^k <= N` and exactly
+1 once `2^k > N`, its single value being removed by the mean): `0.9375` at
+65536 turns, `0.8126` (std `0.9014`) at 16384, Monte Carlo `0.8125 ± 0.0027`;
+the form `1 - (2^K - 1)/(K N)` printed until 2026-10-13 charged generator 15
+with 2 instead of 1 and gave `0.7500` (std `0.8660`) at 16384, the number
+the stage-1 record's section 8 quotes (neighbour audit, U7-3). Not a
+verdict. The
 note's own slope definition (the two-endpoint change over all bands; `+1.09`
 white and `-0.11` pink in the note's table, `+0.991` and `+0.049` for the
 shipped rules at 65536 turns) is printed for comparison and not judged: its
@@ -392,8 +408,12 @@ and the exit status is 1 on any failed verdict. When the git-ignored
 written to `result/turn_modulation_spectra.tsv` (never evidence; the
 committed record is `docs/history/turn_modulation_stage1_2026_10_12.md`,
 section 8). The suite runs a reduced-size twin, 16384 turns with the same
-rules, seed, estimator and tolerances, in the testset "Turn modulation: white
-and pink spectra".
+rules, seed and estimator and the script's slope tolerances, in the testset
+"Turn modulation: white and pink spectra"; its pink rms bound is that size's
+own quantile bound, `[0.75, 1.6]` (below the Monte-Carlo 0.1 % quantile of
+the rms, `0.779`, and above its 99.5 % quantile, `1.538`; 7 of 2048 streams
+outside, against 120 for `[0.8, 1.25]` at 16384 turns), stated at the test
+with the keying pinned bitwise beside it.
 
 ## Weak–Strong Six-Dimensional Source
 

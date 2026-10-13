@@ -1493,6 +1493,29 @@ consumer class, written down in one place (the key-layout comment above
 any new consumer that reuses "slot 0" or "component 1" without reading the
 layout.
 
+## A documented layout assumption is not an enforced one
+
+The pink rule's component band assumed `2N <= 64` slots per element, and
+the assumption lived in a comment and a docstring ("assumed, not enforced:
+a crab cavity has few harmonics"). The audit compiled a crab cavity with
+N = 33 and a pink rule: it compiled silently, and on a shared `rng_id` a
+pink generator's component coincided with a white rule's, 64 of 64 draws
+identical (corr +0.2873), where N = 32 gave 0 of 64 (corr +0.0043). The
+configuration is outside practice; the silence is the defect. Every bound
+a key layout assumes gets a check at the constructor and a test on both
+sides of it (N = 33 refused, N = 32 accepted).
+
+## A docstring above `function (::Type{T})(...)` binds to `Core.Type`
+
+The crab cavity's modulation paragraph sat above its parametric constructor
+and was bound to `Core.Type`, so `?ThinCrabCavitySpec` showed no
+`phase_noise` while `?ThinRFCavitySpec`, whose constructor is a plain method
+on the name, showed it. The detached-docstring sweep could not see this,
+because the docstring IS attached, to the wrong binding; the tripwire now
+refuses any Octopus docstring bound outside the module. The rule: a
+docstring for a type goes on the type, and a sweep that checks attachment
+must also check where.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

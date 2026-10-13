@@ -241,7 +241,13 @@ before its loop. Each `execute!` whose line holds a modulated element records
 a `:turn_modulation` receipt and, with an artifact, the group
 `/turn_modulation/<slot>` keyed by its `/execution` ledger row (both beams of
 a strong-strong task), never rewritten; `turn_modulation_provenance(path)`
-and `read(out, :turn_modulation)` read it back.
+and `read(out, :turn_modulation)` read it back. The modulated kinds today
+are the thin crab cavity and the thin RF cavity, each through its own rule
+container (`CrabCavityNoise`, `RFCavityNoise`) over the shared slot protocol
+(`_slot_rules`, `_turn_rule_values`) of `src/elements/turn_modulated.jl`.
+The wrapper constructor enforces the key layout's bound: a `PinkNoise` on a
+container with more than 64 slots (the pink component stride) is refused,
+and slot labels are validated (non-empty, no '/', unique).
 
 Use `configuration_report` to inspect requested and resolved policy, solver,
 task, schedule, observer, and diagnostic settings. Reports distinguish

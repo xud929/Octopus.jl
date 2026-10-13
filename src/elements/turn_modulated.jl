@@ -30,11 +30,21 @@ export TurnModulated, WhiteNoise, PinkNoise, TurnTable, update, update_line, rea
 # Where the pieces live:
 #   - this file: the rules (`WhiteNoise`, `PinkNoise`, `TurnTable`), the scalar rule
 #     interface `_turn_offset`, the element-level `realize`, the wrapper and
-#     its forwards, the pure hook `update` / `update_line`, the window check
-#     walk `_check_turn_window`, the modulation-stream collector;
+#     its forwards, the pure hook `update` / `update_line`, the SLOT PROTOCOL
+#     (`_slot_rules` on a rule container, `_turn_rule_values` on a spec) and
+#     the three walks generic over it: the window check `_check_turn_window`
+#     / `_check_container_window`, the provenance slots
+#     `_turn_modulation_slots`, the modulation-stream collector
+#     `_collect_turn_modulation_ids!`;
 #   - `src/elements/crab_cavity.jl`: the crab cavity's rule container
-#     `CrabCavityNoise`, its `realize`, `_turn_modulation_wrap` for the kind,
-#     the `phase_noise` / `strength_noise` parameters and their metadata;
+#     `CrabCavityNoise` (2N slots), its `realize`, `_turn_modulation_wrap` for
+#     the kind, its `_slot_rules` / `_turn_rule_values`, the per-harmonic
+#     `phase_noise` / `strength_noise` tuples and their metadata;
+#   - `src/elements/rf_cavity.jl`: the thin RF cavity by the same wrap (stage
+#     3): `RFCavityNoise` (two scalar slots, phase then strength), its
+#     `realize`, `_turn_modulation_wrap`, `_slot_rules` / `_turn_rule_values`,
+#     the scalar `phase_noise` / `strength_noise` parameters; the accelerating
+#     cavity gets no rule (single-pass);
 #   - `src/knowledge/Knowledge.jl`: `compile_runtime` applies
 #     `_turn_modulation_wrap` INNERMOST, then the misalignment, then the roll;
 #   - `src/tasks/Tasks.jl`: the two turn loops call `update_line`, the
@@ -63,8 +73,24 @@ tripwire), never hand-copied into a case list.
 abstract type AbstractTurnRule end
 
 # The key layout of the counter RNG, `octopus_normal(seed, method, turn,
-# rng_id, particle_slot, component, T)`, as used in this tree, so that no two
-# consumers can share a cell even on one `rng_id`:
+# rng_id, particle_slot, component, T)`, as used in this tree. What separates
+# one stochastic consumer from another is the CLAIMED `rng_id` (`next_rng_id!`
+# assigns a fresh stream, `claim_rng_id!` records an explicit one so the
+# counter never reissues it) and the method tag; the cells below are NOT
+# disjoint among the three older classes on one shared id -- the Beam initial
+# distribution and radiation share their turn-0 cells (the U14-2 pair
+# `claim_rng_id!` was written for), and a BPM's occurrence o >= 1 shares
+# radiation particle o's components 1-2 on every turn (measured 2026-10-13,
+# neighbour audit U7-2/U7-7: 62 cross-consumer cell equalities among those
+# three, ledgered). What the layout DOES separate is the rules from every
+# other class: particle slot 0 with a component in the band `>=
+# _RULE_COMPONENT_BASE` is a cell no other consumer draws (0 of the 62
+# equalities involve a rule), and within one element the pink stride keeps
+# the pink generators apart from each other and from the white slots while
+# the container has at most `_PINK_COMPONENT_STRIDE` slots -- enforced at the
+# wrap by `_check_slot_rules` (below), not assumed.
+#   - the Beam initial distribution (`src/beam/Beam.jl`): turn 0, particle
+#     slot = the particle index (>= 1), components 1-6 (the coordinate);
 #   - radiation (`src/elements/radiation.jl`): particle slot = the particle id
 #     (>= 1), components 1-6;
 #   - the BPM reading noise (`src/tasks/BPMObserver.jl`): particle slot = the
@@ -73,26 +99,40 @@ abstract type AbstractTurnRule end
 #     the band `_RULE_COMPONENT_BASE + slot` (white) and
 #     `_RULE_COMPONENT_BASE + slot + _PINK_COMPONENT_STRIDE * (k + 1)` (pink
 #     generator k), `slot` being the element's parameter slot (`1:2N` on a
-#     crab cavity).
+#     crab cavity, 1-2 on an RF cavity).
 # Without the base (review finding S1, 2026-10-12) a white rule on slot 1 or 2
 # and a noisy BPM's occurrence 0 sharing an `rng_id` drew the SAME normal.
 const _RULE_COMPONENT_BASE = 1024
 # The component band of a pink rule's K generators: generator k of slot s draws
 # component `_RULE_COMPONENT_BASE + s + _PINK_COMPONENT_STRIDE * (k + 1)`, while
-# a `WhiteNoise` on slot s draws `_RULE_COMPONENT_BASE + s`. The crab cavity's
-# slots run `1:2N`, so white components and pink bands stay disjoint while
-# `2N <= 64` (assumed, not enforced: a crab cavity has few harmonics).
+# a `WhiteNoise` on slot s draws `_RULE_COMPONENT_BASE + s`. White components
+# and pink bands stay disjoint only while the container's slots number at most
+# `_PINK_COMPONENT_STRIDE`: on slot `s + 64` a white rule draws pink slot s's
+# generator 0 and a pink rule its generators shifted by one (measured 2026-10-13,
+# neighbour audit U7-1: a 33-harmonic crab cavity, 66 slots, drew identical
+# normals on 64 of 64 turns). ENFORCED, not assumed: the two-argument
+# `TurnModulated(base, rule)` constructor runs `_check_slot_rules`, which
+# refuses a container of more than this many slots carrying a `PinkNoise`.
 const _PINK_COMPONENT_STRIDE = 64
 
 """
-    _rule_stream_id(rng_id::Integer) -> UInt64
+    _rule_stream_id(rng_id) -> UInt64
 
 The stream id a stochastic rule's keyword constructor records: `0` assigns a
 fresh stream (`next_rng_id!`); an explicit id is claimed (`claim_rng_id!`) so
 the auto-assign counter never reissues it, as `LumpedRadSpec` and
 `BPMObserver` do (`src/elements/radiation.jl`; 2026-08-05_b audit U14-2).
+Anything but a non-negative integer is an `ArgumentError` naming the keyword
+and the value, raised BEFORE any stream is claimed (a negative id once died in
+`UInt64` with an `InexactError`, a non-integer one in the keyword's type;
+2026-10-13 neighbour audit, U7-6).
 """
-_rule_stream_id(rng_id::Integer) = rng_id == 0 ? next_rng_id!() : claim_rng_id!(rng_id)
+function _rule_stream_id(rng_id)
+    (rng_id isa Integer && rng_id >= 0) || throw(ArgumentError(
+        "rng_id must be a non-negative integer (0 assigns a fresh stream, an explicit " *
+        "id is claimed); got $(repr(rng_id))"))
+    return rng_id == 0 ? next_rng_id!() : claim_rng_id!(rng_id)
+end
 
 # The shared guard of the stochastic rules' `sigma`. The keyword constructors
 # run it BEFORE `_rule_stream_id`, so a refused rule claims no stream.
@@ -114,7 +154,8 @@ particle-index slot fixed at 0 and the component `_RULE_COMPONENT_BASE + slot`
 sequence is a function of the task's seed, the absolute turn and `rng_id`,
 identical on every backend and whether the run is one `execute!` or many.
 `slot` is supplied by the element that owns the rule (the crab cavity uses the
-harmonic index for a phase and `N + harmonic` for a strength), so one `rng_id`
+harmonic index for a phase and `N + harmonic` for a strength; the RF cavity
+slot 1 for its phase and 2 for its strength), so one `rng_id`
 on every entry of one cavity still gives independent draws per entry; two
 CAVITIES sharing an `rng_id` draw identical values and the task constructor
 warns, as it does for two radiation placements sharing a stream. `rng_id = 0`
@@ -134,7 +175,7 @@ struct WhiteNoise{T<:AbstractFloat} <: AbstractTurnRule
         return new{T}(sigma, rng_id)
     end
 end
-function WhiteNoise(sigma::Real; rng_id::Integer=0)
+function WhiteNoise(sigma::Real; rng_id=0)
     s = float(sigma)
     _check_rule_sigma("WhiteNoise", s)
     return WhiteNoise{typeof(s)}(s, _rule_stream_id(rng_id))
@@ -228,17 +269,23 @@ component `_RULE_COMPONENT_BASE + s + _PINK_COMPONENT_STRIDE * (k + 1)`,
 stride 64, while a `WhiteNoise` draws `_RULE_COMPONENT_BASE + s` itself (the
 key layout is documented above `_RULE_COMPONENT_BASE`); the crab cavity's
 slots run `1:2N`, so a white and a pink rule sharing one `rng_id` on one
-element draw from disjoint component bands as long as `2N <= 64` (a crab
-cavity carries a few harmonics; assumed, not enforced). Two ELEMENTS sharing
+element draw from disjoint component bands as long as the element has at
+most 64 slots -- ENFORCED at the wrap: `TurnModulated(base, rule)` refuses a
+container of more than `_PINK_COMPONENT_STRIDE` slots carrying a `PinkNoise`
+through `_check_slot_rules` (a crab cavity with a pink rule has at most 32
+harmonics; with white and table rules only, any number). Two ELEMENTS sharing
 an `rng_id` draw identical values and the task constructor warns, as for
 `WhiteNoise`. `rng_id = 0` (the default) assigns a fresh stream; an explicit
 id is claimed so the auto-assign counter never reissues it, as `LumpedRadSpec`
 and `BPMObserver` do.
 
 `sigma` is the per-turn rms of the offset: the `K` generators are independent
-unit normals, so their sum over `sqrt(K)` has unit variance (the sample rms of
-a finite run wanders with the low-frequency content; the spectra script
-reports it). `sigma` must be finite and non-negative; zero is a quiet rule.
+unit normals, so their sum over `sqrt(K)` has unit variance, but the sample
+rms of ONE finite run wanders with the low-frequency content -- its one-sigma
+scatter is 7.6 % at 65536 turns and 13.8 % at 16384 (`Var[rms^2] =
+(2/(K^2 N)) sum_k 2^k (2K - 1 - 2k)`, K = 16; Monte Carlo over 2048 streams
+agrees), with a heavy upper tail; the spectra script reports the measured
+value. `sigma` must be finite and non-negative; zero is a quiet rule.
 As for `WhiteNoise`, `sigma` is converted to the element's numeric type at
 realisation (a `Float32` sigma on a `Float64` cavity is promoted), while a
 `TurnTable` is refused on a type mismatch because its storage would otherwise
@@ -254,7 +301,7 @@ struct PinkNoise{T<:AbstractFloat} <: AbstractTurnRule
         return new{T}(sigma, rng_id, octaves)
     end
 end
-function PinkNoise(sigma::Real; rng_id::Integer=0, octaves::Integer=16)
+function PinkNoise(sigma::Real; rng_id=0, octaves::Integer=16)
     s = float(sigma)
     _check_rule_sigma("PinkNoise", s)
     _check_pink_octaves(Int(octaves))
@@ -278,8 +325,9 @@ _rule_kind(::TurnTable) = :table
 
 The rule catalogue as prose, `"PinkNoise, TurnTable, WhiteNoise"`: the concrete
 subtypes of `AbstractTurnRule` sorted by name, DERIVED from the type tree for
-the crab cavity's `_rule_tuple` messages and pinned by the suite's catalogue
-tripwire (AGENTS.md: never hand-copy a case list). `_concrete_octopus_subtypes`
+the crab cavity's `_rule_tuple` and the RF cavity's `_rule_scalar` messages and
+pinned by the suite's catalogue tripwire (AGENTS.md: never hand-copy a case
+list). `_concrete_octopus_subtypes`
 lives in `src/tasks/strongstrong/interface.jl`, included after this file; the
 call is made only inside an error path or a test at run time, so the late
 binding is harmless (the precedent is `_alternative_method_names` in
@@ -351,8 +399,9 @@ Throw an `ArgumentError` if `rule` cannot serve every turn of the window
 `first_turn:(first_turn + nturns - 1)`; return `nothing` otherwise. Only a
 `TurnTable` has a window constraint (`first_turn + nturns <= length(offsets)`);
 `nothing`, `WhiteNoise` and `PinkNoise` serve any turn. `where` names the element and slot
-for the message. Called by the `_check_turn_window` walk before the first turn
-of every `execute!`.
+for the message. Called once per slot by `_check_container_window` below,
+which the `_check_turn_window` walk reaches for every `TurnModulated` before
+the first turn of every `execute!`.
 """
 _check_rule_window(rule, first_turn::Int64, nturns::Int, where::AbstractString) = nothing
 
@@ -364,6 +413,110 @@ function _check_rule_window(rule::TurnTable, first_turn::Int64, nturns::Int,
         "the $(label) on $(where) holds $(length(rule.offsets)) " *
         "turns but the window runs turns $(first_turn) to $(first_turn + nturns - 1) " *
         "(absolute, zero-based): a table never wraps, extend it or shorten the run"))
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+# The slot protocol (stage 3, the RF cavity by the same wrap). An element's
+# rule CONTAINER -- the `rule` field of its `TurnModulated` -- declares its
+# scalar slots once, through `_slot_rules`, and its SPEC declares the rule
+# objects it holds through `_turn_rule_values`; the three container-level
+# walks (the window check, the provenance slots, the stream-id collection)
+# are generic over those two declarations, so a new modulated kind adds its
+# `realize`, its `_turn_modulation_wrap` and these two methods, and no walk
+# is hand-copied. `realize` stays per container: it is the element's own
+# arithmetic, not a walk.
+# ---------------------------------------------------------------------------
+
+"""
+    _slot_rules(rules) -> Tuple
+
+The scalar slots of an element-level rule container, in SLOT ORDER (the slot
+number its `realize` hands `_turn_offset`), as `(label::String, rule)` pairs:
+`rule` is `nothing` (inactive) or a concrete `AbstractTurnRule`, `label` the
+parameter name the provenance receipt and the window message print
+(`"phase_noise[2]"` on a crab cavity, `"phase_noise"` on an RF cavity, whose
+phase is a scalar). Inactive slots are included; the consumers skip them.
+Deliberately no generic fallback, as for `realize`: a container without a
+method is a `MethodError` at the first window check or receipt, not a
+modulated element silently missing from the run's provenance. Every container
+with a `realize` method defines one -- the suite's container tripwire pins the
+two method sets against each other: `CrabCavityNoise` in
+`src/elements/crab_cavity.jl`, `RFCavityNoise` in `src/elements/rf_cavity.jl`.
+"""
+function _slot_rules end
+
+"""
+    _check_container_window(rules, first_turn::Int64, nturns::Int, where::AbstractString)
+
+Have every slot of a rule container check the window through the scalar
+`_check_rule_window`, naming the slot after the element: `where * " " * label`
+(`"ThinCrabCavity phase_noise[2]"`, `"ThinRFCavity strength_noise"`); only a
+`TurnTable` can refuse. One generic method over `_slot_rules`, called by the
+`_check_turn_window` walk for every `TurnModulated` it meets. A separate
+function from the scalar `_check_rule_window` on purpose: that one's generic
+no-op (which every stateless rule relies on) must never be what a container
+falls to.
+"""
+function _check_container_window(rules, first_turn::Int64, nturns::Int, where::AbstractString)
+    for (label, rule) in _slot_rules(rules)
+        _check_rule_window(rule, first_turn, nturns, where * " " * label)
+    end
+    return nothing
+end
+
+"""
+    _check_slot_rules(rules) -> nothing
+
+Validate a rule container's slot declaration once, at the wrap: the
+two-argument `TurnModulated(base, rule)` constructor -- the one choke point
+every modulated element passes, from both cavities' `_turn_modulation_wrap` --
+calls it on every container, so the checks are generic over `_slot_rules` and
+no kind repeats them. `_check_slot_table` does the work on the declared
+`(label, rule)` table and throws an `ArgumentError`:
+
+- more than `_PINK_COMPONENT_STRIDE` slots with a `PinkNoise` on any of them
+  (2026-10-13 neighbour audit, U7-1): pink generator k of slot s draws the
+  component `_RULE_COMPONENT_BASE + s + 64 (k + 1)`, so slot `s + 64` of the
+  same container -- a white rule's own component, or another pink rule's
+  generator band shifted by one -- is the same cell under one `rng_id`;
+  measured on a 33-harmonic crab cavity (66 slots), identical draws on 64 of
+  64 turns. The bound is the pink rule's: a container of any size carrying
+  white and table rules only passes;
+- a slot label that is empty, contains `'/'` or repeats within the container
+  (the label half of U5-2): the labels name the window message and the run
+  artifact's `/turn_modulation/<slot>/...` datasets, so an empty, nested or
+  duplicate name would be a silently missing or overwritten group.
+"""
+_check_slot_rules(rules) = _check_slot_table(_slot_rules(rules))
+
+function _check_slot_table(slots::Tuple)
+    n = length(slots)
+    if n > _PINK_COMPONENT_STRIDE && any(p -> p[2] isa PinkNoise, slots)
+        throw(ArgumentError(
+            "a turn-modulation container declares $(n) slots, more than the pink stride " *
+            "$(_PINK_COMPONENT_STRIDE): PinkNoise generators are keyed by component " *
+            "offsets of $(_PINK_COMPONENT_STRIDE) per generator, so a PinkNoise on one slot " *
+            "would share its counter-RNG stream with another rule's slot " *
+            "$(_PINK_COMPONENT_STRIDE) further on under the same rng_id (identical draws). " *
+            "Keep a crab cavity carrying a PinkNoise to at most " *
+            "$(_PINK_COMPONENT_STRIDE ÷ 2) harmonics, or use WhiteNoise and TurnTable rules only"))
+    end
+    seen = Set{String}()
+    for (label, _) in slots
+        label isa String || throw(ArgumentError(
+            "a turn-modulation slot label must be a String; got a $(typeof(label))"))
+        isempty(label) && throw(ArgumentError(
+            "a turn-modulation slot label is empty; every slot of a rule container needs " *
+            "a non-empty label (the parameter name, indexed per harmonic on a crab cavity)"))
+        occursin('/', label) && throw(ArgumentError(
+            "the turn-modulation slot label $(repr(label)) contains '/', which would nest " *
+            "it inside the run artifact's /turn_modulation group; use a flat name"))
+        label in seen && throw(ArgumentError(
+            "the turn-modulation slot label $(repr(label)) appears twice in one container; " *
+            "slot labels must be unique within an element"))
+        push!(seen, label)
+    end
     return nothing
 end
 
@@ -388,10 +541,20 @@ Produce the element to track on turn `ctx.turn` from the NOMINAL element
 `base` and the element-level rule `rule`, together with the rule's successor.
 The returned element has the same concrete type as `base`. Every element
 kind that supports turn modulation defines a method for its own rule
-container (`CrabCavityNoise` for `ThinCrabCavity`, `src/elements/crab_cavity.jl`);
-there is deliberately no generic fallback -- a rule the element does not
-understand is a `MethodError` at the first turn, not a silently unmodulated
-run.
+container (`CrabCavityNoise` for `ThinCrabCavity`, `src/elements/crab_cavity.jl`;
+`RFCavityNoise` for `ThinRFCavity`, `src/elements/rf_cavity.jl`), and every
+such container also declares its slots through `_slot_rules` (the slot
+protocol below); there is deliberately no generic fallback -- a rule the
+element does not understand is a `MethodError` at the first turn, not a
+silently unmodulated run.
+
+Every shipped rule returns ITSELF as `rule′` (a pure function of `ctx`; the
+suite's stateless-rule tripwire pins it for every rule of the derived
+catalogue in every shipped container). The task layer keeps a successor only
+within one `execute!` call on the fast loop and within one plan on the general
+loop, so a stateful rule -- which design D6 admits -- is an owner decision
+before it ships: persist successors or forbid state (2026-10-13 neighbour
+audit, U1-1).
 """
 function realize end
 
@@ -410,6 +573,12 @@ reads; `rule` produces `inner` from `base` and the `TrackingContext` through
 `realize`. The two-argument form starts with `inner === base`, so until the
 first `update` -- and forever on the contextless `track!` path, where no
 update runs -- the wrapper tracks the nominal element (design decision D5).
+It is also where the container's slot declaration is validated, once per
+compile, through `_check_slot_rules` (the pink-stride bound and the slot
+labels): every modulated element passes through it, so a container that
+cannot be keyed or labelled safely is refused at compile, never realised. The
+three-argument form (the survey rebind, the per-turn `update` through the
+parametric constructor) does not repeat the check.
 
 Built by `compile_runtime` through `_turn_modulation_wrap`, INNERMOST of the
 three compile-time wraps (then `MisalignedElement`, then `RefTilted`), because
@@ -424,7 +593,10 @@ struct TurnModulated{E,R} <: AbstractTrackOp
     inner::E
     rule::R
 end
-TurnModulated(base, rule) = TurnModulated(base, base, rule)
+function TurnModulated(base, rule)
+    _check_slot_rules(rule)
+    return TurnModulated(base, base, rule)
+end
 
 # The forwards MisalignedElement defines, plus the context-aware call whose
 # absence on that wrapper once dropped the context of a wrapped stochastic
@@ -459,8 +631,11 @@ its inner element through `realize`; the frame wrappers and `CompositeLine`
 forward into what they hold and rebuild themselves around the result, so a
 modulated element inside a misaligned, rolled or kept-whole sub-line is
 updated like a bare one. Called from the task's turn loops only -- the
-contextless `track!` path never updates, which is what keeps it tracking the
-nominal element.
+contextless `track!` path never updates, which is what keeps it tracking
+`inner`, the nominal element while no update has run. The rebuilt wrapper
+carries the rule's successor, which every shipped rule returns as itself; the
+loops do not persist a successor across `execute!` calls or plans (see
+`realize` and `execute!`).
 """
 update(elem, ctx::TrackingContext) = elem
 
@@ -514,11 +689,11 @@ a no-op.
 _check_turn_window(elem, first_turn::Int64, nturns::Int) = nothing
 _check_turn_window(elems::Tuple, first_turn::Int64, nturns::Int) =
     (foreach(e -> _check_turn_window(e, first_turn, nturns), elems); nothing)
-# The wrapper forwards to its rule container, which names the element and slot
-# in `where` (the crab container's method in crab_cavity.jl visits its
-# per-harmonic entries, "ThinCrabCavity phase_noise[i]" and the like).
+# The wrapper forwards to the container-level check, generic over the
+# container's `_slot_rules`, which names the element and slot in `where`
+# ("ThinCrabCavity phase_noise[i]", "ThinRFCavity strength_noise").
 _check_turn_window(w::TurnModulated, first_turn::Int64, nturns::Int) =
-    _check_rule_window(w.rule, first_turn, nturns, string(nameof(typeof(w.base))))
+    _check_container_window(w.rule, first_turn, nturns, string(nameof(typeof(w.base))))
 _check_turn_window(elem::Union{MisalignedElement,RefTilted}, first_turn::Int64, nturns::Int) =
     _check_turn_window(elem.inner, first_turn, nturns)
 _check_turn_window(elem::CompositeLine, first_turn::Int64, nturns::Int) =
@@ -531,20 +706,54 @@ Collect the `rng_id` of every stochastic turn-modulation rule declared on the
 SPECS of a line (tuples, vectors, `LineEntry`, `ElementSpec{:line}` descended
 as `_collect_radiation_ids!` does), one entry per distinct id per element, so
 `_warn_duplicate_turn_modulation_streams` can warn when two elements share a
-stream. Kinds that declare rule parameters add a method
-(`ElementSpec{:thin_crab_cavity}`, `src/elements/crab_cavity.jl`).
+stream. ONE generic method on `ElementSpec` reads the rule objects through the
+kind's `_turn_rule_values` and pushes each DISTINCT `rng_id` among them (every
+rule carrying an `rng_id` field; `WhiteNoise` and `PinkNoise` today) once: one
+id shared by every slot of one element contributes one entry (the slots keep
+the draws independent) and does not warn; the same id on two elements
+contributes two and does. Kinds that declare rule parameters add a
+`_turn_rule_values` method, not a collector method.
 """
 _collect_turn_modulation_ids!(ids::Vector{UInt64}, element) = ids
 _collect_turn_modulation_ids!(ids::Vector{UInt64}, elements::Tuple) =
     (foreach(e -> _collect_turn_modulation_ids!(ids, e), elements); ids)
 _collect_turn_modulation_ids!(ids::Vector{UInt64}, elements::AbstractVector) =
     (foreach(e -> _collect_turn_modulation_ids!(ids, e), elements); ids)
+# The spec the placement COMPILES -- overrides merged, `_effective_spec` in
+# src/tasks/Tasks.jl -- as every `LineEntry` collector reads it, so a rule
+# given only through a placement override is seen (U1-2).
 _collect_turn_modulation_ids!(ids::Vector{UInt64}, entry::LineEntry) =
-    _collect_turn_modulation_ids!(ids, getfield(entry, :spec))
+    _collect_turn_modulation_ids!(ids, _effective_spec(entry))
 function _collect_turn_modulation_ids!(ids::Vector{UInt64}, element::ElementSpec{:line})
     foreach(e -> _collect_turn_modulation_ids!(ids, e), line_entries(element))
     return ids
 end
+function _collect_turn_modulation_ids!(ids::Vector{UInt64}, spec::ElementSpec)
+    seen = UInt64[]
+    for rule in _turn_rule_values(spec)
+        hasfield(typeof(rule), :rng_id) || continue
+        rule.rng_id in seen || push!(seen, rule.rng_id)
+    end
+    append!(ids, seen)
+    return ids
+end
+
+"""
+    _turn_rule_values(spec) -> Vector{Any}
+
+Every rule object the spec's turn-modulation parameters hold, in slot order and
+`nothing` entries included, each coerced through the kind's own coercion
+(`_rule_tuple`, `_rule_scalar`) so a raw spec that bypassed the friendly
+constructor is checked here as it would be at compile. The generic method
+answers an empty vector: an element kind without rule parameters holds none.
+This ONE fallback is legitimate, unlike one on `_slot_rules` or `realize`,
+because the suite's kind tripwire pins which kinds have rules -- every kind
+with a specific `_turn_modulation_wrap` method must own a specific
+`_turn_rule_values` method -- so a kind that would fall to it is named there.
+`ElementSpec{:thin_crab_cavity}` (`src/elements/crab_cavity.jl`) and
+`ElementSpec{:thin_rf_cavity}` (`src/elements/rf_cavity.jl`) define theirs.
+"""
+_turn_rule_values(spec) = Any[]
 
 """
     _turn_modulation_wrap(spec, inner)
@@ -554,7 +763,11 @@ carries an active turn-modulation rule, and return it untouched otherwise.
 Called from `compile_runtime` innermost of the three wraps. The generic method
 is the identity: a kind that declares no rule parameters compiles to exactly
 the runtime object it always did. Kinds that do declare them add a method on
-their spec type (`ElementSpec{:thin_crab_cavity}` in `src/elements/crab_cavity.jl`).
+their spec type (`ElementSpec{:thin_crab_cavity}` in `src/elements/crab_cavity.jl`,
+`ElementSpec{:thin_rf_cavity}` in `src/elements/rf_cavity.jl`); the suite's
+kind tripwire derives that set from the methods of this function and requires
+each member's metadata, exemption rows, `_turn_rule_values` and container
+`_slot_rules`.
 """
 _turn_modulation_wrap(spec, inner) = inner
 
@@ -568,7 +781,9 @@ consumers can rely on it:
 
     (element = "ThinCrabCavity",            # nameof the realised element's type
      slots   = [slot, slot, ...])           # ACTIVE slots only, in slot order
-    slot = (slot = "phase_noise[1]",        # parameter name and harmonic index
+    slot = (slot = "phase_noise[1]",        # the container's slot label: parameter name and
+                                            # harmonic index on a crab cavity, the bare
+                                            # parameter name ("phase_noise") on an RF cavity
             kind = :white,                  # :white, :pink or :table
             rng_id = UInt64,                # the white or pink rule's stream; 0 for a table
             digest = UInt64,                # the table's FNV-1a digest; 0 for white and pink
@@ -576,9 +791,9 @@ consumers can rely on it:
             length = Int)                   # the table's length; 0 for white and pink
 
 Descends the wrappers and `CompositeLine` like `_check_turn_window`; the
-element-specific rule container contributes its slots through a method of
-`_turn_modulation_slots(rules) -> Vector` (the crab cavity's in
-`src/elements/crab_cavity.jl`).
+element-specific rule container contributes its slots through
+`_turn_modulation_slots(rules) -> Vector`, generic over the container's
+`_slot_rules` declaration (the slot protocol above).
 """
 _turn_modulation_provenance!(out::Vector, elem) = out
 _turn_modulation_provenance!(out::Vector, elems::Tuple) =
@@ -595,13 +810,20 @@ _turn_modulation_provenance!(out::Vector, elem::CompositeLine) =
     _turn_modulation_slots(rules) -> Vector
 
 The ACTIVE slot entries of an element-level rule container, in slot order, each
-of the shape `_turn_modulation_provenance!` documents. Deliberately no generic
-fallback, as for `realize`: a container without a method is a `MethodError`
-when the receipt is built, not a modulated element silently missing from the
-run's provenance. The crab cavity's method is in `src/elements/crab_cavity.jl`;
-it builds each entry through `_push_rule_slot!` below.
+of the shape `_turn_modulation_provenance!` documents: ONE generic method over
+the container's `_slot_rules`, building each entry through `_push_rule_slot!`
+below (an inactive slot appends nothing). No per-container method and no
+fallback of its own: a container without a `_slot_rules` method is a
+`MethodError` when the receipt is built, not a modulated element silently
+missing from the run's provenance.
 """
-function _turn_modulation_slots end
+function _turn_modulation_slots(rules)
+    slots = Any[]
+    for (label, rule) in _slot_rules(rules)
+        _push_rule_slot!(slots, rule, label)
+    end
+    return slots
+end
 
 """
     _push_rule_slot!(slots::Vector{Any}, rule, label::String) -> slots

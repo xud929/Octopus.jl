@@ -84,8 +84,8 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   velocity-slip fix and RF Scope B.
 - [`turn_modulation.md`](design/turn_modulation.md) — turn-by-turn lattice
   modulation, crab cavity phase and amplitude noise first (decided 2026-10-12;
-  stage 1 implemented 2026-10-12, record below): why the variation is
-  element-owned per-turn state
+  stages 1 and 2 implemented 2026-10-12, stage 3 implemented 2026-10-13,
+  records below): why the variation is element-owned per-turn state
   realised on the host rather than a per-particle kernel draw or a knob
   retune; the per-turn hook made a pure, type-preserving `update` with the
   fused tuple rebuilt each turn (measured 20 ns per 40 elements, zero
@@ -397,6 +397,24 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   without one, the same descent fixing a pre-existing CUDA defect, a recording
   aperture inside a kept-whole `BeamLine` that never launched); the tests;
   the owner items ledgered; the gate.
+- [`turn_modulation_stages3_4_2026_10_13.md`](history/turn_modulation_stages3_4_2026_10_13.md) —
+  stage 3 of turn-by-turn lattice modulation, the thin RF cavity's phase and
+  strength by the same `TurnModulated` wrap, and stage 4, the targeted
+  neighbour audit: what landed per file (the scalar `phase_noise` and
+  `strength_noise` on `ThinRFCavitySpec`, `RFCavityNoise`, the slot protocol
+  `_slot_rules`/`_turn_rule_values` replacing the crab cavity's per-container
+  walks); the decisions (scalars with `nothing` as the inactive spelling and
+  why that asymmetry is the parameters' shapes, the accelerating cavity
+  excluded as single-pass, the one argued fallback, the harmon and survey
+  composition); the measured fixture (realised phases, `mean(pz)` through
+  `execute!` against the survey-bound hand reference, the harmon cavity's
+  bound `k`); the tests with the kind and container tripwires and the red
+  table; CI run 447 on the pushed stage 1-2 tree; the stage 4 neighbour
+  audit in the protocol's shape (seven reading units with their coverage
+  ledgers, a second pass over all 39 leads, the findings by severity with
+  mechanism and disposition, the corrections to the stage 1-2 record, the
+  fixed list, the ledgered and owner items, what was not verified); the
+  gate.
 - [`twiss_dispersion_degeneracy_theory_2026_09_11.md`](history/twiss_dispersion_degeneracy_theory_2026_09_11.md) —
   derivation record for theory Section 13 (mode degeneracy) and the analysis
   design note: provenance of the ported working notes and the convention key,

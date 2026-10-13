@@ -944,6 +944,16 @@ function _omit_example_key(schema, key::Symbol, value)
     meta isa ParamMeta || return false
     meta.required && return false
     value === nothing && return true
+    # A non-empty tuple of `nothing`s against an empty-tuple default is the
+    # per-slot spelling of inactive -- what a per-harmonic constructor stores
+    # when the keyword was omitted (the crab cavity's `phase_noise`:
+    # `_rule_tuple` coerces `()` to `N` times `nothing`). Rendering it beside
+    # the `default=()` the parameter lines print showed two spellings of
+    # inactive for one kind and advertised an unset keyword as a deliberate
+    # value (2026-10-13 neighbour audit, U6-4). Only against the `()` default:
+    # a tuple of `nothing`s against a numeric default is a real choice.
+    value isa Tuple && !isempty(value) && meta.default === () &&
+        all(x -> x === nothing, value) && return true
     meta.default === nothing && return false
     try
         return value == meta.default

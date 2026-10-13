@@ -6,9 +6,11 @@ turns. With `policy=nothing`, the execution policy is inferred from particle
 storage. A supplied policy selects execution for existing storage and never
 migrates it. `context` supplies turn and counter-RNG state independently of the
 execution policy. A `TurnModulated` element in a bare `track!` line tracks its
-NOMINAL element on every turn: the rules are realised only by a task's
-`execute!`, which calls `update_line` before each turn (design decision D5,
-`docs/design/turn_modulation.md`).
+`inner` element, unchanged across turns -- the NOMINAL element for a freshly
+compiled wrapper (`inner === base`), the last realised one for a wrapper that
+went through `update_line` by hand or was read back out of a task's plan: the
+rules are realised only by a task's `execute!`, which calls `update_line`
+before each turn (design decision D5, `docs/design/turn_modulation.md`).
 """
 function track!(rep, elems, turns; policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
                 context::TrackingContext=TrackingContext())
@@ -189,14 +191,20 @@ if _HAS_ADAPT
 	@eval begin
 		# The device conversion of a turn-modulated element (design D8,
 		# docs/design/turn_modulation.md). The fused element tuple is a kernel
-		# ARGUMENT, and `@cuda` converts its arguments with `cudaconvert`, which
-		# is `adapt(KernelAdaptor(), x)` and recurses through a tuple
-		# element-wise via `adapt_structure`. THIS is therefore the method the
-		# launch reaches for a wrapper inside the tuple -- a
-		# `CUDA.cudaconvert(::TurnModulated)` method would not be, because the
-		# tuple recursion goes through Adapt, not through `cudaconvert`. The
-		# kernel sees the realised element and never the rule, and a wrapper
-		# carrying a host table (not isbits) still launches.
+		# ARGUMENT, and `@cuda` converts its arguments through the two-argument
+		# `kernel_convert`, i.e. `adapt(KernelAdaptor(managed), x)`, which
+		# recurses through a tuple element-wise via `adapt_structure`. THIS is
+		# therefore the method the launch reaches for a wrapper inside the
+		# tuple -- a `CUDA.cudaconvert(::TurnModulated)` method would not be,
+		# because the tuple recursion goes through Adapt, not through
+		# `cudaconvert`. No Octopus method extends `CUDA.cudaconvert` at all:
+		# the one-argument `cudaconvert(::Phase6DRep)` this file once defined
+		# was never on a launch path (0 calls over six launch paths; the
+		# representation converts through `Adapt.@adapt_structure` in
+		# src/beam/Beam.jl), CUDA documents the function as not to be
+		# extended, and the suite pins the method table (2026-10-13 neighbour
+		# audit, U3-1). The kernel sees the realised element and never the
+		# rule, and a wrapper carrying a host table (not isbits) still launches.
 		#
 		# The three containers need the same descent, or a wrapper INSIDE them
 		# is never reached: Adapt's default `adapt_structure` is the identity
@@ -208,7 +216,20 @@ if _HAS_ADAPT
 		# docs/history/turn_modulation_stage1_2026_10_12.md section 3 and the
 		# regression test is the suite's testset "Turn modulation: CPU/CUDA
 		# identity and the device conversion"). Frame data is isbits and
-		# carried as is.
+		# carried as is. The same descent also reaches a recording aperture's
+		# DEVICE record inside the two frame wrappers, which the identity
+		# default had left unconverted as well (U3-5; the same testset).
+		#
+		# Defined for ANY adaptor `to`, not only the kernel adaptor: these are
+		# kernel semantics (the device never sees a rule), so a host-side
+		# `Adapt.adapt(Array, line)` or any future non-kernel adaptor also sees
+		# the realised `inner` only, the wrapper and its rule dropped. Inert
+		# today -- no in-repo caller adapts an element tuple with another
+		# adaptor, and `LossRecord` (src/elements/aperture.jl) sets the same
+		# precedent, dropping its names under any adaptor; a structure-
+		# preserving generic method with the drop restricted to the kernel
+		# adaptor is an owner item (2026-10-13 neighbour audit, U3-2;
+		# docs/todo.md).
 		#
 		# Defined whenever Adapt loads (a hard dependency, imported in
 		# src/beam/Beam.jl) rather than inside the CUDA block below, so a
@@ -226,17 +247,6 @@ if _HAS_CUDA
 	@eval begin
 		const _CUDA_FUSED_OCCUPANCY_CACHE = Dict{Any,Int}()
 		const _CUDA_FUSED_OCCUPANCY_LOCK = ReentrantLock()
-
-		function CUDA.cudaconvert(rep::Phase6DRep)
-			return Phase6DRep(
-				CUDA.cudaconvert(rep.x),
-				CUDA.cudaconvert(rep.px),
-				CUDA.cudaconvert(rep.y),
-				CUDA.cudaconvert(rep.py),
-				CUDA.cudaconvert(rep.z),
-				CUDA.cudaconvert(rep.pz),
-			)
-		end
 
 		"""
 		    cuda_track_kernel!(rep, elems, turns)

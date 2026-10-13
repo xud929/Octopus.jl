@@ -2894,6 +2894,19 @@ const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     # rows say WHY they are inert here and where their effect is pinned.
     (:thin_crab_cavity, :phase_noise) => "a per-turn rule object, not a number; the generic perturbation cannot form a rule and the bare deterministic call never runs an update -- its effect is pinned at the kernel boundary by the turn-modulation testsets",
     (:thin_crab_cavity, :strength_noise) => "a per-turn rule object, not a number; the generic perturbation cannot form a rule and the bare deterministic call never runs an update -- its effect is pinned at the kernel boundary by the turn-modulation testsets",
+    # The RF cavity's scalar rule parameters (turn-modulation stage 3): the
+    # same decision, a different pin. Their default is `nothing`, for which
+    # `_perturb_candidates` offers (true, false, 1e-3, 1) -- none a rule, each
+    # refused by the constructor, so the sweep counts the pair REJECTED, not
+    # unperturbable (the crab rows above protect `unperturbable`, these two
+    # protect `rejected`: measured 2026-10-13, neighbour audit U6-3, shipped
+    # 41 unperturbable / 23 rejected; without the RF rows 41 / 25, without the
+    # crab rows 43 / 23, the contract passing in every variant). The suite's
+    # ratchet pins `rejected <= 23`, so dropping these rows fails there; the
+    # rows say why the pair is inert here and where its effect is pinned ("Turn
+    # modulation: the RF cavity by the same wrap").
+    (:thin_rf_cavity, :phase_noise) => "a per-turn rule object or nothing, not a number; the generic perturbation cannot form a rule and the bare deterministic call never runs an update -- its effect is pinned at the kernel boundary by the turn-modulation testsets",
+    (:thin_rf_cavity, :strength_noise) => "a per-turn rule object or nothing, not a number; the generic perturbation cannot form a rule and the bare deterministic call never runs an update -- its effect is pinned at the kernel boundary by the turn-modulation testsets",
     # A function, a string and an output handle have no meaningful perturbation:
     # there is no "slightly different" predicate or label whose effect this
     # contract could measure. They are declared inert here rather than left to

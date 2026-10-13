@@ -130,9 +130,13 @@ line = (
 
 Inactive scheduled line hooks do not break fusion. `TrackingTask` caches plans
 by active hook pattern; each plan segment holds its runtime element tuple in a
-`Ref`, and the turn loop rebuilds that tuple every turn through the pure
-`update_line` hook and stores it back, so turn-dependent elements
+`Ref`, and the general turn loop rebuilds that tuple every turn through the
+pure `update_line` hook and stores it back, so turn-dependent elements
 (`TurnModulated`) are realised per turn without mutating any runtime object.
+A bare task (no hooks, no artifact) takes the fast loop instead, which has no
+segment: it rebinds a local to the rebuilt tuple each turn, and that local
+dies with the call (`docs/current_runtime.md`), so neither loop persists a
+rule's successor across `execute!` calls -- see `execute!`.
 
 The older `actions` and `observers` keywords remain accepted as compatibility
 aliases and are merged into `hooks`.
@@ -305,6 +309,32 @@ loss_summary(rep_or_beam, task::TrackingTask) = loss_summary(rep_or_beam, task.l
 loss_summary(rep::Phase6DRep, task::TrackingTask) = loss_summary(rep, task.loss_record[])
 
 """
+    _effective_spec(entry::LineEntry) -> spec
+
+The spec a placement COMPILES: the entry's spec with its overrides merged on
+top, the merge `compile_runtime(entry::LineEntry)` (src/elements/beam_line.jl)
+performs through `_merged_params` before compiling, and the entry's own spec
+object when it carries no overrides (or is not an `ElementSpec` -- an in-line
+observer placed in a line, which compile routes elsewhere). Every spec-level
+walk over a line's placements reads THIS, never `getfield(entry, :spec)`: the
+five `LineEntry` collectors (`_collect_hidden_apertures!`,
+`_collect_radiation_ids!`, `_collect_aperture_specs!`, `_collect_declared!`
+here, `_collect_turn_modulation_ids!` in src/elements/turn_modulated.jl) read
+the raw spec, so a rule, a radiation stream, an aperture or a kept-whole
+alignment given only through a placement override was invisible to every
+pre-tracking walk while the compiled line carried it -- measured as two
+override-only rules sharing `rng_id` 7 with no warning against a receipt of
+`rng_ids: [7, 7]` (2026-10-13 neighbour audit, U1-2). Building the merged
+spec is cheap (one `Dict` merge) and side-effect free apart from the
+unknown-key warning compile itself issues.
+"""
+function _effective_spec(entry::LineEntry)
+    spec = getfield(entry, :spec)
+    (isempty(getfield(entry, :overrides)) || !(spec isa ElementSpec)) && return spec
+    return ElementSpec{kind(spec)}(_merged_params(entry))
+end
+
+"""
 Warn when an aperture sits inside an own-state (kept-whole) sub-line.
 
 A kept-whole line compiles to ONE runtime op, so the aperture binder cannot
@@ -327,7 +357,7 @@ _collect_hidden_apertures!(out, elements::Tuple, inside) =
 _collect_hidden_apertures!(out, elements::AbstractVector, inside) =
     (foreach(e -> _collect_hidden_apertures!(out, e, inside), elements); out)
 _collect_hidden_apertures!(out, entry::LineEntry, inside) =
-    _collect_hidden_apertures!(out, getfield(entry, :spec), inside)
+    _collect_hidden_apertures!(out, _effective_spec(entry), inside)
 function _collect_hidden_apertures!(out, element::ElementSpec{:line}, inside)
     # Entering an own-state line: everything below compiles to one op.
     own = _line_has_own_state(element)
@@ -369,7 +399,7 @@ _collect_radiation_ids!(ids, elements::Tuple) =
 _collect_radiation_ids!(ids, elements::AbstractVector) =
     (foreach(e -> _collect_radiation_ids!(ids, e), elements); ids)
 _collect_radiation_ids!(ids, entry::LineEntry) =
-    _collect_radiation_ids!(ids, getfield(entry, :spec))
+    _collect_radiation_ids!(ids, _effective_spec(entry))
 function _collect_radiation_ids!(ids, element::ElementSpec{:line})
     foreach(e -> _collect_radiation_ids!(ids, e), line_entries(element))
     return ids
@@ -422,7 +452,7 @@ _collect_aperture_specs!(out, elements::AbstractVector) =
     (foreach(e -> _collect_aperture_specs!(out, e), elements); out)
 _collect_aperture_specs!(out, element::ElementSpec{:aperture}) = (push!(out, element); out)
 _collect_aperture_specs!(out, entry::LineEntry) =
-    _collect_aperture_specs!(out, getfield(entry, :spec))
+    _collect_aperture_specs!(out, _effective_spec(entry))
 _collect_aperture_specs!(out, element) = out
 
 """
@@ -540,7 +570,7 @@ end
 _collect_declared!(out, elements::Union{Tuple,AbstractVector}, getter) =
     (foreach(e -> _collect_declared!(out, e, getter), elements); out)
 _collect_declared!(out, entry::LineEntry, getter) =
-    _collect_declared!(out, getfield(entry, :spec), getter)
+    _collect_declared!(out, _effective_spec(entry), getter)
 # A line kept whole (one carrying state of its own) still tracks through its
 # placements, so their declarations apply to the task.
 _collect_declared!(out, line::ElementSpec{:line}, getter) =
@@ -572,8 +602,17 @@ policy is resolved and checked against representation storage, and particles
 are tracked through the resulting runtime element sequence in place.
 
 Successful calls continue from the task's next absolute turn, so splitting a
-run across multiple `execute!` calls preserves schedules, turn-dependent
-updates, and counter-based random streams. Set `start_turn` to a non-negative
+run across multiple `execute!` calls preserves schedules, counter-based random
+streams and the turn-dependent updates of the shipped turn-modulation rules.
+The last holds because every shipped rule is a pure function of the
+`TrackingContext`: `realize` returns the rule itself as its successor, which
+the suite's stateless-rule tripwire pins for every rule of the derived
+catalogue. A rule's SUCCESSOR is kept only within one call on the fast loop
+(a bare task) and within one plan on the general loop (a plan-key flip
+restarts from the compiled elements), so a stateful rule, which design D6
+admits (`docs/design/turn_modulation.md`), would make split calls differ from
+one call until the owner decides to persist successors or forbid state
+(2026-10-13 neighbour audit, U1-1). Set `start_turn` to a non-negative
 integer to explicitly reposition the task before that call, for example when
 restoring a checkpoint. A failed call does not advance the stored turn.
 
@@ -616,6 +655,13 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
     end
     result = try
         _with_resolved_policy(active) do
+            # The divided-run refusal FIRST, before either receipt: it reads
+            # only the rank count in force and the task's hooks, so a run
+            # refused here leaves no receipt claiming it ran (it sat after both
+            # receipts, inside `_execute_tracking_task!`, before; 2026-10-13
+            # neighbour audit, U1-5). Every rank reads the same data and throws
+            # alike, ahead of the shard collective below.
+            _reject_unsharded_tracking_features(task, runtime_entries)
             # Once per call, inside the policy scope: deriving the shard is a
             # collective, and every fold inside the run reads it from here
             # instead of paying for its own.
@@ -629,10 +675,15 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
                 fast_path=isempty(task.actions) && isempty(task.observers) &&
                           !_has_line_hooks(runtime_entries) && task.artifact === nothing,
             ))
-            # The turn-modulation receipt (docs/design/turn_modulation.md 5.6):
-            # one entry per modulated element with its active slots, plus the
-            # window realised. Recorded only when the line has a modulated
-            # element, so an unmodulated run's ledger is unchanged.
+            # The turn-modulation receipt (specified by the stage-1 record,
+            # docs/history/turn_modulation_stage1_2026_10_12.md section 2; the
+            # design's 5.6 is the table rule): one entry per modulated element
+            # with its active slots, plus the window RESOLVED for this call --
+            # not the turns completed: a crash at turn 2 of 5 leaves a receipt
+            # saying turns = 5, as the ledger row written at prepare does, and
+            # the ledger's current_turn carries the progress (U1-3). Recorded
+            # only when the line has a modulated element, so an unmodulated
+            # run's ledger is unchanged.
             prov = _turn_modulation_entries(runtime_elems, 1)
             if !isempty(prov)
                 _record_execution!(:turn_modulation, backend_type(policy),
@@ -886,7 +937,8 @@ end
 function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
                                  turns::Int, first_turn::Int64, policy;
                                  turn_modulation::AbstractVector=Any[])
-    _reject_unsharded_tracking_features(task, runtime_entries)
+    # `_reject_unsharded_tracking_features` ran in `execute!`, ahead of the
+    # receipts (U1-5).
     if isempty(task.actions) && isempty(task.observers) &&
        !_has_line_hooks(runtime_entries) && task.artifact === nothing
         _execute_fast_tracking_turns!(
@@ -1381,14 +1433,17 @@ _survey_rebind(op::MisalignedElement, kicks, ds, ents, total, id, acc_id) =
 _survey_rebind(op::RefTilted, kicks, ds, ents, total, id, acc_id) =
     RefTilted(_survey_rebind(op.inner, kicks, ds, ents, total, id, acc_id),
               op.c, op.s)
-# Binding runs on compiled elements, where the realised element IS the nominal
-# one (no turn has run yet), so the nominal is walked once and reused: walking
-# `inner` separately would advance the cavity counter twice for one element.
+# Binding walks the NOMINAL cavity once and starts the rebound wrapper over
+# from it (`inner === base`), whatever `inner` it was handed. Through a task
+# every wrapper arrives freshly compiled (`inner === base`, no turn has run);
+# a pre-updated wrapper (`inner !== base`) can only arrive by hand, and the
+# next `update` realises `inner` from `base` and the rule again, so the stale
+# realised cavity is dropped rather than walked: walking it separately
+# advanced the cavity counter twice for one element and bound `inner` to the
+# NEXT cavity's `ds` (2026-10-13 neighbour audit, U2-1).
 function _survey_rebind(op::TurnModulated, kicks, ds, ents, total, id, acc_id)
     base = _survey_rebind(op.base, kicks, ds, ents, total, id, acc_id)
-    inner = op.inner === op.base ? base :
-            _survey_rebind(op.inner, kicks, ds, ents, total, id, acc_id)
-    return TurnModulated(base, inner, op.rule)
+    return TurnModulated(base, base, op.rule)
 end
 
 """

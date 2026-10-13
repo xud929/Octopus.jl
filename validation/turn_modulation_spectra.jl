@@ -42,12 +42,26 @@ Verdicts and tolerances (every one must hold for PASS):
                   [0.8, 1.25]: this script's own bound, set after the measured
                   65536-turn value (1.0043) so it passes with margin; the K
                   generators are independent unit normals, so the expectation
-                  is exactly 1 at any length, but the slow generators (one
-                  holds for 2^15 turns) take few values in one run and move
-                  the sample rms by a few percent either way. The sample
+                  of rms^2 is exactly 1 at any length, but the slow generators
+                  (one holds for 2^15 turns) take few values in one run: the
+                  one-sigma scatter of the rms is 7.6 % at 65536 turns and
+                  13.8 % at 16384 (Var[rms^2] = (2/(K^2 N)) sum_k 2^k
+                  (2K - 1 - 2k), with a heavy upper tail; Monte Carlo over
+                  2048 streams: 0.6 % of streams fall outside the band at
+                  65536 turns, 5.9 % at 16384, which is why the suite's
+                  16384-turn twin states its own quantile bound). The sample
                   standard deviation about the run's MEAN is printed beside it
-                  and is biased low by (2^K - 1) / (K N) in variance (the slow
-                  generators land in the mean); it is not the verdict.
+                  with its expectation
+                  E[s^2] = (N/(N-1)) (1 - (1/K) sum_{k=0}^{K-1} min(2^k, N)/N):
+                  generator k contributes 2^k/N to Var(mean) while 2^k <= N
+                  and exactly 1 once 2^k > N, its single value being removed
+                  by the mean entirely (0.9375 at 65536 turns, where every
+                  2^k < N; 0.8126 at 16384, std 0.9014, where generators 14
+                  and 15 hold for the whole run). The earlier printed form
+                  1 - (2^K - 1)/(K N) charged generator 15 with 2 instead of
+                  1 (0.7500, std 0.8660 at 16384; Monte Carlo 0.8125 +- 0.0027
+                  over 2048 streams; 2026-10-13 neighbour audit, U7-3). It is
+                  not the verdict.
     stateless     the pink offset on one turn computed alone, from a fresh
                   compile, equals the sequence's entry for that turn exactly.
 
@@ -130,6 +144,16 @@ endpoint_slope(bands::Vector{Float64}) =
     (log2(bands[end]) - log2(bands[1])) / (length(bands) - 1)
 rms(seq) = sqrt(sum(abs2, seq) / length(seq))
 sample_std(seq) = (mu = sum(seq) / length(seq); sqrt(sum(abs2, seq .- mu) / (length(seq) - 1)))
+# E[s^2] of the pink sum about its own mean (header): generator k holds N/2^k
+# independent values when 2^k <= N, contributing 2^k/N to Var(mean), and ONE
+# value when 2^k > N, contributing exactly 1, which the mean removes.
+pink_svar(K, N) = (N / (N - 1)) * (1 - sum(min(2.0^k, N) for k in 0:K-1) / (K * N))
+# Band i holds bins 2^i .. 2^(i+1) - 1 of the one-sided periodogram, bin j being
+# frequency (j - 1)/N (the convention above), so its frequencies run
+# (2^i - 1)/N .. (2^(i+1) - 2)/N; the labels 2^i/N .. 2^(i+1)/N printed until
+# 2026-10-13 were one bin high (neighbour audit, U7-5; no verdict reads them).
+band_f_lo(i) = (2.0^i - 1) / TURNS
+band_f_hi(i) = (2.0^(i + 1) - 2) / TURNS
 
 white_rule = WhiteNoise(1.0; rng_id=RNG_ID)
 pink_rule = PinkNoise(1.0; rng_id=RNG_ID, octaves=OCTAVES)
@@ -146,10 +170,8 @@ println("rules through ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase
 println()
 println("octave band (f_rev units)      bins      white       pink    (power, top octave = 1)")
 for i in 1:nb
-    f_lo = 2.0^i / TURNS
-    f_hi = 2.0^(i + 1) / TURNS
     mark = i < first_trusted ? "   (untrusted: too few bins)" : ""
-    @printf("  %.1e .. %.1e     %6d   %8.3f   %8.3f%s\n", f_lo, f_hi, bins[i], pw[i], pp[i], mark)
+    @printf("  %.1e .. %.1e     %6d   %8.3f   %8.3f%s\n", band_f_lo(i), band_f_hi(i), bins[i], pw[i], pp[i], mark)
 end
 white_slope = fitted_slope(pw, first_trusted)
 pink_slope = fitted_slope(pp, first_trusted)
@@ -162,8 +184,8 @@ white_rms = rms(seq_white)
 pink_rms = rms(seq_pink)
 @printf("sample rms about zero (sigma = 1):   white %.4f   pink %.4f   (pink bound [%.2f, %.2f])\n",
         white_rms, pink_rms, PINK_RMS_BOUNDS...)
-@printf("sample std about the run's mean:     white %.4f   pink %.4f   (pink expectation about %.4f: 1 - (2^K - 1)/(K N) in variance)\n",
-        sample_std(seq_white), sample_std(seq_pink), sqrt(1 - (2.0^OCTAVES - 1) / (OCTAVES * TURNS)))
+@printf("sample std about the run's mean:     white %.4f   pink %.4f   (pink expectation %.4f: E[s^2] = (N/(N-1)) (1 - (1/K) sum_k min(2^k, N)/N))\n",
+        sample_std(seq_white), sample_std(seq_pink), sqrt(pink_svar(OCTAVES, TURNS)))
 
 # Statelessness: the pink value on one turn from a fresh compile, no history.
 check_turn = min(40000, TURNS - 1)
@@ -188,7 +210,7 @@ if isdir(result_dir)
     open(out, "w") do io
         println(io, "band\tf_lo_frev\tf_hi_frev\tbins\twhite_power\tpink_power\ttrusted")
         for i in 1:nb
-            println(io, i, '\t', 2.0^i / TURNS, '\t', 2.0^(i + 1) / TURNS, '\t', bins[i], '\t',
+            println(io, i, '\t', band_f_lo(i), '\t', band_f_hi(i), '\t', bins[i], '\t',
                     pw[i], '\t', pp[i], '\t', i >= first_trusted)
         end
         println(io, "# turns=$(TURNS) seed=$(SEED) rng_id=$(RNG_ID) octaves=$(OCTAVES) ",

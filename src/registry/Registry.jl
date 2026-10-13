@@ -304,11 +304,15 @@ end
 Concrete `AbstractTrackOp` subtypes absent from the Runtime Objects section.
 
 `_runtime_object_types` derives most of its content from element metadata and
-then hand-appends six types with no owning meta -- a fourth hand-maintained
-piece the `OctopusRegistry` docstring did not declare and nothing checked
+then hand-appends the types of its hand list (the beam layer and the
+compile-time wrappers) with no owning meta -- a fourth hand-maintained piece
+the `OctopusRegistry` docstring did not declare and nothing checked
 (2026-08-05_b audit, U12-19). The U13-6 repair fixed that list's *staleness*
 and left its *structure*: the next wrapper or beam-scale runtime type still
-needs a hand edit, with nothing failing when it is forgotten.
+needs a hand edit, with nothing failing when it is forgotten. The list's
+length is deliberately not quoted here (a hand copy that drifted once,
+2026-10-13 neighbour audit U6-6); the suite's "The Runtime Objects section is
+complete" testset guards its contents.
 
 This is the missing comparison. It is a soft list -- it reports rather than
 throws -- so the caller decides; the suite asserts it is empty.

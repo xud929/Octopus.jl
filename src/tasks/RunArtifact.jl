@@ -223,6 +223,13 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
             end
         end
         n = length(ex["start_turn"])
+        # The provenance slot of the row about to be appended must be free:
+        # checked BEFORE the four ledger datasets are extended, so a refusal
+        # leaves the ledger as it found it. Checked inside the writer after
+        # the append, the refusal left a phantom row (`start_turn`, `turns`,
+        # `current_turn = first_turn - 1`, `elapsed = 0.0`) that the reader
+        # paired with the stranger group (2026-10-13 neighbour audit, U5-3).
+        _ra_check_turn_modulation_slot(file, art.path, n + 1, turn_modulation)
         for (name, val) in (("start_turn", Int64(first_turn)),
                             ("turns", Int64(planned_turns)),
                             ("current_turn", Int64(first_turn) - 1),
@@ -269,16 +276,15 @@ its slot), otherwise the element groups and their slot groups. Nothing here is
 ever rewritten or deleted -- every execution that had a modulated element
 keeps its own record, so a continued file holds every generation of rules it
 ran; a slot group that already exists can only mean the ledger and the
-provenance disagree, and is refused.
+provenance disagree, and is refused by `_ra_check_turn_modulation_slot`, which
+`prepare_run_artifact!` runs BEFORE appending the row (U5-3) and this writer
+runs again.
 """
 function _ra_write_turn_modulation!(file, path::String, slot::Int, entries)
     isempty(entries) && return nothing
+    _ra_check_turn_modulation_slot(file, path, slot, entries)
     root = haskey(file, "turn_modulation") ? file["turn_modulation"] :
            HDF5.create_group(file, "turn_modulation")
-    haskey(root, string(slot)) && throw(ArgumentError(
-        "RunArtifact at $(path): /turn_modulation/$(slot) already exists although " *
-        "the execution ledger row $(slot) was only now appended; the file's ledger " *
-        "and provenance disagree. Use a new path."))
     g = HDF5.create_group(root, string(slot))
     _ra_set_attr!(g, "element_count", Int64(length(entries)))
     for (k, entry) in enumerate(entries)
@@ -587,6 +593,7 @@ read(out, :bpm; name="BPM_07", column=:x)
 read(out, :snapshot; name="inj", turn=2)     # one fired block
 read(out, :losses)                           # rows + apertures + summary
 read(out, :execution)                        # one ledger row per execute!
+read(out, :turn_modulation)                  # modulation provenance per execute!
 read(out, :all)                              # every product, nested by kind
 ```
 
@@ -662,8 +669,8 @@ function _ra_select_column(rows::NamedTuple, column, what)
     return rows[key]
 end
 
-function _ra_losses(f)
-    g = f["losses"]
+# `g` is the /losses group, handed over by `_ra_require_group` (U5-7).
+function _ra_losses(g)
     a = HDF5.attributes(g)
     rows = if haskey(g, "data")
         names = String.(read(g["column_names"]))
@@ -691,24 +698,55 @@ function _ra_losses(f)
            summary=summary))
 end
 
-_ra_execution(f) = begin
-    ex = f["execution"]
+# `ex` is the /execution group, handed over by `_ra_require_group` (U5-7).
+_ra_execution(ex) =
     (start_turn=read(ex["start_turn"]), turns=read(ex["turns"]),
      current_turn=read(ex["current_turn"]), elapsed=read(ex["elapsed"]))
+
+"""
+Refuse a `/turn_modulation/<slot>` group that already exists when `entries`
+is non-empty: `slot` is the ledger row `prepare_run_artifact!` is about to
+append, so an existing group means the file's ledger and its provenance
+disagree. An unmodulated execute! (`entries` empty) writes no group and
+claims none, so a stranger group does not refuse it. The one source of the
+refusal: `prepare_run_artifact!` runs it BEFORE the ledger append (so a
+refused call leaves the ledger unchanged, U5-3) and the writer runs it again.
+"""
+function _ra_check_turn_modulation_slot(file, path::String, slot::Int, entries)
+    isempty(entries) && return nothing
+    haskey(file, "turn_modulation") || return nothing
+    haskey(file["turn_modulation"], string(slot)) && throw(ArgumentError(
+        "RunArtifact at $(path): /turn_modulation/$(slot) already exists although " *
+        "no execute! has recorded execution ledger row $(slot) yet; the file's " *
+        "ledger and provenance disagree. Use a new path."))
+    return nothing
+end
+
+"""
+An attribute of a provenance group read WITHOUT a default: a group lacking it
+is TORN, refused by an `ArgumentError` naming the group and the attribute. One
+message shape for every attribute the reader needs -- the counts through
+`_ra_tm_count` and the eight others (`index`, `kind`, `rng_id`, `digest`,
+`name`, `length` on a slot group; `element`, `beam` on an element group) --
+where a bare `attributes(g)[name]` surfaced `KeyError: key "index" not found`,
+naming the attribute but not the group (2026-10-13 neighbour audit, U5-1).
+"""
+function _ra_tm_attr(g, name::String, where::String)
+    a = HDF5.attributes(g)
+    haskey(a, name) || throw(ArgumentError(
+        "$(where) is torn: the $(name) attribute is missing"))
+    return read(a[name])
 end
 
 """A count attribute read WITHOUT a default: a group lacking it is torn."""
-function _ra_tm_count(g, name::String, where::String)
-    a = HDF5.attributes(g)
-    haskey(a, name) || error("$(where) is torn: the $(name) attribute is missing")
-    return Int(read(a[name]))
-end
+_ra_tm_count(g, name::String, where::String) = Int(_ra_tm_attr(g, name, where))
 
 """
 Read a present `/turn_modulation` group: one entry per execution slot that
 recorded modulation, in ledger order. Every count is checked against the
-subgroups present; a mismatch or a missing count is a TORN group, refused
-with a message saying so rather than read short.
+subgroups present and every attribute is read without a default; a mismatch,
+a missing count or a missing attribute is a TORN group, refused by an
+`ArgumentError` naming the group (and the attribute) rather than read short.
 """
 function _ra_turn_modulation(f)
     root = f["turn_modulation"]
@@ -719,30 +757,33 @@ function _ra_turn_modulation(f)
         g = root[string(slot)]
         present = count(k -> g[k] isa HDF5.Group, keys(g))
         n = _ra_tm_count(g, "element_count", where)
-        present == n || error(
-            "$(where) is torn: element_count = $(n) but $(present) element group(s) present")
+        present == n || throw(ArgumentError(
+            "$(where) is torn: element_count = $(n) but $(present) element group(s) present"))
         elements = NamedTuple[]
         for k in 1:n
-            haskey(g, string(k)) || error(
-                "$(where) is torn: element group $(k) of $(n) is missing")
+            haskey(g, string(k)) || throw(ArgumentError(
+                "$(where) is torn: element group $(k) of $(n) is missing"))
             eg = g[string(k)]
-            ea = HDF5.attributes(eg)
+            where_e = "$(where)/$(k)"
             labels = [String(l) for l in keys(eg) if eg[l] isa HDF5.Group]
-            nslots = _ra_tm_count(eg, "slot_count", "$(where)/$(k)")
-            length(labels) == nslots || error(
-                "$(where)/$(k) is torn: slot_count = $(nslots) but $(length(labels)) " *
-                "slot group(s) present")
+            nslots = _ra_tm_count(eg, "slot_count", where_e)
+            length(labels) == nslots || throw(ArgumentError(
+                "$(where_e) is torn: slot_count = $(nslots) but $(length(labels)) " *
+                "slot group(s) present"))
             entries = Tuple{Int,NamedTuple}[]
             for label in labels
-                a = HDF5.attributes(eg[label])
-                push!(entries, (Int(read(a["index"])),
-                                (slot=label, kind=Symbol(read(a["kind"])),
-                                 rng_id=UInt64(read(a["rng_id"])),
-                                 digest=UInt64(read(a["digest"])),
-                                 name=String(read(a["name"])), length=Int(read(a["length"])))))
+                sg = eg[label]
+                where_s = "$(where_e)/$(label)"
+                push!(entries, (Int(_ra_tm_attr(sg, "index", where_s)),
+                                (slot=label, kind=Symbol(_ra_tm_attr(sg, "kind", where_s)),
+                                 rng_id=UInt64(_ra_tm_attr(sg, "rng_id", where_s)),
+                                 digest=UInt64(_ra_tm_attr(sg, "digest", where_s)),
+                                 name=String(_ra_tm_attr(sg, "name", where_s)),
+                                 length=Int(_ra_tm_attr(sg, "length", where_s)))))
             end
             sort!(entries; by=first)
-            push!(elements, (element=String(read(ea["element"])), beam=Int(read(ea["beam"])),
+            push!(elements, (element=String(_ra_tm_attr(eg, "element", where_e)),
+                             beam=Int(_ra_tm_attr(eg, "beam", where_e)),
                              slots=NamedTuple[s for (_, s) in entries]))
         end
         push!(out, (execution=slot, elements=elements))
@@ -854,8 +895,13 @@ function Base.read(out::TaskOutput, kind::Symbol;
     column === nothing || kind in (:moments, :snapshot, :bpm) || throw(ArgumentError(
         "column selects from a probe group; it does not apply to $(kind)"))
     _ra_open(out.path) do f
-        kind === :losses && return _ra_losses(f)
-        kind === :execution && return _ra_execution(f)
+        # The single-product kinds take their group through `_ra_require_group`
+        # like the named kinds, so a file lacking the group answers "carries no
+        # <kind>; present: ..." rather than a raw HDF5 KeyError (pre-existing;
+        # 2026-10-13 neighbour audit, U5-7). An absent /turn_modulation is the
+        # documented empty answer instead: no execute! recorded modulation.
+        kind === :losses && return _ra_losses(_ra_require_group(f, out, kind))
+        kind === :execution && return _ra_execution(_ra_require_group(f, out, kind))
         kind === :turn_modulation && return _ra_turn_modulation_or_empty(f)
         g = _ra_require_group(f, out, kind)
         one_group = kind === :luminosity ? _ra_lum_series : _ra_probe_columns

@@ -627,14 +627,34 @@ _entry_matches(e::LineEntry, s) = Bool(s(e))
 # ---------------------------------------------------------------------------
 
 """
-    CompositeLine(ops)
+    CompositeLine(ops::Tuple)
 
 The runtime of a line that stayed composite: its elements' runtimes, tracked in
 order as a single map.
+
+`ops` is FLAT -- one runtime op per member, never a nested tuple -- and the
+constructor refuses a `Tuple` member with an `ArgumentError`. Every compiler
+returns one op per placement (`compile_runtime` on a line, a spec or an entry),
+so nothing built from specs ever nests; the invariant is enforced because the
+walks over a composite disagree on a nested tuple: `update`, the window check,
+the provenance, the context requirement and the fused kernels descend it,
+while the strong-beam collector, the hidden-beam count and the survey rebind
+hand each member to a generic fallback that would skip its contents silently,
+and `_inner_method` reads `first(ops).method` (2026-10-13 neighbour audit,
+U2-2). A hand-built nested line would have tracked correctly with its strong
+beams and cavities unseen.
 """
 struct CompositeLine{T<:Tuple} <: AbstractTrackOp
     ops::T
+    function CompositeLine{T}(ops::T) where {T<:Tuple}
+        any(o -> o isa Tuple, ops) && throw(ArgumentError(
+            "CompositeLine ops must be a flat tuple of runtime elements; got a nested " *
+            "Tuple member in $(typeof(ops)). Splat the sub-line's ops into the parent " *
+            "tuple, or wrap it in its own CompositeLine"))
+        return new{T}(ops)
+    end
 end
+CompositeLine(ops::T) where {T<:Tuple} = CompositeLine{T}(ops)
 
 # Both call paths delegate to `fusedTrack`, which is `@generated` and unrolls
 # the (possibly nested) op tuple at COMPILE time.

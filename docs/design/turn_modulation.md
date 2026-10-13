@@ -1,8 +1,9 @@
 # Turn-by-turn lattice modulation: the crab cavity noise case
 
-> **Status: stage 1 implemented 2026-10-12 (record:
-> `../history/turn_modulation_stage1_2026_10_12.md`); stage 2 implemented
-> 2026-10-12 (section 8 of the record); stages 3 and 4 open.** Designed
+> **Status: stages 1-4 implemented (stages 1 and 2 on 2026-10-12, record
+> `../history/turn_modulation_stage1_2026_10_12.md`; stages 3 and 4 on
+> 2026-10-13, record `../history/turn_modulation_stages3_4_2026_10_13.md`,
+> whose section 6 is the neighbour audit); gate pending.** Designed
 > 2026-10-12 in owner discussion. This note records the architecture decision
 > for element parameters that change from one turn to the next inside a
 > single tracking run: crab cavity RF phase and amplitude noise first, ramps
@@ -144,7 +145,14 @@ the noiseless cavity. This is the RF-cavity lesson applied.
 `realize(rule, base, ctx) -> (element, rule′)`. White noise, Voss-McCartney
 pink noise, FIR filters on keyed draws and the table rule return themselves as
 `rule′`; an IIR filter returns its successor. Section 5 catalogues them with
-measured spectra.
+measured spectra. Qualified at stage 4 (audit lead U1-1): every shipped rule
+is a pure function of `ctx` and returns itself, pinned by a tripwire over the
+derived rule catalogue (part (k) of the testset "Turn modulation: rules,
+wrapper and the pure hook"); the fast loop does not persist a successor
+across `execute!` calls (it restarts from the compiled elements on every
+call) and the general loop does not persist one across a plan-key flip, so
+the interface admits state but nothing yet carries it, and a stateful rule
+is an owner decision before it ships: persist successors or forbid state.
 
 **D7. The table rule is a pure consumer (owner decision, 2026-10-12).** It
 takes a vector of per-turn additive offsets in the parameter's own unit and
@@ -224,9 +232,12 @@ context of a wrapped stochastic element (the F13 finding recorded in
 
 The wrapper joins every walk that names the existing two: `_inner_method`,
 `_hidden_strong_beam_count`, `_descend_strong_beams!`, `_survey_rebind`
-(which must rebuild the wrapper around the rebound inner element, as it does
-for `MisalignedElement`), the BPM observer's wrapper awareness, and the
-suite's wrapper lists. The documentation guide's "derive, don't hand-copy"
+(which rebinds the nominal `base` once and sets `inner` to it; audit U2-1)
+and the suite's wrapper lists. Not the BPM observer: no observer walks
+runtime wrappers (`prepare_observer!` ignores the runtime line; the BPM reads
+a centroid and draws its reading noise at particle slot = the reading's
+occurrence within the turn, components 1-2; audit U2-6, U7-2). The
+documentation guide's "derive, don't hand-copy"
 invariant applies: the test that enumerates wrappers should derive the set
 from the subtypes that forward `track_particle`, with a tripwire, rather than
 list three names.
@@ -239,8 +250,13 @@ drop to the realised element:
 CUDA.cudaconvert(w::TurnModulated) = CUDA.cudaconvert(w.current)
 ```
 
-`Phase6DRep` sets the precedent for a conversion at launch
-(`src/track/phase6d_track.jl`). `Adapt` converts tuples element-wise, so the
+`Phase6DRep` converts at launch through `Adapt.@adapt_structure`
+(`src/beam/Beam.jl`), and that is the route a kernel argument takes: `@cuda`
+converts its arguments with `cudaconvert`, which is `adapt(KernelAdaptor(),
+x)` and recurses through tuples via `Adapt.adapt_structure`, so the
+conversion is an `Adapt.adapt_structure` method, never a `CUDA.cudaconvert`
+one (the `CUDA.cudaconvert(::Phase6DRep)` method once beside it was dead, 0
+calls on six launch paths, and was deleted at stage 4; audit U3-1). The
 fused tuple containing a wrapper converts to a tuple containing the realised
 cavity. **To verify at stage 1:** that the `@cuda` launch applies the
 conversion through the nested tuple and that the kernel's element type is the
@@ -282,7 +298,18 @@ BPM sharing an `rng_id` drew identical normals (review finding S1,
 2026-10-12). The keyword constructors follow the radiation convention,
 `rng_id = 0` assigns a fresh stream and an explicit id is claimed, so two
 `WhiteNoise(1e-2)` without ids, which at first shared stream 0 and warned,
-now draw independently as `LumpedRadSpec` and `Beam` do.
+now draw independently as `LumpedRadSpec` and `Beam` do. The band's one
+assumption, `2N <= _PINK_COMPONENT_STRIDE`, lived in a comment and a
+docstring until stage 4 (audit U7-1): a container with more than 64 slots
+let a pink generator's component coincide with another rule's on the same
+`rng_id` (N = 33: 64 of 64 draws identical, corr +0.2873; N = 32: 0 of 64,
+corr +0.0043). The wrapper constructor `TurnModulated(base, rule)` now
+refuses a `PinkNoise` on a container with more than 64 slots and validates
+the slot labels (non-empty, no '/', unique), so a crab cavity with more than
+32 harmonics may carry white and table rules only. The collision-free layout
+(ii), pink generator `k` in particle slot `k` and component
+`_RULE_COMPONENT_BASE + slot`, is deferred to the owner: it re-keys every
+pink sequence, the stride constant and the keying pin.
 
 ### 4.4 Task layer
 
@@ -588,12 +615,19 @@ thread, 2026-10-12:
 | 40 elements | 1760 bytes | 20 ns | 0 bytes | 3.4 ms |
 | 200 elements | 8800 bytes | 353 ns | 0 bytes | not measured |
 | 40 elements, `map` instead of `ntuple(Val)` | 1760 bytes | 9.6 µs | 79 kB | |
+| 40 elements, 20 wrapped, `track!` 2000 particles, 4 threads (2026-10-13, audit U1-4) | 4480 bytes wrapped against 3520 bare (+27 %) | 0 B, 2.0 µs in a function (20 Philox draws) | +960 B per worker per turn (20592 against 16752 B) | timing not reproducible on the shared host (the sign of the delta flipped between two runs); a quiet-machine benchmark is owed |
 
 The rebuild is a stack copy of isbits structs, five orders of magnitude below
 one turn of tracking, and the output tuple type equalled the input type in
 every case (asserted). The one real cost is compile time: one specialised
 rebuild method per distinct line type, of the same order as the fused kernel
-already pays for that line.
+already pays for that line. The audit's row measures the wrapper itself
+rather than the rebuild: a `TurnModulated` carries `base` and `inner`, so
+the fused tuple grows by a cavity per wrapper and each worker copies it once
+per turn; coordinates through the wrapped line and through a hand-unwrapped
+one are bitwise equal, and the wall-time difference was inside the shared
+host's noise, so no timing claim is recorded (a `docs/todo.md` row owes the
+quiet-machine number).
 
 ## 8. Verification plan
 
@@ -647,9 +681,12 @@ Tests the implementation owes, each shown to fail without its feature:
    the metadata band statement.
 3. **Second element.** The RF cavity's phase and voltage by the same wrap, to
    prove the wrapper is element-agnostic before any generalisation of the
-   rule set.
+   rule set. (Landed 2026-10-13: scalar `phase_noise`/`strength_noise` on
+   `ThinRFCavitySpec`, the slot protocol; see the record.)
 4. **Neighbour audit** of the fused path, the wrapper walks and the plan
-   cache, as `AGENTS.md` requires at the end of a feature campaign.
+   cache, as `AGENTS.md` requires at the end of a feature campaign. (Landed
+   2026-10-13: seven reading units, two verification passes, 39 leads fixed,
+   ledgered or documented; see the record's section 6.)
 
 ## 10. Open questions
 

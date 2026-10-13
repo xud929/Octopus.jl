@@ -198,7 +198,9 @@ Element parameters that change from turn to turn inside one tracking run
 the host by the `TurnModulated` compile-time wrap and never read by a kernel;
 design note in `docs/design/turn_modulation.md`. The crab cavity's
 `phase_noise` and `strength_noise` parameters are documented by
-`element_help(:thin_crab_cavity)`. Use Julia help:
+`element_help(:thin_crab_cavity)`; the thin RF cavity declares the same two
+parameters as scalars, one rule or `nothing` each
+(`element_help(:thin_rf_cavity)`). Use Julia help:
 
 ```julia
 ?TurnModulated
@@ -216,6 +218,16 @@ every turn; the rules are realised only by a task's `execute!`, which calls
 `update_line` before each turn (design decision D5). CUDA.jl also exports an
 `update`, so a session that does `using Octopus, CUDA` writes
 `Octopus.update`.
+
+Bounds the wrapper enforces at `TurnModulated(base, rule)`: a `PinkNoise` is
+refused on a rule container with more than 64 slots (the pink component
+stride), so a crab cavity with more than 32 harmonics may carry white and
+table rules only; slot labels must be non-empty, free of '/' and unique. An
+explicit `rng_id` must be a non-negative integer (`0`, the default, assigns
+a fresh stream). The two kinds spell "inactive" differently because their
+parameters have different shapes: the crab cavity takes `()` or a tuple of
+`nothing` and refuses a bare `nothing`, the RF cavity takes `nothing` and
+refuses a tuple; `element_help` of each kind says so.
 
 ## Beam And Runtime Helpers
 

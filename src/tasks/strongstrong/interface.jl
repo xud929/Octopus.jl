@@ -2460,6 +2460,18 @@ function execute!(task::StrongStrongTask, beam1::Beam, beam2::Beam;
     # integer collective each in a fixed order, and scoped by representation:
     # the two beams may differ in size, so a scope holding one shard would
     # hand the second beam the first beam's offset (step 4b).
+    #
+    # The preflight refusals of `_execute_strong_strong_task!` (the block
+    # validation, the divided-run features, the turn-table windows) run inside
+    # the scope AFTER its two receipts (`:strong_strong_diagnostics`,
+    # `:strong_strong_output`) and after the two shard collectives: receipts
+    # record intent, so a refused call leaves those two in the audit for a run
+    # that never ran -- the pre-existing position of every strong-strong
+    # preflight, unlike the TrackingTask twin, which refuses before activation
+    # and records nothing. Hoisting the two compiles and the window checks
+    # above the activation is an owner item (2026-10-13 neighbour audit,
+    # U4-3; docs/todo.md). Not a hang risk: every rank reads the same window
+    # and throws alike.
     result = _with_execution_policy(policy) do
         _with_beam_shards(beam1.rep, beam2.rep) do
             _execute_strong_strong_task!(
@@ -2543,6 +2555,27 @@ function _reject_unsharded_strong_strong_features(blocks1, blocks2)
     return nothing
 end
 
+"""
+    _check_strong_strong_turn_window(elems::Tuple, beam::Int, first_turn::Int64, turns::Int)
+
+The `_check_turn_window` walk over one beam's physics line, its refusal
+re-thrown with the beam in front (`"in beam 2's line: the turn table ..."`):
+the walk's `where` names the element and the slot
+(`"ThinCrabCavity strength_noise[1]"`), and the same cavity kind may sit in
+both lines, so without the prefix a strong-strong refusal did not say which
+line to fix (2026-10-13 neighbour audit, U4-2). Only the `ArgumentError` the
+window check throws is prefixed; anything else propagates unchanged.
+"""
+function _check_strong_strong_turn_window(elems::Tuple, beam::Int, first_turn::Int64, turns::Int)
+    try
+        _check_turn_window(elems, first_turn, turns)
+    catch err
+        err isa ArgumentError || rethrow()
+        throw(ArgumentError("in beam $(beam)'s line: " * err.msg))
+    end
+    return nothing
+end
+
 function _execute_strong_strong_task!(
         task, beam1, beam2, turns::Int, first_turn::Int64, policy)
     _warn_inactive_diagnostics(task.diagnostics, backend_type(policy))
@@ -2571,9 +2604,10 @@ function _execute_strong_strong_task!(
     _validate_strong_strong_blocks(blocks1, blocks2)
     _reject_unsharded_strong_strong_features(blocks1, blocks2)
     # A turn table that cannot serve this window is refused HERE, before any
-    # strong-strong turn runs (src/elements/turn_modulated.jl).
-    _check_turn_window(_strong_strong_physics_line(blocks1), first_turn, turns)
-    _check_turn_window(_strong_strong_physics_line(blocks2), first_turn, turns)
+    # strong-strong turn runs (src/elements/turn_modulated.jl), the message
+    # naming the beam whose line holds the table (U4-2).
+    _check_strong_strong_turn_window(_strong_strong_physics_line(blocks1), 1, first_turn, turns)
+    _check_strong_strong_turn_window(_strong_strong_physics_line(blocks2), 2, first_turn, turns)
     # The turn-modulation receipt (docs/design/turn_modulation.md 5.6), as at
     # the TrackingTask site: both lines are walked, beam 1's entries first,
     # each tagged with its beam; recorded only when a line has a modulated

@@ -232,7 +232,7 @@ constructor names remain the user-facing way to build those specs.
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
 - `ElementSpec{:thin_rf_cavity}` via `ThinRFCavitySpec`
-  - Physics keywords: `:harmonic`, `:thick_element`
+  - Physics keywords: `:harmonic`, `:thick_element`, `:turn_modulation`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`
   - Supported analyses: `TwissDispersionAnalysis`
