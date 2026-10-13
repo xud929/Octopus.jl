@@ -331,6 +331,70 @@ fixed physical source model.
 julia --project=. validation/tracking_task_turn_update.jl
 ```
 
+## Turn Modulation Spectra
+
+`turn_modulation_spectra.jl` is test 9 of `docs/design/turn_modulation.md`
+(section 8): the shipped stochastic turn-modulation rules, `WhiteNoise` and
+the Voss-McCartney `PinkNoise`, have the spectra the note's section 5.5
+measured, and the pink rule is stateless. Both sequences go through the
+public path a run tracks -- a `ThinCrabCavitySpec{1}` carrying the rule as
+`phase_noise`, compiled with `compile_runtime` and realised once per absolute
+turn with `realize`, as `update` does inside `execute!` -- so the sequence is
+exactly the one a tracking run would apply. The power per octave band of the
+periodogram (bins `2^i .. 2^(i+1) - 1` of the mean-subtracted sequence),
+normalised to the top octave, is printed as the note's table; the two lowest
+bands (2 and 4 bins) are printed but excluded from every slope, as the note
+says.
+
+Verdicts, all required for PASS: the least-squares slope of `log2(power)` per
+octave over the trusted bands is `+1 ± 0.15` for white and `0 ± 0.2` for
+pink (the note's test 9 tolerances; the construction's ripple, about a factor
+1.3 across twelve octaves in the note's table and `0.738` to `1.241` of the
+top octave for the shipped rule at 65536 turns, is band-to-band scatter the
+fit averages); the pink sequence's rms about zero for `sigma = 1` lies in
+`[0.8, 1.25]` (the script's own bound: the K octave generators are
+independent unit normals, so the expectation is exactly 1 at any length, but
+the slow generators take one or two values in a run and move the sample rms
+by several percent either way; measured `0.9054` at 65536 turns and `0.8799`
+at 16384, both deterministic at seed 42); and the pink offset on one turn
+computed alone from a fresh compile equals the sequence's entry exactly. The
+note's own slope definition (the two-endpoint change over all bands; `+1.09`
+white and `-0.11` pink in the note's table, `+0.991` and `+0.049` for the
+shipped rules at 65536 turns) is printed for comparison and not judged: its
+endpoints are the untrusted bands. Measured 2026-10-12 under the rules'
+counter-RNG component band (`_RULE_COMPONENT_BASE`): `white_slope=0.9839
+pink_slope=0.0102 white_rms=0.9966 pink_rms=0.9054` at 65536 turns and
+`white_slope=0.9573 pink_slope=-0.0389 white_rms=0.9908 pink_rms=0.8799` at
+16384, both `stateless=true verdict=PASS`.
+
+Run with the note's size (65536 turns, seed 42):
+
+```bash
+julia --project=. validation/turn_modulation_spectra.jl
+```
+
+Run the suite's reduced size:
+
+```bash
+OCTOPUS_SPECTRA_TURNS=16384 OCTOPUS_SPECTRA_SEED=42 \
+julia --project=. validation/turn_modulation_spectra.jl
+```
+
+`OCTOPUS_SPECTRA_TURNS` must be a power of two of at least 1024 (whole octave
+bands). The last line is machine-readable,
+
+```
+TM-SPECTRA white_slope=<v> pink_slope=<v> white_rms=<v> pink_rms=<v> stateless=<bool> turns=<N> seed=<s> verdict=PASS|FAIL
+```
+
+and the exit status is 1 on any failed verdict. When the git-ignored
+`result/` directory exists under the project root, the band table is also
+written to `result/turn_modulation_spectra.tsv` (never evidence; the
+committed record is `docs/history/turn_modulation_stage1_2026_10_12.md`,
+section 8). The suite runs a reduced-size twin, 16384 turns with the same
+rules, seed, estimator and tolerances, in the testset "Turn modulation: white
+and pink spectra".
+
 ## Weak–Strong Six-Dimensional Source
 
 The coupled-covariance audit, limiting-case coverage, CPU/CUDA parity, and

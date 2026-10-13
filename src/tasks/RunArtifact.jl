@@ -1,4 +1,4 @@
-export RunArtifact, TaskOutput
+export RunArtifact, TaskOutput, turn_modulation_provenance
 
 # ---------------------------------------------------------------------------
 # The run artifact: one HDF5 output file per task, one group per producer.
@@ -40,6 +40,19 @@ The artifact carries every product of the run:
   had reached at its most recent flush: live progress and rate from one
   `h5ls` while running, and the run-level how-far-did-it-get answer after a
   crash (the per-group cursors answer the same question per dataset).
+- `/turn_modulation/<slot>`: the turn-by-turn modulation provenance of the
+  `execute!` whose `/execution` ledger row is `<slot>`, written only when
+  its line had a modulated element (docs/design/turn_modulation.md, D7):
+  `element_count` on the slot group; one subgroup per modulated element in
+  line order with `element`, `beam` (1 for a `TrackingTask` line, 1 or 2 for
+  the strong-strong task's two lines) and `slot_count`; one subgroup per
+  ACTIVE slot below it, named by the slot label, with `index`, `kind`
+  (`white`, `pink` or `table`), `rng_id`, `digest`, `name`, `length`.
+  Attributes only; nothing here is ever rewritten or deleted, so a
+  continued file keeps every generation of rules it ran. Read it with
+  [`turn_modulation_provenance`](@ref) or `read(out, :turn_modulation)`: an
+  empty vector means no `execute!` recorded in the file had a modulated
+  element.
 
 Read it back through one handle: [`TaskOutput`](@ref).
 
@@ -142,11 +155,15 @@ end
 Open (or create) the artifact for one `execute!`: validate or build the
 luminosity groups for `labels`, apply crash-truncation (rows beyond each
 group's cursor are a torn tail) and the replay rule (rows at or beyond
-`first_turn` are dropped), append this execution's ledger row, register the
-path by artifact identity, and hold the file open.
+`first_turn` are dropped), append this execution's ledger row, record the
+line's turn-modulation provenance `turn_modulation` (the receipt entries of
+`_turn_modulation_entries`) under `/turn_modulation/<slot>` for that row --
+nothing when empty -- register the path by artifact identity, and hold the
+file open.
 """
 function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
-                               first_turn::Int, planned_turns::Int)
+                               first_turn::Int, planned_turns::Int;
+                               turn_modulation::AbstractVector=Any[])
     art.file === nothing || error("RunArtifact at $(art.path) is already open; " *
                                   "one artifact serves one execute! at a time")
     # One run, one output file, written by rank 0. Every rank still runs the
@@ -215,6 +232,8 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
             d[n + 1] = val
         end
         art.execution_slot = n + 1
+        # Keyed by the ledger row just appended, so written after it.
+        _ra_write_turn_modulation!(file, art.path, art.execution_slot, turn_modulation)
         art.start_time_ns = time_ns()
         art.current_turn = Int64(first_turn) - 1
         empty!(art.probe_names)
@@ -226,6 +245,57 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
     art.file = file
     empty!(art.pending_turns)
     empty!(art.pending_values)
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+# /turn_modulation/<slot>: the turn-by-turn modulation provenance of ONE
+# execute!, keyed by its /execution ledger row (docs/design/turn_modulation.md,
+# D7: the table rule owns its provenance in the run artifact). Attributes
+# only, no turn axis: `element_count` on the slot group; one subgroup per
+# modulated element in line order (`/turn_modulation/<slot>/<k>`, attrs
+# `element`, `beam`, `slot_count`); one subgroup per ACTIVE slot below it named
+# by the slot label (`.../<k>/phase_noise[1]`, attrs `index`, `kind`, `rng_id`,
+# `digest`, `name`, `length`; HDF5 link names admit the brackets). Written at
+# prepare from the receipt the task records (`_turn_modulation_entries`), so
+# the artifact and the `:turn_modulation` receipt derive from the one walk;
+# never rewritten or deleted, so a continued file keeps every generation.
+# ---------------------------------------------------------------------------
+
+"""
+Write `/turn_modulation/<slot>` for the ledger row `slot` just appended:
+nothing when `entries` is empty (an unmodulated `execute!` leaves no group for
+its slot), otherwise the element groups and their slot groups. Nothing here is
+ever rewritten or deleted -- every execution that had a modulated element
+keeps its own record, so a continued file holds every generation of rules it
+ran; a slot group that already exists can only mean the ledger and the
+provenance disagree, and is refused.
+"""
+function _ra_write_turn_modulation!(file, path::String, slot::Int, entries)
+    isempty(entries) && return nothing
+    root = haskey(file, "turn_modulation") ? file["turn_modulation"] :
+           HDF5.create_group(file, "turn_modulation")
+    haskey(root, string(slot)) && throw(ArgumentError(
+        "RunArtifact at $(path): /turn_modulation/$(slot) already exists although " *
+        "the execution ledger row $(slot) was only now appended; the file's ledger " *
+        "and provenance disagree. Use a new path."))
+    g = HDF5.create_group(root, string(slot))
+    _ra_set_attr!(g, "element_count", Int64(length(entries)))
+    for (k, entry) in enumerate(entries)
+        eg = HDF5.create_group(g, string(k))
+        _ra_set_attr!(eg, "element", String(entry.element))
+        _ra_set_attr!(eg, "beam", Int64(entry.beam))
+        _ra_set_attr!(eg, "slot_count", Int64(length(entry.slots)))
+        for (i, s) in enumerate(entry.slots)
+            sg = HDF5.create_group(eg, String(s.slot))
+            _ra_set_attr!(sg, "index", Int64(i))
+            _ra_set_attr!(sg, "kind", String(s.kind))
+            _ra_set_attr!(sg, "rng_id", UInt64(s.rng_id))
+            _ra_set_attr!(sg, "digest", UInt64(s.digest))
+            _ra_set_attr!(sg, "name", String(s.name))
+            _ra_set_attr!(sg, "length", Int64(s.length))
+        end
+    end
     return nothing
 end
 
@@ -546,7 +616,8 @@ function _ra_contents(path::AbstractString)
 end
 
 const _RA_NAMED_KINDS = (:luminosity, :moments, :snapshot, :bpm)
-const _RA_KINDS = (:luminosity, :moments, :snapshot, :bpm, :losses, :execution)
+const _RA_KINDS = (:luminosity, :moments, :snapshot, :bpm, :losses, :execution,
+                   :turn_modulation)
 
 function _ra_require_group(f, out::TaskOutput, kind::Symbol)
     haskey(f, String(kind)) || throw(ArgumentError(
@@ -626,14 +697,103 @@ _ra_execution(f) = begin
      current_turn=read(ex["current_turn"]), elapsed=read(ex["elapsed"]))
 end
 
+"""A count attribute read WITHOUT a default: a group lacking it is torn."""
+function _ra_tm_count(g, name::String, where::String)
+    a = HDF5.attributes(g)
+    haskey(a, name) || error("$(where) is torn: the $(name) attribute is missing")
+    return Int(read(a[name]))
+end
+
+"""
+Read a present `/turn_modulation` group: one entry per execution slot that
+recorded modulation, in ledger order. Every count is checked against the
+subgroups present; a mismatch or a missing count is a TORN group, refused
+with a message saying so rather than read short.
+"""
+function _ra_turn_modulation(f)
+    root = f["turn_modulation"]
+    slots = sort!([parse(Int, String(k)) for k in keys(root) if root[k] isa HDF5.Group])
+    out = NamedTuple[]
+    for slot in slots
+        where = "/turn_modulation/$(slot)"
+        g = root[string(slot)]
+        present = count(k -> g[k] isa HDF5.Group, keys(g))
+        n = _ra_tm_count(g, "element_count", where)
+        present == n || error(
+            "$(where) is torn: element_count = $(n) but $(present) element group(s) present")
+        elements = NamedTuple[]
+        for k in 1:n
+            haskey(g, string(k)) || error(
+                "$(where) is torn: element group $(k) of $(n) is missing")
+            eg = g[string(k)]
+            ea = HDF5.attributes(eg)
+            labels = [String(l) for l in keys(eg) if eg[l] isa HDF5.Group]
+            nslots = _ra_tm_count(eg, "slot_count", "$(where)/$(k)")
+            length(labels) == nslots || error(
+                "$(where)/$(k) is torn: slot_count = $(nslots) but $(length(labels)) " *
+                "slot group(s) present")
+            entries = Tuple{Int,NamedTuple}[]
+            for label in labels
+                a = HDF5.attributes(eg[label])
+                push!(entries, (Int(read(a["index"])),
+                                (slot=label, kind=Symbol(read(a["kind"])),
+                                 rng_id=UInt64(read(a["rng_id"])),
+                                 digest=UInt64(read(a["digest"])),
+                                 name=String(read(a["name"])), length=Int(read(a["length"])))))
+            end
+            sort!(entries; by=first)
+            push!(elements, (element=String(read(ea["element"])), beam=Int(read(ea["beam"])),
+                             slots=NamedTuple[s for (_, s) in entries]))
+        end
+        push!(out, (execution=slot, elements=elements))
+    end
+    return out
+end
+
+_ra_turn_modulation_or_empty(f) =
+    haskey(f, "turn_modulation") ? _ra_turn_modulation(f) : NamedTuple[]
+
+"""
+    turn_modulation_provenance(path::AbstractString) -> Vector{NamedTuple}
+
+The turn-by-turn modulation provenance a run artifact recorded -- its
+`/turn_modulation/<slot>` groups (docs/design/turn_modulation.md, D7: the
+table rule owns its provenance in the run artifact): one entry per `execute!`
+whose line had a modulated element, in `/execution` ledger order,
+
+    (execution = 1,                             # the /execution ledger row
+     elements  = [(element = "ThinCrabCavity",  # one per modulated element, line order
+                   beam    = 1,                 # 1; a strong-strong task records 1 then 2
+                   slots   = [(slot = "phase_noise[1]", kind = :white,
+                               rng_id = 0x0000000000000007, digest = 0x0000000000000000,
+                               name = "", length = 0),
+                              (slot = "strength_noise[1]", kind = :table,
+                               rng_id = 0x0000000000000000, digest = <FNV-1a 64 of the
+                               table's bytes>, name = "amp", length = 10)])])
+
+so a table's identity (`digest`, `name`, `length`) and a stream rule's
+`rng_id` travel with the file (`kind` is `:white`, `:pink` or `:table`; the
+fields a kind does not use hold zeros and `""`). Nothing in the group is ever
+rewritten or deleted: a continued (`append=true`) file keeps one entry per
+modulated execution, so every generation of rules it ran is on record. An
+empty vector means no `execute!` recorded in this file had a modulated
+element -- an unmodulated run, or a file from before the group existed;
+neither is an error (the `/losses` reader's posture for its later-added
+attributes). A group whose counts disagree with the subgroups present is
+torn and refused with a message saying so. `read(out, :turn_modulation)` on a
+[`TaskOutput`](@ref) returns the same vector.
+"""
+turn_modulation_provenance(path::AbstractString) =
+    _ra_open(_ra_turn_modulation_or_empty, path)
+
 """
     read(out::TaskOutput, kind::Symbol; name=nothing, column=nothing, turn=nothing,
          orders=nothing, extra=(), exclude=())
 
 One product of the artifact. `kind` is one of `:luminosity`, `:moments`,
-`:snapshot`, `:bpm`, `:losses`, `:execution` -- or `:all` for every product
-present, nested by kind (named kinds as `Dict{String,NamedTuple}`; reads the
-WHOLE file, snapshots included).
+`:snapshot`, `:bpm`, `:losses`, `:execution`, `:turn_modulation` -- or `:all`
+for every product present, nested by kind (named kinds as
+`Dict{String,NamedTuple}`; reads the WHOLE file, snapshots included).
 
 For the named kinds, no `name` returns every group as a
 `Dict{String,NamedTuple}`; `name` selects one group, returned as a
@@ -659,7 +819,10 @@ beside the columns (`nothing` for task-hook probes and pre-attribute files).
 the per-aperture names/counts/arc positions, and the reconciliation summary
 when the run recorded one (`nothing` otherwise). `:execution` returns the
 ledger -- one entry per `execute!`, `current_turn`/`elapsed` updated at every
-flush.
+flush. `:turn_modulation` returns the turn-by-turn modulation provenance, one
+entry per `execute!` that had a modulated element, the vector
+[`turn_modulation_provenance`](@ref) documents (empty when no recorded
+`execute!` had one or the file predates the group).
 """
 function Base.read(out::TaskOutput, kind::Symbol;
                    name::Union{Nothing,AbstractString}=nothing,
@@ -677,7 +840,7 @@ function Base.read(out::TaskOutput, kind::Symbol;
         column === nothing || throw(ArgumentError(
             "pass either column or an orders/extra/exclude selection, not both"))
     end
-    if kind in (:all, :losses, :execution)
+    if kind in (:all, :losses, :execution, :turn_modulation)
         (name === nothing && column === nothing && turn === nothing) ||
             throw(ArgumentError("$(kind) is not a named group: name/column/turn do not apply"))
     end
@@ -693,6 +856,7 @@ function Base.read(out::TaskOutput, kind::Symbol;
     _ra_open(out.path) do f
         kind === :losses && return _ra_losses(f)
         kind === :execution && return _ra_execution(f)
+        kind === :turn_modulation && return _ra_turn_modulation_or_empty(f)
         g = _ra_require_group(f, out, kind)
         one_group = kind === :luminosity ? _ra_lum_series : _ra_probe_columns
         if name === nothing
@@ -729,7 +893,8 @@ end
 The artifact's table of contents, RECURSIVE and metadata-only (shape and
 attribute reads; no data): each named kind maps to `Dict(name =>
 (columns, rows[, s]))` -- `s` is the probe's arc position where stamped --
-and the single products carry their own `(columns, rows, ...)`. One call
+and the single products carry their own `(columns, rows, ...)`;
+`turn_modulation`, attributes only, is its provenance vector whole. One call
 tells you how to write every subsequent `read(out, kind; ...)`;
 `read(out, :all)` returns the same nesting with the data in it.
 """
@@ -748,6 +913,9 @@ function Base.read(out::TaskOutput)
                               String.(read(obj["column_names"])) : String[],
                           rows=haskey(obj, "data") ? size(obj["data"], 1) : 0,
                           apertures=String.(read(obj["aperture_names"])))
+            elseif k == "turn_modulation"
+                # Attributes only, so the provenance IS the metadata.
+                toc[k] = _ra_turn_modulation(f)
             elseif obj isa HDF5.Group
                 groups = Dict{String,NamedTuple}()
                 for name in keys(obj)

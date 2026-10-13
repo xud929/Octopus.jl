@@ -177,6 +177,18 @@ block count remains available for reproducible tuning. PIC-family thread
 overrides live separately in `CUDAPICLaunchConfig` on `PICPoissonSolver`.
 `GPUExecutionPolicy` remains only as a deprecated CUDA compatibility adapter.
 
+The fused element tuple is a kernel argument. `@cuda` converts its arguments
+with `cudaconvert`, which is `adapt(KernelAdaptor(), x)` and recurses through
+a tuple element-wise via `Adapt.adapt_structure`;
+`src/track/phase6d_track.jl` defines that method, whenever Adapt loads (a
+CPU-only machine has it too), for `TurnModulated` (dropped to its realised
+element) and for `CompositeLine`, `MisalignedElement` and `RefTilted`
+(descending into what they hold, frame data carried as is), because Adapt's
+default is the identity for a struct it does not know, and a wrapper nested
+inside a container without such a method reaches the launch unconverted. A
+`CUDA.cudaconvert` method on the wrapper alone is not reached inside the
+tuple.
+
 For example, keep fused tracking at 256 threads with automatic blocks while
 testing only PIC deposition at 128 threads:
 
@@ -210,6 +222,26 @@ absolute turn across successful `execute!` calls, so chunked execution is
 equivalent to one continuous call for schedules, turn-dependent elements, and
 counter-based stochastic tracking. Pass `start_turn=N` to `execute!` only when
 an explicit reposition is required, such as restoring a checkpoint.
+
+Turn-dependent elements are the `TurnModulated` wrap
+(`src/elements/turn_modulated.jl`; design note `design/turn_modulation.md`).
+The per-turn hook `update(elem, ctx)` is pure and type-preserving; each plan
+segment holds its element or tuple in a `Ref`, the fast loop rebinds a local,
+and the turn loop rebuilds the tuple every turn with `ntuple(..., Val(N))`
+and stores it back, so no runtime object is mutated and, for the shipped
+stateless rules (`WhiteNoise`, `PinkNoise`, `TurnTable`), the realised
+element is a function of the absolute turn alone. The rule never reaches the
+device: at launch `Adapt.adapt_structure` drops the wrapper to its realised
+element, and `CompositeLine`, `MisalignedElement` and `RefTilted` descend
+into what they hold, so a wrapper carrying a host table (not isbits) still
+launches and the kernel sees only the realised element. A `TurnTable` that
+cannot serve the window is refused by `execute!` before any turn runs and
+before the stored turn advances; the strong-strong task checks the same
+before its loop. Each `execute!` whose line holds a modulated element records
+a `:turn_modulation` receipt and, with an artifact, the group
+`/turn_modulation/<slot>` keyed by its `/execution` ledger row (both beams of
+a strong-strong task), never rewritten; `turn_modulation_provenance(path)`
+and `read(out, :turn_modulation)` read it back.
 
 Use `configuration_report` to inspect requested and resolved policy, solver,
 task, schedule, observer, and diagnostic settings. Reports distinguish

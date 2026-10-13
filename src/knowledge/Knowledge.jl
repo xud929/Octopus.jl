@@ -356,6 +356,9 @@ const ALLOWED_PHYSICS_KEYWORDS = Set{Symbol}([
     :placeholder,
     :collimation,
     :particle_loss,
+    # An element kind that declares turn-by-turn modulation rule parameters;
+    # see src/elements/turn_modulated.jl.
+    :turn_modulation,
     # A composite of other elements. One word rather than mislabelling a line
     # as something it is not; the vocabulary is controlled precisely so that
     # additions are deliberate.
@@ -1374,8 +1377,16 @@ function compile_runtime(spec::AbstractElementSpec, method)
     # relative to the rolled magnet. Both wrappers pass their argument through
     # untouched when the spec asks for nothing, so an ordinary element compiles
     # to exactly the runtime object it always did.
+    #
+    # Turn-by-turn modulation wraps INNERMOST (`docs/design/turn_modulation.md`,
+    # section 4.2): the modulated quantity is the element's OWN parameter (a
+    # crab cavity's RF phase or strength), while the other two wraps act on the
+    # frame around the element, so the realised element must sit inside the
+    # frame transforms. `_turn_modulation_wrap` (`src/elements/turn_modulated.jl`)
+    # is the identity for every kind that declares no rule parameters.
     return _ref_tilt_wrap(resolved,
-                          _misalignment_wrap(resolved, T(resolved, method_object)))
+                          _misalignment_wrap(resolved,
+                              _turn_modulation_wrap(resolved, T(resolved, method_object))))
 end
 
 # Generic fallback: specs without knob parameters pass through unchanged. The

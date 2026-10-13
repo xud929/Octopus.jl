@@ -202,7 +202,9 @@ function bpm_reading(bpm::BPMObserver, xbar::Real, ybar::Real, ctx::TrackingCont
         occurrence = _bpm_noise_occurrence!(bpm, ctx.turn)
         # The occurrence rides in the particle slot: a BPM reads the beam, not
         # a particle, so the slot is free -- and occurrence 0 reproduces the
-        # stream from before readings were counted.
+        # stream from before readings were counted. Components 1-2 here; the
+        # turn-modulation rules, also on particle slot 0, draw from the band at
+        # `_RULE_COMPONENT_BASE` (src/elements/turn_modulated.jl, key layout).
         n1 = octopus_normal(ctx.seed, ctx.rng_method, ctx.turn, bpm.rng_id, occurrence, 1, Float64)
         n2 = octopus_normal(ctx.seed, ctx.rng_method, ctx.turn, bpm.rng_id, occurrence, 2, Float64)
         rx += bpm.x_noise * n1

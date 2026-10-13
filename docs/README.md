@@ -83,8 +83,9 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   Bmad's bookkeeping-plus-rampers strategy. Prerequisite design for the F16
   velocity-slip fix and RF Scope B.
 - [`turn_modulation.md`](design/turn_modulation.md) — turn-by-turn lattice
-  modulation, crab cavity phase and amplitude noise first (decided 2026-10-12,
-  pre-implementation): why the variation is element-owned per-turn state
+  modulation, crab cavity phase and amplitude noise first (decided 2026-10-12;
+  stage 1 implemented 2026-10-12, record below): why the variation is
+  element-owned per-turn state
   realised on the host rather than a per-particle kernel draw or a knob
   retune; the per-turn hook made a pure, type-preserving `update` with the
   fused tuple rebuilt each turn (measured 20 ns per 40 elements, zero
@@ -379,6 +380,23 @@ and audits. The source code is the authority; these preserve the rationale.
 Forward-looking (not-yet-done) items live in `todo.md`, not here; the
 frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_ledger_archive.md).
 
+- [`turn_modulation_stage1_2026_10_12.md`](history/turn_modulation_stage1_2026_10_12.md) —
+  stages 1 and 2 of turn-by-turn lattice modulation
+  (`design/turn_modulation.md`): what landed per file (the pure
+  `update`/`update_line` hook replacing `update!`, the `TurnModulated` wrap,
+  the `WhiteNoise`, `PinkNoise` and `TurnTable` rules as
+  `phase_noise`/`strength_noise` on the crab cavity, the window check, the
+  `:turn_modulation` receipt and the artifact's per-execution
+  `/turn_modulation/<slot>` group, the spectra script); the three open
+  questions decided from the note's defaults; the deviations from the note
+  and their reasons (the rules' own counter-RNG component band after the
+  review, the derived rule catalogue); the measurements (the section 5.1
+  fixture under the shipped keying, zero allocation of the rebuild, the FNV-1a
+  vectors, the white and pink spectra, the GPU probe and its finding that a
+  device conversion defined on the wrapper is not reached through a container
+  without one, the same descent fixing a pre-existing CUDA defect, a recording
+  aperture inside a kept-whole `BeamLine` that never launched); the tests;
+  the owner items ledgered; the gate.
 - [`twiss_dispersion_degeneracy_theory_2026_09_11.md`](history/twiss_dispersion_degeneracy_theory_2026_09_11.md) —
   derivation record for theory Section 13 (mode degeneracy) and the analysis
   design note: provenance of the ported working notes and the convention key,

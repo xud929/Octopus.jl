@@ -2378,6 +2378,11 @@ function StrongStrongTask(line1, line2;
                           record_turn_times::Union{Nothing,Bool}=nothing)
     line_tuple1 = _element_tuple(line1)
     line_tuple2 = _element_tuple(line2)
+    # A cavity in beam 1 and one in beam 2 sharing an rng_id draw identical
+    # per-turn offsets, so the duplicate-stream check spans both lines. The
+    # radiation sibling warning is deliberately NOT added here: that gap is
+    # pre-existing and stays ledgered.
+    _warn_duplicate_turn_modulation_streams((line_tuple1..., line_tuple2...))
     seed !== nothing && @warn "StrongStrongTask seed keyword is deprecated; use set_global_rng!(seed=...) instead." seed
     solver = poisson_solver === nothing ? default_poisson_solver : poisson_solver
     # The retired keywords are kept in the signature only to throw a precise
@@ -2565,6 +2570,21 @@ function _execute_strong_strong_task!(
     blocks2 = _strong_strong_runtime_blocks(task, 2)
     _validate_strong_strong_blocks(blocks1, blocks2)
     _reject_unsharded_strong_strong_features(blocks1, blocks2)
+    # A turn table that cannot serve this window is refused HERE, before any
+    # strong-strong turn runs (src/elements/turn_modulated.jl).
+    _check_turn_window(_strong_strong_physics_line(blocks1), first_turn, turns)
+    _check_turn_window(_strong_strong_physics_line(blocks2), first_turn, turns)
+    # The turn-modulation receipt (docs/design/turn_modulation.md 5.6), as at
+    # the TrackingTask site: both lines are walked, beam 1's entries first,
+    # each tagged with its beam; recorded only when a line has a modulated
+    # element, so an unmodulated run's ledger is unchanged. The same entries
+    # go into the artifact's /turn_modulation group below.
+    prov = vcat(_turn_modulation_entries(_strong_strong_physics_line(blocks1), 1),
+                _turn_modulation_entries(_strong_strong_physics_line(blocks2), 2))
+    if !isempty(prov)
+        _record_execution!(:turn_modulation, backend_type(policy),
+                           (elements = prov, first_turn = first_turn, turns = turns))
+    end
     solvers = _preflight_solver_configurations!(task, blocks1, blocks2, policy)
     # Validate every output preparer BEFORE any of them commits, then commit.
     #
@@ -2586,7 +2606,8 @@ function _execute_strong_strong_task!(
     # during their prepare through the active-artifact scope.
     if task.artifact !== nothing
         labels = [String(b.collision.label) for b in blocks1 if b.collision !== nothing]
-        prepare_run_artifact!(task.artifact, labels, Int(first_turn), Int(turns))
+        prepare_run_artifact!(task.artifact, labels, Int(first_turn), Int(turns);
+                              turn_modulation=prov)
     end
     # Absolute window, matching Tasks.jl: `should_run` sees `first_turn + offset`.
     Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => task.artifact,

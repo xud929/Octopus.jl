@@ -89,6 +89,10 @@ One group per producer, position and provenance as attributes:
     /bpm/BPM_07              readings          attrs: name, s
     /losses                  the write_loss_record layout (names, counts,
                              aperture_s, per-loss rows, summary)
+    /turn_modulation/3/1/phase_noise[1]   attrs only: element_count on the
+                             execution slot (/3 = ledger row 3); element, beam,
+                             slot_count per element; index, kind, rng_id,
+                             digest, name, length per slot
 
 **Independent turn axes per dataset.** This is the payoff of declaring
 channels on producers: each collision writes its own `(turns, values)` pair,
@@ -101,6 +105,27 @@ is right. The weak-strong per-element luminosity columns split the same way.
 beam-line provenance path (`ARC1/CQS[3]` — machinery that exists), unique
 within a task, enforced loudly. This finally supplies the "observer identity
 scheme" the original BPM design note deferred (archived ledger, BPM row).
+
+**Turn-modulation provenance.** `/turn_modulation/<slot>` records what the
+line's turn-by-turn modulation rules were for the `execute!` whose
+`/execution` ledger row is `<slot>` (`docs/design/turn_modulation.md`, D7:
+the table rule is a pure consumer and owns its provenance in the run
+artifact). One subgroup per `execute!` that had a modulated element, with
+`element_count`; below it one subgroup per modulated element in line order
+with `element`, `beam` (1 for a `TrackingTask` line; a strong-strong
+artifact records both lines, beam 1's elements then beam 2's) and
+`slot_count`; below that one subgroup per ACTIVE slot named by the slot
+label with `index`, `kind` (`white`, `pink` or `table`), the stream rule's
+`rng_id`, the table's `digest` (FNV-1a 64 over its bytes), `name` and
+`length`, zeros and `""` where a field does not apply. Attributes only, no
+turn axis; written at prepare from the receipt the task records; nothing is
+ever deleted or rewritten, so a continued `append=true` file keeps every
+generation of rules it ran. An unmodulated `execute!` writes nothing for its
+slot: an empty `turn_modulation_provenance(path)` (or `read(out,
+:turn_modulation)`) means no `execute!` recorded in this file had a
+modulated element -- a file from before the group existed reads the same,
+and neither is an error. Counts that disagree with the subgroups present
+mark a torn group, refused by name.
 
 ### Buffer protocol — three shapes, one protocol, not one buffer type
 

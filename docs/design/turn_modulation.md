@@ -1,14 +1,20 @@
 # Turn-by-turn lattice modulation: the crab cavity noise case
 
-> **Status: design, pre-implementation (2026-10-12, owner discussion).** This
-> note records the architecture decision for element parameters that change
-> from one turn to the next inside a single tracking run: crab cavity RF phase
-> and amplitude noise first, ramps and modulations by the same mechanism. It
-> records which design was chosen among several that give the same physics,
-> why, and what was measured to decide. Nothing in this note exists in the
-> source yet; the `update!` hook it builds on does (`src/tasks/Tasks.jl`),
-> unused. Every code block below is a demonstration that ran on 2026-10-12
-> against the tree at commit `7711a8a`; the numbers quoted are from those runs.
+> **Status: stage 1 implemented 2026-10-12 (record:
+> `../history/turn_modulation_stage1_2026_10_12.md`); stage 2 implemented
+> 2026-10-12 (section 8 of the record); stages 3 and 4 open.** Designed
+> 2026-10-12 in owner discussion. This note records the architecture decision
+> for element parameters that change from one turn to the next inside a
+> single tracking run: crab cavity RF phase and amplitude noise first, ramps
+> and modulations by the same mechanism. It records which design was chosen
+> among several that give the same physics, why, and what was measured to
+> decide. Stage 1 landed the pure hook, the wrapper, the white and table rules
+> on the crab cavity and tests 1-8 of section 8; where the implementation
+> departs from the sketches below (the realised element is the field `inner`,
+> the rules are per-harmonic scalar offset generators), section 4.3 and the
+> record say so. Every code block below is a demonstration that ran on
+> 2026-10-12 against the tree at commit `7711a8a`, before the implementation;
+> the numbers quoted are from those runs.
 
 ## 1. The problem
 
@@ -23,9 +29,10 @@ engine: a parameter that takes a different value on every turn, a definite
 spectrum for that sequence of values, and reproducibility of the sequence
 across chunked, checkpointed, CPU and CUDA runs.
 
-Octopus's `TrackingTask` does not provide this today. Its runtime elements are
-immutable isbits structs compiled once from their specs, and nothing in the
-turn loop changes them. The question this note answers is where the per-turn
+Before stage 1: Octopus's `TrackingTask` does not provide this today. Its
+runtime elements are immutable isbits structs compiled once from their specs,
+and nothing in the turn loop changes them. The question this note answers is
+where the per-turn
 variation belongs, given the two-layer design: a polymorphic `ElementSpec`
 (physics meaning, metadata, knobs) that `compile_runtime` translates once into
 a concrete runtime object carrying exactly what a kernel reads (`AGENTS.md`,
@@ -43,6 +50,7 @@ once per runtime element at the start of every turn, in fused segments through
 element extends it. Its signature is a mutation (`!`, returns `nothing`), and
 only two runtime types are mutable, the two strong beams; for every other
 element, the crab cavity included, there is nothing the hook could mutate.
+(Removed at stage 1; `update`/`update_line` replace it.)
 
 **Scheduled actions.** A `ScheduledAction` runs before a turn, sees the turn
 and the particle representation, and may mutate the beam
@@ -76,7 +84,8 @@ The wrapper forwards `track_particle`, the context-aware call and
 element does -- magnet, cavity, or anything added later". The task layer knows
 the two wrappers by name in four walks (`_inner_method`,
 `_hidden_strong_beam_count`, `_descend_strong_beams!`, `_survey_rebind`) and
-the BPM observer recognises them.
+the BPM observer recognises them. (Stage 1: the walks are checked against a
+derived wrapper set; the observer holds no list; see 4.3.)
 
 **The RF-cavity lesson.** `src/elements/rf_cavity.jl` records that an earlier
 draft read `ctx.turn` inside the kernel to special-case the injection pass,
@@ -174,6 +183,9 @@ unit, meaning, inactive behaviour) so `element_help`,
 `validate_element_metadata()` and the registry snapshot see it. Rules are
 data, not programs, in the sense of `docs/knob_control.md`: a rule is a plain
 struct with a documented `realize` method, serialisable and reportable.
+(Stage 1: the rule types are documented objects, not registry objects, with
+no registry root; their metadata is the cavity's `ParamMeta` for `phase_noise`
+and `strength_noise`, and the snapshot lists only `TurnModulated`; see 4.3.)
 
 ### 4.2 Compile layer
 
@@ -234,6 +246,44 @@ cavity. **To verify at stage 1:** that the `@cuda` launch applies the
 conversion through the nested tuple and that the kernel's element type is the
 bare cavity; this is the one untested step of the design.
 
+**Verified at stage 1:** the launch applies the conversion through the tuple,
+but only where a method exists. `@cuda` converts its arguments with
+`cudaconvert`, which is `adapt(KernelAdaptor(), x)` and recurses through a
+tuple element-wise via `Adapt.adapt_structure`, so the conversion is written
+as `Adapt.adapt_structure(to, w::TurnModulated) = adapt(to, w.inner)`
+(`src/track/phase6d_track.jl`); a `CUDA.cudaconvert(::TurnModulated)` method
+as sketched above would not have been reached inside the tuple argument. A
+wrapper placed directly in the fused tuple converted and launched with a
+non-isbits table rule, and the GPU through the wrapper equalled the GPU and
+the CPU through the bare cavity bit for bit. A wrapper nested inside
+`CompositeLine`, `MisalignedElement` or `RefTilted` did not: Adapt's default
+`adapt_structure` is the identity for a struct it does not know, so the
+launch failed with a `KernelError`, "passing non-bitstype argument ... .rule
+is of type TurnTable". Fixed with `adapt_structure` methods on the three
+containers that descend into what they hold, after which a nested line is
+bit-identical GPU against CPU and an updated wrapper tracks its realised
+element on the GPU (the suite's "Turn modulation: CPU/CUDA identity and the
+device conversion" testset). Two names differ from the sketch above: the
+realised element is the field `inner`, not `current`, so that the structural
+unwrap in `_compiled_matches_runtime` (`hasfield(:inner)`) and the suite's
+derived wrapper set recognise the wrapper without a hand list; and the rules
+shipped are per-harmonic scalar offset generators (`WhiteNoise`, `PinkNoise`,
+`TurnTable`) held in the crab cavity's container `CrabCavityNoise`, not the
+cavity-level `CrabPhaseNoise` of section 5.1. The rule types are documented
+public objects, not registry objects: they have no registry root, their
+metadata is the cavity's `ParamMeta` for `phase_noise` and `strength_noise`,
+and the snapshot lists only `TurnModulated`. The rules' draws sit in their own
+band of the counter RNG key, particle slot 0 and component
+`_RULE_COMPONENT_BASE + slot` (a pink generator `k` at
+`+ _PINK_COMPONENT_STRIDE * (k + 1)`), the layout written down once above that
+constant in `src/elements/turn_modulated.jl`: the first draft keyed component
+`slot` itself, the cell a noisy BPM's occurrence 0 reads, so a cavity and a
+BPM sharing an `rng_id` drew identical normals (review finding S1,
+2026-10-12). The keyword constructors follow the radiation convention,
+`rng_id = 0` assigns a fresh stream and an explicit id is claimed, so two
+`WhiteNoise(1e-2)` without ids, which at first shared stream 0 and warned,
+now draw independently as `LumpedRadSpec` and `Beam` do.
+
 ### 4.4 Task layer
 
 The hook becomes pure:
@@ -252,7 +302,7 @@ end
 `Base.RefValue` so the turn loop can store the rebuilt tuple back; the
 isolated segment likewise. The existing `update!` is removed rather than kept
 beside the new verb (one hook, one meaning); the repo-wide grep the matrix
-names for a symbol rename is owed.
+names for a symbol rename is owed (done at stage 1).
 
 The `ntuple(..., Val(N))` form is load-bearing. `Base.map` over a tuple longer
 than 32 elements falls back to a generic path [5]; measured on a 40-element
@@ -287,7 +337,8 @@ particle-index slot fixed at 0, so every rule's sequence is a function of
 
 ### 5.1 White noise (stateless)
 
-One normal per harmonic per turn, keyed on the turn.
+One normal per harmonic per turn, keyed on the turn. Sketch; shipped as
+per-harmonic `WhiteNoise` entries in `CrabCavityNoise` (4.3).
 
 ```julia
 struct CrabPhaseNoise{N,T}
@@ -333,6 +384,10 @@ turn   realized phase [rad]   <px> noisy      <px> noiseless
    7   -3.4575e-03           +7.0704e-06     +0.0000e+00
    8   -1.0113e-02           +9.5198e-06     +0.0000e+00
 ```
+
+Demonstration keying, component = slot; the shipped rules draw in the band
+above `_RULE_COMPONENT_BASE` (section 4.3, stage 1), so the shipped values
+differ: see the record's section 3.
 
 Turn 1 matches the kick formula `Δpx = -strength · sin(phase) / k` with
 `k = 2π f / c = 8.26 m⁻¹`: `-2e-3 · sin(2.0085e-3) / 8.26 = -4.86e-7`. Each
@@ -417,6 +472,10 @@ octave band (f_rev units)        white      pink/VM    pink/IIR
 log2 power change per octave: white +1.09   pink/VM -0.11   pink/IIR +0.24
 expected:                           +1               0                0
 ```
+
+Demonstration keying, component = slot; the shipped rules draw in the band
+above `_RULE_COMPONENT_BASE` (section 4.3, stage 1), so the shipped values
+differ: see the record's section 8.
 
 White doubles per octave as it must. The stateless pink is flat to within a
 factor of about 1.3 across twelve octaves, the known ripple of the
@@ -540,7 +599,9 @@ already pays for that line.
 
 Routed by `AGENTS.md`: the element-spec row (new parameters, metadata, help),
 the public-configuration row (rules are public objects with inactive
-defaults), the contract row (a new effectiveness contract), the symbol-rename
+defaults), the contract row (a new effectiveness contract; superseded at
+stage 1: no new contract, the existing `ElementParameterEffectivenessContract`'s
+exemption table plus the kernel-boundary testset), the symbol-rename
 row (`update!` to `update`), the CUDA row, and the concurrency row (the
 rebuild is thread-count invariant by construction but runs inside the fused
 path). Full gate, CUDA active, four threads.
@@ -596,10 +657,19 @@ Tests the implementation owes, each shown to fail without its feature:
   expression (the nominal value from the knob, the offset from the rule). The
   layers make it consistent, since the knob resolves at compile and the rule at
   run time, but it needs a decided answer before stage 1 and a test either way.
+  Decided 2026-10-12 in the owner's absence from this note's default (owner
+  to confirm): allowed; the knob resolves at compile into the nominal cavity,
+  the rule adds its offset at run time, and the knob-composition test pins
+  both.
 - Whether `strength_noise` should perturb both planes with one realised value
   (this note's assumption) or carry a rule per plane.
+  Decided 2026-10-12 in the owner's absence from this note's default (owner
+  to confirm): one rule per harmonic, its realised offset added to both
+  planes.
 - Whether the table may be a `Float32` vector on a `Float64` line with an
   explicit opt-in, for memory on very long runs. Default is to refuse.
+  Decided 2026-10-12 in the owner's absence from this note's default (owner
+  to confirm): refused at compile, no promotion and no opt-in.
 
 ## 11. References
 

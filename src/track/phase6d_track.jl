@@ -5,7 +5,10 @@ Track all particles in `rep` through callable runtime `elems` for `turns`
 turns. With `policy=nothing`, the execution policy is inferred from particle
 storage. A supplied policy selects execution for existing storage and never
 migrates it. `context` supplies turn and counter-RNG state independently of the
-execution policy.
+execution policy. A `TurnModulated` element in a bare `track!` line tracks its
+NOMINAL element on every turn: the rules are realised only by a task's
+`execute!`, which calls `update_line` before each turn (design decision D5,
+`docs/design/turn_modulation.md`).
 """
 function track!(rep, elems, turns; policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
                 context::TrackingContext=TrackingContext())
@@ -180,6 +183,43 @@ function _track_line_elementwise!(rep, elem, backend, ctx::TrackingContext)
 		track!(rep, elem, 1, backend, ctx)
 	end
 	return nothing
+end
+
+if _HAS_ADAPT
+	@eval begin
+		# The device conversion of a turn-modulated element (design D8,
+		# docs/design/turn_modulation.md). The fused element tuple is a kernel
+		# ARGUMENT, and `@cuda` converts its arguments with `cudaconvert`, which
+		# is `adapt(KernelAdaptor(), x)` and recurses through a tuple
+		# element-wise via `adapt_structure`. THIS is therefore the method the
+		# launch reaches for a wrapper inside the tuple -- a
+		# `CUDA.cudaconvert(::TurnModulated)` method would not be, because the
+		# tuple recursion goes through Adapt, not through `cudaconvert`. The
+		# kernel sees the realised element and never the rule, and a wrapper
+		# carrying a host table (not isbits) still launches.
+		#
+		# The three containers need the same descent, or a wrapper INSIDE them
+		# is never reached: Adapt's default `adapt_structure` is the identity
+		# for a struct it does not know, so without these a misaligned noisy
+		# cavity -- `MisalignedElement(TurnModulated(...))`, the common case --
+		# or one in a kept-whole sub-line reached the launch unconverted and
+		# failed with "passing non-bitstype argument ... .rule is of type
+		# TurnTable" (measured on the RTX 4500 Ada, 2026-10-12; the record is
+		# docs/history/turn_modulation_stage1_2026_10_12.md section 3 and the
+		# regression test is the suite's testset "Turn modulation: CPU/CUDA
+		# identity and the device conversion"). Frame data is isbits and
+		# carried as is.
+		#
+		# Defined whenever Adapt loads (a hard dependency, imported in
+		# src/beam/Beam.jl) rather than inside the CUDA block below, so a
+		# CPU-only machine and the suite's wrapper-walk tripwire see exactly the
+		# methods the launch reaches.
+		Adapt.adapt_structure(to, w::TurnModulated) = Adapt.adapt(to, w.inner)
+		Adapt.adapt_structure(to, c::CompositeLine) = CompositeLine(Adapt.adapt(to, c.ops))
+		Adapt.adapt_structure(to, e::MisalignedElement) =
+			MisalignedElement(Adapt.adapt(to, e.inner), e.qin, e.oin, e.qout, e.oout)
+		Adapt.adapt_structure(to, e::RefTilted) = RefTilted(Adapt.adapt(to, e.inner), e.c, e.s)
+	end
 end
 
 if _HAS_CUDA

@@ -1,13 +1,5 @@
-export TrackingContext, TrackingTask, execute!, update!, luminosity, loss_record,
+export TrackingContext, TrackingTask, execute!, luminosity, loss_record,
        tracking_task_option_schema
-
-"""
-    update!(elem, ctx)
-
-Per-turn runtime-element update hook. Elements that need turn-dependent
-ramping, modulation, or cached state should extend this method.
-"""
-update!(elem, ctx::TrackingContext) = nothing
 
 """
     luminosity(elem, ctx, rep)
@@ -137,8 +129,10 @@ line = (
 ```
 
 Inactive scheduled line hooks do not break fusion. `TrackingTask` caches plans
-by active hook pattern and keeps runtime element objects by reference, so
-turn-dependent updates mutate the cached runtime objects in place.
+by active hook pattern; each plan segment holds its runtime element tuple in a
+`Ref`, and the turn loop rebuilds that tuple every turn through the pure
+`update_line` hook and stores it back, so turn-dependent elements
+(`TurnModulated`) are realised per turn without mutating any runtime object.
 
 The older `actions` and `observers` keywords remain accepted as compatibility
 aliases and are merged into `hooks`.
@@ -208,6 +202,7 @@ function TrackingTask(elements;
     element_tuple = _element_tuple(elements)
     seed !== nothing && @warn "TrackingTask seed keyword is deprecated; use set_global_rng!(seed=...) instead." seed
     _warn_duplicate_radiation_streams(element_tuple)
+    _warn_duplicate_turn_modulation_streams(element_tuple)
     _warn_hidden_apertures(element_tuple)
     action_tuple, observer_tuple = classify_task_hooks(hooks, actions, observers)
     art = artifact === nothing ? nothing :
@@ -384,6 +379,28 @@ _collect_radiation_ids!(ids, element::ElementSpec{:lumped_radiation}) =
 _collect_radiation_ids!(ids, element) = ids
 
 """
+    _warn_duplicate_turn_modulation_streams(elements::Tuple)
+
+The turn-modulation sibling of `_warn_duplicate_radiation_streams`: two ELEMENTS
+whose `WhiteNoise` rules share an `rng_id` draw identical per-turn offsets (the
+counter RNG keys on `(seed, turn, rng_id, slot)` and the slot numbering is per
+element), so their noise is fully correlated. Each element contributes each of
+its distinct ids ONCE (`_collect_turn_modulation_ids!`,
+src/elements/turn_modulated.jl), so one id shared by the entries of a single
+cavity -- independent by slot -- does not warn, while the same id on two
+cavities does.
+"""
+function _warn_duplicate_turn_modulation_streams(elements::Tuple)
+    ids = _collect_turn_modulation_ids!(UInt64[], elements)
+    length(ids) == length(unique(ids)) && return nothing
+    dup = [id for id in unique(ids) if count(==(id), ids) > 1]
+    @warn "multiple turn-modulation rules on different elements share an rng_id: " *
+          "their per-turn draws are identical (fully correlated noise). Give each " *
+          "element's rules their own rng_id." rng_ids = dup
+    return nothing
+end
+
+"""
 Aperture specs in the line, in lattice order. Their position **is** their
 identity: Octopus element specs carry no id of their own, so `element_id` is the
 index of the aperture in the compiled line, assigned here.
@@ -533,6 +550,19 @@ _collect_declared!(out, element::AbstractElementSpec, getter) =
 _collect_declared!(out, element, getter) = out
 
 """
+    _turn_modulation_entries(elems, beam::Int) -> Vector{Any}
+
+The `:turn_modulation` receipt entries of one compiled line: the
+`_turn_modulation_provenance!` walk's `(element, slots)` entries with the
+task's `beam` attached -- 1 for a `TrackingTask` line, 1 or 2 for the two
+lines of a `StrongStrongTask` -- so the receipt and the run artifact's
+`/turn_modulation` group say which line a modulated element sat in.
+"""
+_turn_modulation_entries(elems, beam::Int) =
+    Any[(element = e.element, beam = beam, slots = e.slots)
+        for e in _turn_modulation_provenance!(Any[], elems)]
+
+"""
     execute!(task::TrackingTask, rep; turns=1, start_turn=nothing)
     execute!(task::TrackingTask, beam::Beam; turns=1, start_turn=nothing)
 
@@ -567,6 +597,9 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
     end
     runtime_entries = _runtime_entries(task, rep)
     runtime_elems = _physics_line(runtime_entries)
+    # A turn table that cannot serve this window throws HERE, before any turn
+    # runs and before the stored turn advances (src/elements/turn_modulated.jl).
+    _check_turn_window(runtime_elems, first_turn, nturns)
     policy = _resolve_execution_policy(task.policy, rep)
     # Activated ONCE per call. Activation is what opens the communicator and
     # records the receipt naming it, so a second activation would record a
@@ -596,9 +629,19 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
                 fast_path=isempty(task.actions) && isempty(task.observers) &&
                           !_has_line_hooks(runtime_entries) && task.artifact === nothing,
             ))
+            # The turn-modulation receipt (docs/design/turn_modulation.md 5.6):
+            # one entry per modulated element with its active slots, plus the
+            # window realised. Recorded only when the line has a modulated
+            # element, so an unmodulated run's ledger is unchanged.
+            prov = _turn_modulation_entries(runtime_elems, 1)
+            if !isempty(prov)
+                _record_execution!(:turn_modulation, backend_type(policy),
+                                   (elements = prov, first_turn = first_turn, turns = nturns))
+            end
             _with_shard(rep, _mp_resolve_shard(length(rep))) do
                 _execute_tracking_task!(
-                    task, rep, runtime_entries, runtime_elems, nturns, first_turn, policy)
+                    task, rep, runtime_entries, runtime_elems, nturns, first_turn, policy;
+                    turn_modulation=prov)
             end
         end
     catch
@@ -841,7 +884,8 @@ function _reject_unsharded_tracking_features(task, runtime_entries)
 end
 
 function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
-                                 turns::Int, first_turn::Int64, policy)
+                                 turns::Int, first_turn::Int64, policy;
+                                 turn_modulation::AbstractVector=Any[])
     _reject_unsharded_tracking_features(task, runtime_entries)
     if isempty(task.actions) && isempty(task.observers) &&
        !_has_line_hooks(runtime_entries) && task.artifact === nothing
@@ -904,7 +948,10 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
         # artifact opens BEFORE the observers prepare, because named probes
         # bind to it during their prepare through the active-artifact scope.
         labels = [string("strong_beam_", i) for i in eachindex(strong_beams)]
-        prepare_run_artifact!(art, labels, Int(first_turn), Int(turns))
+        # The receipt's entries are the artifact's: one walk, two consumers
+        # (docs/design/turn_modulation.md D7, 5.6).
+        prepare_run_artifact!(art, labels, Int(first_turn), Int(turns);
+                              turn_modulation=turn_modulation)
     end
     Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => art,
                            _ACTIVE_PROBE_S_MAP =>
@@ -1084,7 +1131,10 @@ function _execute_fast_tracking_turns!(rep, runtime_elems, turns::Int,
         turn = first_turn + offset
         t0 = record ? time_ns() : UInt64(0)
         ctx = with_turn(base_ctx, turn)
-        _update_runtime_line!(runtime_elems, ctx)
+        # PURE per-turn update (design 4.4): rebind the local to the rebuilt
+        # tuple -- same type, zero allocation -- and track that one. Nothing is
+        # mutated in place; the rebound tuple carries a rule's successor.
+        runtime_elems = update_line(runtime_elems, ctx)
         track!(rep, runtime_elems, 1, policy, ctx)
         _stamp_turn!(record, times, t0, backend)
     end
@@ -1331,6 +1381,15 @@ _survey_rebind(op::MisalignedElement, kicks, ds, ents, total, id, acc_id) =
 _survey_rebind(op::RefTilted, kicks, ds, ents, total, id, acc_id) =
     RefTilted(_survey_rebind(op.inner, kicks, ds, ents, total, id, acc_id),
               op.c, op.s)
+# Binding runs on compiled elements, where the realised element IS the nominal
+# one (no turn has run yet), so the nominal is walked once and reused: walking
+# `inner` separately would advance the cavity counter twice for one element.
+function _survey_rebind(op::TurnModulated, kicks, ds, ents, total, id, acc_id)
+    base = _survey_rebind(op.base, kicks, ds, ents, total, id, acc_id)
+    inner = op.inner === op.base ? base :
+            _survey_rebind(op.inner, kicks, ds, ents, total, id, acc_id)
+    return TurnModulated(base, inner, op.rule)
+end
 
 """
 Validate the declared reference-energy chain of a line's accelerating
@@ -1457,25 +1516,40 @@ end
 
 _has_line_hooks(entries::Tuple) = any(entry -> entry isa Union{LineObserverEntry,LineActionEntry}, entries)
 
+# The segments hold their element tuple in a `Ref` because the per-turn update
+# is PURE (`update_line`, docs/design/turn_modulation.md section 4.4): the turn
+# loop reads the tuple out, rebuilds it and stores the rebuilt tuple back,
+# which is what carries a stateful rule's successor from turn to turn. A plan
+# built later under another plan key starts from the COMPILED (nominal)
+# elements in `runtime_entries_cache`, not from a sibling plan's stored tuple:
+# exact for stateless rules (the shipped `WhiteNoise` and `TurnTable` are
+# functions of the absolute turn alone), and the reason a stateful rule would
+# have to keep its state in the element rather than in the tuple.
 struct FusedSegment{Elems}
-    elements::Elems
+    elements::Base.RefValue{Elems}
 end
+FusedSegment(elems::Tuple) = FusedSegment{typeof(elems)}(Ref(elems))
 
 struct IsolatedSegment{Elem}
-    element::Elem
+    element::Base.RefValue{Elem}
 end
+IsolatedSegment(elem) = IsolatedSegment{typeof(elem)}(Ref(elem))
 
 """
 A fused segment that ALSO folds luminosity, emitted instead of `FusedSegment`
 when `luminosity_tracking = :fused` and the segment carries luminosity-producing
 elements. `beams` names those elements in line order, so each gets its own
 `last_luminosity` from its own accumulator and the artifact's per-element
-channels keep their attribution.
+channels keep their attribution. `elements` is a `Ref` for the same reason as
+`FusedSegment`'s; `beams` is captured at plan build, which is exact while no
+strong beam is turn-modulated (none declares a rule today).
 """
 struct LuminousFusedSegment{Elems,Beams}
-    elements::Elems
+    elements::Base.RefValue{Elems}
     beams::Beams
 end
+LuminousFusedSegment(elems::Tuple, beams) =
+    LuminousFusedSegment{typeof(elems),typeof(beams)}(Ref(elems), beams)
 
 struct ObserverSegment{O}
     observer::O
@@ -1579,7 +1653,8 @@ end
     _collect_strong_beams!(acc, elem) -> acc
 
 Every strong beam reachable through `elem`, in LINE ORDER, descending through the
-three wrappers that hide one (`CompositeLine`, `MisalignedElement`, `RefTilted`).
+four wrappers that hide one (`CompositeLine`, `MisalignedElement`, `RefTilted`,
+`TurnModulated`).
 
 The order matters as much as the membership: `fusedTrackLuminous` concatenates
 its per-element accumulators depth-first in the same order, so this walk and that
@@ -1591,7 +1666,7 @@ _collect_strong_beams!(acc, elem) =
         (push!(acc, elem); acc) : _descend_strong_beams!(acc, elem)
 
 _descend_strong_beams!(acc, elem) = acc
-_descend_strong_beams!(acc, elem::Union{MisalignedElement,RefTilted}) =
+_descend_strong_beams!(acc, elem::Union{MisalignedElement,RefTilted,TurnModulated}) =
     _collect_strong_beams!(acc, elem.inner)
 function _descend_strong_beams!(acc, elem::CompositeLine)
     for op in elem.ops
@@ -1613,20 +1688,22 @@ end
     _hidden_strong_beam_count(elem) -> Int
 
 Strong beams the top-level scan in `_execute_tracking_task!` cannot see, because
-`e isa ThinStrongBeam` is false for a WRAPPED element. Three wrappers hide one:
-`CompositeLine` (a sub-line), `MisalignedElement` (any alignment parameter set)
-and `RefTilted` (a reference tilt). The same recursion already exists for
+`e isa ThinStrongBeam` is false for a WRAPPED element. Four wrappers hide one:
+`CompositeLine` (a sub-line), `MisalignedElement` (any alignment parameter set),
+`RefTilted` (a reference tilt) and `TurnModulated` (a turn-by-turn modulation
+rule; no strong beam declares one today, the method keeps the walk structural
+rather than by hand list). The same recursion already exists for
 tracking methods -- `_inner_method` walks `MisalignedElement` and `RefTilted`
 (`src/elements/ref_tilt.jl`) -- and this is that walk for luminosity ownership.
 
 A top-level, unwrapped strong beam is not hidden and counts zero.
 
-Misalignment is the likelier of the three in practice: a strong beam needs only
+Misalignment is the likelier of the four in practice: a strong beam needs only
 `x_offset` set to become a `MisalignedElement`, with no sub-line anywhere in
 sight (measured 2026-09-07: `visible=1` plain, `visible=0` with `x_offset`).
 """
 _hidden_strong_beam_count(elem) = 0
-_hidden_strong_beam_count(elem::Union{MisalignedElement,RefTilted}) =
+_hidden_strong_beam_count(elem::Union{MisalignedElement,RefTilted,TurnModulated}) =
     _strong_beam_units(elem.inner)
 function _hidden_strong_beam_count(elem::CompositeLine)
     total = 0
@@ -1650,22 +1727,29 @@ function _execute_tracking_plan_turn!(rep, plan::Tuple, policy, ctx; stream=noth
     return nothing
 end
 
+# The per-turn update is PURE (design 4.4): read the segment's tuple out of its
+# `Ref`, rebuild it with `update_line`, store the rebuilt tuple back for the
+# next turn, and track the rebuilt one. The stored tuple is what carries a
+# stateful rule's successor from turn to turn.
 function _execute_tracking_segment_turn!(rep, segment::FusedSegment, policy, ctx; stream=nothing)
-    _update_runtime_line!(segment.elements, ctx)
-    _track_fused_runtime!(rep, segment.elements, policy, ctx, stream)
+    elems = update_line(segment.elements[], ctx)
+    segment.elements[] = elems
+    _track_fused_runtime!(rep, elems, policy, ctx, stream)
     return nothing
 end
 
 function _execute_tracking_segment_turn!(rep, segment::LuminousFusedSegment, policy, ctx;
                                         stream=nothing)
-    _update_runtime_line!(segment.elements, ctx)
-    _track_fused_luminous!(rep, segment.elements, segment.beams, policy, ctx)
+    elems = update_line(segment.elements[], ctx)
+    segment.elements[] = elems
+    _track_fused_luminous!(rep, elems, segment.beams, policy, ctx)
     return nothing
 end
 
 function _execute_tracking_segment_turn!(rep, segment::IsolatedSegment, policy, ctx; stream=nothing)
-    update!(segment.element, ctx)
-    _track_isolated_runtime!(rep, segment.element, policy, ctx, stream)
+    elem = update(segment.element[], ctx)
+    segment.element[] = elem
+    _track_isolated_runtime!(rep, elem, policy, ctx, stream)
     return nothing
 end
 
@@ -1770,17 +1854,6 @@ function _finalize_line_observers!(entries::Tuple)
         end
     end
     first_error === nothing || throw(first_error)
-    return nothing
-end
-
-function _update_runtime_line!(runtime_elems::Tuple, ctx)
-    for elem in runtime_elems
-        if elem isa Tuple
-            _update_runtime_line!(elem, ctx)
-        else
-            update!(elem, ctx)
-        end
-    end
     return nothing
 end
 

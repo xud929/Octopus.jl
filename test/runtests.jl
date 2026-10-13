@@ -7588,16 +7588,18 @@ end
     @test fast != initial
 end
 
-@testset "The fused route carries luminosity through all three wrappers" begin
+@testset "The fused route carries luminosity through every wrapper" begin
     # 2026-09-08, the follow-up to the 2026-09-07 guard. A strong beam behind a
     # CompositeLine, MisalignedElement or RefTilted is invisible to the
     # isolation scan, so on the :isolated route it CANNOT be measured and is
     # refused. The :fused route serves it, because each wrapper now forwards the
     # accumulator it used to drop.
     #
-    # RefTilted is pinned here for the first time: _hidden_strong_beam_count has
-    # declared three wrapper types since it was written and the fixtures covered
-    # two, and after this change the same walk decides which beams get artifact
+    # RefTilted is pinned here for the first time: _hidden_strong_beam_count walks
+    # every member of the DERIVED wrapper set (each AbstractTrackOp with an `inner`
+    # field -- MisalignedElement, RefTilted and TurnModulated today, pinned in both
+    # directions by "Turn modulation: rules, wrapper and the pure hook") and the
+    # fixtures covered two, and after this change the same walk decides which beams get artifact
     # channels -- a miss would be a missing channel, not just a missed guard.
     plain = ThinStrongBeamSpec{Float64}(kbb=1.0e-4, beta=(1.0, 1.0),
                                         sigma=(106.0e-6, 9.5e-6))
@@ -7682,6 +7684,17 @@ end
     # the wrapped beam's number instead.
     solo = lum_of((plain,), :fused)
     @test beams2[1].last_luminosity === solo
+
+    # TurnModulated, the wrapper added 2026-10-12 (turn-by-turn modulation): no
+    # strong beam declares a rule from specs today, so the walk is pinned on a
+    # hand-built wrapper -- it must still see through it, or a future modulated
+    # strong beam would lose its channel silently. Both the collector and the
+    # hidden count, since they are two walks.
+    let b = beams2[1]
+        @test length(Octopus._strong_beams_of((Octopus.TurnModulated(b, nothing),))) == 1
+        @test only(Octopus._strong_beams_of((Octopus.TurnModulated(b, nothing),))) === b
+        @test Octopus._hidden_strong_beam_count(Octopus.TurnModulated(b, nothing)) == 1
+    end
 end
 
 @testset "luminosity_tracking selects the route and both give the same number" begin
@@ -8032,6 +8045,195 @@ end
             coordinate_arrays(continuous), coordinate_arrays(chunked))
         @test actual == expected
     end
+end
+
+@testset "Turn modulation: effectiveness at the kernel boundary, chunking and repositioning" begin
+    # 2026-10-12, turn-by-turn modulation stage 1, the task-layer half of
+    # docs/design/turn_modulation.md section 8: test 1 (the realised phase
+    # reaches the kernel, on BOTH turn loops), test 3 (one call, many calls and
+    # a repositioned call agree), the window refusal before any turn runs, the
+    # :turn_modulation provenance receipt, the duplicate-stream warning and the
+    # knob composition (nominal from the knob, offset from the rule).
+    # Strong-strong is deliberately NOT exercised here: the shared segment
+    # executor carries the update, and a strong-strong noise test is stage 2 or
+    # later.
+    kcc = 2 * pi * 394.0e6 / Octopus.CLIGHT
+    cavity(; kw...) = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,), kw...)
+    noisy(; kw...) = cavity(; phase_noise=(WhiteNoise(1.0e-2; rng_id=7),), kw...)
+    n = 500
+    # z = 0 and px = 0 everywhere: the kick is then -strength * sin(phase_t) / kcc
+    # for every particle, so <px> after turn t is the running sum of the kicks.
+    zrep() = Phase6DRep(collect(range(-1.0e-3, 1.0e-3; length=n)), zeros(n),
+                        collect(range(0.5e-3, -0.5e-3; length=n)), zeros(n), zeros(n), zeros(n))
+    copyrep(rep) = Phase6DRep([copy(a) for a in coordinate_arrays(rep)]...)
+    mean_px(rep) = sum(rep.px) / length(rep.px)
+    same(a, b) = all(all(getfield(a, f) .=== getfield(b, f)) for f in (:x, :px, :y, :py, :z, :pz))
+    phase_at(t, seed, method) =   # slot 1 of the rules' component band
+        1.0e-2 * Octopus.octopus_normal(seed, method, Int64(t), UInt64(7), 0,
+                                        Octopus._RULE_COMPONENT_BASE + 1, Float64)
+    timing_receipts(audit) = filter(r -> r.consumer === :tracking_turn_timing, execution_receipts(audit))
+    modulation_receipts(audit) = filter(r -> r.consumer === :turn_modulation, execution_receipts(audit))
+
+    # (a) Test 1, the FAST loop (a bare task): one turn per call so the absolute
+    # turn is the loop variable, the pinned kick recomputed from the counter RNG
+    # at the task's own seed. The loop is asserted BY NAME through the timing
+    # receipt's `fast_path` flag, as the per-turn timing testset does.
+    set_global_rng!(seed=0x5eed, method=:philox)
+    seed, method = Octopus.global_rng_seed(), Octopus.global_rng_method_code()
+    kicks = [-2.0e-3 * sin(phase_at(t, seed, method)) / kcc for t in 0:5]
+    expected_px = cumsum(kicks)
+    @test maximum(abs, kicks) > 1.0e-7
+    fast = TrackingTask((noisy(),))
+    rep_fast = zrep()
+    audit_fast = ExecutionAudit()
+    with_execution_audit(audit_fast) do
+        for t in 0:5
+            execute!(fast, rep_fast; turns=1)
+            @test isapprox(mean_px(rep_fast), expected_px[t + 1]; rtol=1e-12)
+        end
+    end
+    @test length(timing_receipts(audit_fast)) == 6
+    @test all(r.values.fast_path === true for r in timing_receipts(audit_fast))
+    # With the rule inactive px stays EXACTLY zero (sin(0) = 0, no draw).
+    quiet = zrep()
+    execute!(TrackingTask((cavity(phase_noise=()),)), quiet; turns=6)
+    @test all(==(0.0), quiet.px)
+    # The GENERAL loop (an artifact takes it): bit-identical coordinates.
+    set_global_rng!(seed=0x5eed, method=:philox)
+    general = TrackingTask((noisy(),); artifact=joinpath(mktempdir(), "turnmod_general.h5"))
+    rep_general = zrep()
+    audit_general = ExecutionAudit()
+    with_execution_audit(audit_general) do
+        for _ in 0:5
+            execute!(general, rep_general; turns=1)
+        end
+    end
+    @test length(timing_receipts(audit_general)) == 6
+    @test all(r.values.fast_path === false for r in timing_receipts(audit_general))
+    @test same(rep_fast, rep_general)
+
+    # (b) Test 3, chunking and repositioning: one `execute!` of 7 turns, seven
+    # calls of one turn, and a run restored with `start_turn=3` on a copy of the
+    # 3-turn state agree bit for bit, for the stateless white rule and for a
+    # table (which indexes the ABSOLUTE turn, so the restored run reads entry 4
+    # first).
+    for (kind, rule) in (("white", WhiteNoise(1.0e-2; rng_id=7)),
+                         ("table", TurnTable(collect(0.01:0.01:0.10); name="amp")))
+        spec = cavity(phase_noise=(rule,))
+        set_global_rng!(seed=0x5eed, method=:philox)
+        one_call = zrep()
+        execute!(TrackingTask((spec,)), one_call; turns=7)
+        set_global_rng!(seed=0x5eed, method=:philox)
+        seven_calls = zrep()
+        t7 = TrackingTask((spec,))
+        for _ in 1:7
+            execute!(t7, seven_calls; turns=1)
+        end
+        set_global_rng!(seed=0x5eed, method=:philox)
+        first3 = zrep()
+        t3 = TrackingTask((spec,))
+        execute!(t3, first3; turns=3)
+        restored = copyrep(first3)
+        t4 = TrackingTask((spec,))
+        execute!(t4, restored; turns=4, start_turn=3)
+        @testset let rule_kind = kind
+            @test t7.next_turn[] == 7 && t3.next_turn[] == 3 && t4.next_turn[] == 7
+            @test same(one_call, seven_calls)
+            @test same(one_call, restored)
+            @test !same(one_call, first3)
+        end
+    end
+
+    # (c) The window refusal: a 5-turn table cannot serve 6 turns, so `execute!`
+    # throws BEFORE any turn runs -- the beam is untouched and the stored turn
+    # has not advanced -- names the table and says a table never wraps; the
+    # window it covers runs; the turn past its end is refused again.
+    five = cavity(phase_noise=(TurnTable(fill(0.02, 5); name="five"),))
+    task5 = TrackingTask((five,))
+    rep5 = zrep()
+    before = copyrep(rep5)
+    err5 = try
+        execute!(task5, rep5; turns=6)
+        nothing
+    catch e
+        e
+    end
+    @test err5 isa ArgumentError
+    @test occursin("never wraps", sprint(showerror, err5))
+    @test occursin("\"five\"", sprint(showerror, err5))
+    @test same(rep5, before)
+    @test task5.next_turn[] == 0
+    execute!(task5, rep5; turns=5)
+    @test task5.next_turn[] == 5
+    @test !same(rep5, before)
+    after5 = copyrep(rep5)
+    @test_throws ArgumentError execute!(task5, rep5; turns=1)
+    @test same(rep5, after5)
+    @test task5.next_turn[] == 5
+
+    # (d) The provenance receipt: one `:turn_modulation` receipt per `execute!`,
+    # one entry per modulated element with its ACTIVE slots in the pinned shape
+    # and the window realised; a table reports its digest, name and length; an
+    # unmodulated line records none while the timing receipt is still there.
+    audit_w = ExecutionAudit()
+    with_execution_audit(audit_w) do
+        execute!(TrackingTask((DriftSpec(L=0.5), noisy())), zrep(); turns=2, start_turn=3)
+    end
+    @test length(modulation_receipts(audit_w)) == 1
+    rcpt = only(modulation_receipts(audit_w))
+    @test length(rcpt.values.elements) == 1
+    @test rcpt.values.elements[1].element == "ThinCrabCavity"
+    @test rcpt.values.elements[1].beam == 1
+    @test length(rcpt.values.elements[1].slots) == 1
+    slot_w = rcpt.values.elements[1].slots[1]
+    @test propertynames(slot_w) == (:slot, :kind, :rng_id, :digest, :name, :length)
+    @test slot_w.slot == "phase_noise[1]" && slot_w.kind === :white && slot_w.rng_id == 7
+    @test rcpt.values.first_turn == 3 && rcpt.values.turns == 2
+    table = TurnTable(collect(0.01:0.01:0.10); name="amp")
+    audit_t = ExecutionAudit()
+    with_execution_audit(audit_t) do
+        execute!(TrackingTask((cavity(strength_noise=(table,)),)), zrep(); turns=2)
+    end
+    slot_t = only(modulation_receipts(audit_t)).values.elements[1].slots[1]
+    @test slot_t.slot == "strength_noise[1]" && slot_t.kind === :table
+    @test slot_t.length == 10 && slot_t.digest == table.digest && slot_t.name == "amp"
+    @test slot_t.rng_id == 0
+    audit_0 = ExecutionAudit()
+    with_execution_audit(audit_0) do
+        execute!(TrackingTask((cavity(),)), zrep(); turns=2)
+    end
+    @test isempty(modulation_receipts(audit_0))
+    @test length(timing_receipts(audit_0)) == 1
+
+    # (e) The duplicate-stream warning: two CAVITIES sharing an rng_id draw
+    # identical offsets and warn at task construction; distinct ids do not;
+    # one id on both harmonics of ONE cavity does not (the slots keep the draws
+    # independent).
+    @test_logs (:warn, r"share an rng_id") match_mode = :any TrackingTask(
+        (noisy(), DriftSpec(L=1.0), noisy()))
+    @test_logs TrackingTask((noisy(), DriftSpec(L=1.0),
+                             cavity(phase_noise=(WhiteNoise(1.0e-2; rng_id=9),))))
+    @test_logs TrackingTask((ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), phase=(0.0, 0.0),
+                                                    phase_noise=(WhiteNoise(1.0e-2; rng_id=7),
+                                                                 WhiteNoise(1.0e-2; rng_id=7))),))
+
+    # (f) The knob composition: a rule may sit beside a knob-driven nominal; the
+    # knob resolves into the NOMINAL (`base`), the rule's offset is added at run
+    # time on top of it, and a recompile after `set_knob!` moves the nominal.
+    @knob tm_test_phase::Float64
+    set_knob!(:tm_test_phase, 0.3)
+    knobbed() = ElementSpec{:thin_crab_cavity}(; N=1, frequency=394.0e6, strengthX=(2.0e-3,),
+                                               strengthY=(0.0,), phase=(@knob_expr(tm_test_phase),),
+                                               phase_noise=(WhiteNoise(1.0e-2; rng_id=7),))
+    wk = compile_runtime(knobbed())
+    @test wk isa TurnModulated
+    @test wk.base.phase[1] == 0.3
+    @test realize(wk.rule, wk.base, TrackingContext(turn=1, seed=42))[1].phase[1] ==
+          0.3 + 1.0e-2 * Octopus.octopus_normal(UInt64(42), Octopus.global_rng_method_code(),
+                                                 Int64(1), UInt64(7), 0,
+                                                 Octopus._RULE_COMPONENT_BASE + 1, Float64)
+    set_knob!(:tm_test_phase, 0.4)
+    @test compile_runtime(knobbed()).base.phase[1] == 0.4
 end
 
 @testset "Lumped radiation method and flag semantics" begin
@@ -9702,6 +9904,569 @@ end
         @test maximum(abs, collect(roll(u...)) .- collect(bare(u...))) > 1.0e-6
         @test maximum(abs, collect(roll(u...)) .- collect(body(u...))) > 1.0e-6
     end
+end
+
+@testset "Turn modulation: rules, wrapper and the pure hook" begin
+    # 2026-10-12, turn-by-turn modulation stage 1 (docs/design/turn_modulation.md;
+    # its section 8 lists the tests owed). The element-level half: tests 2, 4,
+    # 5, 7 and 8 -- what compiles, what the rules refuse, what `realize`,
+    # `update` and `update_line` produce, which walks see through the wrapper,
+    # and the metadata. Tests 1 and 3 and the receipt are in "Turn modulation:
+    # effectiveness at the kernel boundary, chunking and repositioning"; test 6
+    # in "Turn modulation: CPU/CUDA identity and the device conversion".
+    set_global_rng!(seed=0x5eed, method=:philox)
+    nominal_spec(; kw...) = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,), kw...)
+    noisy_spec(; kw...) = nominal_spec(; phase_noise=(WhiteNoise(1.0e-2; rng_id=7),), kw...)
+    mkrep(n=200) = Phase6DRep([randn(MersenneTwister(2026 + k), n) .* 1.0e-3 for k in 1:6]...)
+    same(a, b) = all(all(getfield(a, f) .=== getfield(b, f)) for f in (:x, :px, :y, :py, :z, :pz))
+    # The design's 5.1 fixture: seed 42, rng_id 7, sigma 1e-2, the phase of
+    # harmonic 1 is slot 1 (a strength of harmonic i is slot N + i). A rule
+    # draws particle slot 0 and the component `_RULE_COMPONENT_BASE + slot`,
+    # the band that keeps it off the cells a BPM (occurrence 0, components 1-2)
+    # or a radiation element (particle id, components 1-6) draws on a shared
+    # rng_id (the key layout in src/elements/turn_modulated.jl).
+    draw(turn, seed=42, slot=1, rng_id=7) =
+        Octopus.octopus_normal(UInt64(seed), Octopus.global_rng_method_code(), Int64(turn),
+                               UInt64(rng_id), 0, Octopus._RULE_COMPONENT_BASE + slot, Float64)
+
+    # (a) What compiles. A rule-free spec is exactly the runtime object it always
+    # was; `(nothing,)` is the inactive rule; a rule wraps the cavity INNERMOST
+    # of the three compile-time wraps, so the misalignment and the roll act on
+    # the frame around the realised element (design 4.2).
+    bare = compile_runtime(nominal_spec())
+    @test bare isa Octopus.ThinCrabCavity
+    @test compile_runtime(nominal_spec(phase_noise=(nothing,))) === bare
+    w = compile_runtime(noisy_spec())
+    @test w isa TurnModulated
+    @test w.inner === w.base
+    @test w.base === bare
+    @test isbits(w)
+    @test w.rule isa Octopus.CrabCavityNoise
+    w_table = compile_runtime(nominal_spec(phase_noise=(TurnTable([0.1, 0.2, 0.3]),)))
+    @test w_table isa TurnModulated
+    @test !isbits(w_table) && isbits(w_table.base)
+    @test compile_runtime(noisy_spec(x_offset=1.0e-3)) isa Octopus.MisalignedElement{<:TurnModulated}
+    rolled = compile_runtime(noisy_spec(x_offset=1.0e-3, ref_tilt=0.3))
+    @test rolled isa Octopus.RefTilted{<:Octopus.MisalignedElement}
+    @test rolled.inner.inner isa TurnModulated
+
+    # (b) The 5.1 table: the realised phase on turn t is sigma times the counter
+    # draw keyed on (seed, t, rng_id, slot) EXACTLY, the strengths untouched,
+    # and turn 1 reproduces the note's printed -6.5957e-03 rad (the value in
+    # the rules' component band; +2.0085e-03 was component 1, the pre-band
+    # keying that shared a cell with a noisy BPM, review S1 2026-10-12).
+    for turn in 1:8
+        cav, rules = realize(w.rule, w.base, TrackingContext(turn=turn, seed=42))
+        @test typeof(cav) === typeof(w.base) && typeof(rules) === typeof(w.rule)
+        @test cav.phase[1] == 1.0e-2 * draw(turn)
+        @test cav.strengthX == w.base.strengthX && cav.strengthY == w.base.strengthY
+    end
+    @test isapprox(realize(w.rule, w.base, TrackingContext(turn=1, seed=42))[1].phase[1],
+                   -6.5957e-3; atol=5e-7)
+    # S1 regression: on a shared rng_id the realised draw is neither the cell a
+    # noisy BPM reads (occurrence 0, component 1) nor the one a radiation
+    # element reads (particle 1, component 1); before the band the first was
+    # bitwise the same normal on every turn.
+    other_cell(turn, particle, component) =
+        Octopus.octopus_normal(UInt64(42), Octopus.global_rng_method_code(), Int64(turn),
+                               UInt64(7), particle, component, Float64)
+    for turn in 1:8
+        realised_phase = realize(w.rule, w.base, TrackingContext(turn=turn, seed=42))[1].phase[1]
+        @test realised_phase != 1.0e-2 * other_cell(turn, 0, 1)
+        @test realised_phase != 1.0e-2 * other_cell(turn, 0, 2)
+        @test realised_phase != 1.0e-2 * other_cell(turn, 1, 1)
+    end
+
+    # (c) Test 2, the nominal path: the contextless `track!` never updates, so a
+    # wrapped line tracks the NOMINAL element bit for bit (design D5), while
+    # `update` yields a realised wrapper of the same type whose inner element
+    # is no longer the base -- and that realised wrapper tracks differently.
+    rep_w, rep_b = mkrep(), mkrep()
+    track!(rep_w, (w,), 3)
+    track!(rep_b, (w.base,), 3)
+    @test same(rep_w, rep_b)
+    u = update(w, TrackingContext(turn=1, seed=42))
+    @test typeof(u) === typeof(w)
+    @test u.inner !== w.base
+    @test u.base === w.base
+    @test u.inner.phase[1] == 1.0e-2 * draw(1)
+    rep_u, rep_b1 = mkrep(), mkrep()
+    track!(rep_u, (u,), 1)
+    track!(rep_b1, (w.base,), 1)
+    @test !same(rep_u, rep_b1)
+
+    # (d) Test 4: `update_line` on a line LONGER than 32 elements keeps the tuple
+    # type and allocates nothing (`ntuple(..., Val(N))`; `map` over a tuple past
+    # 32 entries takes the generic path and allocated 79 kB per turn, design 7).
+    disp = compile_runtime(CrabDispersionSpec{Float64}(zeta1=0.1))
+    line40 = Tuple(isodd(i) ? w : disp for i in 1:40)
+    @test length(line40) == 40 && count(e -> e isa TurnModulated, line40) == 20
+    ctx3 = TrackingContext(turn=3, seed=42)
+    up = update_line(line40, ctx3)
+    @test typeof(up) === typeof(line40)
+    @test all(e.inner.phase[1] == 1.0e-2 * draw(3) for e in up if e isa TurnModulated)
+    @test all(e === disp for e in up if !(e isa TurnModulated))
+    alloc_update(line, ctx) = @allocated update_line(line, ctx)
+    alloc_update(line40, ctx3)
+    @test alloc_update(line40, ctx3) == 0
+
+    # (e) Test 5, the guardrails. Construction refuses what no run could use;
+    # compile refuses a table of the wrong numeric type (never promoted), a
+    # wrong entry count and a non-rule entry -- on the friendly constructor AND
+    # on a raw spec that bypassed it; the table indexes absolute turns and runs
+    # off its end with a BoundsError on the by-hand path; `strength_noise`
+    # moves BOTH planes by one offset and leaves the phase alone; the stream
+    # collector reports each distinct id of one cavity once.
+    @test_throws ArgumentError TurnTable(Float64[])
+    @test_throws ArgumentError TurnTable([NaN])
+    @test_throws ArgumentError TurnTable([1.0, Inf])
+    @test_throws ArgumentError WhiteNoise(-1.0)
+    @test_throws ArgumentError WhiteNoise(NaN)
+    # The stream id follows the radiation convention (U14-2): 0, the default,
+    # assigns a fresh id and two defaults differ; an explicit id is CLAIMED so
+    # the auto-assign counter never reissues it; a refused rule claims none.
+    fresh_white, fresh_pink = WhiteNoise(1.0e-2), PinkNoise(1.0e-2)
+    @test fresh_white.rng_id > 0 && fresh_pink.rng_id > 0 && fresh_white.rng_id != fresh_pink.rng_id
+    claimed = Octopus.next_rng_id!() + 1000
+    @test WhiteNoise(1.0e-2; rng_id=claimed).rng_id == claimed
+    @test Octopus.next_rng_id!() == claimed + 1
+    @test PinkNoise(1.0e-2; rng_id=claimed + 500).rng_id == claimed + 500
+    @test Octopus.next_rng_id!() == claimed + 501
+    before_refused = Octopus.next_rng_id!()
+    @test_throws ArgumentError WhiteNoise(-1.0; rng_id=before_refused + 100)
+    @test_throws ArgumentError PinkNoise(1.0; rng_id=before_refused + 100, octaves=0)
+    @test Octopus.next_rng_id!() == before_refused + 1
+    # The window check names an unnamed table as such, not as "".
+    err_unnamed = try
+        Octopus._check_rule_window(TurnTable([0.1]), Int64(0), 2, "ThinCrabCavity phase_noise[1]")
+        nothing
+    catch e
+        e
+    end
+    @test err_unnamed isa ArgumentError
+    @test occursin("unnamed turn table on ThinCrabCavity phase_noise[1]", sprint(showerror, err_unnamed))
+    err32 = try
+        compile_runtime(nominal_spec(phase_noise=(TurnTable(Float32[0.1]),)))
+        nothing
+    catch e
+        e
+    end
+    @test err32 isa ArgumentError
+    @test occursin("Float32", sprint(showerror, err32))
+    @test_throws ArgumentError ThinCrabCavitySpec{1}(394.0e6; phase_noise=(WhiteNoise(1.0e-2), WhiteNoise(1.0e-2)))
+    @test_throws ArgumentError ThinCrabCavitySpec{1}(394.0e6; phase_noise=(1.0,))
+    raw(; kw...) = ElementSpec{:thin_crab_cavity}(; N=1, frequency=394.0e6, strengthX=(2.0e-3,),
+                                                  strengthY=(0.0,), phase=(0.0,), kw...)
+    @test_throws ArgumentError compile_runtime(raw(phase_noise=(WhiteNoise(1.0e-2), WhiteNoise(1.0e-2))))
+    @test_throws ArgumentError compile_runtime(raw(strength_noise=(1.0,)))
+    @test compile_runtime(raw(phase_noise=(WhiteNoise(1.0e-2; rng_id=7),))) isa TurnModulated
+    @test compile_runtime(nominal_spec(phase_noise=(nothing,), strength_noise=(nothing,))) isa Octopus.ThinCrabCavity
+    @test realize(w_table.rule, w_table.base, TrackingContext(turn=0, seed=1))[1].phase[1] == 0.1
+    @test realize(w_table.rule, w_table.base, TrackingContext(turn=2, seed=1))[1].phase[1] == 0.3
+    @test_throws BoundsError realize(w_table.rule, w_table.base, TrackingContext(turn=3, seed=1))
+    ws = compile_runtime(ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), strengthY=(1.0e-3,), phase=(0.1,),
+                                                strength_noise=(WhiteNoise(1.0e-4; rng_id=3),)))
+    cav5 = realize(ws.rule, ws.base, TrackingContext(turn=5, seed=42))[1]
+    off5 = 1.0e-4 * draw(5, 42, 2, 3)       # strength harmonic 1 of N = 1 is slot N + 1 = 2
+    @test off5 != 0.0
+    # `nominal + off` is the representable pin; `(nominal + off) - nominal == off`
+    # would re-round and differ in the last bits between the two planes.
+    @test cav5.strengthX[1] == 2.0e-3 + off5
+    @test cav5.strengthY[1] == 1.0e-3 + off5
+    @test cav5.strengthX[1] != 2.0e-3 + 1.0e-4 * draw(5, 42, 1, 3)   # slot 1 is the phase's draw
+    @test cav5.phase == ws.base.phase
+    @test Octopus._collect_turn_modulation_ids!(UInt64[], ThinCrabCavitySpec{2}(394.0e6;
+              phase_noise=(WhiteNoise(1.0e-2; rng_id=7), WhiteNoise(1.0e-2; rng_id=7)))) == UInt64[7]
+    @test Octopus._collect_turn_modulation_ids!(UInt64[], ThinCrabCavitySpec{2}(394.0e6;
+              phase_noise=(WhiteNoise(1.0e-2; rng_id=7), nothing),
+              strength_noise=(nothing, WhiteNoise(1.0e-2; rng_id=9)))) == UInt64[7, 9]
+
+    # (f) Test 7's TRIPWIRE. The wrapper set is DERIVED, not declared: every
+    # AbstractTrackOp with a field named `inner` (the rule
+    # `_compiled_matches_runtime` walks by), pinned in both directions against
+    # the three known wrappers. Then every wrapper-aware walk must own a method
+    # whose wrapper-position parameter is narrower than the abstract root for
+    # every member: a wrapper that falls to a walk's generic fallback fails HERE
+    # BY NAME, which is what replaced the hand-enumerated lists.
+    derived = Set(Any[T for T in Octopus._subtypes_recursive(Octopus.AbstractTrackOp)
+                      if !isabstracttype(Base.unwrap_unionall(T)) &&
+                         :inner in fieldnames(Base.unwrap_unionall(T))])
+    @testset let derived_wrappers = sort!(string.(nameof.(collect(derived))))
+        @test derived == Set(Any[Octopus.MisalignedElement, Octopus.RefTilted, Octopus.TurnModulated])
+    end
+    # The SINGLE SOURCE of the walks a wrapper joins, as (function, position of
+    # the wrapper argument): a new walk is added here, a new wrapper is found by
+    # the derivation above, and the product is checked below.
+    wrapper_walks = Any[(Octopus._inner_method, 1), (Octopus._hidden_strong_beam_count, 1),
+                        (Octopus._descend_strong_beams!, 2), (Octopus._survey_rebind, 1),
+                        (Octopus._requires_tracking_context, 1), (Octopus.update, 1),
+                        (Octopus._check_turn_window, 1), (Octopus._turn_modulation_provenance!, 2),
+                        (Octopus.track_luminous, 1), (Octopus.track_particle, 2)]
+    # The device conversion (design D8): `cudaconvert` recurses through the
+    # fused tuple with `Adapt.adapt_structure`, so a wrapper without its own
+    # method reaches the launch unconverted. The methods are defined whenever
+    # Adapt loads (a hard dependency), so the walk is checked on a CPU-only
+    # machine too; `CompositeLine` holds elements without being a wrapper by
+    # the `inner` rule, so it is checked beside the derived set below.
+    if Octopus._HAS_ADAPT
+        push!(wrapper_walks, (Octopus.Adapt.adapt_structure, 2))
+    else
+        @test_skip "Adapt not loaded: the adapt_structure walk is not checked"
+    end
+    # This tripwire checks method OWNERSHIP -- each wrapper has a method of each
+    # walk narrower than the abstract root -- not DESCENT, that the method
+    # reaches the element inside; descent is asserted per frame wrapper after
+    # the instance checks below.
+    function owns_wrapper_method(f, pos, W)
+        for m in methods(f)
+            P = Base.unwrap_unionall(m.sig).parameters
+            length(P) > pos || continue
+            S = Base.rewrap_unionall(P[pos + 1], m.sig)
+            (Octopus.AbstractTrackOp <: S || !(W <: S)) && continue
+            return true
+        end
+        return false
+    end
+    for W in derived, (f, pos) in wrapper_walks
+        @testset let wrapper = nameof(W), walk = nameof(f)
+            @test owns_wrapper_method(f, pos, W)
+        end
+    end
+    # ...and each wrapper has its OWN context-aware call (the F13 class: the
+    # root fallback dropped the context of a wrapped stochastic element), on
+    # instances built the way the aperture tests build theirs; the instance list
+    # is tied to the derived set so a fourth wrapper is not forgotten here.
+    eye = ntuple(i -> Float64(i == 1 || i == 5 || i == 9), 9)
+    instances = (Octopus.MisalignedElement(bare, eye, (0.0, 0.0, 0.0), eye, (0.0, 0.0, 0.0)),
+                 Octopus.RefTilted(bare, 1.0, 0.0), w)
+    @test Set(Any[typeof(inst).name.wrapper for inst in instances]) == derived
+    ctx_call = Tuple{TrackingContext, Int, Float64, Float64, Float64, Float64, Float64, Float64}
+    for inst in instances
+        @test hasmethod(inst, ctx_call)
+        m = which(inst, ctx_call)
+        owner = Base.rewrap_unionall(Base.unwrap_unionall(m.sig).parameters[1], m.sig)
+        @test !(Octopus.AbstractTrackOp <: owner)
+    end
+    if Octopus._HAS_ADAPT
+        @test owns_wrapper_method(Octopus.Adapt.adapt_structure, 2, Octopus.CompositeLine)
+    end
+    # DESCENT, one assertion per frame wrapper and for the kept-whole line:
+    # `update` through the frame reaches the modulated element inside (the
+    # realised inner element differs from the base after one update and carries
+    # the pinned draw) and the frame is rebuilt around it. The misaligned case
+    # is covered again by the hand composition in (g).
+    ctx_d = TrackingContext(turn=1, seed=42)
+    tilted_up = update(Octopus.RefTilted(w, 1.0, 0.0), ctx_d)
+    @test tilted_up isa Octopus.RefTilted && tilted_up.inner.inner !== w.base
+    @test tilted_up.inner.inner.phase[1] == 1.0e-2 * draw(1)
+    misaligned_up = update(Octopus.MisalignedElement(w, eye, (0.0, 0.0, 0.0), eye, (0.0, 0.0, 0.0)), ctx_d)
+    @test misaligned_up isa Octopus.MisalignedElement && misaligned_up.inner.inner !== w.base
+    @test misaligned_up.inner.inner.phase[1] == 1.0e-2 * draw(1)
+    composite_up = update(Octopus.CompositeLine((disp, w)), ctx_d)
+    @test composite_up isa Octopus.CompositeLine && composite_up.ops[2].inner !== w.base
+    @test composite_up.ops[2].inner.phase[1] == 1.0e-2 * draw(1)
+
+    # (g) Test 7's physics. A noisy MISALIGNED cavity through `execute!` equals,
+    # bit for bit, the hand composition "frame change, realised cavity, frame
+    # change back" built from the compiled wrapper's own frame data and
+    # `realize` at turn 0 -- so the realised element really sits INSIDE the
+    # frame transforms and the frame is carried untouched. A noisy cavity in a
+    # kept-whole `BeamLine` (a `CompositeLine`) equals the flat line.
+    set_global_rng!(seed=0x7a11, method=:philox)
+    comp = compile_runtime(noisy_spec(x_offset=1.0e-3))
+    rep_task = mkrep()
+    execute!(TrackingTask((noisy_spec(x_offset=1.0e-3),)), rep_task; turns=1)
+    realised = realize(comp.inner.rule, comp.inner.base, TrackingContext(turn=0))[1]
+    @test realised.phase[1] != 0.0
+    hand = Octopus.MisalignedElement(realised, comp.qin, comp.oin, comp.qout, comp.oout)
+    rep_hand = mkrep()
+    track!(rep_hand, (hand,), 1)
+    @test same(rep_task, rep_hand)
+    rep_nominal = mkrep()
+    track!(rep_nominal, (Octopus.MisalignedElement(comp.inner.base, comp.qin, comp.oin,
+                                                   comp.qout, comp.oout),), 1)
+    @test !same(rep_task, rep_nominal)
+    flat_line = (DriftSpec(L=0.5), noisy_spec(), DriftSpec(L=0.5))
+    sub_line = (DriftSpec(L=0.5), BeamLine("in", noisy_spec()), DriftSpec(L=0.5))
+    set_global_rng!(seed=0x7a11, method=:philox)
+    rep_flat = mkrep()
+    execute!(TrackingTask(flat_line), rep_flat; turns=3)
+    set_global_rng!(seed=0x7a11, method=:philox)
+    sub_task = TrackingTask(sub_line)
+    rep_sub = mkrep()
+    execute!(sub_task, rep_sub; turns=3)
+    @test same(rep_flat, rep_sub)
+    runtime_sub = Octopus._physics_line(Octopus._runtime_entries(sub_task, rep_sub))
+    @test any(e -> e isa Octopus.CompositeLine && any(o -> o isa TurnModulated, e.ops), runtime_sub)
+    set_global_rng!(seed=0x7a11, method=:philox)
+    rep_nom3 = mkrep()
+    execute!(TrackingTask((DriftSpec(L=0.5), nominal_spec(), DriftSpec(L=0.5))), rep_nom3; turns=3)
+    @test !same(rep_flat, rep_nom3)
+
+    # (h) Test 8, the metadata: the validators pass with the new parameters and
+    # rule types, both `element_help` forms show them, the schema carries the
+    # unit, the keyword is declared, and the public names are exported.
+    @test validate_element_metadata().passed
+    @test validate_configuration_metadata() === true
+    for help in (sprint(io -> element_help(io, :thin_crab_cavity)),
+                 sprint(io -> element_help(io, ThinCrabCavitySpec)))
+        @test occursin("phase_noise", help) && occursin("strength_noise", help)
+    end
+    schema = parameter_schema(ElementSpec{:thin_crab_cavity})
+    @test haskey(schema, :phase_noise) && schema.phase_noise.unit == "rad"
+    @test haskey(schema, :strength_noise)
+    @test :turn_modulation in physics_keywords(ElementSpec{:thin_crab_cavity})
+    for name in (:WhiteNoise, :PinkNoise, :TurnTable, :TurnModulated, :update, :update_line,
+                 :realize, :turn_modulation_provenance)
+        @test name in names(Octopus)
+    end
+
+    # (i) The rule catalogue TRIPWIRE (2026-10-12 review, C3/D4). The set of
+    # concrete rules is DERIVED from the `AbstractTurnRule` tree, never
+    # hand-copied: every member must own `_turn_offset` and `_rule_kind`
+    # methods narrower than Any, pass the crab cavity's `_is_turn_rule`, build
+    # its provenance slot through the generic `_push_rule_slot!`, and be named
+    # by `construction_help`, the `phase_noise` meaning and `_turn_rule_names()`
+    # (the string the `_rule_tuple` messages print). The instance table is this
+    # test's SINGLE declared list, pinned against the derived set in both
+    # directions, so a fourth rule fails here by name.
+    rule_instances = Dict{Any,Any}(WhiteNoise => WhiteNoise(1.0; rng_id=1),
+                                   PinkNoise => PinkNoise(1.0; rng_id=1),
+                                   TurnTable => TurnTable([0.0]))
+    derived_rules = Set(Any[Octopus._concrete_octopus_subtypes(Octopus.AbstractTurnRule)...])
+    @test derived_rules == Set(Any[WhiteNoise, PinkNoise, TurnTable])
+    @test Set(Any[keys(rule_instances)...]) == derived_rules
+    owns_rule_method(f, pos, R) = any(methods(f)) do m
+        P = Base.unwrap_unionall(m.sig).parameters
+        length(P) > pos || return false
+        S = Base.rewrap_unionall(P[pos + 1], m.sig)
+        return S !== Any && R <: S
+    end
+    help_text = construction_help(ThinCrabCavitySpec)
+    meaning_text = parameter_schema(ElementSpec{:thin_crab_cavity}).phase_noise.meaning
+    catalogue = Octopus._turn_rule_names()
+    @test catalogue == join(sort!(string.(nameof.(collect(derived_rules)))), ", ")
+    for R in derived_rules
+        @testset let rule = nameof(R)
+            @test haskey(rule_instances, R)
+            @test occursin(string(nameof(R)), help_text)
+            @test occursin(string(nameof(R)), meaning_text)
+            @test occursin(string(nameof(R)), catalogue)
+            @test owns_rule_method(Octopus._turn_offset, 1, R)
+            @test owns_rule_method(Octopus._rule_kind, 1, R)
+            @test haskey(rule_instances, R) && Octopus._is_turn_rule(rule_instances[R])
+            @test haskey(rule_instances, R) &&
+                  Octopus._push_rule_slot!(Any[], rule_instances[R], "phase_noise[1]")[1].kind ===
+                  Octopus._rule_kind(rule_instances[R])
+        end
+    end
+    @test Octopus._is_turn_rule(nothing) && !Octopus._is_turn_rule(1.0)
+    # The refusal messages print the derived catalogue and name the slot, so a
+    # new rule is named there without a hand edit.
+    err_cat = try
+        ThinCrabCavitySpec{1}(394.0e6; phase_noise=(1.0,))
+    catch e
+        e
+    end
+    @test err_cat isa ArgumentError && occursin(catalogue, sprint(showerror, err_cat))
+    @test occursin("phase_noise[1]", sprint(showerror, err_cat))
+end
+
+@testset "Turn modulation: white and pink spectra" begin
+    # 2026-10-12, turn-by-turn modulation stage 2, test 9 of
+    # docs/design/turn_modulation.md section 8: the reduced-size twin of
+    # validation/turn_modulation_spectra.jl (16384 turns against the script's
+    # 65536; the same rules, seed, bands, estimator and tolerances; measured
+    # there white +0.957, pink -0.039, pink rms 0.8799 at this size under the
+    # rule component band of 2026-10-12), plus the
+    # pink rule's guardrails, its keying by the documented formula, its
+    # component band beside a white rule sharing the rng_id on one cavity,
+    # chunking invariance through execute!, zero allocation in realize, the
+    # provenance slot, the strength_noise placement and the duplicate-stream
+    # warning. Every sequence goes through the PUBLIC path a run tracks:
+    # compile_runtime on a ThinCrabCavitySpec{1} and realize per absolute turn.
+    sp_turns = 16384
+    sp_seed = UInt64(42)
+    sp_ctx(turn) = TrackingContext(turn=turn, seed=sp_seed, rng_method=:philox)
+    sp_cavity(; kw...) = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,), kw...)
+    sp_compiled(rule) = compile_runtime(sp_cavity(phase_noise=(rule,)))
+    sp_offset(w, turn) = Octopus.realize(w.rule, w.base, sp_ctx(turn))[1].phase[1] - w.base.phase[1]
+    sp_sequence(rule) = (w = sp_compiled(rule); [sp_offset(w, t) for t in 0:sp_turns-1])
+    # Power per octave band of the periodogram (bins 2^i .. 2^(i+1) - 1 of the
+    # mean-subtracted sequence), normalised to the top octave, as the script.
+    function sp_octave_power(seq)
+        mu = sum(seq) / length(seq)
+        P = abs2.(Octopus.FFTW.rfft(seq .- mu))
+        bands = Float64[]
+        lo = 2
+        while 2lo <= length(P)
+            push!(bands, sum(@view P[lo:2lo-1]))
+            lo *= 2
+        end
+        return bands ./ bands[end]
+    end
+    # Least-squares slope of log2(power) per octave over the trusted bands
+    # (the two lowest, 2 and 4 bins, are excluded as in the note).
+    function sp_slope(bands)
+        y = log2.(bands[3:end])
+        x = collect(Float64, 0:length(y)-1)
+        xm, ym = sum(x) / length(x), sum(y) / length(y)
+        return sum((x .- xm) .* (y .- ym)) / sum(abs2, x .- xm)
+    end
+    sp_rms(seq) = sqrt(sum(abs2, seq) / length(seq))
+
+    # (a) The spectra twin: white doubles per octave, pink is flat per octave,
+    # the pink rms is sigma within the script's bound, and the pink offset on
+    # one turn computed alone equals the sequence's entry (statelessness).
+    white = WhiteNoise(1.0; rng_id=7)
+    pink = PinkNoise(1.0; rng_id=7, octaves=16)
+    seq_white = sp_sequence(white)
+    seq_pink = sp_sequence(pink)
+    pw = sp_octave_power(seq_white)
+    pp = sp_octave_power(seq_pink)
+    @test length(pw) == 12 && length(pp) == 12
+    @test abs(sp_slope(pw) - 1.0) <= 0.15
+    @test abs(sp_slope(pp)) <= 0.20
+    @test 0.8 <= sp_rms(seq_pink) <= 1.25
+    @test abs(sp_rms(seq_white) - 1.0) <= 0.05
+    check_turn = min(40000, sp_turns - 1)
+    @test sp_offset(sp_compiled(pink), check_turn) == seq_pink[check_turn + 1]
+
+    # (b) The keying, by the documented formula: generator k of slot s is the
+    # counter-RNG normal keyed on turn >> k with component
+    # _RULE_COMPONENT_BASE + s + _PINK_COMPONENT_STRIDE (k + 1), the sum over
+    # sqrt(K); the same summation order gives bitwise equality.
+    function sp_formula(turn, slot; K=16, sigma=1.0, rng_id=7)
+        acc = 0.0
+        for k in 0:K-1
+            acc += Octopus.octopus_normal(sp_seed, Octopus.RNG_PHILOX, turn >> k, UInt64(rng_id), 0,
+                                          Octopus._RULE_COMPONENT_BASE + slot +
+                                          Octopus._PINK_COMPONENT_STRIDE * (k + 1), Float64)
+        end
+        return sigma * acc / sqrt(Float64(K))
+    end
+    @test seq_pink[1] == sp_formula(0, 1)
+    @test seq_pink[check_turn + 1] == sp_formula(check_turn, 1)
+    @test sp_offset(sp_compiled(PinkNoise(0.3; rng_id=7, octaves=5)), 1000) ==
+          0.3 * (sum(Octopus.octopus_normal(sp_seed, Octopus.RNG_PHILOX, 1000 >> k, UInt64(7), 0,
+                                            Octopus._RULE_COMPONENT_BASE + 1 +
+                                            Octopus._PINK_COMPONENT_STRIDE * (k + 1), Float64) for k in 0:4) / sqrt(5.0))
+    # Generator k holds its draw for 2^k turns: with one octave the rule IS a
+    # white sequence on component _RULE_COMPONENT_BASE + 1 + _PINK_COMPONENT_STRIDE,
+    # and with two the second generator is
+    # constant across each pair of turns.
+    one = sp_compiled(PinkNoise(1.0; rng_id=7, octaves=1))
+    @test all(sp_offset(one, t) == Octopus.octopus_normal(sp_seed, Octopus.RNG_PHILOX, t, UInt64(7), 0,
+                                                              Octopus._RULE_COMPONENT_BASE + 1 + Octopus._PINK_COMPONENT_STRIDE, Float64)
+              for t in 0:7)
+    two = sp_compiled(PinkNoise(1.0; rng_id=7, octaves=2))
+    slow(t) = sqrt(2.0) * sp_offset(two, t) - Octopus.octopus_normal(sp_seed, Octopus.RNG_PHILOX, t, UInt64(7), 0,
+                                                              Octopus._RULE_COMPONENT_BASE + 1 + Octopus._PINK_COMPONENT_STRIDE, Float64)
+    @test isapprox(slow(4), slow(5); atol=1.0e-12) && isapprox(slow(6), slow(7); atol=1.0e-12) &&
+          !isapprox(slow(5), slow(6); atol=1.0e-12)
+
+    # (c) Guardrails: the octave range, a negative or non-finite sigma; the
+    # bounds themselves construct; zero is a quiet rule; Float32 is kept.
+    @test_throws ArgumentError PinkNoise(1.0; octaves=0)
+    @test_throws ArgumentError PinkNoise(1.0; octaves=63)
+    @test_throws ArgumentError PinkNoise(-1.0)
+    @test_throws ArgumentError PinkNoise(NaN)
+    @test_throws ArgumentError PinkNoise(Inf; octaves=4)
+    @test PinkNoise(1.0; octaves=1).octaves == 1 && PinkNoise(1.0; octaves=62).octaves == 62
+    # rng_id 0, the default, assigns a FRESH stream (the claim semantics are
+    # pinned in "Turn modulation: rules, wrapper and the pure hook").
+    @test PinkNoise(1.0).octaves == 16 && PinkNoise(1.0).rng_id > 0
+    @test PinkNoise(1.0f0; rng_id=3) isa PinkNoise{Float32}
+    @test sp_offset(sp_compiled(PinkNoise(0.0; rng_id=7)), 12) == 0.0
+    err = try
+        PinkNoise(1.0; octaves=70)
+    catch e
+        e
+    end
+    @test err isa ArgumentError && occursin("PinkNoise", err.msg) && occursin("octaves", err.msg)
+    err2 = try
+        ThinCrabCavitySpec{1}(394.0e6; phase_noise=(1.0,))
+    catch e
+        e
+    end
+    @test err2 isa ArgumentError && occursin("PinkNoise", err2.msg)
+    @test occursin("PinkNoise", construction_help(ThinCrabCavitySpec))
+
+    # (d) A white and a pink rule on two slots of ONE cavity sharing the
+    # rng_id draw from disjoint component bands (white: _RULE_COMPONENT_BASE +
+    # slot; pink: _RULE_COMPONENT_BASE + slot + _PINK_COMPONENT_STRIDE (k + 1)),
+    # so the two offsets differ on turn 0, and the pink one is the formula on
+    # slot 2.
+    mixed = compile_runtime(ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), phase=(0.0, 0.0),
+                                                  phase_noise=(WhiteNoise(1.0; rng_id=7), PinkNoise(1.0; rng_id=7))))
+    @test mixed isa TurnModulated
+    realised0 = Octopus.realize(mixed.rule, mixed.base, sp_ctx(0))[1]
+    @test realised0.phase[1] != realised0.phase[2]
+    @test realised0.phase[1] == Octopus.octopus_normal(sp_seed, Octopus.RNG_PHILOX, 0, UInt64(7), 0,
+                                                       Octopus._RULE_COMPONENT_BASE + 1, Float64)
+    @test realised0.phase[2] == sp_formula(0, 2)
+
+    # (e) Chunking invariance through execute!: one call of six turns equals
+    # six calls of one turn bitwise on a small beam, and the noise acted.
+    n = 50
+    sp_zrep() = Phase6DRep(collect(range(-1.0e-3, 1.0e-3; length=n)), zeros(n),
+                           collect(range(0.5e-3, -0.5e-3; length=n)), zeros(n), zeros(n), zeros(n))
+    sp_same(a, b) = all(all(getfield(a, f) .=== getfield(b, f)) for f in (:x, :px, :y, :py, :z, :pz))
+    pink_spec = sp_cavity(phase_noise=(PinkNoise(1.0e-2; rng_id=7),))
+    set_global_rng!(seed=0x5eed, method=:philox)
+    one_call = sp_zrep()
+    execute!(TrackingTask((pink_spec,)), one_call; turns=6)
+    set_global_rng!(seed=0x5eed, method=:philox)
+    six_calls = sp_zrep()
+    t6 = TrackingTask((pink_spec,))
+    for _ in 1:6
+        execute!(t6, six_calls; turns=1)
+    end
+    @test t6.next_turn[] == 6
+    @test sp_same(one_call, six_calls)
+    set_global_rng!(seed=0x5eed, method=:philox)
+    quiet = sp_zrep()
+    execute!(TrackingTask((sp_cavity(),)), quiet; turns=6)
+    @test !sp_same(one_call, quiet)
+
+    # (f) realize with a pink rule is type-preserving and allocates nothing,
+    # the hook's contract (the K-draw loop is a scalar accumulation).
+    wp = sp_compiled(pink)
+    alloc_realize(w, ctx) = @allocated Octopus.realize(w.rule, w.base, ctx)
+    alloc_realize(wp, sp_ctx(5))
+    @test alloc_realize(wp, sp_ctx(6)) == 0
+    @test typeof(Octopus.realize(wp.rule, wp.base, sp_ctx(7))[1]) === typeof(wp.base)
+    @test Octopus.realize(wp.rule, wp.base, sp_ctx(7))[2] === wp.rule
+
+    # (g) The provenance slot: kind :pink with the rng_id, zeros elsewhere
+    # (octaves is a spec parameter, not provenance), through the compiled
+    # wrapper's walk as execute! records it.
+    prov = Octopus._turn_modulation_provenance!(Any[], (wp,))
+    @test length(prov) == 1 && prov[1].element == "ThinCrabCavity"
+    slots = prov[1].slots
+    @test length(slots) == 1
+    @test slots[1].slot == "phase_noise[1]" && slots[1].kind === :pink && slots[1].rng_id == 7
+    @test slots[1].digest == 0 && slots[1].name == "" && slots[1].length == 0
+    @test propertynames(slots[1]) == (:slot, :kind, :rng_id, :digest, :name, :length)
+
+    # (h) strength_noise accepts a pink rule: one realised offset (slot N + 1 = 2,
+    # the formula with rng_id 9) moves both planes of its harmonic bitwise and
+    # leaves the phase alone.
+    ws = compile_runtime(sp_cavity(strength_noise=(PinkNoise(1.0e-3; rng_id=9),)))
+    @test ws isa TurnModulated
+    rs = Octopus.realize(ws.rule, ws.base, sp_ctx(3))[1]
+    off_s = sp_formula(3, 2; sigma=1.0e-3, rng_id=9)
+    @test off_s != 0 && rs.strengthX[1] == ws.base.strengthX[1] + off_s
+    @test rs.strengthY[1] == ws.base.strengthY[1] + off_s && rs.phase[1] == ws.base.phase[1]
+    @test Octopus._turn_modulation_slots(ws.rule)[1].slot == "strength_noise[1]"
+
+    # (i) Two cavities sharing a pink rng_id warn like two white ones; a pink
+    # and a white rule on one cavity with one id do not (distinct slots).
+    @test_logs (:warn, r"share an rng_id") match_mode = :any TrackingTask(
+        (sp_cavity(phase_noise=(PinkNoise(1.0e-2; rng_id=11),)), DriftSpec(L=1.0),
+         sp_cavity(phase_noise=(PinkNoise(1.0e-2; rng_id=11),))))
+    @test_logs TrackingTask((ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), phase=(0.0, 0.0),
+                                                  phase_noise=(WhiteNoise(1.0e-2; rng_id=11), PinkNoise(1.0e-2; rng_id=11))),))
 end
 
 @testset "Thin elements, markers and RBEND" begin
@@ -13956,6 +14721,132 @@ end
         @test_throws ArgumentError execute!(tbad, b1, b2; turns=1)
     end
     foreach(x -> rm(x; force=true), (pa, pm, pa2))
+end
+
+@testset "The run artifact records turn-modulation provenance" begin
+    # docs/design/turn_modulation.md, D7 (owner, 2026-10-12): the table rule
+    # owns its provenance in the run artifact. /turn_modulation/<slot> holds,
+    # for every execute! (ledger row) whose line had a modulated element, one
+    # group per modulated element in line order with its ACTIVE slots and the
+    # rule's identity as attributes; nothing is ever deleted, an unmodulated
+    # execute! writes nothing for its slot, a strong-strong run records both
+    # beams, and a torn group is refused by name.
+    mkp() = Phase6DRep([1e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
+    table = TurnTable(collect(0.001:0.001:0.010); name="amp")
+    crab = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,),
+                                 phase_noise=(WhiteNoise(1.0e-2; rng_id=7),),
+                                 strength_noise=(table,))
+    disp = CrabDispersionSpec{Float64}(zeta1=0.1)
+    p = tempname() * ".h5"
+    t = TrackingTask((crab, disp); artifact=RunArtifact(p; append=true))
+    execute!(t, mkp(); turns=2)
+    execute!(t, mkp(); turns=3)          # continues at turn 2: ledger rows 1 and 2
+    prov = turn_modulation_provenance(p)
+    @test length(prov) == 2
+    @test [e.execution for e in prov] == [1, 2]
+    Octopus.HDF5.h5open(p, "r") do f
+        @test read(f["execution"]["start_turn"]) == [0, 2]   # the slots ARE the ledger rows
+        @test sort(collect(keys(f["turn_modulation"]))) == ["1", "2"]
+        @test read(Octopus.HDF5.attributes(f["turn_modulation"]["1"])["element_count"]) == 1
+        @test sort(collect(keys(f["turn_modulation"]["1"]["1"]))) ==
+              ["phase_noise[1]", "strength_noise[1]"]
+    end
+    for e in prov
+        @test length(e.elements) == 1
+        el = e.elements[1]
+        @test el.element == "ThinCrabCavity"
+        @test el.beam == 1
+        @test length(el.slots) == 2
+        @test el.slots[1].slot == "phase_noise[1]"
+        @test el.slots[1].kind === :white
+        @test el.slots[1].rng_id == 7
+        @test el.slots[2].slot == "strength_noise[1]"
+        @test el.slots[2].kind === :table
+        @test el.slots[2].length == 10
+        @test el.slots[2].digest == table.digest
+        @test el.slots[2].name == "amp"
+    end
+    # The TaskOutput handle serves the same vector; the table of contents and
+    # :all read with the group present.
+    out = TaskOutput(p)
+    @test read(out, :turn_modulation) == prov
+    @test haskey(read(out), "turn_modulation")
+    @test read(out, :all).turn_modulation == prov
+    # An UNMODULATED task continuing the file adds a ledger row but no entry;
+    # the two earlier entries stay (nothing is ever deleted).
+    t0 = TrackingTask((DriftSpec(L=1.0),); artifact=RunArtifact(p; append=true))
+    Test.collect_test_logs() do          # the second-live-writer warning (U7-10)
+        execute!(t0, mkp(); turns=1, start_turn=5)
+    end
+    @test length(read(TaskOutput(p), :execution).start_turn) == 3
+    @test turn_modulation_provenance(p) == prov
+    # A torn group is refused by name, never read short: a missing count ...
+    Octopus.HDF5.h5open(p, "r+") do f
+        Octopus.HDF5.delete_attribute(f["turn_modulation"]["2"], "element_count")
+    end
+    err = try turn_modulation_provenance(p); nothing catch e; e end
+    @test err !== nothing && occursin("torn", sprint(showerror, err))
+    # ... and a count that disagrees with the groups present.
+    Octopus.HDF5.h5open(p, "r+") do f
+        Octopus.HDF5.attributes(f["turn_modulation"]["2"])["element_count"] = Int64(1)
+        g = f["turn_modulation"]["1"]["1"]
+        Octopus.HDF5.delete_attribute(g, "slot_count")
+        Octopus.HDF5.attributes(g)["slot_count"] = Int64(3)
+    end
+    err = try turn_modulation_provenance(p); nothing catch e; e end
+    @test err !== nothing && occursin("torn", sprint(showerror, err))
+    # An unmodulated run writes no group; the reader answers with an empty
+    # vector (no execute! recorded in the file had a modulated element) ...
+    p2 = tempname() * ".h5"
+    execute!(TrackingTask((DriftSpec(L=1.0),); artifact=RunArtifact(p2)), mkp(); turns=1)
+    @test isempty(turn_modulation_provenance(p2))
+    @test isempty(read(TaskOutput(p2), :turn_modulation))
+    Octopus.HDF5.h5open(p2, "r") do f
+        @test !haskey(f, "turn_modulation")
+    end
+    # ... as does a file from before the group existed.
+    p3 = tempname() * ".h5"
+    Octopus.HDF5.h5open(p3, "w") do f
+        Octopus.HDF5.create_group(f, "execution")
+    end
+    @test isempty(turn_modulation_provenance(p3))
+    # A strong-strong run applies the modulation in both lines (shared
+    # segment executor), so it records the receipt and the group with the
+    # `beam` field: beam 1's entries first, then beam 2's.
+    mkb(rng_id, charge, mc2, E0) = begin
+        set_global_rng!(seed=5, method=:philox)
+        Beam(64, CPUThreadsExecutionPolicy(), Float64;
+            beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+            sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
+            charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+    end
+    cav(rng_id) = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,),
+                                        phase_noise=(WhiteNoise(1.0e-2; rng_id=rng_id),))
+    ip = StrongStrongCollision(:ip)
+    pss = tempname() * ".h5"
+    tss = StrongStrongTask((ip, cav(11)), (ip, cav(12)); artifact=pss)
+    audit = ExecutionAudit()
+    b1, b2 = mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9)
+    with_execution_audit(audit) do
+        execute!(tss, b1, b2; turns=2)
+    end
+    receipts = filter(r -> r.consumer === :turn_modulation, execution_receipts(audit))
+    @test length(receipts) == 1
+    rcpt = only(receipts).values
+    @test [e.beam for e in rcpt.elements] == [1, 2]
+    @test all(e.element == "ThinCrabCavity" for e in rcpt.elements)
+    @test [e.slots[1].rng_id for e in rcpt.elements] == [11, 12]
+    @test rcpt.first_turn == 0 && rcpt.turns == 2
+    pss_prov = turn_modulation_provenance(pss)
+    @test length(pss_prov) == 1 && pss_prov[1].execution == 1
+    @test [e.beam for e in pss_prov[1].elements] == [1, 2]
+    @test [e.slots[1].rng_id for e in pss_prov[1].elements] == [11, 12]
+    # Two beams' cavities sharing an rng_id draw identical offsets: the
+    # constructor warns once; distinct ids are silent.
+    @test_logs (:warn, r"share an rng_id") match_mode = :any StrongStrongTask(
+        (ip, cav(11)), (ip, cav(11)))
+    @test_logs StrongStrongTask((ip, cav(11)), (ip, cav(12)))
+    foreach(x -> rm(x; force=true), (p, p2, p3, pss))
 end
 
 @testset "Solver equality is by configuration" begin
@@ -19110,6 +20001,7 @@ end
             (0.0, 0.0, 0.0), ntuple(i -> Float64(i == 1 || i == 5 || i == 9), 9),
             (0.0, 0.0, 0.0)))
         @test Octopus._requires_tracking_context(Octopus.RefTilted(ap, 1.0, 0.0))
+        @test Octopus._requires_tracking_context(Octopus.TurnModulated(ap, nothing))
     end
 
     track!(beam.rep, line, 5; policy=CPUThreadsExecutionPolicy())
@@ -19212,6 +20104,147 @@ end
         @test g.element_id == c.element_id
         @test all(g[k] == c[k] for k in (:x, :px, :y, :py, :z, :pz))
         @test coords_identical(device, cpu.rep)
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
+@testset "Turn modulation: CPU/CUDA identity and the device conversion" begin
+    # 2026-10-12, turn-by-turn modulation stage 1, test 6 of
+    # docs/design/turn_modulation.md section 8: the realised sequence and the
+    # tracked coordinates agree between backends to the existing near-identity
+    # tolerance, and the kernel's element type is the bare cavity (design D8).
+    #
+    # WHAT IS BITWISE AND WHAT IS NOT, measured on the RTX 4500 Ada, 2026-10-12.
+    # The realised sequence is drawn on the HOST and shared by both backends, so
+    # on the device an `execute!` run equals, TO THE BIT, tracking the
+    # hand-realised cavity turn by turn with the same kernel -- the realised
+    # element is what the kernel sees. CPU against CUDA is NOT bitwise for this
+    # element: the device contracts `ikcc * z + phase` into one FMA, so a cavity
+    # with a nonzero phase (and the CrabDispersion element beside it, already in
+    # the tree) differ by a few ulps -- 4.3e-19 on 1e-3-scale coordinates here,
+    # 3.4e-21 on px, the SAME gap the nominal line shows, i.e. the modulation adds
+    # no backend discrepancy of its own. Pinned at 1e-17 (20x headroom, seven
+    # orders inside the contract's atol = rtol = 1e-10, which is also asserted),
+    # against a noise effect of 4e-6 on the device.
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        n = 512
+        host() = Phase6DRep(collect(range(-1.0e-3, 1.0e-3; length=n)), zeros(n),
+                            collect(range(0.5e-3, -0.5e-3; length=n)), zeros(n),
+                            collect(range(-2.0e-3, 2.0e-3; length=n)), zeros(n))
+        device(h) = Phase6DRep((Octopus.CUDA.CuArray(a) for a in coordinate_arrays(h))...)
+        identical(d, h) = all(all(Array(x) .=== Array(y))
+                              for (x, y) in zip(coordinate_arrays(d), coordinate_arrays(h)))
+        maxdiff(d, h) = maximum(maximum(abs.(Array(x) .- Array(y)))
+                                for (x, y) in zip(coordinate_arrays(d), coordinate_arrays(h)))
+        near(d, h) = all(all(isapprox.(Array(x), Array(y); atol=1.0e-10, rtol=1.0e-10))
+                         for (x, y) in zip(coordinate_arrays(d), coordinate_arrays(h)))
+        cavity(; kw...) = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,), kw...)
+        disp = CrabDispersionSpec{Float64}(zeta1=0.1)
+        function run_on(policy, line)
+            set_global_rng!(seed=0x5eed, method=:philox)
+            rep = policy isa CUDAExecutionPolicy ? device(host()) : host()
+            execute!(TrackingTask(line; policy=policy), rep; turns=3)
+            Octopus.CUDA.synchronize()
+            return rep
+        end
+        # The hand-realised reference on a backend: the nominal cavity realised by
+        # `realize` at each absolute turn and tracked for one turn, no wrapper and
+        # no update machinery anywhere.
+        function hand_realised(policy, rule)
+            set_global_rng!(seed=0x5eed, method=:philox)
+            w = compile_runtime(cavity(phase_noise=(rule,)))
+            d_rt = compile_runtime(disp)
+            rep = policy isa CUDAExecutionPolicy ? device(host()) : host()
+            for t in 0:2
+                realised = realize(w.rule, w.base, TrackingContext(turn=t))[1]
+                track!(rep, (realised, d_rt), 1; policy=policy)
+            end
+            Octopus.CUDA.synchronize()
+            return rep
+        end
+        nominal_gpu = run_on(CUDAExecutionPolicy(), (cavity(), disp))
+        for (kind, rule) in (("white", WhiteNoise(1.0e-2; rng_id=7)),
+                             ("table", TurnTable(collect(0.01:0.01:0.10); name="amp")))
+            line = (cavity(phase_noise=(rule,)), disp)
+            cpu = run_on(CPUThreadsExecutionPolicy(), line)
+            gpu = run_on(CUDAExecutionPolicy(), line)
+            @testset let rule_kind = kind, gap = maxdiff(gpu, cpu)
+                # device run == hand-realised device reference, to the bit (D8)
+                @test identical(gpu, hand_realised(CUDAExecutionPolicy(), rule))
+                @test identical(cpu, hand_realised(CPUThreadsExecutionPolicy(), rule))
+                # CPU vs CUDA: the contract's tolerance and the measured ulp bound
+                @test near(gpu, cpu)
+                @test gap <= 1.0e-17
+                # the noise moved the beam on the device by ten orders more
+                @test maxdiff(gpu, nominal_gpu) > 1.0e-7
+            end
+        end
+
+        # The conversion the launch reaches: `cudaconvert` recurses through the
+        # fused tuple with `Adapt.adapt_structure`, and the wrapper adapts to its
+        # realised element -- a bare `ThinCrabCavity`, no rule -- at any depth,
+        # through the three containers that hold elements.
+        w_table = compile_runtime(cavity(phase_noise=(TurnTable([0.1, 0.2, 0.3]),)))
+        bare = compile_runtime(cavity())
+        disp_rt = compile_runtime(disp)
+        holds_wrapper(x::TurnModulated) = true
+        holds_wrapper(x::Tuple) = any(holds_wrapper, x)
+        holds_wrapper(x) = (x isa AbstractArray || x isa AbstractString) ? false :
+            isstructtype(typeof(x)) && any(i -> holds_wrapper(getfield(x, i)), 1:fieldcount(typeof(x)))
+        @test holds_wrapper((w_table, bare))
+        conv = Octopus.CUDA.cudaconvert((w_table, bare))
+        @test conv[1] isa Octopus.ThinCrabCavity
+        @test conv[1] === w_table.inner
+        @test conv[2] === bare
+        @test !holds_wrapper(conv)
+        eye = ntuple(i -> Float64(i == 1 || i == 5 || i == 9), 9)
+        nested = (Octopus.CompositeLine((disp_rt, w_table)),
+                  Octopus.RefTilted(w_table, 1.0, 0.0),
+                  Octopus.MisalignedElement(w_table, eye, (0.0, 0.0, 0.0), eye, (0.0, 0.0, 0.0)),
+                  Octopus.CompositeLine((Octopus.RefTilted(w_table, 1.0, 0.0),)))
+        @test holds_wrapper(nested)
+        nconv = Octopus.CUDA.cudaconvert(nested)
+        @test !holds_wrapper(nconv)
+        @test nconv[1] isa Octopus.CompositeLine && nconv[1].ops[2] isa Octopus.ThinCrabCavity
+        @test nconv[2] isa Octopus.RefTilted && nconv[2].inner isa Octopus.ThinCrabCavity
+        @test nconv[3] isa Octopus.MisalignedElement && nconv[3].inner isa Octopus.ThinCrabCavity
+        @test nconv[4] isa Octopus.CompositeLine && nconv[4].ops[1].inner isa Octopus.ThinCrabCavity
+
+        # A noisy cavity inside a kept-whole BeamLine (a CompositeLine): the
+        # container conversion reaches the wrapper, the device run equals the
+        # flat line's device run to the bit, and both backends agree as above.
+        noisy = cavity(phase_noise=(WhiteNoise(1.0e-2; rng_id=7),))
+        sub_line = (DriftSpec(L=0.5), BeamLine("in", noisy), DriftSpec(L=0.5))
+        flat_line = (DriftSpec(L=0.5), noisy, DriftSpec(L=0.5))
+        cpu_sub = run_on(CPUThreadsExecutionPolicy(), sub_line)
+        gpu_sub = run_on(CUDAExecutionPolicy(), sub_line)
+        @test identical(gpu_sub, run_on(CUDAExecutionPolicy(), flat_line))
+        @test near(gpu_sub, cpu_sub)
+        @test maxdiff(gpu_sub, cpu_sub) <= 1.0e-17
+        @test maxdiff(gpu_sub, run_on(CUDAExecutionPolicy(),
+                                      (DriftSpec(L=0.5), BeamLine("in", cavity()), DriftSpec(L=0.5)))) > 1.0e-7
+
+        # NEIGHBOUR PROBE (the container `adapt_structure` methods, 2026-10-12).
+        # Before them Adapt's default was the identity for `CompositeLine`, so a
+        # kept-whole sub-line carrying a recording aperture's DEVICE record
+        # reached the kernel unconverted (a CuArray field inside a kernel
+        # argument). It launches now, and the losses and coordinates match the
+        # CPU's to the bit (polynomial maps only, no transcendental kick).
+        coll(rec) = (compile_runtime(DriftSpec(L=0.5)),
+                     compile_runtime(BeamLine("coll", ApertureSpec(shape=:rectangle, x_limit=0.5e-3,
+                                                                   y_limit=1.0, name="A", element_id=1,
+                                                                   loss_record=rec))))
+        cpu_ap = host()
+        cpu_rec = LossRecord(["A"], n, cpu_ap)
+        track!(cpu_ap, coll(cpu_rec), 2; policy=CPUThreadsExecutionPolicy())
+        gpu_ap = device(host())
+        gpu_rec = LossRecord(["A"], n, gpu_ap)
+        track!(gpu_ap, coll(gpu_rec), 2; policy=CUDAExecutionPolicy())
+        Octopus.CUDA.synchronize()
+        @test sum(loss_counts(cpu_rec)) > 0
+        @test loss_counts(gpu_rec) == loss_counts(cpu_rec)
+        @test identical(gpu_ap, cpu_ap)
     else
         @test_skip "CUDA device not available"
     end

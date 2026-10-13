@@ -33,6 +33,10 @@ element_help(:thin_crab_cavity)
 element_help(ThinCrabCavitySpec)
 ```
 
+`element_help(:thin_crab_cavity)` also documents the crab cavity's
+turn-by-turn modulation parameters `phase_noise` and `strength_noise` (see
+"Turn Modulation" below).
+
 Then use focused metadata queries when needed:
 
 ```julia
@@ -186,6 +190,32 @@ Deferred parameter expressions over named knobs; design note in
 ?knob_symbolics_available
 ?KnobEffectivenessContract
 ```
+
+## Turn Modulation
+
+Element parameters that change from turn to turn inside one tracking run
+(crab cavity RF phase and amplitude noise first), realised once per turn on
+the host by the `TurnModulated` compile-time wrap and never read by a kernel;
+design note in `docs/design/turn_modulation.md`. The crab cavity's
+`phase_noise` and `strength_noise` parameters are documented by
+`element_help(:thin_crab_cavity)`. Use Julia help:
+
+```julia
+?TurnModulated
+?WhiteNoise
+?PinkNoise
+?TurnTable
+?update
+?update_line
+?realize
+?turn_modulation_provenance
+```
+
+A bare `track!` through a `TurnModulated` line tracks the NOMINAL element on
+every turn; the rules are realised only by a task's `execute!`, which calls
+`update_line` before each turn (design decision D5). CUDA.jl also exports an
+`update`, so a session that does `using Octopus, CUDA` writes
+`Octopus.update`.
 
 ## Beam And Runtime Helpers
 

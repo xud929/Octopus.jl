@@ -130,9 +130,12 @@ Two consequences to know:
   cache compiled runtime lines; lines containing knob parameters record the
   epoch and recompile when it has moved. A knob assignment therefore reaches
   an already-constructed task at its **next `execute!`**. Mid-execution
-  turn-dependent modulation remains the job of `ScheduledAction`/`update!`
-  (see `weak_strong_6d_model.md` §6); extending the epoch check into the turn
-  loop is recorded as future work below.
+  turn-dependent modulation is the element-owned `TurnModulated` wrap with
+  the pure per-turn `update` hook (design note
+  `docs/design/turn_modulation.md`): a knob resolves at compile into the
+  nominal element and a rule adds its per-turn offset at run time on top of
+  it; extending the epoch check into the turn loop is recorded as future
+  work below.
 
 **Verification.** `validate(KnobEffectivenessContract())` checks the whole
 chain at the consumer boundary: a knob-driven element tracks identically to

@@ -2884,6 +2884,16 @@ const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     (:lumped_radiation, :beta) => "optics input folded before the map, as alpha is",
     (:thin_strong_beam, :klum) => "reaches the runtime but feeds the luminosity diagnostic, not the coordinate map",
     (:thin_strong_beam, :alpha) => "used only when the strong beam is given through beta/alpha optics rather than kbb, which this probe does not do",
+    # Turn-modulation rule parameters (docs/design/turn_modulation.md): each
+    # entry is `nothing` or a rule object, and the realised offset is added by
+    # the per-turn `update` the task loops call, which the bare deterministic
+    # call below never runs (design decision D5). A decision, not a crash
+    # guard: `_perturb_candidates` forms no candidate for a tuple of rules, so
+    # without these rows the two pairs are merely counted unperturbable
+    # (measured 2026-10-12: 43 instead of 41, the contract still passing); the
+    # rows say WHY they are inert here and where their effect is pinned.
+    (:thin_crab_cavity, :phase_noise) => "a per-turn rule object, not a number; the generic perturbation cannot form a rule and the bare deterministic call never runs an update -- its effect is pinned at the kernel boundary by the turn-modulation testsets",
+    (:thin_crab_cavity, :strength_noise) => "a per-turn rule object, not a number; the generic perturbation cannot form a rule and the bare deterministic call never runs an update -- its effect is pinned at the kernel boundary by the turn-modulation testsets",
     # A function, a string and an output handle have no meaningful perturbation:
     # there is no "slightly different" predicate or label whose effect this
     # contract could measure. They are declared inert here rather than left to
@@ -3011,6 +3021,11 @@ function _perturb_candidates(key::Symbol, current, pmeta)
     current isa Symbol && return ()
     if current isa Tuple
         isempty(current) && return ((0.0, 0.31),)
+        # A tuple holding anything but numbers -- a turn-modulation rule object
+        # or `nothing`, the per-harmonic `phase_noise` shape -- has no numeric
+        # neighbourhood this contract can form: unperturbable, never a
+        # `Float64(nothing)` (2026-10-12 review, C4).
+        all(entry -> entry isa Real, current) || return ()
         return (ntuple(i -> Float64(current[i]) + 0.17 * i, length(current)),)
     end
     # A `nothing` default carries no type at all, so offer the shapes an element

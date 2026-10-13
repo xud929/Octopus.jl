@@ -1453,6 +1453,46 @@ fixed one, and the red failure text is read to confirm it fails for the
 defect (the message the defect produces), not for the test. A red count
 alone certifies nothing.
 
+## A conversion defined on a type is not reached through a container that has none
+
+The turn-modulation design named one untested step: that the CUDA launch
+applies the wrapper's device conversion through the fused tuple. Tested, it
+did, for a wrapper placed directly in the tuple. One level down, inside
+`MisalignedElement`, `RefTilted` or `CompositeLine`, the same wrapper reached
+the launch unconverted and the kernel refused it with "passing non-bitstype
+argument ... .rule is of type TurnTable", a field named three levels deep.
+`Adapt` descends a tuple element-wise, but for a struct it does not know its
+`adapt_structure` is the identity, so the recursion stops at the first
+container without a method and never sees what is inside.
+
+The rule: when adding a device conversion for a type, enumerate every
+container that can hold the type, give each a descending method, and test
+the nested placement, not only the flat one. A probe that passes on the flat
+tuple has tested the recursion into tuples, which Adapt already owned, and
+nothing about the containers the code actually builds.
+
+The same descent fixed a defect nobody was looking for: on the base tree a
+recording aperture inside a kept-whole `BeamLine` never launched on CUDA, its
+device record reaching the kernel unconverted through the same identity
+default (the base-tree run is described in
+`history/turn_modulation_stage1_2026_10_12.md`, section 3; the regression
+test is the neighbour probe in "Turn modulation: CPU/CUDA identity and the
+device conversion"). A conversion added for one type is owed to every type
+the container can hold.
+
+## A shared stream id separates nothing when two consumers key the same cell
+
+The counter RNG key is `(seed, turn, rng_id, particle slot, component)`. The
+rule's first draft keyed particle slot 0 and component 1 or 2, exactly the
+cell the BPM's occurrence-0 reading noise draws, so a cavity and the BPM
+measuring it would have drawn identical normals under one `rng_id`: the
+U14-2 shape again, two consumers on one stream. The repair is a band per
+consumer class, written down in one place (the key-layout comment above
+`_RULE_COMPONENT_BASE` in `src/elements/turn_modulated.jl`), and claimed ids
+(`rng_id = 0` assigns a fresh stream, an explicit id is claimed). The tell:
+any new consumer that reuses "slot 0" or "component 1" without reading the
+layout.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

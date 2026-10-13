@@ -48,7 +48,7 @@ constructor names remain the user-facing way to build those specs.
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
 - `ElementSpec{:thin_crab_cavity}` via `ThinCrabCavitySpec`
-  - Physics keywords: `:thin_element`, `:crab_cavity`, `:harmonic`
+  - Physics keywords: `:thin_element`, `:crab_cavity`, `:harmonic`, `:turn_modulation`
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`
   - Supported analyses: `TwissDispersionAnalysis`
@@ -380,3 +380,4 @@ live under `src/track/`.
 - `MisalignedElement`
 - `RefTilted`
 - `CompositeLine`
+- `TurnModulated`

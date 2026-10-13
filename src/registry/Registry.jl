@@ -219,9 +219,10 @@ function _runtime_object_types(reg::OctopusRegistry)
     # wrappers are what any misaligned/rolled/kept-whole placement compiles
     # THROUGH, and were missing from the snapshot entirely (2026-08-05
     # audit, U13-6 — the file header once claimed only meta-derived content
-    # here).
+    # here). `TurnModulated` is the fourth wrapper, what a placement with a
+    # turn-by-turn modulation rule compiles through (2026-10-12).
     append!(out, Any[BeamParams, Phase6DRep, Beam,
-                     MisalignedElement, RefTilted, CompositeLine])
+                     MisalignedElement, RefTilted, CompositeLine, TurnModulated])
     return unique(out)
 end
 
