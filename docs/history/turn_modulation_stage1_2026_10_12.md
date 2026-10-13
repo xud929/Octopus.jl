@@ -342,7 +342,32 @@ build on that); the probes were not re-run after the keying moved.
 
 ## 7 Gate
 
-[gate: pending -- the orchestrator fills this subsection after the two-arm run]
+The two-arm full gate ran on the committed batch 1fc2cbd (one commit on
+08f04e5, the tree of every section above), from the worktree, with CUDA
+active on the RTX 4500 Ada and four threads, after the fast lane on the
+same tree (exit 0, 314 rows, the fifteen heavyweight sections skipped
+loudly, every turn-modulation testset among the rows that ran) and the
+extracted source sweeps (the stage 6 pin tripwire exactly three lines,
+the `Core.Box` sweep, the detached-docstring sweep, all green):
+
+| arm | start, end (EDT) | rows | assertions | skipped |
+|---|---|---|---|---|
+| native | 2026-10-12 20:48:51, 23:23:29 | 329 | 148926 / 148926 | none |
+| `OPENBLAS_CORETYPE=Haswell`, `-C haswell` | 2026-10-12 23:23:29, 2026-10-13 01:48:16 | 329 | 148926 / 148926 | none |
+
+Exit 0 in both arms, `Testing Octopus tests passed`; the two arms' rows
+agree name for name and count for count; no row carries a failure, error
+or broken column; no `LANE SKIP` line (the full lane) and no CUDA skip
+(the CUDA testsets ran, "Turn modulation: CPU/CUDA identity and the device
+conversion" 28 of 28 among them). Against the previous gate (the DBA-ring
+example check at ce0bdf2: 324 rows, 148544 assertions) this batch adds
+five rows and 382 assertions. The box carried a load average near 28
+throughout, which is why each arm took about two and a half hours where
+the campaign's earlier gates took forty-five minutes.
+
+Not verified by this gate: the push and the CI run on the pushed tree (the
+runner's own CPU class), which follow on the owner's word.
+
 
 ## 8 Stage 2: the pink rule and the spectra
 
