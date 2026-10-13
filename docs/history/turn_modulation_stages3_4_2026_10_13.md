@@ -4,7 +4,7 @@ Status: stage 3 of `docs/design/turn_modulation.md` (section 9, item 3)
 implemented 2026-10-13 on top of the stage 1-2 batch pushed as `148d39a`
 (CI run 447 green, section 5); stage 4, the targeted neighbour audit,
 completed 2026-10-13 with its fixes folded into the same batch (section 6);
-the gate is pending (section 7). The stage 1-2 record,
+the two-arm full gate ran green on the batch's commit b99f6b7 (section 7). The stage 1-2 record,
 `turn_modulation_stage1_2026_10_12.md`, is frozen; this one builds on it and
 carries the corrections to it (6.4).
 
@@ -656,4 +656,48 @@ also when one spec object is placed twice.
 
 ## 7 Gate
 
-[gate: pending]
+The full gate ran on the committed tree b99f6b7 (working tree clean, the
+HEAD recorded in each log header) in both CPU arms, CUDA active, four
+threads, one arm after the other on the same host (load average about 18
+throughout):
+
+| arm | start to end, EDT, 2026-10-13 | rows | assertions | exit |
+|---|---|---|---|---|
+| native | 12:57:26 to 15:01:15 | 332 | 149326 of 149326 | 0 |
+| AVX2 (OpenBLAS Haswell kernels, LLVM target haswell) | 15:01:15 to 17:04:48 | 332 | 149326 of 149326 | 0 |
+
+```bash
+julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
+OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. --threads=4 \
+  -e 'using Pkg; Pkg.test(julia_args=["--threads=4", "-C", "haswell"])'
+```
+
+Both arms end in "Testing Octopus tests passed"; no summary row carries a
+Fail, Error or Broken column; the sorted row sets of the two arms are
+identical (an empty diff); nothing was skipped (the one line matching
+"skipped" in each log is a Twiss testset's title); CUDA was active, 36 rows
+per arm naming it, among them "Turn modulation: CPU/CUDA identity and the
+device conversion" 39/39. Against the stage 1-2 gate on 1fc2cbd (329 rows,
+148926 assertions) this tree has three rows more, "Turn modulation: the RF
+cavity by the same wrap", "Turn modulation: slot bounds and labels at the
+wrap" and "Turn modulation: the strong-strong window and receipt", and 400
+assertions more. The turn-modulation rows, identical in both arms:
+effectiveness 57/57, rules 321/321, slot bounds 25/25, white and pink
+spectra 44/44, RF cavity 140/140, run artifact provenance 127/127,
+strong-strong window 20/20, CPU/CUDA identity 39/39.
+
+Targeted checks on the same tree before the gate, all green: the extracted
+sweeps (the three stage 6 pins, the `Core.Box` sweep 2/2, the docstring
+sweep 2/2 with its new foreign-binding check); the fast lane, 12:08 to
+12:55, exit 0 with the fifteen standard heavyweight sections skipped
+loudly; "Architecture integrity" 28/28 on the regenerated snapshot (whose
+only change is the RF cavity's `:turn_modulation` keyword);
+`validation/tracking_backend_consistency.jl` passed in all six pairings,
+CPU against CPU and against CUDA, "Tracking backends agree within
+tolerance"; `validate(PublicConfigurationEffectivenessContract())` passed
+("Public configuration reached CPU, fused CUDA, and CUDA PIC consumers",
+residual 1.08e-19). The gate and check logs live under the git-ignored
+`result/gates/turnmod/`; this section is the record.
+
+Not verified: CI on this tree, which is not pushed; everything else the
+matrix names for this batch's classes ran.
