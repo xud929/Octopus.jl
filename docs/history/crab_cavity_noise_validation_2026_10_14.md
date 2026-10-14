@@ -471,7 +471,10 @@ CPU/CUDA identity 39/39). Checks before the gate: the extracted sweeps
 (exit 0) and a fast lane (exit 0, 316 rows, 147178/147178, the fifteen
 standard loud skips) on the tree one docs step earlier, and "Architecture
 integrity" 28/28 on the final docs. Not verified: CI on this tree, which is
-not pushed at the time of writing. The suite rows this batch changes, "Every example script runs
+not pushed at the time of writing. Added after the push: pushed 2026-10-14 as
+20bbfaa (this record's commit on top of 90a15be); CI run 449 on it
+completed green (runner znver4, 31 min, the usual stage 6 identity-pin
+notices). The suite rows this batch changes, "Every example script runs
 against the current interface" (21/21, its list derived from the
 catalogue) and "The developer harnesses run divided under an MPI
 launcher" (8/8), ran extracted and green (section 1); with
