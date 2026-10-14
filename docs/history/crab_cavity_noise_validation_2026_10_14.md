@@ -6,11 +6,9 @@ entry, the theory note and the validation script landed on the branch
 as `6995151` (stages 1-4 of `docs/design/turn_modulation.md`; CI run 448
 green); the rule checks and the sweep ran 2026-10-14 (sections 4-6: 147 of
 147 rule checks; 77 acceptance items, 76 pass, the one fail explained);
-the gate is pending (section 7). The remaining pending markers -- the gate
-(section 7) and the one marked `coupling` (the
-theory note's derived vertical coupling ratio; section 5) -- are filled
-before the commit that carries this record,
-with the number behind each verdict written here (never a `result/` path,
+the two-arm full gate ran green on the batch's commit 90a15be (section
+7); the vertical coupling ratio stays measured, not derived (section 5, an
+owner row). Every verdict carries its number here (never a `result/` path,
 which is not evidence); a claim whose number is not in this file is not
 made.
 
@@ -441,11 +439,39 @@ unchanged (section 1). Targeted checks before the gate: the example at its
 default size on CPU and, where a device is functional, on CUDA; the
 harness's default run; part `noise`; the index walk of `docs/README.md`.
 
-[gate: pending] -- the two-arm full gate (native and the AVX2 arm) on the
-batch's final tree: the commit, the start and end times, the row and
-assertion counts per arm, the exit codes, the skipped checks, the
-turn-modulation and example-execution rows by name, and what was not
-verified. The suite rows this batch changes, "Every example script runs
+The full gate ran on the committed tree 90a15be (working tree clean, the
+HEAD recorded in each log header) in both CPU arms, CUDA active, four
+threads, one arm after the other on the same host, the GPU shared with
+another user's process throughout:
+
+| arm | start to end, EDT, 2026-10-14 | rows | assertions | exit |
+|---|---|---|---|---|
+| native | 05:42:37 to 08:06:16 | 332 | 149349 of 149349 | 0 |
+| AVX2 (OpenBLAS Haswell kernels, LLVM target haswell) | 08:06:16 to 10:12:14 | 332 | 149349 of 149349 | 0 |
+
+```bash
+julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
+OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. --threads=4 \
+  -e 'using Pkg; Pkg.test(julia_args=["--threads=4", "-C", "haswell"])'
+```
+
+Both arms end in "Testing Octopus tests passed"; no summary row carries a
+Fail, Error or Broken column; the sorted row sets of the two arms are
+identical; nothing was skipped; CUDA was active, 36 rows per arm naming it.
+Against the stages 3-4 gate on b99f6b7 (332 rows, 149326 assertions) the
+row count is unchanged and 23 assertions were added: "Every example script
+runs against the current interface" 21/21 (was 6/6; 32 min on the native
+arm, 35 on the AVX2 arm; the eight scripts each exit 0, the new example in
+281 s and its harness in 242 s on the native arm), "The developer harnesses
+run divided under an MPI launcher" 8/8 (was 4/4), and the catalogue testset
+with the new entry. The turn-modulation rows are unchanged from the stages
+3-4 gate (effectiveness 57/57, rules 321/321, slot bounds 25/25, spectra
+44/44, RF cavity 140/140, artifact 127/127, strong-strong window 20/20,
+CPU/CUDA identity 39/39). Checks before the gate: the extracted sweeps
+(exit 0) and a fast lane (exit 0, 316 rows, 147178/147178, the fifteen
+standard loud skips) on the tree one docs step earlier, and "Architecture
+integrity" 28/28 on the final docs. Not verified: CI on this tree, which is
+not pushed at the time of writing. The suite rows this batch changes, "Every example script runs
 against the current interface" (21/21, its list derived from the
 catalogue) and "The developer harnesses run divided under an MPI
 launcher" (8/8), ran extracted and green (section 1); with
