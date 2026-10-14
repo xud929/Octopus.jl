@@ -448,6 +448,21 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   the beam-beam response in emittance and luminosity against the noise-free
   run; white, pink and table compared at equal rms); the verification and
   the gate; the owner items and the ledger rows.
+- [`crab_cavity_noise_mpi_benchmark_2026_10_14.md`](history/crab_cavity_noise_mpi_benchmark_2026_10_14.md) —
+  the follow-up batch to the crab cavity noise campaign: the MPI execution
+  policy arm of the example (`config.execution = :multiprocess`, package mode
+  under a launcher, the rank read from the recorded communicator receipt) and
+  of its harness (`OCTOPUS_USE_MPI`, `OCTOPUS_RANKS`, the per-turn timing
+  instrument `OCTOPUS_RECORD_TURN_TIMES` / `OCTOPUS_TURN_TIMING_PATH`, the
+  `ranks=`, `threads=` and `steady_ms_per_turn=` fields of the summary line);
+  the benchmark driver `profiling/crab_cavity_noise_backends.jl` and its
+  conventions (fixed case, steady window, SHA-256 output digests, resumable
+  TSV); what a divided run reproduces bit for bit (the beam, the luminosity
+  series, the provenance) and what agrees to the rank-ordered fold bound (the
+  moments table), with the numbers; the dry run's table and the finding that
+  the every-turn moment observer and artifact row, not the tracking, dominate
+  the CPU per-turn cost; the production benchmark across the threads, MPI and
+  CUDA arms; the verification and the gate; the ledger rows.
 - [`twiss_dispersion_degeneracy_theory_2026_09_11.md`](history/twiss_dispersion_degeneracy_theory_2026_09_11.md) —
   derivation record for theory Section 13 (mode degeneracy) and the analysis
   design note: provenance of the ported working notes and the convention key,

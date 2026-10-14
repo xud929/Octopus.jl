@@ -74,11 +74,20 @@ element and slot, the luminosity mean and the weak beam's first and last
 recorded rms emittances. Only the receipt and the provenance are
 authoritative at the suite-sized default of 2 turns; the emittance growth is
 a measurement only for long runs (the production comment on `config.turns`).
+Under `:multiprocess` every rank prints the policy, the `crab_noise:`
+configuration line (each rank asserting what it read) and its `mpi_rank = r
+of P` line; rank 0 alone holds the artifact (the library gates the file) and
+prints the readback, and every other rank ends with one line naming itself.
 
 Run from the project root (edit the `config` block first; `:auto` picks CUDA
 when a device is functional):
 
     julia --project=. examples/crab_cavity_noise.jl
+
+With `config.execution = :multiprocess` -- MPI ranks x CPU threads -- the file
+must run in PACKAGE mode under a launcher (the execution policy block says why):
+
+    mpiexec -n 4 julia --project=. -e 'using Octopus, MPI; include("examples/crab_cavity_noise.jl")'
 
 The configurable developer harness of the same case (run size, device, rule,
 rms values, beam-beam and radiation toggles through OCTOPUS_* variables, one
@@ -213,9 +222,13 @@ config = (
     #                  and on one without (CI has no GPU).
     #   :cuda          one CUDA device, and an ERROR if none is functional.
     #   :threads       CPU logical workers, one process.
+    #   :multiprocess  MPI ranks x CPU threads. Read the note in the execution
+    #                  policy block below first: this file must then be run in
+    #                  PACKAGE mode under a launcher.
     execution = :auto,
     gpu_device = nothing,  # CUDA device index, or nothing for the current one
     threads = :auto,       # CPU logical workers per process
+    ranks = :auto,         # :multiprocess only; an integer asserts the count
     turns = 2,           # raise for a real run (production: 1_000_000)
     n_macro = 10_000,    # ~1_024_000 for a production weak beam
 )
@@ -224,10 +237,15 @@ n_macro = config.n_macro
 # ---------------------------------------------------------------------------
 # Execution policy. `:auto` prefers CUDA and falls back to CPU threads, and the
 # run PRINTS which it chose: a measurement whose device you have to guess at is
-# one you cannot report. `:cuda` is the same choice made strict. (The
-# weak-strong example also shows the `:multiprocess` arm; it is omitted here
-# because the turn-modulation rules are realised once per turn on the host of
-# each process and this precedent is about the noise, not the division.)
+# one you cannot report. `:cuda` is the same choice made strict. `:multiprocess`
+# divides the beam across MPI ranks (the weak-strong example's arm): the
+# turn-modulation rules are stateless functions of the absolute turn, realised
+# identically on every rank's host, so a divided run applies the same noise as
+# the undivided one; each particle's streams key on its GLOBAL slot, so the
+# tracked coordinates and the chunk-folded luminosity are the undivided run's
+# bit for bit, while the moment observer's rank-ordered reduction agrees to
+# the accumulation difference between one serial sum and P of them
+# (`_masked_global_sum`, src/policies/Policies.jl, records that trade).
 # ---------------------------------------------------------------------------
 cuda_ok = false
 if config.execution === :auto || config.execution === :cuda
@@ -236,11 +254,36 @@ if config.execution === :auto || config.execution === :cuda
     config.execution === :cuda && !cuda_ok && error(
         "config.execution = :cuda, but CUDA.functional(false) is false: no " *
         "usable device. Use :auto to fall back to CPU threads, or :threads.")
-elseif config.execution !== :threads
-    error("config.execution = $(repr(config.execution)) is not one of :auto, :cuda, :threads")
+elseif !(config.execution in (:threads, :multiprocess))
+    error("config.execution = $(repr(config.execution)) is not one of :auto, :cuda, :threads, :multiprocess")
 end
+# `ranks` is read by `:multiprocess` alone; set anywhere else it would be a
+# configuration nothing read, which this repository counts as a defect.
+config.execution === :multiprocess || config.ranks === :auto || error(
+    "config.ranks = $(repr(config.ranks)) is read only under config.execution = :multiprocess; " *
+    "under $(repr(config.execution)) it would go unread")
 
-policy = if cuda_ok
+policy = if config.execution === :multiprocess
+    # One Octopus process per MPI rank, each with its own CPU logical workers.
+    #
+    # This choice needs the file run in PACKAGE MODE under a launcher:
+    #
+    #   mpiexec -n 4 julia --project=. -e 'using Octopus, MPI; include("examples/crab_cavity_noise.jl")'
+    #
+    # because `MultiProcessExecutionPolicy` reaches a real communicator only
+    # through the `OctopusMPIExt` package extension, and a package extension
+    # attaches only to a PACKAGE -- which the `include` of src/Octopus.jl at the
+    # top of this file is not. Without the extension every rank would be its own
+    # communicator of one, `ranks = :auto` would accept that, and `mpiexec -n 4`
+    # would run FOUR whole simulations racing on one artifact path: exit 0,
+    # plausible timings, wrong answer. So it is refused instead.
+    Base.get_extension(Main.Octopus, :OctopusMPIExt) === nothing && error(
+        "config.execution = :multiprocess needs the OctopusMPIExt extension, " *
+        "which attaches only when Octopus is loaded as a PACKAGE with MPI also " *
+        "loaded. Run: mpiexec -n <P> julia --project=. -e 'using Octopus, MPI; " *
+        "include(\"examples/crab_cavity_noise.jl\")'")
+    MultiProcessExecutionPolicy(threads = config.threads, ranks = config.ranks)
+elseif cuda_ok
     CUDAExecutionPolicy(device = config.gpu_device)
 else
     CPUThreadsExecutionPolicy(threads = config.threads)
@@ -498,7 +541,15 @@ line_specs = (
 )
 # `policy = policy` is load-bearing (the weak-strong example's note): without
 # it `execute!` resolves a FRESH default policy and the one built above
-# reaches only `Beam(...)`.
+# reaches only `Beam(...)`. Fatal rather than cosmetic for `:multiprocess`: the
+# inferred default is a single-process CPU policy, under which each rank
+# tracks the shard it holds AS IF IT WERE THE WHOLE BEAM -- local index
+# offsets, so the per-particle streams repeat across the ranks; no cross-rank
+# reduction, so the moments and the luminosity are the shard's; and every rank
+# believing it is rank 0, so every rank writes the one artifact path. The
+# library's launcher tripwire WARNS ("PMI_SIZE=P ... the execution policy in
+# force is a single-process one"); the `ranks` check runs only when the
+# multi-process policy activates, which the inferred default never does.
 task = TrackingTask(line_specs;
     policy = policy,
     artifact = RunArtifact(artifact_path; capacity = input.output.capacity))
@@ -510,72 +561,100 @@ audit = with_execution_audit() do
     execute!(task, beam; turns = turns)
 end
 
-println("turns = ", turns)
-println("n_macro = ", n_macro)
-println("artifact = ", artifact_path)
-println("  /luminosity/strong_beam_1, /moments/weak_beam, /execution",
-        cn.rule === :none ? "" : ", /turn_modulation")
+# Under `:multiprocess` every rank runs this file. Which rank this process is
+# comes from the `:multi_process_communicator` receipt the run RECORDED at
+# activation -- nranks and rank read from the communicator Octopus opened --
+# not from Octopus's `_mp_rank()`, which reads the policy in force and answers
+# 0 on every rank once `execute!` has closed its scope (docs/experiences.md,
+# "A collective outside its scope is a silent no-op"). A single-process run
+# records no such receipt: one rank, rank 0.
+comm_receipts = filter(r -> r.consumer === :multi_process_communicator, execution_receipts(audit))
+policy isa MultiProcessExecutionPolicy && isempty(comm_receipts) && error(
+    "config.execution = :multiprocess, but the run recorded no :multi_process_communicator receipt")
+mp_nranks = isempty(comm_receipts) ? 1 : Int(last(comm_receipts).values.nranks)
+mp_rank = isempty(comm_receipts) ? 0 : Int(last(comm_receipts).values.rank)
+policy isa MultiProcessExecutionPolicy && println(
+    "mpi_rank = ", mp_rank, " of ", mp_nranks, " (recorded by the run; resolved_by = ",
+    last(comm_receipts).values.resolved_by, ", threads per rank = ", last(comm_receipts).values.threads, ")")
 
-# The receipt: one per `execute!` whose line held a modulated element, with
-# the elements and active slots it realised and the window it resolved (the
-# planned turns of this call, not the turns completed). Absent for a run
-# without a modulated element, and that absence is said out loud.
-tm_receipts = filter(r -> r.consumer === :turn_modulation, execution_receipts(audit))
-if isempty(tm_receipts)
-    println("turn_modulation receipt = none recorded (the line has no modulated " *
-            "element; crab_noise.rule = ", cn.rule, ")")
-end
-# The receipt and the provenance list the modulated elements in LINE ORDER
-# and name only the element type, so the two cavities read alike. This
-# script owns the line (tccb before tcca) and labels the entries by that
-# order; the labels are the script's, not something the record stores.
-modulated_cavities = ("tccb", "tcca")
-cavity_label(k) = k <= length(modulated_cavities) ?
-    "element $(k) = $(modulated_cavities[k])" : "element $(k)"
-for r in tm_receipts
-    println("turn_modulation receipt: first_turn = ", r.values.first_turn,
-            ", turns = ", r.values.turns, ", backend = ", r.backend)
-    for (k, e) in enumerate(r.values.elements)
-        println("  [", cavity_label(k), "] ", e.element, " (beam ", e.beam, "): ",
-                join(("$(s.slot) $(s.kind)" for s in e.slots), ", "))
+if mp_rank != 0
+    # Rank 0 alone holds the artifact (the library gates the file itself), so
+    # the readback below is its. Nothing printed there is a per-rank quantity:
+    # every number is read back from the artifact -- whole-beam by
+    # construction, the moment observer reducing across the ranks and the
+    # luminosity folding across them -- and the receipt is the same on every
+    # rank (the rules and the window are). A `beam_statistics(beam)` here, as
+    # the weak-strong example prints, would be THIS RANK'S SHARD and would
+    # have to be labelled so.
+    println("rank ", mp_rank, " of ", mp_nranks, ": shard tracked; rank 0 holds the artifact and prints the readback")
+else
+    println("turns = ", turns)
+    println("n_macro = ", n_macro)
+    println("artifact = ", artifact_path)
+    println("  /luminosity/strong_beam_1, /moments/weak_beam, /execution",
+            cn.rule === :none ? "" : ", /turn_modulation")
+
+    # The receipt: one per `execute!` whose line held a modulated element, with
+    # the elements and active slots it realised and the window it resolved (the
+    # planned turns of this call, not the turns completed). Absent for a run
+    # without a modulated element, and that absence is said out loud.
+    tm_receipts = filter(r -> r.consumer === :turn_modulation, execution_receipts(audit))
+    if isempty(tm_receipts)
+        println("turn_modulation receipt = none recorded (the line has no modulated " *
+                "element; crab_noise.rule = ", cn.rule, ")")
     end
-end
+    # The receipt and the provenance list the modulated elements in LINE ORDER
+    # and name only the element type, so the two cavities read alike. This
+    # script owns the line (tccb before tcca) and labels the entries by that
+    # order; the labels are the script's, not something the record stores.
+    modulated_cavities = ("tccb", "tcca")
+    cavity_label(k) = k <= length(modulated_cavities) ?
+        "element $(k) = $(modulated_cavities[k])" : "element $(k)"
+    for r in tm_receipts
+        println("turn_modulation receipt: first_turn = ", r.values.first_turn,
+                ", turns = ", r.values.turns, ", backend = ", r.backend)
+        for (k, e) in enumerate(r.values.elements)
+            println("  [", cavity_label(k), "] ", e.element, " (beam ", e.beam, "): ",
+                    join(("$(s.slot) $(s.kind)" for s in e.slots), ", "))
+        end
+    end
 
-# The provenance the artifact recorded, per execution and element: the stream
-# id of a white or pink slot, the digest, name and length of a table slot.
-for entry in turn_modulation_provenance(artifact_path)
-    println("turn_modulation provenance, /execution row ", entry.execution, ":")
-    for (k, e) in enumerate(entry.elements)
-        println("  [", cavity_label(k), "] ", e.element, " (beam ", e.beam, ")")
-        for s in e.slots
-            if s.kind === :table
-                println("    ", s.slot, ": table digest = 0x", string(s.digest; base = 16, pad = 16),
-                        ", name = ", repr(s.name), ", length = ", s.length)
-            else
-                println("    ", s.slot, ": ", s.kind, ", rng_id = ", Int(s.rng_id))
+    # The provenance the artifact recorded, per execution and element: the stream
+    # id of a white or pink slot, the digest, name and length of a table slot.
+    for entry in turn_modulation_provenance(artifact_path)
+        println("turn_modulation provenance, /execution row ", entry.execution, ":")
+        for (k, e) in enumerate(entry.elements)
+            println("  [", cavity_label(k), "] ", e.element, " (beam ", e.beam, ")")
+            for s in e.slots
+                if s.kind === :table
+                    println("    ", s.slot, ": table digest = 0x", string(s.digest; base = 16, pad = 16),
+                            ", name = ", repr(s.name), ", length = ", s.length)
+                else
+                    println("    ", s.slot, ": ", s.kind, ", rng_id = ", Int(s.rng_id))
+                end
             end
         end
     end
-end
 
-# Physics columns, read back from the artifact rather than from the live beam,
-# so what is printed is what the file holds.
-out = TaskOutput(artifact_path)
-lum = read(out, :luminosity; name = "strong_beam_1")
-println("luminosity mean over ", length(lum.value), " turns = ",
-        sum(lum.value) / length(lum.value), " (per-turn values in /luminosity/strong_beam_1)")
-mom = read(out, :moments; name = "weak_beam")
-# The rms emittance from the central second moments, per recorded turn:
-# eps_x = sqrt(<x^2><px^2> - <x px>^2) with the columns m200000, m020000,
-# m110000, and eps_y likewise from m002000, m000200, m001100 (`?Moment`).
-eps_x = sqrt.(mom.m200000 .* mom.m020000 .- mom.m110000 .^ 2)
-eps_y = sqrt.(mom.m002000 .* mom.m000200 .- mom.m001100 .^ 2)
-println("weak beam rms emittance estimator = sqrt(<x^2><px^2> - <x px>^2) from the " *
-        "central second moments of /moments/weak_beam")
-println("  design (input) emittances: eps_x = ", emit[1], ", eps_y = ", emit[2])
-println("  eps_x: first recorded (turn ", Int(mom.turn[1]), ") = ", eps_x[1],
-        ", last recorded (turn ", Int(mom.turn[end]), ") = ", eps_x[end])
-println("  eps_y: first recorded (turn ", Int(mom.turn[1]), ") = ", eps_y[1],
-        ", last recorded (turn ", Int(mom.turn[end]), ") = ", eps_y[end])
-println("  the first-to-last growth is a measurement only for long runs (raise " *
-        "config.turns); at the suite-sized default it is noise of the estimator")
+    # Physics columns, read back from the artifact rather than from the live beam,
+    # so what is printed is what the file holds.
+    out = TaskOutput(artifact_path)
+    lum = read(out, :luminosity; name = "strong_beam_1")
+    println("luminosity mean over ", length(lum.value), " turns = ",
+            sum(lum.value) / length(lum.value), " (per-turn values in /luminosity/strong_beam_1)")
+    mom = read(out, :moments; name = "weak_beam")
+    # The rms emittance from the central second moments, per recorded turn:
+    # eps_x = sqrt(<x^2><px^2> - <x px>^2) with the columns m200000, m020000,
+    # m110000, and eps_y likewise from m002000, m000200, m001100 (`?Moment`).
+    eps_x = sqrt.(mom.m200000 .* mom.m020000 .- mom.m110000 .^ 2)
+    eps_y = sqrt.(mom.m002000 .* mom.m000200 .- mom.m001100 .^ 2)
+    println("weak beam rms emittance estimator = sqrt(<x^2><px^2> - <x px>^2) from the " *
+            "central second moments of /moments/weak_beam")
+    println("  design (input) emittances: eps_x = ", emit[1], ", eps_y = ", emit[2])
+    println("  eps_x: first recorded (turn ", Int(mom.turn[1]), ") = ", eps_x[1],
+            ", last recorded (turn ", Int(mom.turn[end]), ") = ", eps_x[end])
+    println("  eps_y: first recorded (turn ", Int(mom.turn[1]), ") = ", eps_y[1],
+            ", last recorded (turn ", Int(mom.turn[end]), ") = ", eps_y[end])
+    println("  the first-to-last growth is a measurement only for long runs (raise " *
+            "config.turns); at the suite-sized default it is noise of the estimator")
+end

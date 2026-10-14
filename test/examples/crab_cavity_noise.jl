@@ -14,6 +14,18 @@ Run from the Octopus project root:
 
     julia --project=. test/examples/crab_cavity_noise.jl
 
+Run divided across MPI ranks -- one Octopus process per rank, each with its own
+CPU logical workers (OCTOPUS_CPU_THREADS per rank; OCTOPUS_RANKS optionally
+states the process count the run must match, `auto` accepts whatever the
+launcher started). This needs an environment where Octopus AND MPI both resolve
+as PACKAGES (the OCTOPUS_USE_MPI paragraph below says why):
+
+    OCTOPUS_USE_MPI=1 OCTOPUS_CPU_THREADS=4 OCTOPUS_RANKS=4 mpiexec -n 4 julia --project=. --threads=4 test/examples/crab_cavity_noise.jl
+
+or, equivalently, with the packages loaded first:
+
+    OCTOPUS_USE_MPI=1 OCTOPUS_RANKS=4 mpiexec -n 4 julia --project=. --threads=4 -e 'using Octopus, MPI; include("test/examples/crab_cavity_noise.jl")'
+
 The default run is intentionally small: 2 turns and 10000 macroparticles,
 white noise at the owner's specification (phase rms 10 urad, relative strength
 rms 1e-4, per active harmonic). Every variable this harness reads, with its
@@ -28,7 +40,42 @@ config-that-was-never-read defect class, AGENTS.md Invariants):
                               one grammar, 1/0 true/false yes/no on/off
     OCTOPUS_CUDA_DEVICE       CUDA device index (the current device)
     OCTOPUS_CPU_THREADS       CPU logical workers (auto = the process default);
-                              pair it with julia --threads=N
+                              pair it with julia --threads=N; per RANK under
+                              OCTOPUS_USE_MPI=1
+    OCTOPUS_USE_MPI           1|0 (0): run divided across MPI ranks under a
+                              launcher, one Octopus process per rank with
+                              OCTOPUS_CPU_THREADS logical workers each
+                              (MultiProcessExecutionPolicy); loads Octopus as
+                              a PACKAGE (the paragraph below). Refused with
+                              OCTOPUS_USE_GPU=1: the multi-process policy
+                              composes the CPU policy and is CPU storage only
+    OCTOPUS_RANKS             with OCTOPUS_USE_MPI=1: the rank count the run
+                              must match (auto = whatever the launcher
+                              started); the policy rejects a communicator of
+                              another size and never adjusts. Refused without
+                              OCTOPUS_USE_MPI=1, where it would go unread --
+                              and `mpiexec -n P` with the switch off would
+                              run P whole simulations on one artifact path
+    OCTOPUS_RECORD_TURN_TIMES 1|0 (0): clock every complete turn (the task's
+                              `record_turn_times`, read back with
+                              `turn_timings`); every rank prints its own
+                              series and the summary line gains
+                              steady_ms_per_turn (below). Off by default: on
+                              CUDA it synchronizes at every turn boundary and
+                              perturbs the throughput it measures
+    OCTOPUS_TURN_TIMING_PATH  with OCTOPUS_RECORD_TURN_TIMES=1: write the
+                              series as a TSV with the header row
+                              turn<TAB>seconds<TAB>max_over_ranks_seconds --
+                              turn 1..T of this call; seconds = rank 0's own
+                              clock of the turn; max_over_ranks_seconds = the
+                              maximum over the ranks, which is the turn's
+                              wall time (equal to seconds at one rank).
+                              Written by rank 0 only; a relative path
+                              resolves against the repository root, never
+                              into OCTOPUS_RESULT_DIR (the suite asserts rank
+                              0's result directory holds exactly one file).
+                              Refused without OCTOPUS_RECORD_TURN_TIMES=1, and
+                              refused when set but empty
     OCTOPUS_NOISE_RULE        white|pink|table|none (white)
     OCTOPUS_NOISE_SCALE       multiplies both rms values (1.0); amplitude sweeps
     OCTOPUS_PHASE_RMS         rms of the RF phase offset per active harmonic,
@@ -118,10 +165,36 @@ config-that-was-never-read defect class, AGENTS.md Invariants):
 Refused by name, because a non-default request this file would silently drop
 is a defect rather than a typo: OCTOPUS_MP (the dead spelling the frozen
 docs/history/production_benchmark_2026_09_06.md names; refused on presence,
-as the weak-strong harness does), OCTOPUS_USE_MPI=1, OCTOPUS_RANKS,
-OCTOPUS_RECORD_TURN_TIMES=1 and OCTOPUS_TURN_TIMING_PATH -- this harness has
-no multi-process arm and no per-turn timing series; both live in
-test/examples/weak_strong_tracking.jl.
+as the weak-strong harness does; the switch is OCTOPUS_USE_MPI), OCTOPUS_RANKS
+without OCTOPUS_USE_MPI=1, OCTOPUS_TURN_TIMING_PATH without
+OCTOPUS_RECORD_TURN_TIMES=1 or set but empty, and OCTOPUS_USE_GPU=1 together
+with OCTOPUS_USE_MPI=1.
+
+OCTOPUS_USE_MPI=1 needs an environment where BOTH Octopus and MPI resolve as
+PACKAGES. MultiProcessExecutionPolicy reaches a communicator only through the
+OctopusMPIExt package extension, and an extension does not load for the
+`include` of src/Octopus.jl this harness uses by default -- so the switch loads
+Octopus as a package instead and refuses to run if the extension is still
+absent. Without it every rank would be its own communicator of one, which
+OCTOPUS_RANKS=auto accepts, and every process would track the whole beam and
+write the one artifact path (the weak-strong harness's header;
+docs/experiences.md, "A weak dependency's extension does not exist for an
+`include`d module"). What divides and what does not: the turn-modulation
+rules are stateless functions of the absolute turn, realised identically on
+every rank's host, so every rank applies the same noise; the beam is drawn
+whole on every rank and sharded on chunk boundaries, and each particle's
+counter-RNG streams key on its GLOBAL slot, so the tracked coordinates are the
+undivided run's bit for bit; the luminosity folds on the fixed chunk grid in
+chunk order and is bit for bit too; the moment observer reduces one serial sum
+per rank and then across the ranks in rank order, so its columns are NOT
+promised bit for bit against the undivided run (`_masked_global_sum` in
+src/policies/Policies.jl records the trade: the masking invariant won over
+cross-rank bitwise agreement, priced at the accumulation difference between
+one serial sum and P of them). Under MPI every rank prints its `mpi_rank = r
+of P` line and the configuration it read; rank 0 alone holds the artifact
+(the library gates the file itself), so the receipt, the provenance, the
+emittances and the CRAB-NOISE line are printed by rank 0 only, and the other
+ranks end with one line each.
 
 Examples:
 
@@ -130,6 +203,7 @@ Examples:
     OCTOPUS_NOISE_RULE=none OCTOPUS_RADIATION=0 julia --project=. --threads=4 test/examples/crab_cavity_noise.jl
     OCTOPUS_STRENGTH_REL_RMS=0 OCTOPUS_KBB_SCALE=0 OCTOPUS_CHROMATICITY=0,0 OCTOPUS_RADIATION=0 OCTOPUS_CASE_NAME=C1 OCTOPUS_TURNS=100000 OCTOPUS_USE_GPU=1 julia --project=. test/examples/crab_cavity_noise.jl
     OCTOPUS_NOISE_RULE=table OCTOPUS_TABLE_FILE=result/w1_offsets.tsv OCTOPUS_STRENGTH_REL_RMS=0 OCTOPUS_CASE_NAME=T1 julia --project=. test/examples/crab_cavity_noise.jl
+    OCTOPUS_USE_MPI=1 OCTOPUS_RANKS=2 OCTOPUS_CPU_THREADS=4 OCTOPUS_TURNS=200 OCTOPUS_N_MACRO=20000 OCTOPUS_RECORD_TURN_TIMES=1 OCTOPUS_TURN_TIMING_PATH=result/timing_2ranks.tsv mpiexec -n 2 julia --project=. --threads=4 test/examples/crab_cavity_noise.jl
 
 CUDA checks:
 
@@ -139,13 +213,14 @@ Outputs: ONE run artifact, `<result_dir>/<seed>/<case_name>.h5`
 (docs/design/run_artifact.md) -- `/luminosity/strong_beam_1`,
 `/moments/weak_beam`, the `/execution` ledger and, for a modulated run,
 `/turn_modulation/<ledger row>`; read through one handle,
-`read(TaskOutput(path), kind; name = ...)`. The run prints the policy, the
+`read(TaskOutput(path), kind; name = ...)`; plus the TSV of
+OCTOPUS_TURN_TIMING_PATH when asked for. The run prints the policy, the
 `:turn_modulation` execution receipt, the artifact's provenance per element
 and slot (the two cavities labelled by the line order this file owns, tccb
 before tcca, because the record itself names only the element type), and
-ends with the one line the validation driver parses:
+ends with the one line the validation driver parses (rank 0's under MPI):
 
-    CRAB-NOISE rule=<r> scale=<s> phase_rms=<rad> strength_rel_rms=<rel> chrom=<xi_x>,<xi_y> table_file=<path|none> turns=<T> n_macro=<N> kbb_scale=<k> radiation=<0|1> seed=<seed> artifact=<path> eps_x_first=<..> eps_x_last=<..> eps_y_first=<..> eps_y_last=<..> lumi_mean=<..> wall_s=<..> ms_per_turn=<..>
+    CRAB-NOISE rule=<r> scale=<s> phase_rms=<rad> strength_rel_rms=<rel> chrom=<xi_x>,<xi_y> table_file=<path|none> turns=<T> n_macro=<N> kbb_scale=<k> radiation=<0|1> seed=<seed> artifact=<path> eps_x_first=<..> eps_x_last=<..> eps_y_first=<..> eps_y_last=<..> lumi_mean=<..> wall_s=<..> ms_per_turn=<..> ranks=<P> threads=<n|NA> steady_ms_per_turn=<ms|NA>
 
 where phase_rms and strength_rel_rms are the EFFECTIVE values that ran:
 OCTOPUS_*_RMS times OCTOPUS_NOISE_SCALE when the parameter carries rules, 0
@@ -156,10 +231,20 @@ eps_x = sqrt(<x^2><px^2> - <x px>^2) from the columns m200000, m020000,
 m110000 of /moments/weak_beam and eps_y likewise from m002000, m000200,
 m001100 (`?Moment`), at the first and the last recorded moment row; lumi_mean
 is the mean of /luminosity/strong_beam_1 over the run; wall_s is the wall
-time of the one `execute!` call, the JIT compilation of its first turn
-included, and ms_per_turn = 1000 wall_s / turns. The paths contain no spaces
-by construction of the derived names; an OCTOPUS_CASE_NAME, OCTOPUS_RESULT_DIR
-or OCTOPUS_TABLE_FILE with a space would break the line's parser.
+time of the one `execute!` call (rank 0's under MPI), the JIT compilation of
+its first turn included, and ms_per_turn = 1000 wall_s / turns -- an upper
+bound, JIT-polluted by construction and kept as it is; ranks is the
+communicator size the run RECORDED in its `:multi_process_communicator`
+receipt (1 single-process), checked against MPI's own world; threads is the
+per-process CPU logical-worker count the policy resolved (OCTOPUS_CPU_THREADS,
+`auto` = the default pool), NA on CUDA, whose thread count is the launch
+geometry's; steady_ms_per_turn is 1000 times the median over turns 21..T of
+the per-turn wall time (max_over_ranks_seconds of the timing file, the slowest
+rank's clock) when OCTOPUS_RECORD_TURN_TIMES=1 and T > 20, NA otherwise -- the
+figure to compare across rank counts, free of the first turn's JIT and the
+warm-up. The paths contain no spaces by construction of the derived names; an
+OCTOPUS_CASE_NAME, OCTOPUS_RESULT_DIR or OCTOPUS_TABLE_FILE with a space would
+break the line's parser.
 =#
 
 """
@@ -190,35 +275,67 @@ function env_parse(::Type{T}, key::AbstractString, default::AbstractString) wher
 end
 
 # The dead spelling, refused on presence as the weak-strong harness refuses it
-# (its header says why: the frozen 2026-09-06 record names it).
+# (its header says why: the frozen 2026-09-06 record names it). The switch
+# this harness reads is OCTOPUS_USE_MPI, read next.
 haskey(ENV, "OCTOPUS_MP") && error(
-    "OCTOPUS_MP is not a switch this harness reads; this harness has no " *
-    "multi-process arm at all. The divided weak-strong run is " *
-    "OCTOPUS_USE_MPI=1 on test/examples/weak_strong_tracking.jl.")
-# The sibling's switches this file does not implement: refused when they
-# would change the run, so a divided or per-turn-timed run is never silently
-# answered with a plain one.
-env_bool("OCTOPUS_USE_MPI", false) && error(
-    "OCTOPUS_USE_MPI=1: this harness has no multi-process arm (the " *
-    "turn-modulation rules are realised on the host of each process and this " *
-    "precedent is about the noise, not the division). Use " *
-    "test/examples/weak_strong_tracking.jl for a divided run.")
-haskey(ENV, "OCTOPUS_RANKS") && error(
-    "OCTOPUS_RANKS is read only by the multi-process arm of " *
-    "test/examples/weak_strong_tracking.jl; this harness has none.")
-env_bool("OCTOPUS_RECORD_TURN_TIMES", false) && error(
-    "OCTOPUS_RECORD_TURN_TIMES=1: this harness records no per-turn timing " *
-    "series; it reports wall_s and ms_per_turn of the whole run on its " *
-    "CRAB-NOISE line. The per-turn series is test/examples/weak_strong_tracking.jl's.")
-haskey(ENV, "OCTOPUS_TURN_TIMING_PATH") && error(
-    "OCTOPUS_TURN_TIMING_PATH is read only with OCTOPUS_RECORD_TURN_TIMES in " *
-    "test/examples/weak_strong_tracking.jl; this harness has no timing series.")
+    "OCTOPUS_MP is not a switch this harness reads. The multi-process switch is " *
+    "OCTOPUS_USE_MPI=1, matching OCTOPUS_USE_GPU; OCTOPUS_RANKS and " *
+    "OCTOPUS_CPU_THREADS are spelled as you have them. OCTOPUS_MP is what the " *
+    "scratch copies behind docs/history/production_benchmark_2026_09_06.md used, " *
+    "and that record is frozen, so it still names the old spelling.")
 
-if !isdefined(Main, :Octopus)
+# OCTOPUS_USE_MPI=1 runs this harness divided across MPI ranks -- the
+# weak-strong harness's arm, with its semantics (brought here 2026-10-14; until
+# then this file refused the switch by name). Read BEFORE Octopus is loaded
+# because it decides HOW Octopus is loaded: `MultiProcessExecutionPolicy`
+# reaches a communicator only through the `OctopusMPIExt` package extension,
+# and an extension attaches only to a PACKAGE, which the default `include` of
+# src/Octopus.jl into `Main` is not (docs/experiences.md, "A weak dependency's
+# extension does not exist for an `include`d module"). With the switch off this
+# is the same `include` the suite has always run. The suite's MPI testset
+# classifies the harnesses under test/examples/ by the exact text of the next
+# line, so it is spelled as the weak-strong harness spells it.
+use_mpi = env_bool("OCTOPUS_USE_MPI", false)
+if use_mpi
+    # A Main.Octopus that came from an `include` cannot be turned into the
+    # package: Julia 1.12 makes `using Octopus` a hard error here ("importing
+    # Octopus into Main conflicts with an existing global"), which is loud but
+    # says nothing about the cause. Say it here instead.
+    if isdefined(Main, :Octopus) && Base.PkgId(Main.Octopus).uuid === nothing
+        error("OCTOPUS_USE_MPI=1 needs Octopus loaded as a PACKAGE, because the " *
+              "OctopusMPIExt extension attaches only to a package -- but " *
+              "Main.Octopus is already an `include`d module (its PkgId carries no " *
+              "UUID). Either drop the earlier `include` of src/Octopus.jl and let " *
+              "this harness load the package, or `using Octopus` before including " *
+              "this file.")
+    end
+    using Octopus
+    using MPI
+    # Idempotent through `Initialized()`, and the extension's own activation
+    # makes exactly this call; doing it here makes this process's rank
+    # available to this file before `execute!` rather than only after it.
+    MPI.Initialized() || MPI.Init(threadlevel = :funneled)
+elseif !isdefined(Main, :Octopus)
     include(joinpath(@__DIR__, "..", "..", "src", "Octopus.jl"))
 end
 using .Octopus
 import Random
+if use_mpi && Base.get_extension(Main.Octopus, :OctopusMPIExt) === nothing
+    error("OCTOPUS_USE_MPI=1, but OctopusMPIExt did not load. Every rank would " *
+          "then be its own communicator of one and each would run the WHOLE " *
+          "simulation, racing on one artifact path and reporting plausible " *
+          "timings. Run this harness against an environment where Octopus and " *
+          "MPI both resolve as packages, and do not pre-`include` src/Octopus.jl " *
+          "into Main before it.")
+end
+# This process's place in the launcher's world, read from the COMMUNICATOR and
+# not from Octopus's `_mp_rank()`, which reads the policy in force and answers
+# 0 on every rank outside an execution scope (docs/experiences.md, "A
+# collective outside its scope is a silent no-op"). 1 and 0 single-process.
+# Printed first, so every rank's lines below follow its own.
+mpi_nranks = use_mpi ? MPI.Comm_size(MPI.COMM_WORLD) : 1
+mpi_rank = use_mpi ? MPI.Comm_rank(MPI.COMM_WORLD) : 0
+use_mpi && println("mpi_rank = ", mpi_rank, " of ", mpi_nranks)
 
 # Run size.
 turns = env_parse(Int, "OCTOPUS_TURNS", "2")
@@ -286,6 +403,28 @@ isfinite(kbb_scale) || error("OCTOPUS_KBB_SCALE=$(kbb_scale) must be finite")
 use_radiation = env_bool("OCTOPUS_RADIATION", true)
 moment_step = env_parse(Int, "OCTOPUS_MOMENT_STEP", "1")
 moment_step >= 1 || error("OCTOPUS_MOMENT_STEP=$(moment_step) must be at least 1")
+
+# The multi-process and timing switches (the weak-strong harness's, with its
+# semantics), each read here so a bad value fails before any work -- and each
+# refused where it would go unread, because a set variable nothing reads is
+# the config-that-was-never-read defect class, not a typo.
+use_mpi || !haskey(ENV, "OCTOPUS_RANKS") || error(
+    "OCTOPUS_RANKS=$(repr(ENV["OCTOPUS_RANKS"])) without OCTOPUS_USE_MPI=1: the rank count is " *
+    "read only by the multi-process arm, so it would go unread -- and under a " *
+    "launcher a single-process run on every rank is P whole simulations racing " *
+    "on one artifact path. Set OCTOPUS_USE_MPI=1 for a divided run.")
+ranks_text = lowercase(strip(get(ENV, "OCTOPUS_RANKS", "auto")))
+ranks = ranks_text == "auto" ? :auto : env_parse(Int, "OCTOPUS_RANKS", "auto")
+record_turn_times = env_bool("OCTOPUS_RECORD_TURN_TIMES", false)
+turn_timing_path = get(ENV, "OCTOPUS_TURN_TIMING_PATH", "")
+# Set but empty would write nothing and say nothing: refused by name, like
+# every other set variable this file cannot act on.
+haskey(ENV, "OCTOPUS_TURN_TIMING_PATH") && isempty(strip(turn_timing_path)) && error(
+    "OCTOPUS_TURN_TIMING_PATH is set but empty: name a file for the per-turn series " *
+    "or unset the variable; an empty path would write nothing and say nothing.")
+record_turn_times || !haskey(ENV, "OCTOPUS_TURN_TIMING_PATH") || error(
+    "OCTOPUS_TURN_TIMING_PATH=$(repr(turn_timing_path)) without OCTOPUS_RECORD_TURN_TIMES=1: " *
+    "no per-turn series is recorded, so nothing would be written there.")
 
 scale_tag(s) = isinteger(s) ? string(Int(s)) : string(s)
 default_case_name = "crab_noise_$(noise_rule_kind)_x$(scale_tag(noise_scale))" *
@@ -390,8 +529,16 @@ isempty(input.case_name) && error("OCTOPUS_CASE_NAME is empty")
 
 # Execution policy. CPU threads are the portable default; OCTOPUS_USE_GPU=1
 # selects CUDA storage and kernels (the rules are realised on the host either
-# way and uploaded with the element once per turn).
+# way and uploaded with the element once per turn); OCTOPUS_USE_MPI=1 divides
+# the beam across the launcher's ranks, each rank a CPU-threads process.
 use_gpu = env_bool("OCTOPUS_USE_GPU", false)
+# The multi-process policy composes the CPU policy and is CPU storage only, so
+# there is no CUDA arm to divide; asking for both is a request one of the two
+# switches would have to be silently dropped from.
+use_gpu && use_mpi && error(
+    "OCTOPUS_USE_GPU=1 and OCTOPUS_USE_MPI=1 together: MultiProcessExecutionPolicy " *
+    "composes CPUThreadsExecutionPolicy and runs on CPU storage, so there is no " *
+    "CUDA-plus-MPI mode to select. Choose one.")
 if use_gpu
     import CUDA
     CUDA.functional(false) || error("OCTOPUS_USE_GPU=1 requested, but CUDA.functional(false) is false.")
@@ -403,7 +550,15 @@ policy = if use_gpu
 else
     cpu_threads_text = lowercase(strip(get(ENV, "OCTOPUS_CPU_THREADS", "auto")))
     cpu_threads = cpu_threads_text == "auto" ? :auto : env_parse(Int, "OCTOPUS_CPU_THREADS", "auto")
-    CPUThreadsExecutionPolicy(threads = cpu_threads)
+    if use_mpi
+        # OCTOPUS_RANKS passes straight through as the policy's `ranks` with no
+        # harness logic: the policy rejects a communicator whose size differs
+        # from an explicit request and never adjusts; `auto` accepts whatever
+        # `mpiexec -n` started.
+        MultiProcessExecutionPolicy(threads = cpu_threads, ranks = ranks)
+    else
+        CPUThreadsExecutionPolicy(threads = cpu_threads)
+    end
 end
 println("execution policy = ", nameof(typeof(policy)))
 set_global_rng!(seed = input.seed, method = :philox)
@@ -697,9 +852,22 @@ line_specs = (
 )
 # `policy = policy` is load-bearing (the weak-strong harness's note): without
 # it `execute!` resolves a fresh default and OCTOPUS_USE_GPU, OCTOPUS_CUDA_DEVICE
-# and OCTOPUS_CPU_THREADS would reach only `Beam(...)`.
+# and OCTOPUS_CPU_THREADS would reach only `Beam(...)`. Under OCTOPUS_USE_MPI
+# the inferred default is a single-process CPU policy, and what the library
+# then does is this: the beam is already this rank's shard (built by the
+# multi-process policy), and the run would track it AS IF IT WERE THE WHOLE
+# BEAM -- global index offset 0, so the per-particle streams repeat across the
+# ranks; every collective a serial passthrough, so the moments and the
+# luminosity would be the shard's; every rank believing it is rank 0, so every
+# rank would write the one artifact path. The only guard that fires is the
+# launcher tripwire's WARNING (`_warn_launcher_without_policy`: "PMI_SIZE=P
+# ... the execution policy in force is a single-process one"); the
+# OCTOPUS_RANKS check runs only when the multi-process policy activates, which
+# the inferred default never does. OCTOPUS_RECORD_TURN_TIMES is the task's own
+# `record_turn_times` (`?TrackingTask`).
 task = TrackingTask(line_specs;
     policy = policy,
+    record_turn_times = record_turn_times,
     artifact = RunArtifact(artifact_path; capacity = input.output.capacity))
 # One `execute!`, timed whole (JIT of its first turn included), inside an
 # execution audit so the `:turn_modulation` receipt can be read back.
@@ -710,60 +878,152 @@ end
 wall_s = time() - t0
 ms_per_turn = 1000 * wall_s / turns
 
-println("turns = ", turns)
-println("n_macro = ", n_macro)
-println("artifact = ", artifact_path)
-println("  /luminosity/strong_beam_1, /moments/weak_beam, /execution",
-        (phase_on || strength_on) ? ", /turn_modulation" : "")
-# The receipt and the provenance list the modulated elements in LINE ORDER
-# and name only the element type, so the two cavities read alike. This file
-# owns the line (tccb before tcca) and labels the entries by that order; the
-# labels are this file's, not something the record stores.
-modulated_cavities = ("tccb", "tcca")
-cavity_label(k) = k <= length(modulated_cavities) ?
-    "element $(k) = $(modulated_cavities[k])" : "element $(k)"
-tm_receipts = filter(r -> r.consumer === :turn_modulation, execution_receipts(audit))
-isempty(tm_receipts) && println("turn_modulation receipt = none recorded (the line has no " *
-                                "modulated element: OCTOPUS_NOISE_RULE=", cn.rule,
-                                ", effective phase_rms ", phase_sigma,
-                                ", effective strength_rel_rms ", strength_sigma_rel, ")")
-for r in tm_receipts
-    println("turn_modulation receipt: first_turn = ", r.values.first_turn,
-            ", turns = ", r.values.turns, ", backend = ", r.backend)
-    for (k, e) in enumerate(r.values.elements)
-        println("  [", cavity_label(k), "] ", e.element, " (beam ", e.beam, "): ",
-                join(("$(s.slot) $(s.kind)" for s in e.slots), ", "))
+# What the run RECORDED about its division: the `:multi_process_communicator`
+# receipt, written at activation from the communicator Octopus actually opened
+# (nranks, rank, the per-rank worker count it resolved); a single-process run
+# records none. The summary line's `ranks=` is that recorded count, checked
+# against MPI's own world, so a policy that silently failed to divide cannot
+# report the launcher's count as its own.
+comm_receipts = filter(r -> r.consumer === :multi_process_communicator, execution_receipts(audit))
+recorded_ranks = isempty(comm_receipts) ? 1 : Int(last(comm_receipts).values.nranks)
+recorded_ranks == mpi_nranks || error(
+    "the run recorded a communicator of $(recorded_ranks) rank(s) while MPI.COMM_WORLD holds " *
+    "$(mpi_nranks): the policy in force did not divide over the launcher's world")
+# The per-process CPU logical-worker count the policy RESOLVED (the
+# configuration report's `:threads` entry: OCTOPUS_CPU_THREADS, or the default
+# pool for `auto`), checked against the count the communicator receipt carries;
+# NA on CUDA, whose `threads` is the launch geometry's, not a worker count.
+threads_text = if use_gpu
+    "NA"
+else
+    threads_entry = only(filter(e -> e.name === :threads, collect(configuration_report(policy))))
+    if !isempty(comm_receipts) && Int(last(comm_receipts).values.threads) != threads_entry.resolved
+        error("the communicator receipt records $(last(comm_receipts).values.threads) workers per " *
+              "rank while the configuration report resolves $(threads_entry.resolved)")
     end
+    string(threads_entry.resolved)
 end
-for entry in turn_modulation_provenance(artifact_path)
-    println("turn_modulation provenance, /execution row ", entry.execution, ":")
-    for (k, e) in enumerate(entry.elements)
-        println("  [", cavity_label(k), "] ", e.element, " (beam ", e.beam, ")")
-        for s in e.slots
-            if s.kind === :table
-                println("    ", s.slot, ": table digest = 0x", string(s.digest; base = 16, pad = 16),
-                        ", name = ", repr(s.name), ", length = ", s.length)
-            else
-                println("    ", s.slot, ": ", s.kind, ", rng_id = ", Int(s.rng_id))
+
+# OCTOPUS_RECORD_TURN_TIMES=1: the per-turn series the task clocked. PER RANK
+# by the task's documented semantics: the INSTRUMENT adds no collective, each
+# rank stamps its own clock at its own turn boundary, so every rank prints its
+# own series. The turn itself is not independent per rank: the line's own
+# per-turn collectives -- the luminosity's chunk fold every turn and the moment
+# observer's reduction every recorded turn -- sit inside the clocked turn, so
+# the slowest rank sets the turn, which is why the MAX over ranks is the turn's
+# wall time. Reduced here with one max over MPI's own world after the run --
+# outside Octopus's scope, where its collectives are passthroughs, but on
+# MPI.COMM_WORLD, where this is a real collective that every rank issues (all
+# ranks read the same switch). Exact: max associates freely.
+series = turn_timings(task)
+max_series = series
+steady_text = "NA"
+if record_turn_times
+    length(series) == turns || error(
+        "turn_timings(task) holds $(length(series)) entries for a $(turns)-turn run")
+    println("turn_timings_seconds",
+            mpi_nranks > 1 ? " (rank $(mpi_rank) shard of $(mpi_nranks); the turn's wall time is the max over ranks)" : "",
+            " = ", series)
+    use_mpi && (max_series = MPI.Allreduce(series, max, MPI.COMM_WORLD))
+    # The steady figure: the median over turns 21..T of the turn's wall time,
+    # after the first turn's JIT and the warm-up; NA when the run is too short
+    # to have one, and said so.
+    if turns > 20
+        sorted_tail = sort(max_series[21:end])
+        m = length(sorted_tail)
+        steady_median = isodd(m) ? sorted_tail[(m + 1) ÷ 2] :
+                                   (sorted_tail[m ÷ 2] + sorted_tail[m ÷ 2 + 1]) / 2
+        steady_text = string(1000 * steady_median)
+    else
+        mpi_rank == 0 && println("steady_ms_per_turn = NA (needs more than 20 turns; this run has ", turns, ")")
+    end
+    if mpi_rank == 0 && !isempty(turn_timing_path)
+        # Rank 0 alone writes: one path and P writers is a race. Relative
+        # paths resolve against the repository, never into OCTOPUS_RESULT_DIR
+        # (the suite asserts rank 0's result directory holds exactly one file).
+        timing_file = isabspath(turn_timing_path) ? turn_timing_path :
+                      normpath(joinpath(@__DIR__, "..", "..", turn_timing_path))
+        mkpath(dirname(timing_file))
+        open(timing_file, "w") do io
+            println(io, "turn\tseconds\tmax_over_ranks_seconds")
+            for i in 1:turns
+                println(io, i, "\t", series[i], "\t", max_series[i])
             end
         end
+        println("turn_timing_path = ", timing_file, " (", turns, " rows; seconds = rank 0's clock ",
+                "of the turn, max_over_ranks_seconds = the slowest rank's, equal at one rank)")
     end
 end
 
-# Read back from the artifact, not from the live beam: the line below reports
-# what the file holds. The rms emittance from the central second moments,
-# eps_x = sqrt(<x^2><px^2> - <x px>^2) (columns m200000, m020000, m110000),
-# eps_y from m002000, m000200, m001100.
-out = TaskOutput(artifact_path)
-lum = read(out, :luminosity; name = "strong_beam_1")
-lumi_mean = sum(lum.value) / length(lum.value)
-mom = read(out, :moments; name = "weak_beam")
-eps_x = sqrt.(mom.m200000 .* mom.m020000 .- mom.m110000 .^ 2)
-eps_y = sqrt.(mom.m002000 .* mom.m000200 .- mom.m001100 .^ 2)
-println("emittance estimator = sqrt(<x^2><px^2> - <x px>^2) from the central second moments; ",
-        length(eps_x), " moment rows, first at turn ", Int(mom.turn[1]),
-        ", last at turn ", Int(mom.turn[end]), "; design eps_x = ", emit[1], ", eps_y = ", emit[2])
-println("CRAB-NOISE rule=", cn.rule, " scale=", cn.scale,
+if mpi_rank != 0
+    # Rank 0 alone holds the artifact (the library gates the file itself), so
+    # the readback below is its; this rank tracked its shard and is done. Every
+    # number printed below is whole-beam by construction -- the moment observer
+    # reduces across the ranks, the luminosity folds across them -- so nothing
+    # here needs the shard label the weak-strong harness puts on its
+    # `beam_statistics` line, which this harness does not print.
+    println("rank ", mpi_rank, " of ", mpi_nranks, ": shard tracked; rank 0 holds the artifact and prints the readback")
+else
+    println("turns = ", turns)
+    println("n_macro = ", n_macro)
+    println("artifact = ", artifact_path)
+    println("  /luminosity/strong_beam_1, /moments/weak_beam, /execution",
+            (phase_on || strength_on) ? ", /turn_modulation" : "")
+    # The receipt and the provenance list the modulated elements in LINE ORDER
+    # and name only the element type, so the two cavities read alike. This file
+    # owns the line (tccb before tcca) and labels the entries by that order; the
+    # labels are this file's, not something the record stores. The receipt is
+    # per process and the same on every rank (the rules and the window are),
+    # so it is printed once, here.
+    modulated_cavities = ("tccb", "tcca")
+    cavity_label(k) = k <= length(modulated_cavities) ?
+        "element $(k) = $(modulated_cavities[k])" : "element $(k)"
+    tm_receipts = filter(r -> r.consumer === :turn_modulation, execution_receipts(audit))
+    isempty(tm_receipts) && println("turn_modulation receipt = none recorded (the line has no " *
+                                    "modulated element: OCTOPUS_NOISE_RULE=", cn.rule,
+                                    ", effective phase_rms ", phase_sigma,
+                                    ", effective strength_rel_rms ", strength_sigma_rel, ")")
+    for r in tm_receipts
+        println("turn_modulation receipt: first_turn = ", r.values.first_turn,
+                ", turns = ", r.values.turns, ", backend = ", r.backend)
+        for (k, e) in enumerate(r.values.elements)
+            println("  [", cavity_label(k), "] ", e.element, " (beam ", e.beam, "): ",
+                    join(("$(s.slot) $(s.kind)" for s in e.slots), ", "))
+        end
+    end
+    for entry in turn_modulation_provenance(artifact_path)
+        println("turn_modulation provenance, /execution row ", entry.execution, ":")
+        for (k, e) in enumerate(entry.elements)
+            println("  [", cavity_label(k), "] ", e.element, " (beam ", e.beam, ")")
+            for s in e.slots
+                if s.kind === :table
+                    println("    ", s.slot, ": table digest = 0x", string(s.digest; base = 16, pad = 16),
+                            ", name = ", repr(s.name), ", length = ", s.length)
+                else
+                    println("    ", s.slot, ": ", s.kind, ", rng_id = ", Int(s.rng_id))
+                end
+            end
+        end
+    end
+
+    # Read back from the artifact, not from the live beam: the line below reports
+    # what the file holds. The rms emittance from the central second moments,
+    # eps_x = sqrt(<x^2><px^2> - <x px>^2) (columns m200000, m020000, m110000),
+    # eps_y from m002000, m000200, m001100.
+    out = TaskOutput(artifact_path)
+    lum = read(out, :luminosity; name = "strong_beam_1")
+    lumi_mean = sum(lum.value) / length(lum.value)
+    mom = read(out, :moments; name = "weak_beam")
+    eps_x = sqrt.(mom.m200000 .* mom.m020000 .- mom.m110000 .^ 2)
+    eps_y = sqrt.(mom.m002000 .* mom.m000200 .- mom.m001100 .^ 2)
+    println("emittance estimator = sqrt(<x^2><px^2> - <x px>^2) from the central second moments; ",
+            length(eps_x), " moment rows, first at turn ", Int(mom.turn[1]),
+            ", last at turn ", Int(mom.turn[end]), "; design eps_x = ", emit[1], ", eps_y = ", emit[2])
+    # ONE string, written once: a line a parent parses is built whole
+    # (docs/experiences.md, "Two ranks printing at the same moment merge
+    # mid-line"). wall_s and ms_per_turn are this rank's `execute!`, JIT
+    # included; steady_ms_per_turn is the max over ranks after the warm-up.
+    summary = string("CRAB-NOISE rule=", cn.rule, " scale=", cn.scale,
         " phase_rms=", phase_sigma, " strength_rel_rms=", strength_sigma_rel,
         " chrom=", chromaticity[1], ",", chromaticity[2],
         " table_file=", isempty(cn.table_file) ? "none" : cn.table_file,
@@ -772,4 +1032,8 @@ println("CRAB-NOISE rule=", cn.rule, " scale=", cn.scale,
         " artifact=", artifact_path,
         " eps_x_first=", eps_x[1], " eps_x_last=", eps_x[end],
         " eps_y_first=", eps_y[1], " eps_y_last=", eps_y[end],
-        " lumi_mean=", lumi_mean, " wall_s=", wall_s, " ms_per_turn=", ms_per_turn)
+        " lumi_mean=", lumi_mean, " wall_s=", wall_s, " ms_per_turn=", ms_per_turn,
+        " ranks=", recorded_ranks, " threads=", threads_text,
+        " steady_ms_per_turn=", steady_text)
+    println(summary)
+end

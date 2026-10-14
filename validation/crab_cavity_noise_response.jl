@@ -184,6 +184,11 @@ parses the harness's final line
     CRAB-NOISE rule=.. scale=.. [phase_rms=.. strength_rel_rms=.. chrom=..] turns=.. n_macro=..
                kbb_scale=.. radiation=.. seed=.. artifact=<path> eps_x_first=.. eps_x_last=..
                eps_y_first=.. eps_y_last=.. lumi_mean=.. wall_s=.. ms_per_turn=..
+               [ranks=.. threads=.. steady_ms_per_turn=..]
+The bracketed trailing fields arrived with the harness's MPI arm (2026-10-14:
+the recorded rank count, the per-process worker count, the post-warm-up
+median turn time or NA); the parser reads the line as key=value tokens, so
+they are carried and ignored by every check here.
 The receipt must state the requested configuration (a configuration you set
 is not one the code read): rule, scale, turns, n_macro, kbb_scale and
 radiation must match; phase_rms and strength_rel_rms (the EFFECTIVE sigmas,

@@ -18394,8 +18394,9 @@ if _lane_gate("The developer harnesses run divided under an MPI launcher")
     # harness landed, 2026-10-14). Every `.jl` under test/examples/ either
     # reads the switch, `use_mpi = env_bool("OCTOPUS_USE_MPI", false)`, and
     # runs here, or refuses it by name, `env_bool("OCTOPUS_USE_MPI", false)
-    # && error(` (test/examples/crab_cavity_noise.jl, which has no
-    # multi-process arm), and is excluded on that evidence. A harness that
+    # && error(` (none does today: the crab cavity noise harness gained its
+    # arm on 2026-10-14; the branch stays for a future harness), and is
+    # excluded on that evidence. A harness that
     # does neither is one the switch would silently drop -- the example
     # runner runs every harness with the switch OFF, and nothing runs it on
     # -- so it fails here by name. Text patterns, because the classification

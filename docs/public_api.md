@@ -224,7 +224,12 @@ weak-strong crab crossing with RF phase and amplitude noise on both proton
 crab cavities, white, pink or a tabulated record through one switch, each
 cavity on independent streams (harness `test/examples/crab_cavity_noise.jl`,
 study `validation/crab_cavity_noise_response.jl`); the physics it measures
-is derived in `docs/theory/crab_cavity_noise_response.md`. To read the
+is derived in `docs/theory/crab_cavity_noise_response.md`. The example also
+runs divided under the MPI execution policy (`config.execution =
+:multiprocess`, package mode under a launcher; `OCTOPUS_USE_MPI=1` on the
+harness), and `profiling/crab_cavity_noise_backends.jl` benchmarks it across
+CPU threads, MPI ranks and CUDA with output digests; the numbers are in
+`docs/history/crab_cavity_noise_mpi_benchmark_2026_10_14.md`. To read the
 `:turn_modulation` execution receipt, the run's own statement of which
 elements and slots it realised and over which window, wrap the `execute!`
 call in `with_execution_audit` and filter `execution_receipts` -- outside an
