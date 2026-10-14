@@ -336,6 +336,25 @@ reference material, not API docs; the implementing code links back to them.
   of the same model that *measures* the truncation error, the measured 2D
   Y-versus-flatness and Y-versus-xi scans, and the coupled asymmetric
   (EIC-like) mode analysis.
+- [`crab_cavity_noise_response.md`](theory/crab_cavity_noise_response.md) —
+  crab cavity RF noise on a colliding beam, the first physics use of the
+  turn-modulation rules (`design/turn_modulation.md`): the transverse kick
+  error of a per-turn phase or strength offset on one harmonic of a thin
+  crab cavity (dipole part, residual, the bunch factors), its mapping to an
+  IP orbit offset for the upstream and the downstream cavity and the
+  common-timing alternative, the emittance growth of the weak beam under
+  white and coloured offset sequences (random dipole kicks, raw versus
+  central emittance and decoherence, the beam-beam-mediated response), the
+  spectral form of the growth rate and the Voss-McCartney pink ratio, the
+  production-point predictions for the owner's 10 urad / 1e-4 point with
+  their stated uncertainty (section 6), the measurement plan that
+  `validation/crab_cavity_noise_response.jl` executes (section 7) and the
+  owner-facing ambiguities (section 8: per-harmonic independent streams
+  versus common timing; the both-planes strength semantics, under which a
+  horizontal cavity's amplitude noise grows the vertical emittance at 0.87 of
+  the horizontal rate). Used by `examples/crab_cavity_noise.jl` and its
+  harness `test/examples/crab_cavity_noise.jl`; the measured numbers belong
+  to `history/crab_cavity_noise_validation_2026_10_14.md`, not to the note.
 
 ## Planning
 
@@ -415,6 +434,20 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   mechanism and disposition, the corrections to the stage 1-2 record, the
   fixed list, the ledgered and owner items, what was not verified); the
   gate.
+- [`crab_cavity_noise_validation_2026_10_14.md`](history/crab_cavity_noise_validation_2026_10_14.md) —
+  the crab cavity noise example and validation campaign, the first physics
+  use of turn-by-turn modulation: what landed (`examples/crab_cavity_noise.jl`,
+  its harness `test/examples/crab_cavity_noise.jl`, the catalogue entry, the
+  theory note `theory/crab_cavity_noise_response.md`, the validation script
+  `validation/crab_cavity_noise_response.jl`); the specification and the
+  interpretations adopted (10 urad and 1e-4 per active harmonic on
+  independent streams, the amplitude sigma, both cavities independent, the
+  synthetic table record, the both-planes strength semantics); the
+  predictions with their stated uncertainty; the three questions with the
+  numbers behind each verdict (do the rules generate the specified noise;
+  the beam-beam response in emittance and luminosity against the noise-free
+  run; white, pink and table compared at equal rms); the verification and
+  the gate; the owner items and the ledger rows.
 - [`twiss_dispersion_degeneracy_theory_2026_09_11.md`](history/twiss_dispersion_degeneracy_theory_2026_09_11.md) —
   derivation record for theory Section 13 (mode degeneracy) and the analysis
   design note: provenance of the ported working notes and the convention key,

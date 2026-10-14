@@ -219,6 +219,24 @@ every turn; the rules are realised only by a task's `execute!`, which calls
 `update`, so a session that does `using Octopus, CUDA` writes
 `Octopus.update`.
 
+The production-shaped precedent is `examples/crab_cavity_noise.jl`: the EIC
+weak-strong crab crossing with RF phase and amplitude noise on both proton
+crab cavities, white, pink or a tabulated record through one switch, each
+cavity on independent streams (harness `test/examples/crab_cavity_noise.jl`,
+study `validation/crab_cavity_noise_response.jl`); the physics it measures
+is derived in `docs/theory/crab_cavity_noise_response.md`. To read the
+`:turn_modulation` execution receipt, the run's own statement of which
+elements and slots it realised and over which window, wrap the `execute!`
+call in `with_execution_audit` and filter `execution_receipts` -- outside an
+audit no receipt is recorded, while the artifact's provenance
+(`turn_modulation_provenance(path)`, `read(TaskOutput(path),
+:turn_modulation)`) is written by every `execute!` regardless:
+
+```julia
+audit = with_execution_audit() do; execute!(task, beam; turns = turns); end
+receipts = filter(r -> r.consumer === :turn_modulation, execution_receipts(audit))
+```
+
 Bounds the wrapper enforces at `TurnModulated(base, rule)`: a `PinkNoise` is
 refused on a rule container with more than 64 slots (the pink component
 stride), so a crab cavity with more than 32 harmonics may carry white and

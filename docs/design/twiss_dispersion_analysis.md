@@ -502,7 +502,9 @@ expected diagnostic stays silent. An implementation contract is the option
 probe table. A validation script reproduces the identity table with the
 digest convention of the profiling drivers and gets its own section in
 `validation/README.md`. An executable example analyzes a DBA ring with RF as a
-`BeamLine` and is catalogued and added to the example runner list.
+`BeamLine` and is catalogued in `example_catalog()`, from which the suite's
+example-execution testset derives its list (since 2026-10-14; an
+uncatalogued script under `examples/` fails that testset by name).
 
 ### Staging
 

@@ -3,7 +3,14 @@
 > **Status: stages 1-4 implemented (stages 1 and 2 on 2026-10-12, record
 > `../history/turn_modulation_stage1_2026_10_12.md`; stages 3 and 4 on
 > 2026-10-13, record `../history/turn_modulation_stages3_4_2026_10_13.md`,
-> whose section 6 is the neighbour audit); gate pending.** Designed
+> whose section 6 is the neighbour audit; the two-arm gate ran on b99f6b7 and
+> the batch was pushed 2026-10-13 as 6995151, CI run 448 green). First physics
+> use 2026-10-14: `examples/crab_cavity_noise.jl` (RF phase and amplitude noise
+> on both proton crab cavities of the EIC weak-strong case) with the theory
+> note `../theory/crab_cavity_noise_response.md`, which derives the kick
+> errors, the IP offsets and the emittance growth the rules drive, and the
+> campaign record `../history/crab_cavity_noise_validation_2026_10_14.md`.**
+> Designed
 > 2026-10-12 in owner discussion. This note records the architecture decision
 > for element parameters that change from one turn to the next inside a
 > single tracking run: crab cavity RF phase and amplitude noise first, ramps
@@ -702,7 +709,15 @@ Tests the implementation owes, each shown to fail without its feature:
   (this note's assumption) or carry a rule per plane.
   Decided 2026-10-12 in the owner's absence from this note's default (owner
   to confirm): one rule per harmonic, its realised offset added to both
-  planes.
+  planes. Why it must be decided (2026-10-14, the theory note
+  `../theory/crab_cavity_noise_response.md`, sections 3.2 and 8): under this
+  semantics a horizontal cavity with `strengthY = 0` acquires vertical
+  crabbing noise of the same absolute slope, so at the production point
+  (relative amplitude rms 1e-4) the vertical emittance grows at 0.87 of the
+  horizontal rate (9.5e-7 against 1.10e-6 per turn), where a physical voltage
+  error, scaling both planes proportionally, would give no vertical noise;
+  the alternative is a relative (multiplicative) scaling per harmonic. The
+  validation sweep measures the vertical rate under the shipped semantics.
 - Whether the table may be a `Float32` vector on a `Float64` line with an
   explicit opt-in, for memory on very long runs. Default is to refuse.
   Decided 2026-10-12 in the owner's absence from this note's default (owner

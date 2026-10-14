@@ -14710,44 +14710,111 @@ if _lane_gate("Every example script runs against the current interface")
     # suite runs. Each script runs in a subprocess at its small config
     # defaults (the weak-strong pair at 2 turns / 10k macroparticles;
     # knob_control at 1 turn / 4 particles; strong-strong at 200/beam;
-    # twiss_dispersion_dba_ring at its fixed DBA ring, two analyze runs --
-    # all CPU policy), so this also
-    # enforces "update examples when public APIs change". Costs one package
-    # load per script; exit 0 is the assertion, with the output tail
-    # surfaced on failure.
+    # twiss_dispersion_dba_ring at its fixed DBA ring, two analyze runs;
+    # crab_cavity_noise at 2 turns / 10k macroparticles -- the harnesses on
+    # CPU threads, the clean examples on whatever their `:auto` device line
+    # finds), so this also enforces "update examples when public APIs
+    # change". Costs one package load per script; exit 0 is the assertion,
+    # with the output tail surfaced on failure.
+    #
+    # WHICH scripts run is derived, not listed (AGENTS.md Invariants: derive
+    # from one source and add a coverage tripwire). Until 2026-10-14 this
+    # block hand-listed four examples and two harnesses, so a fifth example
+    # -- catalogued, documented, with a harness of its own -- would have
+    # shipped without this suite ever executing it. The clean examples come
+    # from `example_catalog()`, the one source the registry answers with (an
+    # entry's `title` is its repo-relative script path); the harnesses are
+    # every `.jl` under test/examples/, a directory with no catalogue, so the
+    # directory is the source. The tripwire holds the catalogue to examples/
+    # in both directions and names the offender: a script nobody registered
+    # fails here instead of going unrun.
     root = dirname(@__DIR__)
-    scripts = vcat(
-        [joinpath(root, "examples", f) for f in
-         ("knob_control.jl", "weak_strong_tracking.jl", "strong_strong_tracking.jl",
-          "twiss_dispersion_dba_ring.jl")],
-        [joinpath(root, "test", "examples", f) for f in
-         ("weak_strong_tracking.jl", "strong_strong_tracking.jl")])
-    for script in scripts
+    catalogued = sort([basename(e.title) for e in example_catalog()])
+    on_disk = sort(filter(f -> endswith(f, ".jl"), readdir(joinpath(root, "examples"))))
+    uncatalogued = setdiff(on_disk, catalogued)
+    dangling = setdiff(catalogued, on_disk)
+    isempty(uncatalogued) || @info "TRIPWIRE: scripts under examples/ that example_catalog() (src/examples/Examples.jl) does not name -- register them, or this testset never runs them" uncatalogued
+    isempty(dangling) || @info "TRIPWIRE: example_catalog() entries whose script is not under examples/" dangling
+    @test uncatalogued == String[]
+    @test dangling == String[]
+    harnesses = sort(filter(f -> endswith(f, ".jl"), readdir(joinpath(root, "test", "examples"))))
+    # Floors at the 2026-10-14 population, so an empty derivation (a moved
+    # directory, a catalogue that stopped resolving) cannot pass vacuously.
+    @test length(catalogued) >= 5
+    @test length(harnesses) >= 3
+    run_script(script, env) = begin
+        base = `$(Base.julia_cmd()) --startup-file=no --project=$(root) $(script)`
+        cmd = isempty(env) ? base : addenv(base, env...)
         buf = IOBuffer()
-        p = run(pipeline(`$(Base.julia_cmd()) --startup-file=no --project=$(root) $(script)`,
-                         stdout=buf, stderr=buf); wait=false)
+        t0 = time()
+        p = run(pipeline(cmd, stdout=buf, stderr=buf); wait=false)
         wait(p)
         ok = success(p)
-        if !ok
-            text = String(take!(buf))
-            @info "example script failed" script last(text, 2000)
-        end
+        text = String(take!(buf))
+        # One line per script in the suite's log, so a gate's record names
+        # the scripts that ran: a derived set is only as visible as its run.
+        println("    ", relpath(script, root), ": exit ", p.exitcode, ", ", round(time() - t0; digits=1), " s")
+        ok || @info "example script failed" script last(text, 2000)
         @test ok
+        return text
     end
-    # The clean examples write into repo-root result/ by their documented
-    # config (gitignored, but every Pkg.test left the artifacts behind;
-    # 2026-08-05 audit, U18-3). Remove exactly the files these runs create,
-    # in both output directories, and leave anything else in result/ alone.
-    # The weak-strong pair writes under result/<seed>/<case_name>.* since
-    # 2026-08-11 (seed 123456789, case "weak_strong" — the scripts' shipped
-    # config values); the seed directory is removed only when these deletions
-    # leave it empty.
-    for dir in (joinpath(root, "result"), joinpath(root, "test", "result"))
-        seed_dir = joinpath(dir, "123456789")
-        for name in ("weak_strong.h5", "pic_hcc.h5")
-            rm(joinpath(seed_dir, name); force=true)
+    # Artifacts. The clean examples take no environment by design and write
+    # under result/<seed>/<case_name>.h5 beside the repository (each writer's
+    # header, OUTPUTS; gitignored, but every Pkg.test left them behind,
+    # 2026-08-05 audit, U18-3). Which files they create is derived from what
+    # each run RECORDED: every writing script prints the one line
+    # `artifact = <path>`, and exactly those files are removed, with a seed
+    # directory the runs created once it is empty, and nothing else in
+    # result/ -- no fixed names, which is how the cleanup stayed two files
+    # long while a third writer landed. The tripwire for a file a run wrote
+    # without saying so is the seed directories' listing: taken before the
+    # runs, it must be what remains after the cleanup, and a leftover fails
+    # here by name. The layout, <digits>/<file> directly under result/, is
+    # the scan's one assumption, so every recorded path is held to it and a
+    # path outside it is left alone and reported rather than removed.
+    result_root = normpath(joinpath(root, "result"))
+    seed_dirs(dir) = isdir(dir) ? filter(d -> all(isdigit, d) && isdir(joinpath(dir, d)), readdir(dir)) : String[]
+    seed_files(dir) = Set(joinpath(d, f) for d in seed_dirs(dir) for f in readdir(joinpath(dir, d)))
+    in_layout(path) = dirname(dirname(normpath(path))) == result_root &&
+                      all(isdigit, basename(dirname(normpath(path))))
+    dirs_before = Set(seed_dirs(result_root))
+    files_before = seed_files(result_root)
+    recorded = String[]
+    for name in catalogued
+        text = run_script(joinpath(root, "examples", name), Pair{String,String}[])
+        append!(recorded, String(strip(m.captures[1])) for m in eachmatch(r"^artifact = (.+)$"m, text))
+    end
+    # The three writers of 2026-10-14 (weak_strong, strong_strong,
+    # crab_cavity_noise); an empty list would mean the cleanup had nothing to
+    # go on and the scan below checks only what it can see.
+    @test length(recorded) >= 3
+    for path in recorded
+        in_layout(path) || @info "an example recorded an artifact outside result/<seed>/, which this cleanup does not reach" path
+        @test in_layout(path)
+        in_layout(path) && rm(path; force=true)
+    end
+    for d in setdiff(Set(seed_dirs(result_root)), dirs_before)
+        path = joinpath(result_root, d)
+        isempty(readdir(path)) && rm(path)
+    end
+    leftover = sort(collect(setdiff(seed_files(result_root), files_before)))
+    isempty(leftover) || @info "TRIPWIRE: files the example runs left under result/<seed>/ that no run recorded as its artifact" leftover
+    @test leftover == String[]
+    @test isempty(setdiff(Set(seed_dirs(result_root)), dirs_before))
+    # The harnesses take OCTOPUS_RESULT_DIR (their documented switch, and the
+    # MPI testset's answer to the same problem), so each runs into a
+    # directory of its own, removed with the run, and never races or deletes
+    # a developer's own harness run into test/result. The redirect must have
+    # been READ -- a configuration you set is not a configuration the code
+    # read -- so the harness is required to have written under it: one that
+    # ignored the variable wrote into test/result instead and fails by name.
+    for harness in harnesses
+        mktempdir() do outdir
+            run_script(joinpath(root, "test", "examples", harness), ["OCTOPUS_RESULT_DIR" => outdir])
+            wrote = any(!isempty(files) for (_, _, files) in walkdir(outdir))
+            wrote || @info "harness wrote nothing under OCTOPUS_RESULT_DIR" harness outdir
+            @test wrote
         end
-        isdir(seed_dir) && isempty(readdir(seed_dir)) && rm(seed_dir)
     end
 end
 end # _lane_gate("Every example script runs against the current interface")
@@ -18322,6 +18389,29 @@ if _lane_gate("The developer harnesses run divided under an MPI launcher")
     # The shard label on the rms line is the second, independent tell -- the
     # harness only prints it when the communicator holds more than one rank.
     root = dirname(@__DIR__)
+    # WHICH harnesses carry the arm is derived from the harnesses, not listed
+    # (AGENTS.md Invariants; the hand list here stopped at two while a third
+    # harness landed, 2026-10-14). Every `.jl` under test/examples/ either
+    # reads the switch, `use_mpi = env_bool("OCTOPUS_USE_MPI", false)`, and
+    # runs here, or refuses it by name, `env_bool("OCTOPUS_USE_MPI", false)
+    # && error(` (test/examples/crab_cavity_noise.jl, which has no
+    # multi-process arm), and is excluded on that evidence. A harness that
+    # does neither is one the switch would silently drop -- the example
+    # runner runs every harness with the switch OFF, and nothing runs it on
+    # -- so it fails here by name. Text patterns, because the classification
+    # must cost no package load: a harness that rephrases either line fails
+    # loudly and updates the pattern or itself; it cannot go unclassified.
+    harness_dir = joinpath(root, "test", "examples")
+    mpi_harnesses = String[]
+    for harness in sort(filter(f -> endswith(f, ".jl"), readdir(harness_dir)))
+        text = read(joinpath(harness_dir, harness), String)
+        reads = occursin("use_mpi = env_bool(\"OCTOPUS_USE_MPI\", false)", text)
+        refuses = occursin("env_bool(\"OCTOPUS_USE_MPI\", false) && error(", text)
+        xor(reads, refuses) || @info "TRIPWIRE: a harness under test/examples/ neither reads nor refuses OCTOPUS_USE_MPI (or does both), so the MPI arm would silently skip it" harness reads refuses
+        @test xor(reads, refuses)
+        reads && push!(mpi_harnesses, harness)
+    end
+    @test length(mpi_harnesses) >= 2    # the two arms of 2026-09-06
     launcher = try
         MPICH_jll.mpiexec(exe -> exe)
     catch err
@@ -18331,8 +18421,8 @@ if _lane_gate("The developer harnesses run divided under an MPI launcher")
     if launcher === nothing
         @test_broken false          # visible in the summary, unlike a silent skip
     else
-        for harness in ("weak_strong_tracking.jl", "strong_strong_tracking.jl")
-            script = joinpath(root, "test", "examples", harness)
+        for harness in mpi_harnesses
+            script = joinpath(harness_dir, harness)
             outdir = mktempdir()
             cmd = addenv(
                 `$(launcher) -n 2 $(Base.julia_cmd()) --startup-file=no --threads=2 $(script)`,

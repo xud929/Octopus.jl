@@ -85,6 +85,21 @@ function example_catalog()
             "and the smaller of the two tracking examples to read first.",
             Type[TrackingTask, ThinStrongBeamSpec, ThinCrabCavitySpec, Beam]),
         ReferenceExample(
+            "examples/crab_cavity_noise.jl",
+            "The weak-strong crab-crossing case with turn-by-turn RF phase and " *
+            "amplitude noise on both proton crab cavities -- white, pink or a " *
+            "tabulated record through one switch, each cavity on independent " *
+            "streams. The precedent for declaring turn modulation and reading " *
+            "its execution receipt and artifact provenance back. It supports " *
+            "three verification questions: does the rule generate the specified " *
+            "noise (provenance and realised rms), what is the beam-beam response " *
+            "(emittance growth and luminosity against the noise-free run), and " *
+            "how do the rules compare. Its configurable development harness is " *
+            "test/examples/crab_cavity_noise.jl; the numerical study is " *
+            "validation/crab_cavity_noise_response.jl.",
+            Type[TrackingTask, ThinCrabCavitySpec, WhiteNoise, PinkNoise, TurnTable,
+                 TurnModulated, RunArtifact]),
+        ReferenceExample(
             "examples/knob_control.jl",
             "One knob driving many element parameters, in two production-shaped " *
             "scenarios built on the strong-strong example's constants. The " *

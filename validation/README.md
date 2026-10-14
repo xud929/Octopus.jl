@@ -415,6 +415,108 @@ the rms, `0.779`, and above its 99.5 % quantile, `1.538`; 7 of 2048 streams
 outside, against 120 for `[0.8, 1.25]` at 16384 turns), stated at the test
 with the keying pinned bitwise beside it.
 
+## Crab Cavity Noise Response
+
+`crab_cavity_noise_response.jl` is the numerical study behind
+`examples/crab_cavity_noise.jl`: the EIC weak-strong crab-crossing case of
+`examples/weak_strong_tracking.jl` with turn-by-turn RF phase and amplitude
+noise on both proton crab cavities (`tccb` before the IP, `tcca` after it)
+at the owner's production point -- phase rms 10 urad and relative amplitude
+rms 1e-4 per active harmonic (1 and 2), each cavity on independent streams,
+the strength rule's absolute sigma `1e-4 |strengthX[i]|` added to both
+planes (the shipped semantics). Reference model:
+`docs/theory/crab_cavity_noise_response.md` (section 6 the predicted rates,
+section 7 the plan this script executes, section 8 the interpretations it
+adopts); the rules' own contracts are `docs/design/turn_modulation.md`,
+sections 5.1, 5.2, 5.5 and 5.6. The script answers the example's three
+questions in six parts, selected by the first argument, with `key=value`
+overrides after it (every key with its default is in the file header):
+
+1. Do the rules generate the specified noise? Part `noise` (CPU, about a
+   minute after the load): the sequences a run would apply, produced the way
+   a run produces them -- a `ThinCrabCavitySpec{3}` with the example's
+   strengths compiled into a `TurnModulated` and realised by the pure
+   `Octopus.update` hook on every absolute turn, seed 123456789, the
+   example's stream ids 11, 12, 14, 15 (tccb) and 21, 22, 24, 25 (tcca) --
+   for 65536 turns by default. Metrics, each printed PASS/FAIL with its
+   number: the sample rms against sigma (white and table within
+   `3 sqrt(1/(2N))`, 0.83 % at 65536; pink within three times the
+   construction's own one-sigma, `Var[rms^2]/sigma^4 = (2/(K^2 N)) sum_k
+   2^k (2K - 1 - 2k)`, 7.65 % at K = 16 and N = 65536, so 23 %, with a
+   Monte Carlo p-value from 2048 reference streams beside it); the pink
+   cells rebuilt bitwise from the counter RNG and its distinct generator
+   draws unit-normal within `3 sqrt(2/M)`; the mean within three times its
+   own one-sigma (pink: `sigma^2 (2^K - 1)/(K N)`, not `sigma^2/N`); the
+   octave-band spectrum as `turn_modulation_spectra.jl` measures it (white
+   and table slope `+1 +- 0.15` per octave, pink `0 +- 0.2` and the band
+   shape against 2048 synthetic Voss-McCartney streams, chi-square at
+   99.9 %); the pairwise independence of the eight active slots (`|rho| <=
+   3 se` at lag 0, se from Bartlett's formula for pink, `1/sqrt(N)` for
+   white); the strength offset equal on both planes to 4 ulp; harmonic 3
+   and the base element untouched bitwise; the `scale` factor exact to
+   1e-12; the table realised bitwise from its record, and its digest, name
+   and length in the artifact provenance of a short CPU `TrackingTask` run.
+2. What is the beam-beam response? Parts `pilot` and `sweep` (GPU), which
+   run the harness `test/examples/crab_cavity_noise.jl` as a subprocess per
+   case and parse its final `CRAB-NOISE` line after checking that the
+   receipt states the requested configuration (rule, scale, turns,
+   macroparticles, `kbb_scale`, radiation, the effective sigmas, the
+   chromaticity, the table file's digests). Estimators from the artifact's
+   `/moments/weak_beam`: the raw action `J_raw`, the central emittance
+   `eps_c` and the centroid action `J_c` per plane, each fit by least
+   squares over turns `[n0, T]` (n0 = 2000) after subtracting the no-noise
+   baseline with the same seed, as rates relative to the design emittances
+   (1.128e-8 m horizontal, 1.004e-9 m vertical); the luminosity's mean and
+   relative trend over the same window. `pilot` calibrates (white at scale
+   100 and 30, the baseline drift, a `kbb = 0` case, the ms per turn at the
+   sweep's size and the projected wall clock); `sweep` runs the theory
+   note's cases B0, W1-W3, P1, T1, T2, A1, A4, AP1, AT1, C0, C1, C2 and the
+   optional C3 (1e5 turns, 2^17 for the pink runs, 2.5e4 for A4; 1e6
+   macroparticles; radiation off; moment step 1), one TSV row per case,
+   resumable. Part `tablefile` writes W1's realised offsets as the harness's
+   `OCTOPUS_TABLE_FILE` for T1 (exact Float64 round-trip, FNV-1a digests
+   printed); part `control` is the sharp linear check of C1, the recorded
+   centroid against the realisation-aware prediction propagated through the
+   linear maps, PASS within 1 % of its rms excursion.
+3. How do the rules compare? Part `report` on a sweep TSV: the theory
+   note's acceptance items 1-8, each PASS/FAIL with its number and
+   tolerance -- the W1, W2, W3, A1 (x and y), A4, T2 and AT1 rates within a
+   factor 1.25 of the reference (`ref_*` times s^2; the references are
+   overridable arguments whose defaults are the note's section 6 values,
+   1.72e-7 per turn for phase white in x, 1.10e-6 and 9.5e-7 for amplitude
+   white in x and y) and the B0 slope below 5 % of the s = 1 prediction;
+   the s^2 exponent within 0.1; P1/W1 and AP1/A1 within 25 % of the pink
+   ratios 0.15 (x) and 0.17 (y); T1 equal to W1 to 1e-10 relative on every
+   moment column; `eps_c` growing at least 0.8 of `J_raw` with the
+   second-half `J_c` below 10 % of the growth and no vertical growth under
+   phase noise; the C1 and C2 controls; the fit quality (two-half slopes
+   within 20 % of the rate, residual rms below 5 % of the growth). The
+   falsifiers are printed by name when they trigger; no verdict uses a
+   constant that is not printed.
+
+Run from the project root (`artifact_dir` should be a local disk: the
+per-turn observer write on a networked filesystem dominates a long run):
+
+```bash
+julia --project=. validation/crab_cavity_noise_response.jl noise
+julia --project=. validation/crab_cavity_noise_response.jl tablefile
+julia --project=. validation/crab_cavity_noise_response.jl pilot gpu=1 threads=4 artifact_dir=/local/scratch
+julia --project=. validation/crab_cavity_noise_response.jl sweep tag=<tag> gpu=1 threads=4 artifact_dir=/local/scratch
+julia --project=. validation/crab_cavity_noise_response.jl report tsv=result/crab_noise/sweep_<tag>.tsv
+julia --project=. validation/crab_cavity_noise_response.jl control tsv=result/crab_noise/sweep_<tag>.tsv case=C1
+```
+
+Outputs under `out=` (default `result/crab_noise/` under the project root,
+git-ignored, never evidence): `noise_summary.tsv`, `noise_correlations.tsv`,
+`noise_pink_bands.tsv` and `noise_table_provenance.h5` from `noise`;
+`W1_realised_offsets*.tsv` from `tablefile`; `pilot.tsv`, `sweep_<tag>.tsv`
+and `control_<case>_centroid.tsv`, the subprocess logs under `logs/` and the
+artifact copies under `artifacts/`. Each judging part ends with one
+machine-readable line (`CRAB-NOISE-RULES`, `CRAB-NOISE-REPORT`,
+`CRAB-NOISE-CONTROL`, each `... verdict=PASS|FAIL`) and exits 1 on any FAIL.
+The committed record with the measured numbers is
+`docs/history/crab_cavity_noise_validation_2026_10_14.md`.
+
 ## Weak–Strong Six-Dimensional Source
 
 The coupled-covariance audit, limiting-case coverage, CPU/CUDA parity, and
