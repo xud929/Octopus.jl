@@ -160,6 +160,8 @@ across `execute!` calls (it restarts from the compiled elements on every
 call) and the general loop does not persist one across a plan-key flip, so
 the interface admits state but nothing yet carries it, and a stateful rule
 is an owner decision before it ships: persist successors or forbid state.
+The artifact reserves a per-window checkpoint group for such state
+(`turn_modulation_record.md`, D10), written by nothing today.
 
 **D7. The table rule is a pure consumer (owner decision, 2026-10-12).** It
 takes a vector of per-turn additive offsets in the parameter's own unit and
@@ -709,7 +711,11 @@ Tests the implementation owes, each shown to fail without its feature:
   (this note's assumption) or carry a rule per plane.
   Decided 2026-10-12 in the owner's absence from this note's default (owner
   to confirm): one rule per harmonic, its realised offset added to both
-  planes. Why it must be decided (2026-10-14, the theory note
+  planes.
+  Decided 2026-10-15 by the owner: relative scaling per harmonic, `S (1 + d)`
+  on both planes of the crab cavity and on the RF cavity's voltage, one
+  voltage driver per cavity; implementation owed (`turn_modulation_record.md`,
+  section 7 stage 0). Why it must be decided (2026-10-14, the theory note
   `../theory/crab_cavity_noise_response.md`, sections 3.2 and 8): under this
   semantics a horizontal cavity with `strengthY = 0` acquires vertical
   crabbing noise of the same absolute slope, so at the production point

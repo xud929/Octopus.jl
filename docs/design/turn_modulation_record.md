@@ -1,6 +1,7 @@
 # Recording the realised turn modulation in the run artifact
 
-> **Status: designed 2026-10-15 in owner discussion; not implemented.** This
+> **Status: designed 2026-10-15 in owner discussion, its four open questions
+> decided by the owner the same day (section 8); not implemented.** This
 > note records the decisions for recording, turn by turn, the offsets the
 > turn-modulation rules produce during a run, so that a reader of the run
 > artifact can verify that `execute!` realised a new value every turn and
@@ -81,9 +82,10 @@ that. `Beam` keeps refusing a non-positive count; the one-particle probe of
 section 6 is the verification instrument.
 
 **D2. The switch lives on the run artifact, and nothing gains a new name.**
-Recording is an output option of `RunArtifact`, a keyword beside `append`
-and `capacity` (name to be fixed in section 8; `record_turn_modulation =
-false` in this note), off by default. It is not a keyword of
+Recording is an output option of `RunArtifact`, the keyword
+`record_turn_modulation = false` beside `append` and `capacity` (decided
+2026-10-15; the verb-noun form parallels the task's `record_turn_times`),
+off by default. It is not a keyword of
 `with_execution_audit`: the audit is a proof instrument, and tying output to
 it would make a run's artifact depend on whether a contract or a user
 happened to wrap the run. No new function appears: the recorded data is
@@ -102,10 +104,11 @@ is exactly what the verification reconstructs and checks against the
 tracking; recording it would record the thing under test. The nominal
 parameters of every active slot (the phase, and both planes' strengths) are
 stored once per execution slot beside the labels, so a reader forms the
-realised values and any normalised view it wants. Floating point agrees:
+realised values, `phi0 + d` on a phase slot and `S (1 + d)` on a strength
+slot under the relative semantics of section 5. Floating point agrees:
 `(S + d) - S` is not bitwise `d`, so an offset derived from element fields
-would miss a replay by a relative 1e-12 on the strength slots, while the
-recorded `d` with the stored `S` reproduces the element's value exactly.
+would miss a replay by a relative 1e-12, while the recorded `d` with the
+stored `S` reproduces the element's value exactly.
 
 **D4. Only the generated data.** The series has one column per ACTIVE
 slot, in provenance order, labelled as the provenance labels the slot;
@@ -133,9 +136,9 @@ rows by active-slot columns, with the attributes `columns` (the labels in
 order), `first_turn` and `turns` (the window, as the receipt records them),
 and the per-slot `nominal` attributes (`phase`, `strengthX`, `strengthY`
 for a crab slot; the RF cavity's twins). Row `i` holds the offsets applied
-on absolute turn `first_turn + i - 1`, in the parameter's own unit: radians
-on a phase slot; the strength's unit on a strength slot, one value that the
-shipped semantics adds to both planes. Execution-slot groups are never
+on absolute turn `first_turn + i - 1`: radians on a phase slot; on a
+strength slot the dimensionless relative factor `d` that scales both planes'
+strengths of the harmonic, `S_X (1 + d)` and `S_Y (1 + d)` (section 5). Execution-slot groups are never
 deleted, so chunked and repositioned runs stack as the provenance does
 today, and a knob change between windows shows up as a different nominal
 in the next slot.
@@ -145,6 +148,22 @@ the same keys; rank 0 writes, as it writes the other producers. On CUDA
 the realisation is host-side already; nothing crosses to the device. The
 strong-strong task records both beams' lines through the same path,
 labelled by beam as its provenance entries are.
+
+**D10. Space reserved for rule state, nothing written today.** A stateful
+rule, one whose successor differs from the rule (design D6 of the parent
+note: an IIR filter, a counter), would have to resume across `execute!`
+calls from where it stopped, and today both turn loops restart a successor
+at a call or plan boundary (the stage 4 audit, lead U1-1). No shipped rule
+is stateful and a tripwire pins it, so the recorder writes offsets only.
+The artifact nevertheless reserves the place a future implementation uses:
+one group `/turn_modulation/<slot>/state` per execution slot, written once
+after the window's last turn by stateful rules only, holding one dataset
+per stateful slot under the slot's label, a checkpoint and not a per-turn
+series (any intermediate state is regenerable by replaying the recorded
+offsets through the rule). Absent today; the readers return `nothing` for
+it. Its contents and the restart semantics of the loops are designed
+together with the first stateful rule; this paragraph and the todo row are
+the hand-over.
 
 **D9. What stays as it is.** `with_execution_audit`, the receipts and their
 contents; the rules and the slot protocol; the realised element's
@@ -171,17 +190,22 @@ nevertheless pins the absence of any effect on the tracked coordinates.
   recompiles at the next `execute!` and the new nominal is recorded with
   that window's execution slot, while the offsets are unchanged (verified
   for the knob case in the stage 4 audit).
-- **The both-planes question** (`turn_modulation.md` section 10, open): one
-  strength offset is added to `strengthX` and `strengthY`. The record
-  stores the one offset and both nominals, so whichever semantics the owner
-  decides, the dataset's meaning is "what the rule produced" and only the
-  reader's reconstruction changes; the vertical column of a horizontal
-  cavity makes the current semantics visible in the data.
-- **The amplitude-noise convention.** The example specifies a relative rms
-  and multiplies by the nominal strength before handing an additive rule
-  over; that is the producer's convention, not the rule's, and the record
-  stays in the rule's unit. A reader divides by the stored nominal where it
-  is non-zero.
+- **The strength rule's action on the two planes** (decided 2026-10-15,
+  owner): one voltage driver excites a cavity's horizontal and vertical
+  kick, so one relative amplitude error scales both, `S_X (1 + d)` and
+  `S_Y (1 + d)`; a second driver is a second cavity. The shipped additive
+  semantics, one absolute offset added to both strengths, made a horizontal
+  cavity kick vertically (the theory note predicted 0.87 of the horizontal
+  rate, the sweep measured 1.16 with the beam-beam coupling) and is replaced
+  by the relative scaling on the crab cavity and the RF cavity alike. The
+  record stores the factor `d` and both nominals. Falsifier: horizontal
+  amplitude noise grows no vertical emittance without beam-beam.
+- **The amplitude-noise convention.** Under the relative semantics the
+  rule's sigma IS the relative rms: the example hands `1e-4` over directly
+  and drops its multiplication by the nominal strength; a strength table
+  holds relative factors. The record stays in the rule's unit, the
+  dimensionless factor, and the reader forms `S (1 + d)` from the stored
+  nominal.
 - **Tables.** The recorded series equals the table's entries over the
   window, which verifies the index mapping (`first_turn` to entry
   `first_turn + 1`) on a real run rather than by the compile-time length
@@ -233,6 +257,14 @@ CUDA active before the push, recorded in the batch's history record.
 
 ## 7. Staging
 
+0. The semantics change decided in section 5: the strength rule scales both
+   planes relatively on the crab cavity and the RF cavity (`realize`, the
+   `ParamMeta` unit, the tests pinning strength offsets, the kernel-boundary
+   effectiveness test), the example and harness handing the relative rms
+   over directly, the theory note's amplitude section and production-point
+   table reworded, and the validation study's amplitude arms re-run (A05,
+   A1, A2, A4, A4s, AP1, AT1, C2 and the covariance control; about an hour
+   on the GPU) with a new dated record; a full-gate batch before stage 1.
 1. The recorder in both tracking loops and the strong-strong loop, the
    `RunArtifact` option with its metadata, the writer and the extended
    readers, the one-particle probe testset with the three comparisons, the
@@ -244,18 +276,22 @@ CUDA active before the push, recorded in the batch's history record.
    noise part reading the recorded series through the public reader
    instead of the internal replay where it can.
 
-## 8. Open questions for the owner
+## 8. Decisions taken by the owner (2026-10-15)
 
-- The option's name: `record_turn_modulation` (this note) or a name in the
-  style of the other output options of `run_artifact.md`.
-- Whether the default stays off (file growth, section 4) or on, with the
-  example's default run recording either way.
-- The both-planes semantics (`turn_modulation.md` section 10), which fixes
-  what the `strengthY` nominal and the single strength offset mean
-  together; the record is designed to survive either answer.
-- Whether a successor rule's state should be recorded as well. No shipped
-  rule is stateful (the stage 4 tripwire pins it), so this note records
-  offsets only.
+1. **Name.** `record_turn_modulation`, parallel to the task's
+   `record_turn_times`.
+2. **Default.** Off; the example's default run switches it on as the
+   precedent for reading the series back.
+3. **Strength rule.** Relative scaling per harmonic, `S (1 + d)` on both
+   planes, on the crab cavity and the RF cavity alike: one voltage driver
+   per cavity, two drivers are two cavities. Without beam-beam, horizontal
+   amplitude noise excites no vertical emittance growth; that is a falsifier
+   of the implementation. Replaces the additive both-planes default of
+   2026-10-12 (parent note, section 10).
+4. **Rule state.** Offsets only; the artifact reserves one checkpoint group
+   per execution slot for a future stateful rule (D10), written by nothing
+   today, so that the implementation of the first stateful rule picks up
+   from this note and the todo row.
 
 ## 9. References
 
