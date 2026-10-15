@@ -370,7 +370,10 @@ AVX2, the eight scripts each exit 0). Checks before the gate on the same
 tree: the extracted sweeps (exit 0), the fast lane (exit 0, 316 rows,
 147178/147178, the fifteen standard loud skips, 18:37 to 18:56) and
 "Architecture integrity" 28/28 on the final documents. Not verified: CI on
-this tree, which is not pushed at the time of writing.
+this tree, which is not pushed at the time of writing. Added after the push: pushed 2026-10-14 as
+ef04cfc (this record's commit on top of f858107); CI run 451 on it
+completed green (runner znver3, 32 min, the usual stage 6 identity-pin
+notices).
 
 ## 6 Ledger and owner items
 
