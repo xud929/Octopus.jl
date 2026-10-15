@@ -9,7 +9,8 @@ execution policy and compares the outputs. The arm landed on the branch
 `crab-noise-example` on top of 371b2df (uncommitted at the time of
 writing); the divided-run reproduction facts of section 2 and the dry run
 of section 3 are measured; the production benchmark of section 4 ran on
-2026-10-14 (sixteen arms); the gate of section 5 is pending. Every verdict
+2026-10-14 (sixteen arms); the two-arm full gate ran green on the batch's commit f858107
+(section 5). Every verdict
 carries its number here; a `result/` path is not evidence and none is cited
 as one.
 
@@ -340,7 +341,36 @@ extracted, 10 of 10 (8 before). Not verified at the time of writing: the
 full gate on the batch's final tree, CI on it (not pushed), and the
 production benchmark's table.
 
-The gate: [gate: pending]
+The full gate ran on the committed tree f858107 (working tree clean, the
+HEAD recorded in each log header) in both CPU arms, CUDA active, four
+threads, one arm after the other on a quiet host (load average about 3 to
+6):
+
+| arm | start to end, EDT, 2026-10-14 | rows | assertions | exit |
+|---|---|---|---|---|
+| native | 18:57:01 to 19:45:10 | 332 | 149351 of 149351 | 0 |
+| AVX2 (OpenBLAS Haswell kernels, LLVM target haswell) | 19:45:10 to 20:32:50 | 332 | 149351 of 149351 | 0 |
+
+```bash
+julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
+OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. --threads=4 \
+  -e 'using Pkg; Pkg.test(julia_args=["--threads=4", "-C", "haswell"])'
+```
+
+Both arms end in "Testing Octopus tests passed"; no summary row carries a
+Fail, Error or Broken column; the sorted row sets of the two arms are
+identical; nothing was skipped; CUDA was active, 36 rows per arm naming it.
+Against the crab-noise gate on 90a15be (332 rows, 149351 - 2 assertions)
+the row count is unchanged and two assertions were added, the launcher
+testset's pins for this harness: "The developer harnesses run divided
+under an MPI launcher" 10/10 (was 8/8; 2 min 12 s in each arm, both
+launched harnesses and this one under mpiexec -n 2), "Every example script
+runs against the current interface" 21/21 (10 min 30 s native, 10 min 24 s
+AVX2, the eight scripts each exit 0). Checks before the gate on the same
+tree: the extracted sweeps (exit 0), the fast lane (exit 0, 316 rows,
+147178/147178, the fifteen standard loud skips, 18:37 to 18:56) and
+"Architecture integrity" 28/28 on the final documents. Not verified: CI on
+this tree, which is not pushed at the time of writing.
 
 ## 6 Ledger and owner items
 
