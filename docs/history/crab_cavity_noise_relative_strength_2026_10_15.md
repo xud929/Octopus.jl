@@ -5,8 +5,8 @@ Status: in progress 2026-10-15, stage 0 of
 (section 7). The owner decided the semantics on 2026-10-15 (section 1); the
 implementation (section 2, landed 2026-10-15), the re-validation of the
 amplitude arms (section 3, run 2026-10-15) and the gate (section
-5, `[gate: pending]`) are owed by this batch, and each marker is replaced by
-its numbers when the work lands. This record corrects the frozen
+5, both arms green 2026-10-15 after one crashed native attempt) are this
+batch's and carry their numbers. This record corrects the frozen
 [`crab_cavity_noise_validation_2026_10_14.md`](crab_cavity_noise_validation_2026_10_14.md)
 where that record described the superseded semantics (section 4); the
 frozen record itself is not edited. Every verdict carries its number here; a
@@ -289,7 +289,7 @@ measured are superseded. Read it with:
   a relative scaling the vertical plane would receive nothing here and these
   rates would vanish") is what section 3 of this record measures.
 
-## 5 Verification `[gate: pending]`
+## 5 Verification
 
 Matrix classes this batch touches, to be read from the diff once it exists:
 element spec, metadata and help output (`validate_element_metadata()`, both
@@ -303,9 +303,42 @@ the backend-consistency scripts run; docs plus anything else: the full gate.
 The gate is the full gate at four threads, CUDA active, in both CPU arms
 (native and the AVX2 parity arm) on the batch's final tree before the push.
 
-`[gate: pending]`: the arms' table (start, end, rows, assertions, exit), the
-changed rows against the 2026-10-14 gate (332 rows, 149349 assertions), the
-skips and what was not verified land here.
+The full gate ran on the committed tree f7cfe6a in both CPU arms, CUDA
+active, four threads. The first native attempt (14:57:52 to 15:25:49 EDT)
+did not finish: the test process died with signal 11 after every printed
+testset had passed, through "Accelerating cavity changes the reference
+exactly (Scope B)", at the point where the suite precompiled
+`ArrayInterfaceCUDAExt` mid-run on the networked depot, whose compiled cache
+was being rewritten at the time; no test failed and no Julia crash report
+was written. The AVX2 arm then ran on the same tree and passed, and the
+native arm was rerun alone and passed through the same point:
+
+| arm | start to end, EDT, 2026-10-15 | rows | assertions | exit |
+|---|---|---|---|---|
+| native, first attempt | 14:57:52 to 15:25:49 | none printed after the crash | none | signal 11, no test failed |
+| AVX2 (OpenBLAS Haswell kernels, LLVM target haswell) | 15:25:49 to 16:18:44 | 332 | 149397 of 149397 | 0 |
+| native, rerun | 16:19:12 to 17:08:28 | 332 | 149397 of 149397 | 0 |
+
+```bash
+julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
+OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. --threads=4 \
+  -e 'using Pkg; Pkg.test(julia_args=["--threads=4", "-C", "haswell"])'
+```
+
+Both passing arms end in "Testing Octopus tests passed"; no summary row
+carries a Fail, Error or Broken column; their sorted row sets are
+identical; nothing was skipped; CUDA was active, 36 rows per arm naming it.
+Against the previous gate on f858107 (332 rows, 149351 assertions) the row
+count is unchanged and 46 assertions were added, the re-pinned and new
+strength assertions of section 2; "Every example script runs against the
+current interface" 21/21 (10 min 50 s native, 10 min 39 s AVX2) and "The
+developer harnesses run divided under an MPI launcher" 10/10 ran in both.
+Checks on the same tree before the gate: the extracted sweeps (exit 0), a
+fast lane (exit 0, 316 rows, 147217/147217, the fifteen standard loud
+skips) and "Architecture integrity" 28/28; the registry snapshot equals the
+generated text. Not verified: CI on this tree, which is not pushed at the
+time of writing; the cause of the first attempt's crash, which did not
+recur.
 
 ## 6 Ledger
 
