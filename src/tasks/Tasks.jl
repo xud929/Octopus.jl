@@ -1001,9 +1001,13 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
         # bind to it during their prepare through the active-artifact scope.
         labels = [string("strong_beam_", i) for i in eachindex(strong_beams)]
         # The receipt's entries are the artifact's: one walk, two consumers
-        # (docs/design/turn_modulation.md D7, 5.6).
+        # (docs/design/turn_modulation.md D7, 5.6). The recorder's columns --
+        # each modulated element's active slot indices and nominals -- come
+        # from the sibling walk over the same compiled line
+        # (docs/design/turn_modulation_record.md D3, D5).
         prepare_run_artifact!(art, labels, Int(first_turn), Int(turns);
-                              turn_modulation=turn_modulation)
+                              turn_modulation=turn_modulation,
+                              turn_modulation_columns=_turn_modulation_columns!(Any[], runtime_elems))
     end
     Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => art,
                            _ACTIVE_PROBE_S_MAP =>
@@ -1061,6 +1065,14 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
         _record_turns = task.record_turn_times
         _turn_backend = backend_type(policy)
         _open_turn_boundary(_record_turns, _turn_backend)
+        # The turn-modulation series recorder of this line (beam 1), or
+        # `nothing`: no artifact, `record_turn_modulation` off, a non-root rank
+        # or no modulated element. Resolved once; the segments' recording hook
+        # fills it in line order and `_tm_end_turn!` closes each turn's row
+        # (docs/design/turn_modulation_record.md D5-D8). The fast loop has no
+        # sink because it is never taken with an artifact (its predicate in
+        # `_execute_tracking_task!` requires `task.artifact === nothing`).
+        _tm_sink = _turn_modulation_sink(art, 1)
         for offset in 0:(turns - 1)
             turn = first_turn + offset
             _turn_t0 = _record_turns ? time_ns() : UInt64(0)
@@ -1073,7 +1085,9 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
             plan = get!(task.plan_cache, plan_key) do
                 _build_tracking_plan(runtime_entries, plan_key)
             end
-            _execute_tracking_plan_turn!(rep, plan, policy, ctx)
+            _tm_begin_turn!(_tm_sink)
+            _execute_tracking_plan_turn!(rep, plan, policy, ctx; sink=_tm_sink)
+            _tm_end_turn!(_tm_sink, turn)
             run_observers!(task.observers, ctx, rep)
             if art !== nothing
                 art.current_turn = Int64(turn)
@@ -1185,7 +1199,10 @@ function _execute_fast_tracking_turns!(rep, runtime_elems, turns::Int,
         ctx = with_turn(base_ctx, turn)
         # PURE per-turn update (design 4.4): rebind the local to the rebuilt
         # tuple -- same type, zero allocation -- and track that one. Nothing is
-        # mutated in place; the rebound tuple carries a rule's successor.
+        # mutated in place; the rebound tuple carries a rule's successor. The
+        # plain hook, never the recording one: this loop is taken only without
+        # an artifact (see the predicate in `_execute_tracking_task!`), so there
+        # is no series to record here and the general loop owns the recorder.
         runtime_elems = update_line(runtime_elems, ctx)
         track!(rep, runtime_elems, 1, policy, ctx)
         _stamp_turn!(record, times, t0, backend)
@@ -1775,9 +1792,15 @@ _strong_beam_units(e) =
 requires_isolated_tracking(elem) = false
 requires_isolated_tracking(elem::Union{ThinStrongBeam,GaussianStrongBeam}) = true
 
-function _execute_tracking_plan_turn!(rep, plan::Tuple, policy, ctx; stream=nothing)
+# `sink` is the turn-modulation series recorder of the line being tracked
+# (`_turn_modulation_sink`; `nothing` when the run does not record), handed to
+# the recording form of the pure hook in every element-carrying segment; the
+# plan's segments run in line order, so the recorder meets the modulated
+# elements in the order the provenance lists them. Both the weak-strong general
+# loop and the strong-strong loop reach the segments through here.
+function _execute_tracking_plan_turn!(rep, plan::Tuple, policy, ctx; stream=nothing, sink=nothing)
     for segment in plan
-        _execute_tracking_segment_turn!(rep, segment, policy, ctx; stream=stream)
+        _execute_tracking_segment_turn!(rep, segment, policy, ctx; stream=stream, sink=sink)
     end
     return nothing
 end
@@ -1785,36 +1808,42 @@ end
 # The per-turn update is PURE (design 4.4): read the segment's tuple out of its
 # `Ref`, rebuild it with `update_line`, store the rebuilt tuple back for the
 # next turn, and track the rebuilt one. The stored tuple is what carries a
-# stateful rule's successor from turn to turn.
-function _execute_tracking_segment_turn!(rep, segment::FusedSegment, policy, ctx; stream=nothing)
-    elems = update_line(segment.elements[], ctx)
+# stateful rule's successor from turn to turn. The rebuild happens on the host
+# BEFORE the tracking call converts anything for a device, so the draws the
+# sink records are the host-side values on every backend.
+function _execute_tracking_segment_turn!(rep, segment::FusedSegment, policy, ctx;
+                                        stream=nothing, sink=nothing)
+    elems = update_line(segment.elements[], ctx, sink)
     segment.elements[] = elems
     _track_fused_runtime!(rep, elems, policy, ctx, stream)
     return nothing
 end
 
 function _execute_tracking_segment_turn!(rep, segment::LuminousFusedSegment, policy, ctx;
-                                        stream=nothing)
-    elems = update_line(segment.elements[], ctx)
+                                        stream=nothing, sink=nothing)
+    elems = update_line(segment.elements[], ctx, sink)
     segment.elements[] = elems
     _track_fused_luminous!(rep, elems, segment.beams, policy, ctx)
     return nothing
 end
 
-function _execute_tracking_segment_turn!(rep, segment::IsolatedSegment, policy, ctx; stream=nothing)
-    elem = update(segment.element[], ctx)
+function _execute_tracking_segment_turn!(rep, segment::IsolatedSegment, policy, ctx;
+                                        stream=nothing, sink=nothing)
+    elem = update(segment.element[], ctx, sink)
     segment.element[] = elem
     _track_isolated_runtime!(rep, elem, policy, ctx, stream)
     return nothing
 end
 
-function _execute_tracking_segment_turn!(rep, segment::ObserverSegment, policy, ctx; stream=nothing)
+function _execute_tracking_segment_turn!(rep, segment::ObserverSegment, policy, ctx;
+                                        stream=nothing, sink=nothing)
     _synchronize_segment_stream(stream)
     run_observers!((segment.observer,), ctx, rep)
     return nothing
 end
 
-function _execute_tracking_segment_turn!(rep, segment::ActionSegment, policy, ctx; stream=nothing)
+function _execute_tracking_segment_turn!(rep, segment::ActionSegment, policy, ctx;
+                                        stream=nothing, sink=nothing)
     _synchronize_segment_stream(stream)
     run_actions!((segment.action,), ctx, rep)
     return nothing

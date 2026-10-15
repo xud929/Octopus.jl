@@ -14,7 +14,11 @@
 > of `turn_modulation_record.md`): the `strength_noise` offset is a
 > dimensionless relative factor `d` scaling both planes' strengths,
 > `S (1 + d)`, on the crab cavity and the RF cavity alike; record
-> `../history/crab_cavity_noise_relative_strength_2026_10_15.md`.**
+> `../history/crab_cavity_noise_relative_strength_2026_10_15.md`. Stage 1 of
+> that note, recording the realised offsets in the run artifact
+> (`record_turn_modulation`), landed 2026-10-15 and verified by the
+> one-particle probe on CPU threads, CUDA and two MPI ranks (section 4.4;
+> record `../history/turn_modulation_record_2026_10_15.md`).**
 > Designed
 > 2026-10-12 in owner discussion. This note records the architecture decision
 > for element parameters that change from one turn to the next inside a
@@ -360,6 +364,14 @@ allocation for the unrolled form (section 7). The suite asserts zero
 allocation in the rebuild and that the rebuilt tuple's type equals the input
 type, in the spirit of the `Core.Box` tripwire.
 
+The offsets each turn's `realize` produces can be recorded in the run
+artifact turn by turn (`RunArtifact(path; record_turn_modulation = true)`,
+the `series` dataset beside the `/turn_modulation` provenance, fed from the
+same evaluation the realised element is built from, so a reader verifies
+from the artifact alone that the loop realised a new value every turn and
+that the kick consumed it): `turn_modulation_record.md`, stage 1 in
+progress 2026-10-15.
+
 ### 4.5 Turn indexing
 
 `execute!` carries an absolute turn across calls and `start_turn` repositions
@@ -642,6 +654,20 @@ thread, 2026-10-12:
 | 200 elements | 8800 bytes | 353 ns | 0 bytes | not measured |
 | 40 elements, `map` instead of `ntuple(Val)` | 1760 bytes | 9.6 µs | 79 kB | |
 | 40 elements, 20 wrapped, `track!` 2000 particles, 4 threads (2026-10-13, audit U1-4) | 4480 bytes wrapped against 3520 bare (+27 %) | 0 B, 2.0 µs in a function (20 Philox draws) | +960 B per worker per turn (20592 against 16752 B) | timing not reproducible on the shared host (the sign of the delta flipped between two runs); a quiet-machine benchmark is owed |
+| 40 elements, 20 wrapped, MIXED container `(nothing, WhiteNoise)` on 2 harmonics (2026-10-15, review F1 of the recorder batch) | not measured | not measured | 14400 B per turn before the fix, 15360 B with the recording sink (`(nothing, PinkNoise)` 14720 / 15680 B; the suite's white-pink-plus-table fixture 21120 / 22080 B; per `update` 720 B, 640 B on the main checkout c070750 before the recorder, so pre-existing); 0 B after, on every shape and both hooks | not measured |
+
+The zero in the first rows was measured on HOMOGENEOUS containers (every
+slot a `WhiteNoise`), where `rules.phase[i]` has one type whatever `i` is. A
+mixed container -- `nothing` beside a rule, a `PinkNoise` -- built its draws
+through an `ntuple` closure whose per-index type needed a constant
+propagation Julia skips when the closure is not inlineable, so the draws and
+the successor inferred as `Union`s and the rebuild allocated (the last row).
+Since 2026-10-15 the draws are unrolled with literal indices by `_slot_draws`
+(`src/elements/turn_modulated.jl`, `@generated`), 0 B on every shape, and the
+suite pins the mixed shapes on both hooks ("Turn modulation: rules, wrapper
+and the pure hook", part (d)). `Base.map` over tuples takes its generic path
+from 32 entries on, not past 32 (592 B at exactly 32 entries, 0 at 31, Julia
+1.12.4), which is why the unrolling is generated rather than mapped.
 
 The rebuild is a stack copy of isbits structs, five orders of magnitude below
 one turn of tracking, and the output tuple type equalled the input type in
@@ -731,8 +757,9 @@ Tests the implementation owes, each shown to fail without its feature:
   planes.
   Decided 2026-10-15 by the owner: relative scaling per harmonic, `S (1 + d)`
   on both planes of the crab cavity and on the RF cavity's voltage, one
-  voltage driver per cavity; implementation in progress 2026-10-15 as stage 0
-  of `turn_modulation_record.md` (section 7), record
+  voltage driver per cavity; implemented 2026-10-15 as stage 0 of
+  `turn_modulation_record.md` (section 7), landed as f7cfe6a and pushed as
+  c070750, record
   `../history/crab_cavity_noise_relative_strength_2026_10_15.md`. Why it must
   be decided (2026-10-14, the theory note
   `../theory/crab_cavity_noise_response.md`, sections 3.2 and 8): under this

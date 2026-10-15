@@ -10040,6 +10040,63 @@ end
     alloc_update(line, ctx) = @allocated update_line(line, ctx)
     alloc_update(line40, ctx3)
     @test alloc_update(line40, ctx3) == 0
+    # The pin above is on a HOMOGENEOUS container (every slot a WhiteNoise),
+    # where `rules.phase[i]` has one concrete type whatever `i` is. A MIXED
+    # container -- `nothing` beside a rule, a `PinkNoise` (whose loop keeps the
+    # realisation closure from being inlineable), a `TurnTable` slot -- built
+    # its draws with `ntuple(i -> _turn_offset(rules.phase[i], ...), Val(N))`,
+    # whose per-index type is known only through constant propagation into the
+    # closure, which Julia skips when the closure is not inlineable: the draws
+    # tuple and the successor container inferred as Unions, and `update` on a
+    # `(nothing, WhiteNoise)` cavity allocated 640 B on the main checkout and
+    # 720 B with the recording hook, 14400 B per turn on this 40-element line
+    # (review F1, 2026-10-15; the measurements in docs/design/turn_modulation.md
+    # section 7; the draws are now unrolled by `_slot_draws`). Pinned at 0 B
+    # per shape on the plain hook and on the recording hook with a sink (a
+    # hand-built recorder whose buffers are sized ahead, so no `push!` grows
+    # them), each row named; the sink must also have met every wrapped element
+    # once with the draws of the realisation.
+    mixed_table = TurnTable(collect(0.001:0.001:0.012); name="amp")
+    mixed_spec(; kw...) = ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), strengthY=(0.0, 5.0e-4),
+                                                phase=(0.1, 0.2), kw...)
+    mixed_shapes = (
+        ("(nothing, WhiteNoise) phase", mixed_spec(phase_noise=(nothing, WhiteNoise(2.0e-3; rng_id=8)))),
+        ("(nothing, PinkNoise) phase", mixed_spec(phase_noise=(nothing, PinkNoise(2.0e-3; rng_id=8, octaves=4)))),
+        ("(nothing, TurnTable) strength", mixed_spec(strength_noise=(nothing, mixed_table))),
+        ("(WhiteNoise, PinkNoise) phase, (nothing, TurnTable) strength",
+         mixed_spec(phase_noise=(WhiteNoise(1.0e-2; rng_id=7), PinkNoise(2.0e-3; rng_id=8, octaves=4)),
+                    strength_noise=(nothing, mixed_table))),
+    )
+    alloc_update_sink(line, ctx, rec) = (Octopus._tm_begin_turn!(rec); @allocated update_line(line, ctx, rec))
+    active_slots(wm) = [k for (k, (_, r)) in enumerate(Octopus._slot_rules(wm.rule)) if r !== nothing]
+    p_sink = tempname() * ".h5"
+    Octopus.HDF5.h5open(p_sink, "w") do f_sink
+        for (shape, spec) in mixed_shapes
+            wm = compile_runtime(spec)
+            line_m = Tuple(isodd(i) ? wm : disp for i in 1:40)
+            bufs = [sizehint!(Float64[], 4096) for _ in 1:20]
+            rec = Octopus.TurnModulationRecorder(f_sink, 10^6, 1, ["k$(i)" for i in 1:20],
+                                                 [active_slots(wm) for _ in 1:20], bufs, 0, 0)
+            up_m = update_line(line_m, ctx3)
+            alloc_update(line_m, ctx3)
+            alloc_update_sink(line_m, ctx3, rec)
+            @testset let shape = shape
+                @test wm isa TurnModulated
+                @test typeof(up_m) === typeof(line_m)
+                Octopus._tm_begin_turn!(rec)
+                @test typeof(update_line(line_m, ctx3, rec)) === typeof(line_m)
+                @test alloc_update(line_m, ctx3) == 0
+                @test alloc_update_sink(line_m, ctx3, rec) == 0
+                Octopus._tm_begin_turn!(rec)
+                foreach(empty!, bufs)
+                update_line(line_m, ctx3, rec)
+                @test rec.cursor == 20
+                draws_m = Octopus._realize_draws(wm.rule, wm.base, ctx3)[3]
+                @test all(bufs[k] == [draws_m[s] for s in active_slots(wm)] for k in 1:20)
+            end
+        end
+    end
+    rm(p_sink; force=true)
 
     # (e) Test 5, the guardrails. Construction refuses what no run could use;
     # compile refuses a table of the wrong numeric type (never promoted), a
@@ -10184,6 +10241,7 @@ end
                         (Octopus._descend_strong_beams!, 2), (Octopus._survey_rebind, 1),
                         (Octopus._requires_tracking_context, 1), (Octopus.update, 1),
                         (Octopus._check_turn_window, 1), (Octopus._turn_modulation_provenance!, 2),
+                        (Octopus._turn_modulation_columns!, 2),
                         (Octopus.track_luminous, 1), (Octopus.track_particle, 2)]
     # The device conversion (design D8): `cudaconvert` recurses through the
     # fused tuple with `Adapt.adapt_structure`, so a wrapper without its own
@@ -10478,6 +10536,14 @@ end
                                for m in methods(f)])
     @test container_set(Octopus.realize) == container_set(Octopus._slot_rules)
     @test container_set(Octopus.realize) == Set(Any[Octopus.CrabCavityNoise, Octopus.RFCavityNoise])
+    # The record's shared evaluation and the nominals (2026-10-15,
+    # docs/design/turn_modulation_record.md D3 and D5): every container with a
+    # `_slot_rules` declaration owns `_realize_draws` (the one evaluation
+    # `realize` projects, whose draws the run artifact records) and
+    # `_slot_nominals` (the nominals written beside the provenance); a future
+    # container missing either fails here by name.
+    @test container_set(Octopus._realize_draws) == container_set(Octopus._slot_rules)
+    @test container_set(Octopus._slot_nominals) == container_set(Octopus._slot_rules)
 
     # (k) The STATELESS-RULE tripwire (2026-10-13 neighbour audit, U1-1; design
     # D6). The task layer keeps a rule's SUCCESSOR only within one `execute!`
@@ -10510,9 +10576,25 @@ end
             if wk isa TurnModulated
                 push!(containers_seen, typeof(wk.rule).name.wrapper)
                 for turn in (0, 1)
-                    realised, successor = realize(wk.rule, wk.base, TrackingContext(turn=turn, seed=42))
+                    ctx_k = TrackingContext(turn=turn, seed=42)
+                    realised, successor = realize(wk.rule, wk.base, ctx_k)
                     @test successor === wk.rule
                     @test typeof(realised) === typeof(wk.base)
+                    # The ONE shared evaluation (record note D5): `realize` is
+                    # the projection of `_realize_draws`, whose draws tuple has
+                    # one entry per declared slot, the first slot's entry being
+                    # the rule's own `_turn_offset` at this turn; and the
+                    # nominals align with the slots, one NamedTuple each.
+                    r3 = Octopus._realize_draws(wk.rule, wk.base, ctx_k)
+                    @test length(r3) == 3 && r3[1] === realised && r3[2] === successor
+                    draws_k = r3[3]
+                    @test draws_k isa Tuple && length(draws_k) == length(Octopus._slot_rules(wk.rule))
+                    @test draws_k[1] === Octopus._turn_offset(rule_k, ctx_k, 1, typeof(draws_k[1]))[1]
+                    noms_k = Octopus._slot_nominals(wk.rule, wk.base)
+                    @test noms_k isa Tuple && length(noms_k) == length(Octopus._slot_rules(wk.rule))
+                    @test all(n -> n isa NamedTuple && haskey(n, :phase), noms_k)
+                    @test length(only(Octopus._turn_modulation_columns!(Any[], (wk,))).active) ==
+                          length(Octopus._turn_modulation_slots(wk.rule))
                 end
                 # ...and through the hook the task loops call: the rebuilt
                 # wrapper carries the identical rule.
@@ -15804,6 +15886,780 @@ end
         (ip, cav(11)), (ip, cav(11)))
     @test_logs StrongStrongTask((ip, cav(11)), (ip, cav(12)))
     foreach(x -> rm(x; force=true), (p, p_clean, p2, p3, p4, pss))
+end
+
+@testset "The run artifact records the realised turn modulation" begin
+    # docs/design/turn_modulation_record.md (2026-10-15, stage 1): the artifact
+    # option `record_turn_modulation` records, turn by turn, the OFFSETS the
+    # turn-modulation rules produced -- the draws of the ONE evaluation that
+    # built the realised element (D5) -- as the `series` dataset beside each
+    # modulated element's provenance (D7), the slots' nominals written with
+    # the provenance whether or not the run records (D3), the window as the
+    # receipt records it; off by default (D2) and nothing else in the file or
+    # the tracking changes; the readers gain `series` and `nominal` and nothing
+    # gains a new name. Parts (a)-(j) are the record note's sections 6.2 and
+    # 6.3 plus the strong-strong and CUDA arms.
+    table = TurnTable(collect(0.001:0.001:0.012); name="amp")
+    crab = ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), strengthY=(0.0, 5.0e-4),
+                                 phase=(0.1, 0.2),
+                                 phase_noise=(WhiteNoise(1.0e-2; rng_id=7),
+                                              PinkNoise(2.0e-3; rng_id=8, octaves=4)),
+                                 strength_noise=(nothing, table))
+    disp = CrabDispersionSpec{Float64}(zeta1=0.1)
+    probe = ScheduledObserver(MomentObserver(; name="m", orders=1))
+    line = (crab, disp, probe)
+    mkp() = Phase6DRep([1.0e-4, -2.0e-4], [0.0, 0.0], [3.0e-5, 0.0], [0.0, 0.0],
+                       [1.0e-2, -1.0e-2], [0.0, 0.0])
+    mod_receipt(audit) = only(filter(r -> r.consumer === :turn_modulation,
+                                     execution_receipts(audit))).values
+    # One run: the global seed reset, the task executed under an audit, the
+    # `:turn_modulation` receipt returned.
+    function run(path, elements=line; turns=5, start_turn=nothing, policy=nothing,
+                 rep=mkp(), kw...)
+        set_global_rng!(seed=0x5eed, method=:philox)
+        t = TrackingTask(elements; policy=policy, artifact=RunArtifact(path; kw...))
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do
+            execute!(t, rep; turns=turns, start_turn=start_turn)
+        end
+        return mod_receipt(audit)
+    end
+    # The hook's own replay of one slot over a window: the pure rule interface
+    # with the task's context keys (the global seed and method, the absolute
+    # turn) and the slot number the container hands it.
+    replay(rule, slot, turns) =
+        Float64[Octopus._turn_offset(rule, TrackingContext(turn=t), slot, Float64)[1] for t in turns]
+    wk = compile_runtime(crab)
+    labels = ["phase_noise[1]", "phase_noise[2]", "strength_noise[2]"]   # provenance order
+    attr_names(obj) = sort!([String(k) for k in keys(Octopus.HDF5.attributes(obj))])
+    group_names(g) = sort!([String(k) for k in keys(g)])
+    bitwise(a, b) = size(a) == size(b) && all(a .=== b)
+    provenance_attrs = ["digest", "index", "kind", "length", "name", "rng_id"]
+    crab_nominals = ["nominal_phase", "nominal_strengthX", "nominal_strengthY"]
+
+    # (a) OFF by default: no `series` dataset, the readers' `series` is
+    # `nothing`, the nominals travel with the provenance (D3; the three
+    # `nominal_*` attributes are the one addition to a slot group since the
+    # provenance landed), the file's other groups are those of a run before
+    # the option existed.
+    p_off = tempname() * ".h5"
+    rcpt_off = run(p_off)
+    prov_off = turn_modulation_provenance(p_off)
+    @test length(prov_off) == 1 && length(prov_off[1].elements) == 1
+    el_off = prov_off[1].elements[1]
+    @test [s.slot for s in el_off.slots] == labels
+    @test all(s.series === nothing for s in el_off.slots)
+    @test prov_off[1].state === nothing
+    @test el_off.slots[1].nominal == (phase=0.1, strengthX=2.0e-3, strengthY=0.0)
+    @test el_off.slots[2].nominal == (phase=0.2, strengthX=1.0e-3, strengthY=5.0e-4)
+    @test el_off.slots[3].nominal == (phase=0.2, strengthX=1.0e-3, strengthY=5.0e-4)
+    Octopus.HDF5.h5open(p_off, "r") do f
+        @test group_names(f) == ["execution", "luminosity", "moments", "turn_modulation"]
+        @test attr_names(f["turn_modulation"]["1"]) == ["element_count"]
+        eg = f["turn_modulation"]["1"]["1"]
+        @test !haskey(eg, "series")
+        @test group_names(eg) == labels
+        @test attr_names(eg) == ["beam", "element", "slot_count"]
+        @test attr_names(eg["phase_noise[1]"]) == sort(vcat(provenance_attrs, crab_nominals))
+        @test !haskey(f["turn_modulation"]["1"], "state")
+    end
+    @test read(TaskOutput(p_off), :turn_modulation) == prov_off
+    @test read(TaskOutput(p_off))["turn_modulation"] == prov_off   # nothing recorded: toc == read
+    @test read(TaskOutput(p_off), :all).turn_modulation == prov_off
+
+    # (b) ON: the dataset exists with `turns` rows by the active slots in
+    # provenance order, its window attributes equal the receipt's, the
+    # nominals equal the spec's; the provenance groups and attributes are
+    # exactly those of (a).
+    p_on = tempname() * ".h5"
+    rcpt_on = run(p_on; record_turn_modulation=true)
+    prov_on = turn_modulation_provenance(p_on)
+    @test length(prov_on) == 1 && length(prov_on[1].elements) == 1
+    el = prov_on[1].elements[1]
+    @test [s.slot for s in el.slots] == labels
+    @test all(s.series isa Vector{Float64} && length(s.series) == 5 for s in el.slots)
+    @test prov_on[1].state === nothing
+    Octopus.HDF5.h5open(p_on, "r") do f
+        @test group_names(f) == ["execution", "luminosity", "moments", "turn_modulation"]
+        eg = f["turn_modulation"]["1"]["1"]
+        @test haskey(eg, "series")
+        d = eg["series"]
+        @test size(d) == (5, 3)
+        @test eltype(d) == Float64
+        a = Octopus.HDF5.attributes(d)
+        @test read(a["columns"]) == labels
+        @test read(a["first_turn"]) == rcpt_on.first_turn == 0
+        @test read(a["turns"]) == rcpt_on.turns == 5
+        @test attr_names(d) == ["columns", "first_turn", "turns"]
+        # the dataset is the one addition beside the slot groups
+        @test group_names(eg) == sort(vcat(labels, ["series"]))
+        @test sort!([String(k) for k in keys(eg) if eg[k] isa Octopus.HDF5.Group]) == labels
+        @test attr_names(eg) == ["beam", "element", "slot_count"]
+        @test attr_names(f["turn_modulation"]["1"]) == ["element_count"]
+        for label in labels
+            @test attr_names(eg[label]) == sort(vcat(provenance_attrs, crab_nominals))
+        end
+    end
+    @test el.slots[1].nominal == (phase=0.1, strengthX=2.0e-3, strengthY=0.0)
+    @test el.slots[2].nominal == (phase=0.2, strengthX=1.0e-3, strengthY=5.0e-4)
+    @test el.slots[3].nominal == (phase=0.2, strengthX=1.0e-3, strengthY=5.0e-4)
+    @test read(TaskOutput(p_on), :turn_modulation) == prov_on
+    @test read(TaskOutput(p_on), :all).turn_modulation == prov_on
+    # The table of contents stays metadata-only: the recorded row count stands
+    # in for each column; the nominals (attributes) are there.
+    toc_on = read(TaskOutput(p_on))["turn_modulation"]
+    @test [s.series for s in toc_on[1].elements[1].slots] == [5, 5, 5]
+    @test [s.nominal for s in toc_on[1].elements[1].slots] == [s.nominal for s in el.slots]
+    @test [(s.slot, s.kind, s.rng_id) for s in toc_on[1].elements[1].slots] ==
+          [(s.slot, s.kind, s.rng_id) for s in el.slots]
+
+    # (c) BITWISE: every recorded column equals the draws the hook produces for
+    # the same rule, slot and turns; the table slot's column equals the
+    # record's entries over the window; and the realised values formed from
+    # the recorded offsets and the stored nominals are the element's own, to
+    # the bit (D3: the offset is recorded, not the realised value).
+    @test el.slots[1].series == replay(wk.rule.phase[1], 1, 0:4)
+    @test el.slots[2].series == replay(wk.rule.phase[2], 2, 0:4)
+    @test el.slots[3].series == replay(wk.rule.strength[2], 4, 0:4)
+    @test el.slots[3].series == table.offsets[1:5]
+    @test el.slots[1].series != el.slots[2].series
+    @test all(x -> abs(x) > 0, el.slots[1].series)
+    for (i, t) in enumerate(0:4)
+        realised = realize(wk.rule, wk.base, TrackingContext(turn=t))[1]
+        @test realised.phase[1] === el.slots[1].nominal.phase + el.slots[1].series[i]
+        @test realised.phase[2] === el.slots[2].nominal.phase + el.slots[2].series[i]
+        @test realised.strengthX[2] === el.slots[3].nominal.strengthX * (1 + el.slots[3].series[i])
+        @test realised.strengthY[2] === el.slots[3].nominal.strengthY * (1 + el.slots[3].series[i])
+        @test realised.strengthX[1] === el.slots[1].nominal.strengthX   # the inactive strength slot
+    end
+
+    # (d) NO SIDE EFFECT: the moments of the run with the switch on are bitwise
+    # those of the run with it off, and the ledger agrees but for `elapsed`.
+    m_off = read(TaskOutput(p_off), :moments; name="m")
+    m_on = read(TaskOutput(p_on), :moments; name="m")
+    @test keys(m_off) == keys(m_on)
+    @test length(m_on.turn) == 5
+    @test all(bitwise(m_off[k], m_on[k]) for k in keys(m_off) if m_off[k] isa AbstractVector)
+    ex_off, ex_on = read(TaskOutput(p_off), :execution), read(TaskOutput(p_on), :execution)
+    @test ex_off.start_turn == ex_on.start_turn == [0]
+    @test ex_off.turns == ex_on.turns == [5]
+    @test ex_off.current_turn == ex_on.current_turn == [4]
+
+    # (g) The receipt is identical with the switch on and off, in the shape
+    # the kernel-boundary testset pins (D9: the receipts do not change).
+    @test rcpt_on == rcpt_off
+    @test propertynames(rcpt_on.elements[1].slots[1]) == (:slot, :kind, :rng_id, :digest, :name, :length)
+
+    # (e) INVALID refused by name (an ArgumentError naming the keyword and the
+    # value, as `capacity` is refused); an unknown keyword stays a
+    # MethodError; the default is `false`; the structured metadata validates
+    # with every other public option; the option is INACTIVE on a line with
+    # no modulated element (nothing to record, nothing written, no error).
+    err_e = try RunArtifact(tempname() * ".h5"; record_turn_modulation=1); nothing catch e; e end
+    @test err_e isa ArgumentError
+    @test err_e !== nothing && occursin("record_turn_modulation", sprint(showerror, err_e)) &&
+          occursin("got 1", sprint(showerror, err_e))
+    @test_throws ArgumentError RunArtifact(tempname() * ".h5"; record_turn_modulation="true")
+    @test_throws ArgumentError RunArtifact(tempname() * ".h5"; record_turn_modulation=nothing)
+    @test_throws MethodError RunArtifact(tempname() * ".h5"; record_turn_modulations=true)
+    @test RunArtifact(tempname() * ".h5").record_turn_modulation === false
+    @test RunArtifact(tempname() * ".h5"; record_turn_modulation=true).record_turn_modulation === true
+    schema = run_artifact_option_schema()
+    @test Set(keys(schema)) == Set((:append, :capacity, :record_turn_modulation))
+    @test Set(keys(schema)) ⊆ Set(fieldnames(RunArtifact))
+    @test schema.record_turn_modulation.option_type === Bool
+    @test schema.record_turn_modulation.default === false
+    @test schema.record_turn_modulation.category === :output
+    @test schema.record_turn_modulation.consumer !== :unspecified
+    @test schema.capacity.default == 64 && schema.append.default === false
+    @test validate_configuration_metadata()
+    p_in = tempname() * ".h5"
+    set_global_rng!(seed=0x5eed, method=:philox)
+    execute!(TrackingTask((disp, probe); artifact=RunArtifact(p_in; record_turn_modulation=true)),
+             mkp(); turns=2)
+    @test isempty(turn_modulation_provenance(p_in))
+    Octopus.HDF5.h5open(p_in, "r") do f
+        @test !haskey(f, "turn_modulation")
+        @test group_names(f) == ["execution", "luminosity", "moments"]
+    end
+
+    # (f) CHUNKING and REPOSITIONING (6.3): two windows of 3 turns on a
+    # continued artifact record two execution slots whose concatenated series
+    # equals one window of 6, each slot's window attributes its own; a run
+    # repositioned with `start_turn = 4` records `first_turn = 4` and the
+    # entries from turn 4 on (the table's entries 5 to 8). `capacity = 2` so
+    # the three turns of a window cross a flush boundary and leave a tail.
+    p_c = tempname() * ".h5"
+    set_global_rng!(seed=0x5eed, method=:philox)
+    t_c = TrackingTask(line; artifact=RunArtifact(p_c; append=true, capacity=2,
+                                                  record_turn_modulation=true))
+    rep_c = mkp()
+    execute!(t_c, rep_c; turns=3)
+    execute!(t_c, rep_c; turns=3)
+    prov_c = turn_modulation_provenance(p_c)
+    @test [e.execution for e in prov_c] == [1, 2]
+    p_6 = tempname() * ".h5"
+    run(p_6; turns=6, record_turn_modulation=true)
+    prov_6 = turn_modulation_provenance(p_6)
+    for j in 1:3
+        @test length(prov_c[1].elements[1].slots[j].series) == 3
+        @test vcat(prov_c[1].elements[1].slots[j].series, prov_c[2].elements[1].slots[j].series) ==
+              prov_6[1].elements[1].slots[j].series
+    end
+    Octopus.HDF5.h5open(p_c, "r") do f
+        for (slot, first) in (("1", 0), ("2", 3))
+            d = f["turn_modulation"][slot]["1"]["series"]
+            @test size(d) == (3, 3)
+            @test read(Octopus.HDF5.attributes(d)["first_turn"]) == first
+            @test read(Octopus.HDF5.attributes(d)["turns"]) == 3
+        end
+        @test read(f["execution"]["start_turn"]) == [0, 3]
+    end
+    p_r = tempname() * ".h5"
+    rcpt_r = run(p_r; turns=4, start_turn=4, record_turn_modulation=true)
+    prov_r = turn_modulation_provenance(p_r)
+    @test rcpt_r.first_turn == 4 && rcpt_r.turns == 4
+    Octopus.HDF5.h5open(p_r, "r") do f
+        d = f["turn_modulation"]["1"]["1"]["series"]
+        @test read(Octopus.HDF5.attributes(d)["first_turn"]) == 4
+        @test read(Octopus.HDF5.attributes(d)["turns"]) == 4
+        @test size(d) == (4, 3)
+    end
+    @test prov_r[1].elements[1].slots[3].series == table.offsets[5:8]
+    @test prov_r[1].elements[1].slots[1].series == replay(wk.rule.phase[1], 1, 4:7)
+    @test prov_r[1].elements[1].slots[2].series == replay(wk.rule.phase[2], 2, 4:7)
+    @test prov_r[1].elements[1].slots[1].series == prov_6[1].elements[1].slots[1].series[5:6] ∪
+          replay(wk.rule.phase[1], 1, 6:7)   # the overlap with the 6-turn run agrees
+
+    # (h) The RF cavity by the same wrap: one phase and one strength column,
+    # the nominals `(phase, strength)` of the compiled cavity.
+    rf = ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV,
+                          phase_noise=WhiteNoise(1.0e-2; rng_id=21),
+                          strength_noise=TurnTable([1.0e-4, 2.0e-4, 3.0e-4]; name="rf_amp"))
+    p_rf = tempname() * ".h5"
+    rcpt_rf = run(p_rf, (rf, DriftSpec(L=0.5)); turns=3, record_turn_modulation=true)
+    prov_rf = turn_modulation_provenance(p_rf)
+    el_rf = prov_rf[1].elements[1]
+    w_rf = compile_runtime(rf)
+    @test el_rf.element == "ThinRFCavity"
+    @test [s.slot for s in el_rf.slots] == ["phase_noise", "strength_noise"]
+    @test el_rf.slots[1].nominal == (phase=w_rf.base.phase, strength=w_rf.base.strength)
+    @test el_rf.slots[2].nominal == el_rf.slots[1].nominal
+    @test el_rf.slots[1].series == replay(w_rf.rule.phase, 1, 0:2)
+    @test el_rf.slots[2].series == [1.0e-4, 2.0e-4, 3.0e-4]
+    @test rcpt_rf.first_turn == 0 && rcpt_rf.turns == 3
+    Octopus.HDF5.h5open(p_rf, "r") do f
+        d = f["turn_modulation"]["1"]["1"]["series"]
+        @test size(d) == (3, 2)
+        @test read(Octopus.HDF5.attributes(d)["columns"]) == ["phase_noise", "strength_noise"]
+        @test attr_names(f["turn_modulation"]["1"]["1"]["phase_noise"]) ==
+              sort(vcat(provenance_attrs, ["nominal_phase", "nominal_strength"]))
+    end
+
+    # (i) STRONG-STRONG: a modulated cavity on each beam records two labelled
+    # element groups per execution slot (the provenance testset's fixture),
+    # each series the replay of its own stream; the luminosity is bitwise with
+    # the switch off and the receipt identical.
+    mkb(rng_id, charge, mc2, E0) = begin
+        set_global_rng!(seed=5, method=:philox)
+        Beam(64, CPUThreadsExecutionPolicy(), Float64;
+            beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+            sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
+            charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+    end
+    cav(rng_id) = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,),
+                                        phase_noise=(WhiteNoise(1.0e-2; rng_id=rng_id),))
+    ip = StrongStrongCollision(:ip)
+    out_receipt(audit) = only(filter(r -> r.consumer === :strong_strong_output,
+                                     execution_receipts(audit))).values
+    function ss_run(path; kw...)
+        tss = StrongStrongTask((ip, cav(11)), (ip, cav(12)); artifact=RunArtifact(path; kw...))
+        b1, b2 = mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9)
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do
+            execute!(tss, b1, b2; turns=2)
+        end
+        return mod_receipt(audit), out_receipt(audit)
+    end
+    pss_on, pss_off = tempname() * ".h5", tempname() * ".h5"
+    rc_on, orc_on = ss_run(pss_on; record_turn_modulation=true)
+    rc_off, orc_off = ss_run(pss_off)
+    @test rc_on == rc_off
+    # The option's declared consumer is the `:strong_strong_output` receipt,
+    # which carries the requested value beside `append` and the path (review
+    # F3, 2026-10-15: the schema had named the `:turn_modulation` receipt,
+    # which the switch leaves identical by design, so the declared boundary
+    # carried nothing of it); the weak-strong TrackingTask has no output
+    # receipt, and its evidence is the file read in (a)-(c).
+    @test propertynames(orc_on) == (:artifact, :append, :record_turn_modulation)
+    @test orc_on.record_turn_modulation === true && orc_off.record_turn_modulation === false
+    @test orc_on.artifact == pss_on && orc_off.artifact == pss_off && orc_on.append === false
+    @test run_artifact_option_schema().record_turn_modulation.consumer === :strong_strong_output
+    @test run_artifact_option_schema().append.consumer === :strong_strong_output
+    prov_ss = turn_modulation_provenance(pss_on)
+    @test length(prov_ss) == 1 && length(prov_ss[1].elements) == 2
+    @test [e.beam for e in prov_ss[1].elements] == [1, 2]
+    for (k, rng_id) in ((1, 11), (2, 12))
+        s = prov_ss[1].elements[k].slots[1]
+        @testset let beam = k
+            @test s.slot == "phase_noise[1]" && s.rng_id == rng_id
+            @test s.series == replay(compile_runtime(cav(rng_id)).rule.phase[1], 1, 0:1)
+            @test s.nominal == (phase=0.0, strengthX=2.0e-3, strengthY=0.0)
+        end
+    end
+    @test prov_ss[1].elements[1].slots[1].series != prov_ss[1].elements[2].slots[1].series
+    @test all(s.series === nothing for e in turn_modulation_provenance(pss_off)[1].elements for s in e.slots)
+    lum_on = read(TaskOutput(pss_on), :luminosity; name="ip")
+    lum_off = read(TaskOutput(pss_off), :luminosity; name="ip")
+    @test lum_on.turn == lum_off.turn == [0, 1]
+    @test bitwise(lum_on.value, lum_off.value)
+    Octopus.HDF5.h5open(pss_on, "r") do f
+        @test size(f["turn_modulation"]["1"]["1"]["series"]) == (2, 1)
+        @test size(f["turn_modulation"]["1"]["2"]["series"]) == (2, 1)
+        @test read(Octopus.HDF5.attributes(f["turn_modulation"]["1"]["2"])["beam"]) == 2
+    end
+    # ...and the strong-strong configuration report names the recording where
+    # it names the artifact's other options.
+    tss_report = StrongStrongTask((ip, cav(11)), (ip, cav(12));
+                                  artifact=RunArtifact(pss_on; record_turn_modulation=true))
+    report = configuration_report(tss_report, mkb(1, -1.0, EMASS_EV, 10.0e9),
+                                  mkb(2, 1.0, PMASS_EV, 275.0e9))
+    @test occursin("recording the turn-modulation series", only(report.output).reason)
+    @test !occursin("recording", only(configuration_report(
+        StrongStrongTask((ip, cav(11)), (ip, cav(12)); artifact=pss_off),
+        mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9)).output).reason)
+    # Only ONE beam modulated, either beam (review F4, 2026-10-15; the
+    # reviewer's probe P1): one element group tagged with the modulated beam,
+    # one recorder, its series the replay of that beam's stream over the
+    # window; `capacity = 2` over 3 turns, so the tail flush is exercised.
+    cav_plain() = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,))
+    for (beam, rng_id, line1, line2) in ((1, 11, (ip, cav(11)), (ip, cav_plain())),
+                                         (2, 12, (ip, cav_plain()), (ip, cav(12))))
+        p_one = tempname() * ".h5"
+        tss_one = StrongStrongTask(line1, line2;
+                                   artifact=RunArtifact(p_one; capacity=2, record_turn_modulation=true))
+        execute!(tss_one, mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9); turns=3)
+        prov_one = turn_modulation_provenance(p_one)
+        @testset let modulated_beam = beam
+            @test length(prov_one) == 1 && length(prov_one[1].elements) == 1
+            el_one = prov_one[1].elements[1]
+            @test el_one.beam == beam && el_one.element == "ThinCrabCavity"
+            @test el_one.first_turn == 0 && el_one.turns == 3
+            @test [s.slot for s in el_one.slots] == ["phase_noise[1]"]
+            @test el_one.slots[1].rng_id == rng_id
+            @test el_one.slots[1].series == replay(compile_runtime(cav(rng_id)).rule.phase[1], 1, 0:2)
+            Octopus.HDF5.h5open(p_one, "r") do f
+                @test sort(collect(String.(keys(f["turn_modulation"]["1"])))) == ["1"]
+                @test read(Octopus.HDF5.attributes(f["turn_modulation"]["1"]["1"])["beam"]) == beam
+                @test size(f["turn_modulation"]["1"]["1"]["series"]) == (3, 1)
+            end
+        end
+        rm(p_one; force=true)
+    end
+
+    # A series SHORTER than its `turns` attribute is a run stopped before its
+    # window completed (killed, or interrupted between two flushes; the
+    # reviewer's probe P6, which such a file answered silently): the row count
+    # is authoritative, the rows are read as they stand, ONE warning names the
+    # dataset on every reader path, and the element entry carries the window
+    # the attributes declare (`first_turn`, `turns`; `nothing` when the run did
+    # not record). The intact file reads silently with the same window
+    # (review F2, 2026-10-15).
+    @test propertynames(el) == (:element, :beam, :first_turn, :turns, :slots)
+    @test el.first_turn == 0 && el.turns == 5
+    @test el_off.first_turn === nothing && el_off.turns === nothing
+    @test toc_on[1].elements[1].first_turn == 0 && toc_on[1].elements[1].turns == 5
+    @test_logs turn_modulation_provenance(p_on)
+    p_short = tempname() * ".h5"
+    cp(p_on, p_short)
+    Octopus.HDF5.h5open(p_short, "r+") do f
+        Octopus.HDF5.set_extent_dims(f["turn_modulation"]["1"]["1"]["series"], (1, 3))
+    end
+    short_warning = r"/turn_modulation/1/1/series holds 1 recorded turn\(s\) of the 5 its turns attribute declares \(first_turn 0\)"
+    prov_short = @test_logs (:warn, short_warning) turn_modulation_provenance(p_short)
+    el_short = prov_short[1].elements[1]
+    @test el_short.first_turn == 0 && el_short.turns == 5
+    @test [s.slot for s in el_short.slots] == labels
+    @test all(length(s.series) == 1 for s in el_short.slots)
+    @test [s.series[1] for s in el_short.slots] == [s.series[1] for s in el.slots]
+    @test [s.nominal for s in el_short.slots] == [s.nominal for s in el.slots]
+    toc_short = @test_logs (:warn, short_warning) read(TaskOutput(p_short))["turn_modulation"]
+    @test [s.series for s in toc_short[1].elements[1].slots] == [1, 1, 1]
+    @test toc_short[1].elements[1].first_turn == 0 && toc_short[1].elements[1].turns == 5
+    @test (@test_logs (:warn, short_warning) read(TaskOutput(p_short), :turn_modulation)) == prov_short
+    rm(p_short; force=true)
+
+    # The reserved `state` group (D10) is skipped by the element count and
+    # read as `nothing`; a torn series -- a missing `columns`, `first_turn` or
+    # `turns` attribute, a slot group without its nominals although the
+    # element recorded, a `columns` attribute that does not name the slot
+    # groups -- is refused by name on every reader path, as the existing
+    # attributes are.
+    p_st = tempname() * ".h5"
+    cp(p_on, p_st)
+    Octopus.HDF5.h5open(p_st, "r+") do f
+        Octopus.HDF5.create_group(f["turn_modulation"]["1"], "state")
+    end
+    @test turn_modulation_provenance(p_st) == prov_on
+    @test read(TaskOutput(p_st))["turn_modulation"] == toc_on
+    # (the nominal case removes the whole `nominal_*` family of one slot group,
+    # and the message names the family)
+    torn_cases = Any[(("1/1/series", "columns"), p_on), (("1/1/series", "first_turn"), p_on),
+                     (("1/1/series", "turns"), p_on), (("1/1/phase_noise[2]", "nominal_"), p_on)]
+    for ((grp, attr), src) in torn_cases
+        p_a = tempname() * ".h5"
+        cp(src, p_a)
+        Octopus.HDF5.h5open(p_a, "r+") do f
+            obj = f["turn_modulation"][grp]
+            if startswith(attr, "nominal_")
+                for n in attr_names(obj)
+                    startswith(n, "nominal_") && Octopus.HDF5.delete_attribute(obj, n)
+                end
+            else
+                Octopus.HDF5.delete_attribute(obj, attr)
+            end
+        end
+        for (route, reader) in (("provenance", () -> turn_modulation_provenance(p_a)),
+                                ("read_kind", () -> read(TaskOutput(p_a), :turn_modulation)),
+                                ("toc", () -> read(TaskOutput(p_a))))
+            err_a = try reader(); nothing catch e; e end
+            msg_a = err_a === nothing ? "" : sprint(showerror, err_a)
+            @testset let torn_group = grp, missing_attribute = attr, reader_route = route
+                @test err_a isa ArgumentError
+                @test occursin("torn", msg_a)
+                @test occursin("/turn_modulation/" * grp, msg_a)
+                @test occursin(attr, msg_a)
+            end
+        end
+        rm(p_a; force=true)
+    end
+    p_cols = tempname() * ".h5"
+    cp(p_on, p_cols)
+    Octopus.HDF5.h5open(p_cols, "r+") do f
+        d = f["turn_modulation"]["1"]["1"]["series"]
+        Octopus.HDF5.delete_attribute(d, "columns")
+        Octopus.HDF5.attributes(d)["columns"] = ["phase_noise[2]", "phase_noise[1]", "strength_noise[2]"]
+    end
+    err_c = try turn_modulation_provenance(p_cols); nothing catch e; e end
+    @test err_c isa ArgumentError
+    @test err_c !== nothing && occursin("torn", sprint(showerror, err_c)) &&
+          occursin("/turn_modulation/1/1/series", sprint(showerror, err_c))
+    # A nominal-less slot group of an UNRECORDED element is a file from before
+    # the nominals existed, not a torn one: `nominal` reads `nothing`.
+    p_old = tempname() * ".h5"
+    cp(p_off, p_old)
+    Octopus.HDF5.h5open(p_old, "r+") do f
+        obj = f["turn_modulation"]["1"]["1"]["phase_noise[1]"]
+        for n in attr_names(obj)
+            startswith(n, "nominal_") && Octopus.HDF5.delete_attribute(obj, n)
+        end
+    end
+    @test turn_modulation_provenance(p_old)[1].elements[1].slots[1].nominal === nothing
+    @test turn_modulation_provenance(p_old)[1].elements[1].slots[2].nominal == el_off.slots[2].nominal
+
+    # The recorder's protocol, on a hand-built recorder over one dataset: the
+    # active slots' values of each element are kept in slot order, `capacity`
+    # complete turns flush, a turn that never ends (the crash path's finalize)
+    # is dropped rather than written as a misaligned row, an element the
+    # provenance did not list is refused by name, and a turn closed with an
+    # element missing is refused with its partial values dropped.
+    p_rec = tempname() * ".h5"
+    Octopus.HDF5.h5open(p_rec, "w") do f
+        g = Octopus.HDF5.create_group(Octopus.HDF5.create_group(
+                Octopus.HDF5.create_group(f, "turn_modulation"), "1"), "1")
+        d = Octopus.HDF5.create_dataset(g, "series", Octopus.HDF5.datatype(Float64),
+                                        Octopus.HDF5.dataspace((0, 2); max_dims=(-1, 2)); chunk=(4, 2))
+        rec = Octopus.TurnModulationRecorder(f, 2, 1, ["turn_modulation/1/1"], [[1, 3]],
+                                             [Float64[]], 0, 0)
+        @test Octopus._turn_modulation_sink(nothing, 1) === nothing
+        Octopus._tm_begin_turn!(rec)
+        Octopus._record_turn_draws!(rec, (1.0, 9.0, 2.0))
+        Octopus._tm_end_turn!(rec, 0)
+        @test size(d) == (0, 2) && rec.rows == 1                 # buffered, below capacity
+        Octopus._tm_begin_turn!(rec)
+        Octopus._record_turn_draws!(rec, (3.0, 9.0, 4.0))
+        Octopus._tm_end_turn!(rec, 1)
+        @test read(d) == [1.0 2.0; 3.0 4.0] && rec.rows == 0     # capacity 2: flushed
+        Octopus._tm_begin_turn!(rec)
+        Octopus._record_turn_draws!(rec, (5.0, 9.0, 6.0))         # a turn that never ends
+        Octopus._ra_flush_turn_modulation!(rec)                   # the crash path's finalize
+        @test read(d) == [1.0 2.0; 3.0 4.0] && isempty(rec.buffers[1])
+        Octopus._tm_begin_turn!(rec)
+        Octopus._record_turn_draws!(rec, (7.0, 9.0, 8.0))
+        err_k = try Octopus._record_turn_draws!(rec, (0.0, 0.0, 0.0)); nothing catch e; e end
+        @test err_k isa ErrorException
+        @test err_k !== nothing && occursin("beam 1", sprint(showerror, err_k)) &&
+              occursin("element 2", sprint(showerror, err_k)) &&
+              occursin("lists 1", sprint(showerror, err_k))
+        Octopus._tm_end_turn!(rec, 3)
+        Octopus._tm_begin_turn!(rec)                              # a turn with the element missing
+        err_m = try Octopus._tm_end_turn!(rec, 4); nothing catch e; e end
+        @test err_m isa ErrorException
+        @test err_m !== nothing && occursin("turn 4", sprint(showerror, err_m)) &&
+              occursin("met 0", sprint(showerror, err_m)) && occursin("lists 1", sprint(showerror, err_m))
+        Octopus._ra_flush_turn_modulation!(rec)
+        @test read(d) == [1.0 2.0; 3.0 4.0; 7.0 8.0]
+    end
+    rm(p_rec; force=true)
+    # `prepare_run_artifact!` handed a non-empty provenance with its DEFAULT
+    # empty `turn_modulation_columns` -- the two walks over the line
+    # disagreeing -- is refused by name, an ArgumentError naming the path and
+    # both counts, and leaves the artifact closed (review F4, 2026-10-15; the
+    # reviewer's probe P3).
+    p_cols0 = tempname() * ".h5"
+    art_cols0 = RunArtifact(p_cols0)
+    err_cols0 = try
+        Octopus.prepare_run_artifact!(art_cols0, String[], 0, 2;
+                                      turn_modulation=Octopus._turn_modulation_entries((wk,), 1))
+        nothing
+    catch e
+        e
+    end
+    msg_cols0 = err_cols0 === nothing ? "" : sprint(showerror, err_cols0)
+    @test err_cols0 isa ArgumentError
+    @test occursin(p_cols0, msg_cols0) && occursin("lists 1 modulated element(s)", msg_cols0) &&
+          occursin("column walk lists 0", msg_cols0)
+    @test art_cols0.file === nothing
+    rm(p_cols0; force=true)
+
+    # (j) CUDA: (b)-(d) on the device. The series is host-side on every
+    # backend, so it is bitwise the CPU run's; the device moments of the run
+    # with the switch on are bitwise those with it off.
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        device(h) = Phase6DRep((Octopus.CUDA.CuArray(a) for a in coordinate_arrays(h))...)
+        p_g_on, p_g_off = tempname() * ".h5", tempname() * ".h5"
+        rc_g_on = run(p_g_on; policy=CUDAExecutionPolicy(), rep=device(mkp()),
+                      record_turn_modulation=true)
+        Octopus.CUDA.synchronize()
+        rc_g_off = run(p_g_off; policy=CUDAExecutionPolicy(), rep=device(mkp()))
+        Octopus.CUDA.synchronize()
+        @test rc_g_on == rc_g_off == rcpt_on
+        prov_g = turn_modulation_provenance(p_g_on)
+        @test length(prov_g) == 1 && length(prov_g[1].elements) == 1
+        @test [s.slot for s in prov_g[1].elements[1].slots] == labels
+        @test [s.series for s in prov_g[1].elements[1].slots] == [s.series for s in el.slots]
+        @test [s.nominal for s in prov_g[1].elements[1].slots] == [s.nominal for s in el.slots]
+        @test all(s.series === nothing for s in turn_modulation_provenance(p_g_off)[1].elements[1].slots)
+        Octopus.HDF5.h5open(p_g_on, "r") do f
+            d = f["turn_modulation"]["1"]["1"]["series"]
+            @test size(d) == (5, 3)
+            @test read(Octopus.HDF5.attributes(d)["columns"]) == labels
+            @test read(Octopus.HDF5.attributes(d)["first_turn"]) == 0
+            @test read(Octopus.HDF5.attributes(d)["turns"]) == 5
+        end
+        mg_off = read(TaskOutput(p_g_off), :moments; name="m")
+        mg_on = read(TaskOutput(p_g_on), :moments; name="m")
+        @test keys(mg_off) == keys(mg_on)
+        @test all(bitwise(mg_off[k], mg_on[k]) for k in keys(mg_off) if mg_off[k] isa AbstractVector)
+        foreach(x -> rm(x; force=true), (p_g_on, p_g_off))
+    else
+        @test_skip "CUDA device not available"
+    end
+    foreach(x -> rm(x; force=true), (p_off, p_on, p_in, p_c, p_6, p_r, p_rf, pss_on, pss_off,
+                                      p_st, p_cols, p_old))
+end
+
+@testset "Turn modulation: the one-particle probe verifies the loop per harmonic" begin
+    # docs/design/turn_modulation_record.md section 6.1 as the owner planned it
+    # (2026-10-15): a 3-harmonic crab cavity, one harmonic at a time carrying a
+    # white or pink rule on its phase and, independently drawn, on its strength,
+    # then all three; one particle at randomised `initial_offset`, 64 turns, a
+    # `MomentObserver` every turn; three comparisons per verification --
+    # recording on against off bitwise, modulated against all-`nothing` (the
+    # px and pz steps differ from turn 0, py bitwise equal), and the rows
+    # predicted from the RECORDED offsets and nominals against the observed
+    # rows. The probe is test/turn_modulation_probe.jl, functions only, shared
+    # with the two-rank mpiexec child below (one source for the three arms).
+    #
+    # What the measurements are (phase A from result/crab_noise/S1B, 24/24,
+    # record docs/history/turn_modulation_record_2026_10_15.md section 2.2):
+    # on the CPU the predicted rows are the kernel's BITWISE -- the host
+    # forms the same Float64 operations in the same order with Julia's `sin`
+    # and no FMA contraction -- so the pin is 0 ulp, re-anchored on the
+    # previous observed row (the naive step difference reads 27-35 ulp of the
+    # px kick and up to 4e3 of the pz kick, which is the state's one rounding,
+    # not a prediction error). On CUDA the device contracts `i k z + phi` into
+    # one FMA and libdevice sin/cos differ from Base by 1 ulp on some inputs
+    # (the CPU/CUDA identity testset's header), so each harmonic's term
+    # differs by a few ulps of itself: the pin is one state ulp plus 1e-14 of
+    # `sum_i |kick_i|` (about 45 ulp of the kick); measured <= 2.0e-16 on px
+    # and 0 on pz. The schedule's base seed was chosen so the drawn kinds
+    # cover both rules on both slot types; the coverage is asserted, so a
+    # schedule that verifies less than it claims fails here by name.
+    include(joinpath(pkgdir(Octopus), "test", "turn_modulation_probe.jl"))
+    schedule = tm_probe_schedule()
+    cov = tm_probe_coverage(schedule)
+    @test length(schedule) == 4 && [v.label for v in schedule] == ["H1", "H2", "H3", "ALL"]
+    @test cov.single_phase
+    @test cov.single_strength
+    @test cov.all_both
+    turns = tm_probe_turns()
+
+    # The per-field assertions of one verification; `exact` selects the pin.
+    function assert_verification(backend, v, r; exact)
+        @testset let backend = backend, label = v.label, seed = v.seed, coords = v.coords,
+                     phase_kinds = v.phase_kinds, strength_kinds = v.strength_kinds
+            @test r !== nothing && r.root
+            if r !== nothing && r.root
+            @test r.same_start
+            @test r.nominal_same
+            @test sum(r.counts) == 1
+            # 1. recording on against off: nothing in the tracking changes
+            @test r.c1.bitwise
+            @test r.c1.max_abs == 0.0
+            @test r.c1.receipt_identical
+            @test r.c1.series_on            # on: every active slot carries 64 entries
+            @test r.c1.series_off           # off: the same slots, `series === nothing`
+            @test r.c1.nothing_recorded_for_plain
+            # 2. the modulation is consumed, from the first turn, on px and pz;
+            #    py is untouched (S_Y = 0 stays 0 under the relative factor)
+            @test r.c2.px_all
+            @test r.c2.px_first == 1
+            @test r.c2.pz_all
+            @test r.c2.pz_first == 1
+            @test r.c2.py_equal
+            @test r.c2.receipts == (1, 1, 0)
+            @test r.c2.window_ok
+            # 3. the recorded values are the ones the element used
+            @test r.c3.series_eq_replay     # plan 6.2: the series is the hook's replay, bitwise
+            @test r.c3.same_as_read         # turn_modulation_provenance == read(out, :turn_modulation)
+            @test r.c3.nominal_recorded     # the slot groups' nominals are the spec's
+            @test r.c3.start_turn == [0]
+            @test r.c3.window_turns == [turns]
+            @test r.c3.active_nonzero
+            @test r.c3.inactive_zero
+            @test r.c3.max_dphi > 1.0e-6 && r.c3.max_d > 1.0e-5   # the rules moved something
+            for p in (r.c3.mod, r.c3.nom)
+                @test p.turns_ok
+                @test p.xyz_const
+                @test p.py_const
+                @test p.dpy_zero
+                if exact
+                    @test p.px_ulp == 0
+                    @test p.pz_ulp == 0
+                    @test p.chain_px == 0.0 && p.chain_pz == 0.0
+                else
+                    @test p.px_excess <= 1.0e-14
+                    @test p.pz_excess <= 1.0e-14
+                end
+            end
+            @test r.c3.within
+            if r.ref.series_bitwise !== nothing
+                @test r.ref.series_bitwise           # host-side draws: identical across backends
+                if exact
+                    @test r.ref.rows_bitwise         # one particle on one rank folds exactly
+                else
+                    @test r.ref.rows_max_abs <= 1.0e-17   # the CPU/CUDA identity testset's pin
+                end
+            end
+            @test tm_probe_pass(r)
+            end
+        end
+    end
+
+    # (a) CPU threads: the reference arm; its artifacts are the other arms' reference.
+    dir_cpu = mktempdir()
+    results_cpu = Dict{String,Any}()
+    for v in schedule
+        r = tm_probe_verify(v, CPUThreadsExecutionPolicy(), dir_cpu; exact=true)
+        results_cpu[v.label] = r
+        println(tm_probe_line("cpu", v, r))
+        assert_verification("cpu", v, r; exact=true)
+    end
+    @test all(tm_probe_pass(results_cpu[v.label]) for v in schedule)
+
+    # (b) CUDA: the same schedule on the device; the recorded series is
+    # host-side and must be the CPU arm's bit for bit, the rows within the pin.
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        dir_cuda = mktempdir()
+        for v in schedule
+            r = tm_probe_verify(v, CUDAExecutionPolicy(), dir_cuda; exact=false, cpu_ref=dir_cpu)
+            println(tm_probe_line("cuda", v, r))
+            assert_verification("cuda", v, r; exact=false)
+        end
+    else
+        @test_skip "CUDA device not available -- the probe's CUDA arm skipped"
+    end
+
+    # (c) MPI, two ranks: the child runs THIS probe file as a script under the
+    # launcher the suite's other MPI sections use, writing per-rank receipt
+    # files (the merged stdout drops bytes under load; test/mpi_seam_check.jl)
+    # and its artifacts into a directory the parent names; the parent asserts
+    # the child's lines AND reads the child's artifacts itself: the moments
+    # bitwise against the CPU arm's (one particle on one rank folds exactly)
+    # and the recorded series bitwise. Full lane only, like its siblings.
+    mpi_arm = @isdefined(_lane_gate) ? _lane_gate("Turn modulation: the one-particle probe, two-rank arm") : true
+    if mpi_arm
+        launcher = try
+            MPICH_jll.mpiexec(exe -> exe)
+        catch err
+            @info "MPICH_jll provided no mpiexec; the probe's MPI arm was NOT exercised" err
+            nothing
+        end
+        if launcher === nothing
+            @test_broken false          # visible in the summary, never a silent pass
+        else
+            child = joinpath(pkgdir(Octopus), "test", "turn_modulation_probe.jl")
+            dir_mpi = mktempdir()
+            # The child's load path is the parent's own, expanded: under
+            # `Pkg.test` that is the test sandbox and @stdlib, exactly the
+            # `@:@stdlib` the sibling sections pass; in package mode on a
+            # worktree (the stage runner) `@:@stdlib` cannot reach MPI at all,
+            # while the parent's stack can.
+            cmd = addenv(`$(launcher) -n 2 $(Base.julia_cmd()) --startup-file=no --threads=2 $(child)`,
+                         "JULIA_LOAD_PATH" => join(Base.load_path(), Sys.iswindows() ? ";" : ":"),
+                         "JULIA_PROJECT" => Base.active_project(),
+                         "OCTOPUS_TM_PROBE_DIR" => dir_mpi,
+                         "OCTOPUS_TM_PROBE_CPU_REF" => dir_cpu)
+            buf = IOBuffer()
+            proc = run(pipeline(cmd; stdout=buf, stderr=buf); wait=false)
+            watchdog = Timer(1800) do _
+                process_running(proc) && kill(proc)
+            end
+            wait(proc)
+            close(watchdog)
+            raw = String(take!(buf))
+            files = [joinpath(dir_mpi, "rank_$(r).txt") for r in 0:1]
+            delivered = count(isfile, files)
+            receipts = join((isfile(f) ? read(f, String) : "" for f in files), "")
+            ran = occursin("TM-PROBE", receipts)
+            if !success(proc) && !ran
+                @info "the MPI launcher could not run the probe child; the probe's MPI arm was NOT exercised" out=last(raw, 3000)
+                @test_broken false
+            else
+                success(proc) || @info "the probe's MPI child failed" out=last(raw, 4000) receipts=last(receipts, 4000)
+                @test success(proc)
+                @test delivered == 2
+                lines = split(receipts, '\n')
+                done = filter(l -> startswith(l, "TM-PROBE-DONE "), lines)
+                @test length(done) == 1
+                @test occursin(" verifications=4 pass=4/4 coverage=true verdict=PASS", only(done))
+                @test count(l -> startswith(l, "TM-PROBE backend=mpi2 "), lines) == 4
+                @test !any(l -> startswith(l, "TM-PROBE-FAIL"), lines)
+                # One particle, two ranks: exactly one rank holds it (the chunk
+                # rule puts a single particle in the LAST chunk, rank 1).
+                shards = filter(l -> startswith(l, "TM-PROBE-SHARD "), lines)
+                @test length(shards) == 8
+                for v in schedule
+                    held = [parse(Int, match(r"nlocal=(\d+)", l)[1])
+                            for l in shards if occursin(" label=$(v.label) ", l)]
+                    @test length(held) == 2 && sum(held) == 1
+                    # The parent's own reading of the child's artifacts.
+                    for tag in ("mod_a", "mod_b", "nom")
+                        p_child = joinpath(dir_mpi, "$(v.label)_$(tag).h5")
+                        p_cpu = joinpath(dir_cpu, "$(v.label)_$(tag).h5")
+                        @test isfile(p_child)
+                        isfile(p_child) || continue
+                        @test tm_probe_columns_bitwise(tm_probe_rows(p_child), tm_probe_rows(p_cpu))
+                    end
+                    rec_child = tm_probe_recorded(joinpath(dir_mpi, "$(v.label)_mod_a.h5"); turns=turns)
+                    rec_cpu = tm_probe_recorded(joinpath(dir_cpu, "$(v.label)_mod_a.h5"); turns=turns)
+                    @test rec_child.series_present && rec_cpu.series_present
+                    @test all(rec_child.dphi .=== rec_cpu.dphi) && all(rec_child.d .=== rec_cpu.d)
+                end
+            end
+        end
+    end
 end
 
 @testset "Turn modulation: the strong-strong window and receipt" begin

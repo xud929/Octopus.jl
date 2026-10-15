@@ -15,8 +15,13 @@ scripts named at the end of this header:
 
 1. Does the rule generate the specified noise? The run's `/turn_modulation`
    provenance names every active slot with its kind and stream (or table
-   digest); the realised offsets per turn have the stated rms and spectrum
-   (validation/turn_modulation_spectra.jl measures the shipped rules).
+   digest), and with `output.record_turn_modulation = true` (this file's
+   default) the artifact also holds the per-turn OFFSETS every active slot
+   produced, read back through the same public reader; this script prints
+   their realised rms against the requested rms per slot, read from the
+   record rather than by replaying the rule. The spectrum is measured by
+   validation/turn_modulation_spectra.jl (the shipped rules) and
+   validation/crab_cavity_noise_response.jl part `noise`.
 2. What is the beam-beam response? The weak beam's rms emittances and the
    luminosity are in the artifact per turn; the response to the noise is
    their growth against the noise-free run, with and without the beam-beam
@@ -68,16 +73,30 @@ sweeps never collide on output paths.
 OUTPUTS. ONE run artifact under `result/<seed>/<case_name>.h5`
 (docs/design/run_artifact.md): `/luminosity/strong_beam_1`,
 `/moments/weak_beam`, the `/execution` ledger and, for a modulated run,
-`/turn_modulation/<ledger row>`. Read with one handle, `out =
+`/turn_modulation/<ledger row>` -- with, since `output.record_turn_modulation`
+is `true` here, the `series` dataset per modulated element: one row per turn,
+one Float64 column per active slot, the OFFSET the rule produced (radians on
+a phase slot; the dimensionless relative factor d on a strength slot, the
+realised strengths being S (1 + d)), the same evaluation the element used
+(docs/design/turn_modulation_record.md; 8 bytes per active slot per turn,
+which is why the library's default is off). Read with one handle, `out =
 TaskOutput(path)`: `read(out, :luminosity; name = "strong_beam_1")`,
 `read(out, :moments; name = "weak_beam")`, `read(out, :execution)`,
-`read(out, :turn_modulation)` (also `turn_modulation_provenance(path)`).
+`read(out, :turn_modulation)` (also `turn_modulation_provenance(path)`; each
+slot entry's `series` is the recorded column, `nothing` when a run did not
+record, and `nominal` the slot's nominal parameters).
 After the run this script prints the execution policy, the `:turn_modulation`
 execution receipt (`execution_receipts` of the audit), the provenance per
-element and slot, the luminosity mean and the weak beam's first and last
-recorded rms emittances. Only the receipt and the provenance are
-authoritative at the suite-sized default of 2 turns; the emittance growth is
-a measurement only for long runs (the production comment on `config.turns`).
+element and slot, one table of the recorded series per element and active
+slot (label, rule kind, nominal, series length, realised rms against the
+requested rms and their ratio: for a white rule 1 within the sampling band
++-1/sqrt(2 turns), one sigma; for a pink rule printed without a pin, since
+the band-limited sum's finite-run rms wanders with its slow generators), the
+luminosity mean and the weak beam's first and last recorded rms emittances.
+Only the receipt, the provenance and the series are authoritative at the
+suite-sized default of 2 turns (the series' rms then sits anywhere in a wide
+band, and the printout says how wide); the emittance growth is a measurement
+only for long runs (the production comment on `config.turns`).
 Under `:multiprocess` every rank prints the policy, the `crab_noise:`
 configuration line (each rank asserting what it read) and its `mpi_rank = r
 of P` line; rank 0 alone holds the artifact (the library gates the file) and
@@ -214,6 +233,15 @@ input = (
         capacity = 1024,
         moment_start = 0,
         moment_step = 1,
+        # Record the per-turn offsets the noise rules produce as the `series`
+        # dataset beside each cavity's provenance (`?RunArtifact`,
+        # docs/design/turn_modulation_record.md). ON here, as the precedent
+        # for reading the realised noise back from the record instead of
+        # replaying the rule (owner decision 2026-10-15); the library's
+        # default is off because the file grows by 8 bytes per active slot
+        # per turn (64 MB per million turns for this case's eight slots).
+        # Recording changes nothing in the tracking.
+        record_turn_modulation = true,
     ),
 )
 
@@ -560,7 +588,8 @@ line_specs = (
 # multi-process policy activates, which the inferred default never does.
 task = TrackingTask(line_specs;
     policy = policy,
-    artifact = RunArtifact(artifact_path; capacity = input.output.capacity))
+    artifact = RunArtifact(artifact_path; capacity = input.output.capacity,
+                           record_turn_modulation = input.output.record_turn_modulation))
 # The execution audit collects the receipts the run's consumers emit; the
 # `:turn_modulation` receipt is how a run states which rules it actually
 # realised (`?with_execution_audit`, `?execution_receipts`). A bare `track!`
@@ -616,8 +645,9 @@ else
     # script owns the line (tccb before tcca) and labels the entries by that
     # order; the labels are the script's, not something the record stores.
     modulated_cavities = ("tccb", "tcca")
+    cavity_name(k) = k <= length(modulated_cavities) ? modulated_cavities[k] : "element $(k)"
     cavity_label(k) = k <= length(modulated_cavities) ?
-        "element $(k) = $(modulated_cavities[k])" : "element $(k)"
+        "element $(k) = $(cavity_name(k))" : cavity_name(k)
     for r in tm_receipts
         println("turn_modulation receipt: first_turn = ", r.values.first_turn,
                 ", turns = ", r.values.turns, ", backend = ", r.backend)
@@ -629,7 +659,8 @@ else
 
     # The provenance the artifact recorded, per execution and element: the stream
     # id of a white or pink slot, the digest, name and length of a table slot.
-    for entry in turn_modulation_provenance(artifact_path)
+    provenance = turn_modulation_provenance(artifact_path)
+    for entry in provenance
         println("turn_modulation provenance, /execution row ", entry.execution, ":")
         for (k, e) in enumerate(entry.elements)
             println("  [", cavity_label(k), "] ", e.element, " (beam ", e.beam, ")")
@@ -642,6 +673,54 @@ else
                 end
             end
         end
+    end
+
+    # The recorded series: what the rules GENERATED, turn by turn, read back
+    # from the artifact (`output.record_turn_modulation = true`) through the
+    # same reader -- entry i of a slot's `series` is the offset applied on
+    # absolute turn first_turn + i - 1, the very value the element used (one
+    # evaluation shared with the realised element; nothing is replayed here).
+    # Per element and active slot: the realised rms of the series against the
+    # requested rms of its rule -- a phase slot's offsets are radians, the
+    # requested rms `phase_sigma`; a strength slot's are the dimensionless
+    # relative factor d, the requested rms `strength_sigma_rel`. For the white
+    # rule, and for the synthetic white table, the ratio is 1 up to the
+    # sampling error of an rms over T iid normals, one sigma 1/sqrt(2T). For
+    # the pink rule the ratio is printed WITHOUT a pin: the Voss-McCartney sum
+    # is band-limited, its generator k holds one value for 2^k turns, so a
+    # finite run's rms wanders with the slow generators far beyond 1/sqrt(2T)
+    # (one sigma 7.65 % at 2^16 turns, `?PinkNoise`); the verdict belongs to
+    # validation/crab_cavity_noise_response.jl part `noise`, taken over 2^20
+    # turns against the construction's own Monte Carlo band.
+    if input.output.record_turn_modulation
+        one_sigma = 1 / sqrt(2 * turns)
+        fmt(x) = string(round(x; sigdigits = 6))
+        nominal_text(nom) = nom === nothing ? "n/a" :
+            join(("$(name)=$(fmt(getfield(nom, name)))" for name in propertynames(nom)), " ")
+        band_text(kind) = kind === :pink ? "no pin (band-limited sum)" :
+                                           "1 +- $(fmt(one_sigma)) (1 sigma)"
+        println("turn_modulation series: recorded offsets read from the artifact, realised rms against the requested rms")
+        println("  white and table rows: ratio = 1 within +-", fmt(one_sigma),
+                " (one sigma, 1/sqrt(2 turns) at ", turns, " turns); pink rows: no pin, ",
+                "the band-limited sum's finite-run rms wanders with its slow generators")
+        println("  ", rpad("element slot", 26), rpad("kind", 7), rpad("nominal", 50),
+                lpad("length", 7), lpad("realised rms", 14), lpad("requested rms", 14),
+                lpad("ratio", 9), "  expected")
+        # One row per active slot of every recorded execution; counted first,
+        # since a counter bumped inside a top-level `for` would be a new local.
+        n_rows = sum(length(e.slots) for entry in provenance for e in entry.elements; init = 0)
+        for entry in provenance, (k, e) in enumerate(entry.elements), s in e.slots
+            s.series === nothing && error(
+                "output.record_turn_modulation = true, but $(cavity_label(k)) $(s.slot) " *
+                "recorded no series in /execution row $(entry.execution)")
+            requested = startswith(s.slot, "phase_noise") ? phase_sigma : strength_sigma_rel
+            realised = sqrt(sum(abs2, s.series) / length(s.series))
+            println("  ", rpad("$(cavity_name(k)) $(s.slot)", 26), rpad(string(s.kind), 7),
+                    rpad(nominal_text(s.nominal), 50), lpad(string(length(s.series)), 7),
+                    lpad(fmt(realised), 14), lpad(fmt(requested), 14),
+                    lpad(fmt(realised / requested), 9), "  ", band_text(s.kind))
+        end
+        n_rows == 0 && println("  (no modulated element in the line: nothing recorded; crab_noise.rule = ", cn.rule, ")")
     end
 
     # Physics columns, read back from the artifact rather than from the live beam,

@@ -1516,6 +1516,56 @@ refuses any Octopus docstring bound outside the module. The rule: a
 docstring for a type goes on the type, and a sweep that checks attachment
 must also check where.
 
+## A per-turn step compared as a row difference carries the state's rounding
+
+The one-particle probe that verifies the `execute!` loop turn by turn
+(2026-10-15, `docs/history/turn_modulation_record_2026_10_15.md`, section
+2.2) first measured each turn's kick as the difference of two observed
+rows and compared it with the kick predicted from the recorded offsets, in
+ulps of the kick. That metric read 27-35 ulp on `px` and 128-4030 ulp on
+`pz`, although the loop was exact: the difference of two rounded states
+carries one rounding of the state, which is `ulp(state)/ulp(kick)` kicks
+when the kick is small against the coordinate (the `pz` kick is 1e-3 of
+`pz`). Re-anchoring, that is forming the predicted row from the previous
+observed row plus the kick exactly as the kernel forms it, made every CPU
+and MPI row bitwise and left the CUDA rows within a few ulp of the kick,
+which is libdevice's `sin`. The same reading applies to any free-running
+comparison: an ulp count of a gap at a coordinate's zero crossing means
+nothing (1540 "ulp" there was 3.4e-21), so the pin is the gap relative to
+the kick, not to the value. The rule: verify a loop step against the state
+it started from, and state the tolerance in the kick's units.
+
+## A per-index type that rests on constant propagation is a type stability nobody promised
+
+The crab cavity's realisation built its per-slot draws with `ntuple(i ->
+_turn_offset(rules.phase[i], ctx, i, T), Val(N))`. On a homogeneous
+container (every slot a `WhiteNoise`) `rules.phase[i]` has one concrete type
+for any `i`, and the suite's zero-allocation pin, measured on exactly that
+fixture, stayed green from stage 1 through the recorder batch. On a MIXED
+container (`nothing` beside a rule, or a `PinkNoise`, whose loop keeps the
+closure from being inlineable) the index-typed `getindex` infers a `Union`,
+and the one thing that could have resolved it -- constant propagation of the
+literal index into the closure -- is a heuristic Julia skips when the
+closure's inferred body is not inlineable. The draws tuple and the successor
+container inferred as `Union`s, and every `realize`, `update` and
+`update_line` on such an element allocated: 336 / 640 B per `realize` /
+`update` on the main checkout, 688 / 720 B with the recording hook, 14400 B
+per turn on a 40-element line (review F1 of the recorder batch, 2026-10-15;
+the numbers in `design/turn_modulation.md`, section 7). The reviewer found
+it by running the mixed shapes; the pin could not, because its fixture never
+exercised per-index inference -- the "A check must be able to fail" family,
+in the costume of a fixture where the defect has nothing to act on.
+
+Rules adopted: when a tuple's per-index type matters, unroll with LITERAL
+indices (a `@generated` body, the `fusedTrack` precedent; `_slot_draws` in
+`src/elements/turn_modulated.jl`) rather than through an `ntuple` closure,
+and say in the docstring that inference alone, not constprop, makes it
+stable; `Base.map` over tuples is type-stable the same way but takes a
+`Vector{Any}` path from 32 entries on (592 B at exactly 32, 0 at 31 --
+"longer than 32" in the design note was off by one); an allocation pin on a
+container type covers the MIXED shapes, since the homogeneous one is the
+shape that cannot fail.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

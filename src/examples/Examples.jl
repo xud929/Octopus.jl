@@ -90,9 +90,13 @@ function example_catalog()
             "amplitude noise on both proton crab cavities -- white, pink or a " *
             "tabulated record through one switch, each cavity on independent " *
             "streams. The precedent for declaring turn modulation and reading " *
-            "its execution receipt and artifact provenance back. It supports " *
+            "back its execution receipt, its artifact provenance and -- with the " *
+            "artifact's record_turn_modulation option on, as its default run has " *
+            "it -- the per-turn offsets every active slot produced, whose realised " *
+            "rms it prints against the requested rms. It supports " *
             "three verification questions: does the rule generate the specified " *
-            "noise (provenance and realised rms), what is the beam-beam response " *
+            "noise (provenance and the recorded series' realised rms, read from " *
+            "the artifact rather than by replaying the rule), what is the beam-beam response " *
             "(emittance growth and luminosity against the noise-free run), and " *
             "how do the rules compare. Its configurable development harness is " *
             "test/examples/crab_cavity_noise.jl; the numerical study is " *

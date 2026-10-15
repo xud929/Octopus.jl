@@ -168,6 +168,40 @@ config-that-was-never-read defect class, AGENTS.md Invariants):
                               table do NOT change the derived name: set
                               OCTOPUS_CASE_NAME for those sweeps
     OCTOPUS_MOMENT_STEP       turns between moment rows (1); row 1 is turn 0
+    OCTOPUS_RECORD_TURN_MODULATION
+                              1|0 (1): the artifact's `record_turn_modulation`
+                              option (`?RunArtifact`, docs/design/
+                              turn_modulation_record.md): record the per-turn
+                              OFFSETS every active noise slot produced as the
+                              `series` dataset beside the cavity's provenance,
+                              one row per turn -- rad on a phase slot, the
+                              dimensionless relative factor d on a strength
+                              slot -- the very values the element used (one
+                              evaluation, shared; nothing in the tracking
+                              changes). ON by default here, as in the example
+                              (the library's default is off: 8 bytes per
+                              active slot per turn). When on, rank 0 reads the
+                              series back through the public reader and
+                              REFUSES the run, with the numbers, unless every
+                              active slot of this run recorded a series of
+                              exactly OCTOPUS_TURNS entries; every white
+                              series has rms within max(10 %, 5/sqrt(2 T)) of
+                              its sigma (the one-sigma of an rms over T iid
+                              normals is 1/sqrt(2T), so 10 % is a 5-sigma
+                              band from T = 1250 on and the band widens below
+                              that to stay at 5 sigma -- at the suite's 2
+                              turns a bare 10 % pin would fail 85 % of the
+                              time on correct code); and every table series
+                              equals its record's first T entries bitwise. A
+                              pink series' rms is printed with its ratio and
+                              no pin: the band-limited sum's finite-run rms
+                              wanders with its slow generators (one sigma
+                              7.65 % at 2^16 turns; the verdict is
+                              validation/crab_cavity_noise_response.jl part
+                              `noise`, over 2^20 turns). When off, every slot
+                              must read back `series === nothing`, or the run
+                              is refused: a series written unasked is a
+                              configuration the code did not read
 
 Refused by name, because a non-default request this file would silently drop
 is a defect rather than a typo: OCTOPUS_MP (the dead spelling the frozen
@@ -219,17 +253,29 @@ CUDA checks:
 Outputs: ONE run artifact, `<result_dir>/<seed>/<case_name>.h5`
 (docs/design/run_artifact.md) -- `/luminosity/strong_beam_1`,
 `/moments/weak_beam`, the `/execution` ledger and, for a modulated run,
-`/turn_modulation/<ledger row>`; read through one handle,
-`read(TaskOutput(path), kind; name = ...)`; plus the TSV of
+`/turn_modulation/<ledger row>` (with OCTOPUS_RECORD_TURN_MODULATION=1 the
+`series` dataset per cavity: one row per turn, one column per active slot);
+read through one handle, `read(TaskOutput(path), kind; name = ...)` (the
+series: `read(out, :turn_modulation)[1].elements[k].slots[j].series`, or
+`turn_modulation_provenance(path)`); plus the TSV of
 OCTOPUS_TURN_TIMING_PATH when asked for. The run prints the policy, the
 `:turn_modulation` execution receipt, the artifact's provenance per element
 and slot (the two cavities labelled by the line order this file owns, tccb
-before tcca, because the record itself names only the element type), and
-ends with the one line the validation driver parses (rank 0's under MPI):
+before tcca, because the record itself names only the element type), one
+`series <label>: ...` line per recorded slot (its entry count, rms, sigma,
+ratio and the band or bitwise verdict applied), and ends with the one line
+the validation driver parses (rank 0's under MPI):
 
-    CRAB-NOISE rule=<r> scale=<s> phase_rms=<rad> strength_rel_rms=<rel> chrom=<xi_x>,<xi_y> table_file=<path|none> turns=<T> n_macro=<N> kbb_scale=<k> radiation=<0|1> seed=<seed> artifact=<path> eps_x_first=<..> eps_x_last=<..> eps_y_first=<..> eps_y_last=<..> lumi_mean=<..> wall_s=<..> ms_per_turn=<..> ranks=<P> threads=<n|NA> steady_ms_per_turn=<ms|NA>
+    CRAB-NOISE rule=<r> scale=<s> phase_rms=<rad> strength_rel_rms=<rel> chrom=<xi_x>,<xi_y> table_file=<path|none> turns=<T> n_macro=<N> kbb_scale=<k> radiation=<0|1> seed=<seed> artifact=<path> eps_x_first=<..> eps_x_last=<..> eps_y_first=<..> eps_y_last=<..> lumi_mean=<..> wall_s=<..> ms_per_turn=<..> ranks=<P> threads=<n|NA> steady_ms_per_turn=<ms|NA> record=<true|false> [rms_<cavity>_<parameter>_<i>=<rms> ...]
 
-where phase_rms and strength_rel_rms are the EFFECTIVE values that ran:
+where the fields through steady_ms_per_turn are the line as it was before
+the recording landed (2026-10-15), so a parser of `key=value` tokens
+(validation/crab_cavity_noise_response.jl, profiling/
+crab_cavity_noise_backends.jl) reads the same fields; record is
+OCTOPUS_RECORD_TURN_MODULATION as read, and with it on one `rms_<label>`
+field per recorded slot follows, in slot order, the label the
+OCTOPUS_TABLE_FILE columns use (`tccb_phase_noise_1`, ...; absent with the
+switch off or under rule none). phase_rms and strength_rel_rms are the EFFECTIVE values that ran:
 OCTOPUS_*_RMS times OCTOPUS_NOISE_SCALE when the parameter carries rules, 0
 when it carries none (rms 0, or rule none); strength_rel_rms is the strength
 rule's sigma itself, the relative rms of S (1 + d); with a file table they
@@ -411,6 +457,9 @@ isfinite(kbb_scale) || error("OCTOPUS_KBB_SCALE=$(kbb_scale) must be finite")
 use_radiation = env_bool("OCTOPUS_RADIATION", true)
 moment_step = env_parse(Int, "OCTOPUS_MOMENT_STEP", "1")
 moment_step >= 1 || error("OCTOPUS_MOMENT_STEP=$(moment_step) must be at least 1")
+# The artifact's `record_turn_modulation` (header): on by default, as the
+# example's `output` block has it; read back and checked on rank 0 below.
+record_turn_modulation = env_bool("OCTOPUS_RECORD_TURN_MODULATION", true)
 
 # The multi-process and timing switches (the weak-strong harness's, with its
 # semantics), each read here so a bad value fails before any work -- and each
@@ -683,6 +732,10 @@ end
 # the seed: the table rule without a file (the header's "inert otherwise").
 table_master = (cn.rule === :table && isempty(cn.table_file)) ? Random.Xoshiro(cn.table_seed) : nothing
 table_slot_rms = Tuple{String,Float64}[]
+# Every table rule's record, keyed by the file-column label
+# `<cavity>_<parameter>_<i>` whatever its source (synthetic or file): the
+# bitwise reference the recorded series is checked against on rank 0.
+table_offsets = Dict{String,Vector{Float64}}()
 function noise_rule(parameter::String, cavity::String, i::Int, sigma, rng_id)
     cn.rule === :white && return WhiteNoise(sigma; rng_id = rng_id)
     cn.rule === :pink && return PinkNoise(sigma; rng_id = rng_id, octaves = cn.pink_octaves)
@@ -694,6 +747,7 @@ function noise_rule(parameter::String, cavity::String, i::Int, sigma, rng_id)
         offsets = file_tables[label]
     end
     push!(table_slot_rms, (label, sqrt(sum(abs2, @view offsets[1:turns]) / turns)))
+    table_offsets["$(cavity)_$(parameter)_$(i)"] = offsets
     return TurnTable(offsets; name = label)
 end
 function crab_noise_rules(cavity::String, id_base::Int)
@@ -879,7 +933,8 @@ line_specs = (
 task = TrackingTask(line_specs;
     policy = policy,
     record_turn_times = record_turn_times,
-    artifact = RunArtifact(artifact_path; capacity = input.output.capacity))
+    artifact = RunArtifact(artifact_path; capacity = input.output.capacity,
+                           record_turn_modulation = record_turn_modulation))
 # One `execute!`, timed whole (JIT of its first turn included), inside an
 # execution audit so the `:turn_modulation` receipt can be read back.
 t0 = time()
@@ -1017,6 +1072,88 @@ else
         end
     end
 
+    # The recorded series (OCTOPUS_RECORD_TURN_MODULATION, on by default): the
+    # offsets every active slot produced, read back from the artifact through
+    # the public reader -- entry i of a slot's `series` is the value applied on
+    # absolute turn i - 1 of this one `execute!` (first_turn 0), the very value
+    # the element used (one evaluation, shared with the realised element;
+    # nothing is replayed here). Read on THIS rank because rank 0 alone holds
+    # the file. Checked loudly, with the numbers (the header's paragraph on the
+    # variable): every active slot of this run recorded a series of exactly
+    # `turns` entries; a white series' rms is within `rms_tol` of its sigma,
+    # rms_tol = max(0.10, 5/sqrt(2 turns)) -- the one-sigma of an rms over T
+    # iid normals is 1/sqrt(2T), so 10 % is a 5-sigma band from T = 1250 on
+    # and the band widens below that to stay at 5 sigma (at the suite's 2 turns
+    # a bare 10 % pin would fail 85 % of the time on correct code); a table
+    # series equals its record's first `turns` entries bitwise; a pink series'
+    # rms is printed with its ratio and no pin (the band-limited sum's
+    # finite-run rms wanders with its slow generators; the verdict is the
+    # validation study's, over 2^20 turns). With the switch OFF every slot
+    # must read back `nothing`: a series written unasked is a configuration
+    # the code did not read. The `rms_<label>` fields join the summary line
+    # after its pre-existing fields.
+    series_fields = String[]
+    if phase_on || strength_on
+        rms_tol = max(0.10, 5 / sqrt(2 * turns))
+        recorded_labels = String[]
+        for entry in turn_modulation_provenance(artifact_path)
+            for (k, e) in enumerate(entry.elements)
+                k <= length(modulated_cavities) || error(
+                    "the provenance lists $(length(entry.elements)) modulated elements; this line has $(length(modulated_cavities))")
+                cavity = modulated_cavities[k]
+                for s in e.slots
+                    m = match(r"^(phase_noise|strength_noise)\[([0-9]+)\]$", s.slot)
+                    m === nothing && error(
+                        "slot label $(repr(s.slot)) of $(cavity_label(k)) is not of the form phase_noise[i] or strength_noise[i]")
+                    parameter = String(m.captures[1])
+                    label = "$(cavity)_$(parameter)_$(m.captures[2])"
+                    if !record_turn_modulation
+                        s.series === nothing || error(
+                            "OCTOPUS_RECORD_TURN_MODULATION=0, but $(label) read back a series of " *
+                            "$(length(s.series)) entries: the artifact recorded what was not asked for")
+                        continue
+                    end
+                    s.series === nothing && error(
+                        "OCTOPUS_RECORD_TURN_MODULATION=1, but $(label) read back no series (nothing)")
+                    n = length(s.series)
+                    n == turns || error(
+                        "$(label): the recorded series has $(n) entries for a run of $(turns) turns")
+                    push!(recorded_labels, label)
+                    rms = sqrt(sum(abs2, s.series) / n)
+                    sigma = parameter == "phase_noise" ? phase_sigma : strength_sigma_rel
+                    if s.kind === :white
+                        ratio = rms / sigma
+                        abs(ratio - 1) <= rms_tol || error(
+                            "$(label) (white): the recorded series has rms $(rms) against sigma $(sigma), " *
+                            "ratio $(ratio), outside 1 +- $(rms_tol) (max(10 %, 5/sqrt(2 turns)) at $(turns) turns)")
+                        println("series ", label, ": white, ", n, " entries, rms = ", rms, ", sigma = ", sigma,
+                                ", ratio = ", ratio, " (within 1 +- ", rms_tol, ")")
+                    elseif s.kind === :table
+                        record = table_offsets[label]
+                        if s.series != record[1:turns]
+                            first_bad = findfirst(i -> s.series[i] !== record[i], 1:turns)
+                            error("$(label) (table): the recorded series differs from the record's first $(turns) " *
+                                  "entries; first difference at entry $(first_bad): recorded $(s.series[first_bad]), " *
+                                  "record $(record[first_bad])")
+                        end
+                        println("series ", label, ": table, ", n, " entries == the record's first ", turns,
+                                " entries bitwise, rms = ", rms)
+                    else
+                        println("series ", label, ": ", s.kind, ", ", n, " entries, rms = ", rms, ", sigma = ", sigma,
+                                ", ratio = ", rms / sigma, " (no pin: band-limited sum, the finite-run rms wanders)")
+                    end
+                    push!(series_fields, "rms_$(label)=$(rms)")
+                end
+            end
+        end
+        if record_turn_modulation
+            sort(recorded_labels) == sort(needed_labels) || error(
+                "the recorded series name the slots $(sort(recorded_labels)) while this run activates $(sort(needed_labels))")
+        else
+            println("turn_modulation series = none recorded (OCTOPUS_RECORD_TURN_MODULATION=0; every slot read back nothing)")
+        end
+    end
+
     # Read back from the artifact, not from the live beam: the line below reports
     # what the file holds. The rms emittance from the central second moments,
     # eps_x = sqrt(<x^2><px^2> - <x px>^2) (columns m200000, m020000, m110000),
@@ -1045,6 +1182,10 @@ else
         " eps_y_first=", eps_y[1], " eps_y_last=", eps_y[end],
         " lumi_mean=", lumi_mean, " wall_s=", wall_s, " ms_per_turn=", ms_per_turn,
         " ranks=", recorded_ranks, " threads=", threads_text,
-        " steady_ms_per_turn=", steady_text)
+        " steady_ms_per_turn=", steady_text,
+        # Appended AFTER the pre-2026-10-15 fields, so a parser of the fields
+        # above reads them unchanged (the header's note on the line).
+        " record=", record_turn_modulation,
+        isempty(series_fields) ? "" : " " * join(series_fields, " "))
     println(summary)
 end

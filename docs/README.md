@@ -98,9 +98,13 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   staging; open questions and references.
 - [`turn_modulation_record.md`](design/turn_modulation_record.md) — recording
   the realised turn-modulation offsets in the run artifact (designed
-  2026-10-15; stage 0, the relative strength semantics, in progress
-  2026-10-15, record `history/crab_cavity_noise_relative_strength_2026_10_15.md`;
-  the recorder not implemented): a `RunArtifact` switch, off by default, writes
+  2026-10-15; stage 0, the relative strength semantics, landed as f7cfe6a
+  and pushed as c070750, record
+  `history/crab_cavity_noise_relative_strength_2026_10_15.md`; stage 1, the
+  recorder and the `record_turn_modulation` option, landed 2026-10-15 and
+  verified by the one-particle probe on CPU threads, CUDA and two MPI
+  ranks, record `history/turn_modulation_record_2026_10_15.md`; stage 2 not
+  implemented): a `RunArtifact` switch, off by default, writes
   one row per turn of the rules' offsets for the active slots beside the
   provenance, with the nominals stored per execution slot; the offsets are
   the primary datum and the realised values the derived one; no empty beam,
@@ -486,6 +490,19 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   of the amplitude arms (A05, A1, A2, A4, A4s, AP1, AT1, C2 and the
   covariance control) with its expectations and numbers; the corrections to
   the 2026-10-14 record; the gate; the ledger.
+- [`turn_modulation_record_2026_10_15.md`](history/turn_modulation_record_2026_10_15.md) —
+  stage 1 of `design/turn_modulation_record.md`, recording the realised turn
+  modulation in the run artifact: what landed (the `RunArtifact` option
+  `record_turn_modulation` with its metadata, the recorder fed from the one
+  shared evaluation in both tracking loops and the strong-strong loop, the
+  `series` dataset and the nominal attributes beside the `/turn_modulation`
+  provenance, the readers' `series` and `nominal` fields, the reserved
+  `state` group written by nothing); the verification plan as the owner
+  stated it (the one-particle probe on a three-harmonic crab cavity, one
+  harmonic at a time then all three, white and pink rules on strength and
+  phase, randomised initial coordinates with the seed logged, the three
+  comparisons under CPU threads, CUDA and the MPI policy with two ranks) and
+  its numbers; the examples update; the gate; the ledger.
 - [`twiss_dispersion_degeneracy_theory_2026_09_11.md`](history/twiss_dispersion_degeneracy_theory_2026_09_11.md) —
   derivation record for theory Section 13 (mode degeneracy) and the analysis
   design note: provenance of the ported working notes and the convention key,

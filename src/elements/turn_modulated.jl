@@ -11,7 +11,7 @@ export TurnModulated, WhiteNoise, PinkNoise, TurnTable, update, update_line, rea
 # (D2); the per-turn hook `update(elem, ctx)` is PURE and type-preserving and
 # every segment's element tuple is rebuilt each turn with `ntuple(..., Val(N))`
 # (D3, section 7: 20 ns and zero allocation for 40 elements; `map` over a
-# tuple longer than 32 allocates); no new runtime cavity -- `TurnModulated`
+# tuple of 32 or more entries allocates); no new runtime cavity -- `TurnModulated`
 # is the third compile-time wrapper beside `MisalignedElement` and `RefTilted`
 # and forwards tracking to the REALISED element (D4); nominal and realised
 # stay separate so the contextless `track!` path, where no update ever runs,
@@ -32,25 +32,40 @@ export TurnModulated, WhiteNoise, PinkNoise, TurnTable, update, update_line, rea
 #
 # Where the pieces live:
 #   - this file: the rules (`WhiteNoise`, `PinkNoise`, `TurnTable`), the scalar rule
-#     interface `_turn_offset`, the element-level `realize`, the wrapper and
-#     its forwards, the pure hook `update` / `update_line`, the SLOT PROTOCOL
-#     (`_slot_rules` on a rule container, `_turn_rule_values` on a spec) and
-#     the three walks generic over it: the window check `_check_turn_window`
+#     interface `_turn_offset`, the element-level `realize` and the one
+#     evaluation behind it, `_realize_draws` (the realised element, the
+#     successors AND the draws, so the run artifact's recorder shares the
+#     evaluation that built the element: `docs/design/turn_modulation_record.md`
+#     D5), the wrapper and its forwards, the pure hook `update` / `update_line`
+#     in its plain and its recording (`sink`) forms, the SLOT PROTOCOL
+#     (`_slot_rules` and `_slot_nominals` on a rule container,
+#     `_turn_rule_values` on a spec) and
+#     the walks generic over it: the window check `_check_turn_window`
 #     / `_check_container_window`, the provenance slots
-#     `_turn_modulation_slots`, the modulation-stream collector
+#     `_turn_modulation_slots`, the recorder's columns
+#     `_turn_modulation_columns!`, the modulation-stream collector
 #     `_collect_turn_modulation_ids!`;
 #   - `src/elements/crab_cavity.jl`: the crab cavity's rule container
-#     `CrabCavityNoise` (2N slots), its `realize`, `_turn_modulation_wrap` for
-#     the kind, its `_slot_rules` / `_turn_rule_values`, the per-harmonic
+#     `CrabCavityNoise` (2N slots), its `_realize_draws` / `realize`,
+#     `_turn_modulation_wrap` for
+#     the kind, its `_slot_rules` / `_slot_nominals` / `_turn_rule_values`,
+#     the per-harmonic
 #     `phase_noise` / `strength_noise` tuples and their metadata;
 #   - `src/elements/rf_cavity.jl`: the thin RF cavity by the same wrap (stage
 #     3): `RFCavityNoise` (two scalar slots, phase then strength), its
-#     `realize`, `_turn_modulation_wrap`, `_slot_rules` / `_turn_rule_values`,
+#     `_realize_draws` / `realize`, `_turn_modulation_wrap`, `_slot_rules` /
+#     `_slot_nominals` / `_turn_rule_values`,
 #     the scalar `phase_noise` / `strength_noise` parameters; the accelerating
 #     cavity gets no rule (single-pass);
+#   - `src/tasks/RunArtifact.jl`: the series recorder (`TurnModulationRecorder`,
+#     the sink the recording hook hands each element's draws to, the
+#     `record_turn_modulation` option, the `series` dataset and the nominal
+#     attributes beside the provenance, the extended readers);
 #   - `src/knowledge/Knowledge.jl`: `compile_runtime` applies
 #     `_turn_modulation_wrap` INNERMOST, then the misalignment, then the roll;
-#   - `src/tasks/Tasks.jl`: the two turn loops call `update_line`, the
+#   - `src/tasks/Tasks.jl`: the two turn loops call `update_line` (the
+#     general loop's segments in the recording form, with the artifact's sink
+#     or `nothing`), the
 #     segments hold their tuple in a `Base.RefValue`, `execute!` runs the
 #     window check before the first turn and records the provenance receipt,
 #     the task constructor warns on duplicate modulation streams, and the
@@ -405,6 +420,49 @@ end
 end
 
 """
+    _slot_draws(rules::Tuple, ctx::TrackingContext, first_slot::Int, ::Type{T}) -> Tuple
+    _slot_values(draws::Tuple) -> Tuple
+    _slot_successors(draws::Tuple) -> Tuple
+
+`_turn_offset` over a tuple of per-slot rules -- slot `first_slot` for the
+first entry, `first_slot + 1` for the next, and so on -- as the tuple of the
+rules' `(value, rule′)` pairs, and the two projections of such a tuple: the
+values (one `T` per slot) and the successors (one rule per slot). Unrolled by
+`@generated` with LITERAL indices (`rules[1]`, `rules[2]`, ...), so each
+entry's type is its own slot's, as `getfield` with a constant index infers
+it, with no constant propagation involved. The form these replace,
+`ntuple(i -> _turn_offset(rules[i], ctx, i, T), Val(N))`, is type-stable only
+on a HOMOGENEOUS container (every slot the same rule type): on a mixed one --
+`nothing` beside a rule, or a `PinkNoise`, whose loop keeps the closure from
+being inlineable -- `rules[i]` infers as a `Union`, Julia skips the constant
+propagation that would resolve it (a closure whose inferred body is not
+inlineable is judged not worth propagating into), the draws tuple and the
+successor container infer as `Union`s, and `realize`, `update` and
+`update_line` on that element allocate: 336 B per `realize` and 640 B per
+`update` on a `(nothing, WhiteNoise)` crab cavity on the main checkout
+(c070750), 688 and 720 B with the recording hook, 14400 B per turn on a
+40-element line, 0 B after this unrolling (review F1, 2026-10-15; the table
+in `docs/design/turn_modulation.md`, section 7). `Base.map` over tuples is
+type-stable the same way but takes a `Vector{Any}` path from 32 entries on
+(measured: 592 B at 32 entries, 0 at 31), which is why the generated form is
+used instead. Generated bodies are compile-time and serial (the suite's
+`Core.Box` sweep skips them by design).
+"""
+@inline @generated function _slot_draws(rules::Tuple, ctx::TrackingContext, first_slot::Int,
+                                        ::Type{T}) where {T}
+    calls = [:(_turn_offset(rules[$i], ctx, first_slot + $(i - 1), T)) for i in 1:fieldcount(rules)]
+    return :(($(calls...),))
+end
+
+@inline @generated function _slot_values(draws::Tuple)
+    return :(($([:(draws[$i][1]) for i in 1:fieldcount(draws)]...),))
+end
+
+@inline @generated function _slot_successors(draws::Tuple)
+    return :(($([:(draws[$i][2]) for i in 1:fieldcount(draws)]...),))
+end
+
+"""
     _check_rule_window(rule, first_turn::Int64, nturns::Int, where::AbstractString)
 
 Throw an `ArgumentError` if `rule` cannot serve every turn of the window
@@ -457,6 +515,25 @@ two method sets against each other: `CrabCavityNoise` in
 `src/elements/crab_cavity.jl`, `RFCavityNoise` in `src/elements/rf_cavity.jl`.
 """
 function _slot_rules end
+
+"""
+    _slot_nominals(rules, base) -> Tuple
+
+The NOMINAL parameters the slots of a rule container act on, in SLOT order and
+aligned one-to-one with `_slot_rules` (the recorder's walk checks the two
+lengths agree), one NamedTuple per slot read from `base`, the compiled nominal
+element, never from a realised one: on a `CrabCavityNoise` over a
+`ThinCrabCavity` the harmonic's `(phase, strengthX, strengthY)` for both its
+phase slot and its strength slot; on an `RFCavityNoise` over a `ThinRFCavity`
+`(phase, strength)` for either slot. The run artifact writes each active
+slot's NamedTuple as the `nominal_<name>` attributes of its provenance group
+(`docs/design/turn_modulation_record.md`, D3 and D7), so a reader forms the
+realised value from a recorded offset exactly as `realize` does -- `phase + d`
+on a phase slot, `strength * (1 + d)` on a strength slot -- while the record
+itself holds the rule's output. Per container like `_slot_rules`, deliberately
+without a fallback; the suite's container tripwire pins the method set.
+"""
+function _slot_nominals end
 
 """
     _check_container_window(rules, first_turn::Int64, nturns::Int, where::AbstractString)
@@ -567,8 +644,34 @@ within one `execute!` call on the fast loop and within one plan on the general
 loop, so a stateful rule -- which design D6 admits -- is an owner decision
 before it ships: persist successors or forbid state (2026-10-13 neighbour
 audit, U1-1).
+
+Each container's method is the two-element projection of its `_realize_draws`
+(below), the ONE evaluation that also yields the draws the run artifact
+records; `realize` keeps this `(element, rule′)` contract for the hand-realised
+references and the tests that use it.
 """
 function realize end
+
+"""
+    _realize_draws(rules, base, ctx::TrackingContext) -> (element, rules′, draws::Tuple)
+
+The one evaluation behind `realize` (`docs/design/turn_modulation_record.md`,
+D5): the element to track on turn `ctx.turn`, the rules' successors, and the
+DRAWS -- the value `_turn_offset` returned for EVERY slot of the container, in
+SLOT order (the order of `_slot_rules`, `2N` entries on a `CrabCavityNoise`,
+two on an `RFCavityNoise`): an offset in rad on a phase slot, the
+dimensionless relative factor `d` on a strength slot, `zero(T)` on an inactive
+slot. The element is built FROM these very values, so a recorder handed the
+tuple records what the element used by construction, without reading the
+element back (which would miss a replay by a relative 1e-12, `(S + d) - S`
+not being `d`) and without evaluating a rule a second time. The recording
+hook (`update(elem, ctx, sink)` below) is its only caller besides `realize`;
+the tuple is isbits and dead on the plain hook, so the off path pays nothing.
+Per container, like `realize` and with the same deliberate absence of a
+generic fallback; the suite's container tripwire pins the method set against
+`_slot_rules`.
+"""
+function _realize_draws end
 
 # ---------------------------------------------------------------------------
 # The wrapper.
@@ -649,10 +752,30 @@ carries the rule's successor, which every shipped rule returns as itself; the
 loops do not persist a successor across `execute!` calls or plans (see
 `realize` and `execute!`).
 """
-update(elem, ctx::TrackingContext) = elem
+update(elem, ctx::TrackingContext) = update(elem, ctx, nothing)
 
-function update(w::TurnModulated{E,R}, ctx::TrackingContext) where {E,R}
-    inner, rule = realize(w.rule, w.base, ctx)
+"""
+    update(elem, ctx::TrackingContext, sink) -> elem′
+
+The RECORDING form of the pure hook (`docs/design/turn_modulation_record.md`,
+D5): the same rebuild as `update(elem, ctx)`, with every modulated element's
+draws -- the tuple `_realize_draws` returns beside the realised element --
+handed to `sink` through `_record_turn_draws!(sink, draws)`, in LINE order,
+the order the provenance walk lists the elements. One evaluation feeds both
+the element and the recorder, so the recorded sequence and the one the kick
+used cannot disagree. `sink === nothing` IS the plain hook: the two-argument
+form forwards here with `nothing`, `_record_turn_draws!(::Nothing, _)` is a
+no-op and the draws tuple is dead code, so a run without the artifact's
+`record_turn_modulation` pays nothing (the suite keeps its zero-allocation
+and type-preservation pins on the two-argument form). The sink's protocol
+(per-turn begin and end, the flush through the artifact's `capacity`) is the
+recorder's, `TurnModulationRecorder` in `src/tasks/RunArtifact.jl`.
+"""
+update(elem, ctx::TrackingContext, sink) = elem
+
+function update(w::TurnModulated{E,R}, ctx::TrackingContext, sink) where {E,R}
+    inner, rule, draws = _realize_draws(w.rule, w.base, ctx)
+    _record_turn_draws!(sink, draws)
     # The explicit type parameters are the type-preservation assertion: a
     # realised element or successor rule of another type is a conversion error
     # here, not a tuple of a new type in the kernel.
@@ -661,28 +784,44 @@ end
 # The frame wrappers rebuild themselves around the updated element they hold,
 # carrying their own frame data unchanged; the kept-whole sub-line rebuilds its
 # op tuple through `update_line`, so nesting depth does not matter.
-update(elem::MisalignedElement, ctx::TrackingContext) =
-    MisalignedElement(update(elem.inner, ctx), elem.qin, elem.oin, elem.qout, elem.oout)
-update(elem::RefTilted, ctx::TrackingContext) =
-    RefTilted(update(elem.inner, ctx), elem.c, elem.s)
-update(elem::CompositeLine, ctx::TrackingContext) =
-    CompositeLine(update_line(elem.ops, ctx))
+update(elem::MisalignedElement, ctx::TrackingContext, sink) =
+    MisalignedElement(update(elem.inner, ctx, sink), elem.qin, elem.oin, elem.qout, elem.oout)
+update(elem::RefTilted, ctx::TrackingContext, sink) =
+    RefTilted(update(elem.inner, ctx, sink), elem.c, elem.s)
+update(elem::CompositeLine, ctx::TrackingContext, sink) =
+    CompositeLine(update_line(elem.ops, ctx, sink))
+
+"""
+    _record_turn_draws!(sink, draws::Tuple) -> nothing
+
+Hand one modulated element's draws of the current turn to the recording sink:
+the no-op on `nothing` (the plain hook), the recorder's method in
+`src/tasks/RunArtifact.jl`, which keeps the ACTIVE slots' values and refuses an
+element the provenance did not list.
+"""
+_record_turn_draws!(::Nothing, draws::Tuple) = nothing
 
 """
     update_line(line::Tuple, ctx::TrackingContext) -> line′
+    update_line(line::Tuple, ctx::TrackingContext, sink) -> line′
 
 `update` applied to every element of a runtime line tuple, nested tuples
 included, rebuilt with `ntuple(..., Val(N))` so the result is a stack copy of
 the same tuple type with zero allocation (`docs/design/turn_modulation.md`,
-section 7: 20 ns for 40 elements; `Base.map` over a tuple longer than 32
-elements takes the generic path and allocated 79 kB per turn). The suite pins
+section 7: 20 ns for 40 elements; `Base.map` over a tuple of 32 or more
+entries takes the generic path and allocated 79 kB per turn). The suite pins
 `typeof(update_line(line, ctx)) === typeof(line)` and zero allocation on a
-line longer than 32 elements.
+line longer than 32 elements, on homogeneous and on mixed rule containers
+(`_slot_draws`), on both hooks. The three-argument form is the recording hook
+applied to the line (`sink` as for `update`; `nothing` is the plain form);
+`ntuple` evaluates its entries in index order, which is what makes the
+recorder meet the modulated elements in line order.
 """
-@inline update_line(line::Tuple, ctx::TrackingContext) =
-    ntuple(i -> _update_entry(line[i], ctx), Val(length(line)))
-@inline _update_entry(e::Tuple, ctx::TrackingContext) = update_line(e, ctx)
-@inline _update_entry(e, ctx::TrackingContext) = update(e, ctx)
+@inline update_line(line::Tuple, ctx::TrackingContext) = update_line(line, ctx, nothing)
+@inline update_line(line::Tuple, ctx::TrackingContext, sink) =
+    ntuple(i -> _update_entry(line[i], ctx, sink), Val(length(line)))
+@inline _update_entry(e::Tuple, ctx::TrackingContext, sink) = update_line(e, ctx, sink)
+@inline _update_entry(e, ctx::TrackingContext, sink) = update(e, ctx, sink)
 
 # ---------------------------------------------------------------------------
 # The walks a wrapper joins. The window check and the stream collector are
@@ -817,6 +956,48 @@ _turn_modulation_provenance!(out::Vector, elem::Union{MisalignedElement,RefTilte
     _turn_modulation_provenance!(out, elem.inner)
 _turn_modulation_provenance!(out::Vector, elem::CompositeLine) =
     _turn_modulation_provenance!(out, elem.ops)
+
+"""
+    _turn_modulation_columns!(out::Vector, elem) -> out
+
+The run artifact's side of the provenance walk: one entry per modulated element
+of a compiled line, in the SAME order as `_turn_modulation_provenance!` (the
+same five methods over the same wrappers; the suite's wrapper-walk tripwire
+pins both), each
+
+    (active  = [k, ...],          # the ACTIVE slots' indices into the draws tuple
+                                  # `_realize_draws` returns, in slot order
+     nominal = [NamedTuple, ...]) # the same slots' `_slot_nominals` entries
+
+so `active[j]` is the column the recorder keeps for the `j`-th provenance slot
+of the element and `nominal[j]` the nominal attributes written on that slot's
+group. Generic over `_slot_rules` and `_slot_nominals`; a container whose two
+declarations disagree in length is refused by name rather than recorded
+misaligned.
+"""
+_turn_modulation_columns!(out::Vector, elem) = out
+_turn_modulation_columns!(out::Vector, elems::Tuple) =
+    (foreach(e -> _turn_modulation_columns!(out, e), elems); out)
+function _turn_modulation_columns!(out::Vector, w::TurnModulated)
+    slots = _slot_rules(w.rule)
+    nominals = _slot_nominals(w.rule, w.base)
+    length(nominals) == length(slots) || throw(ArgumentError(
+        "$(nameof(typeof(w.base))): _slot_nominals declares $(length(nominals)) slot(s) but " *
+        "_slot_rules declares $(length(slots)); the two must align slot for slot"))
+    active = Int[]
+    nominal = NamedTuple[]
+    for (k, (_, rule)) in enumerate(slots)
+        rule === nothing && continue
+        push!(active, k)
+        push!(nominal, nominals[k])
+    end
+    push!(out, (active = active, nominal = nominal))
+    return out
+end
+_turn_modulation_columns!(out::Vector, elem::Union{MisalignedElement,RefTilted}) =
+    _turn_modulation_columns!(out, elem.inner)
+_turn_modulation_columns!(out::Vector, elem::CompositeLine) =
+    _turn_modulation_columns!(out, elem.ops)
 
 """
     _turn_modulation_slots(rules) -> Vector

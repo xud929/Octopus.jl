@@ -304,33 +304,49 @@ struct CrabCavityNoise{P<:Tuple,S<:Tuple}
 end
 
 """
+    _realize_draws(rules::CrabCavityNoise, base::ThinCrabCavity{N,M,T}, ctx) -> (cavity, rules′, draws)
     realize(rules::CrabCavityNoise, base::ThinCrabCavity{N,M,T}, ctx) -> (cavity, rules′)
 
 The cavity to track on turn `ctx.turn`: `base` with each harmonic's realised
 phase offset added to `phase[i]` and its realised strength factor `d` scaling
 both planes, `strengthX[i] (1 + d)` and `strengthY[i] (1 + d)`, together with
 the rules' successors (relative scaling, 2026-10-15; an inactive slot's `d` is
-zero and leaves the strengths bitwise unchanged, a zero nominal stays zero).
+zero and leaves the strengths bitwise unchanged, a zero nominal stays zero)
+and, from `_realize_draws`, the `2N` draws in slot order -- the `N` phase
+offsets then the `N` strength factors, the very values the cavity above was
+built from (`docs/design/turn_modulation_record.md`, D5). `realize` is the
+two-element projection.
 Phase harmonic `i` is handed slot `i`, strength harmonic `i` slot `N + i`.
-Every tuple is rebuilt with `ntuple(..., Val(N))`, so the result has exactly
-the type of `base` and the call allocates nothing; the successor container has
-the type of `rules` because every shipped rule is stateless.
+The per-slot draws come from `_slot_draws` (`src/elements/turn_modulated.jl`),
+unrolled with literal indices so that a MIXED container -- `nothing` beside a
+rule, a `PinkNoise` -- is as type-stable as a homogeneous one; the harmonic
+tuples are then rebuilt from the homogeneous value tuples with
+`ntuple(..., Val(N))`, so the result has exactly the type of `base`, the
+successor container the type of `rules` (every shipped rule is stateless) and
+the call allocates nothing for every container shape (the suite pins 0 B on
+`(nothing, WhiteNoise)`, `(nothing, PinkNoise)` and a table slot, where the
+`ntuple`-over-`rules.phase[i]` form allocated 640 to 736 B per `update`;
+review F1, 2026-10-15).
 """
-function realize(rules::CrabCavityNoise, base::ThinCrabCavity{N,M,T},
-                 ctx::TrackingContext) where {N,M,T}
-    phase_draws = ntuple(i -> _turn_offset(rules.phase[i], ctx, i, T), Val(N))
-    strength_draws = ntuple(j -> _turn_offset(rules.strength[j], ctx, N + j, T), Val(N))
+function _realize_draws(rules::CrabCavityNoise, base::ThinCrabCavity{N,M,T},
+                        ctx::TrackingContext) where {N,M,T}
+    phase_draws = _slot_draws(rules.phase, ctx, 1, T)
+    strength_draws = _slot_draws(rules.strength, ctx, N + 1, T)
+    dphi = _slot_values(phase_draws)
+    d = _slot_values(strength_draws)
     realised = ThinCrabCavity{N,M,T}(
         base.method,
         base.kcc,
-        ntuple(a -> base.strengthX[a] * (one(T) + strength_draws[a][1]), Val(N)),
-        ntuple(b -> base.strengthY[b] * (one(T) + strength_draws[b][1]), Val(N)),
-        ntuple(c -> base.phase[c] + phase_draws[c][1], Val(N)),
+        ntuple(a -> base.strengthX[a] * (one(T) + d[a]), Val(N)),
+        ntuple(b -> base.strengthY[b] * (one(T) + d[b]), Val(N)),
+        ntuple(c -> base.phase[c] + dphi[c], Val(N)),
     )
-    successor = CrabCavityNoise(
-        ntuple(p -> phase_draws[p][2], Val(N)),
-        ntuple(q -> strength_draws[q][2], Val(N)),
-    )
+    successor = CrabCavityNoise(_slot_successors(phase_draws), _slot_successors(strength_draws))
+    return realised, successor, (dphi..., d...)
+end
+
+function realize(rules::CrabCavityNoise, base::ThinCrabCavity, ctx::TrackingContext)
+    realised, successor, _ = _realize_draws(rules, base, ctx)
     return realised, successor
 end
 
@@ -385,6 +401,23 @@ function _slot_rules(rules::CrabCavityNoise)
     phase = ntuple(i -> ("phase_noise[$(i)]", rules.phase[i]), length(rules.phase))
     strength = ntuple(i -> ("strength_noise[$(i)]", rules.strength[i]), length(rules.strength))
     return (phase..., strength...)
+end
+
+"""
+    _slot_nominals(rules::CrabCavityNoise, base::ThinCrabCavity{N}) -> Tuple
+
+The `2N` slots' nominal parameters in the order of `_slot_rules`: harmonic
+`i`'s `(phase = base.phase[i], strengthX = base.strengthX[i], strengthY =
+base.strengthY[i])` for its phase slot (slot `i`) and again for its strength
+slot (slot `N + i`), the three parameters the slot's realised value acts on --
+`phase + d` on the phase, `strengthX (1 + d)` and `strengthY (1 + d)` on the
+strength. The run artifact writes them as `nominal_phase`, `nominal_strengthX`,
+`nominal_strengthY` on each active slot's provenance group
+(`docs/design/turn_modulation_record.md`, D3 and D7).
+"""
+function _slot_nominals(rules::CrabCavityNoise, base::ThinCrabCavity{N,M,T}) where {N,M,T}
+    harmonic(i) = (phase = base.phase[i], strengthX = base.strengthX[i], strengthY = base.strengthY[i])
+    return (ntuple(harmonic, Val(N))..., ntuple(harmonic, Val(N))...)
 end
 
 """

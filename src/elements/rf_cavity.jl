@@ -470,13 +470,16 @@ struct RFCavityNoise{P,S}
 end
 
 """
+    _realize_draws(rules::RFCavityNoise, base::ThinRFCavity{M,T}, ctx) -> (cavity, rules′, draws)
     realize(rules::RFCavityNoise, base::ThinRFCavity{M,T}, ctx) -> (cavity, rules′)
 
 The cavity to track on turn `ctx.turn`: `base` with the realised phase offset
 (slot 1) added to `phase` and the realised strength factor `d` (slot 2)
 scaling `strength` to `strength (1 + d)` (relative, 2026-10-15; an inactive
 slot's `d` is zero and leaves the strength bitwise unchanged), together with
-the rules' successors. EVERY other field is carried
+the rules' successors and, from `_realize_draws`, the two draws `(dphase,
+dstrength)` the cavity was built from (`docs/design/turn_modulation_record.md`,
+D5); `realize` is the two-element projection. EVERY other field is carried
 verbatim -- `method`, `k`, `L`, `beta0`, `gamma0` and the survey channel
 `ds_turn` -- so a survey-bound base realises survey-bound cavities, and a
 harmon cavity realised before binding keeps `k = NaN` and refuses to kick
@@ -484,13 +487,18 @@ exactly as its nominal does. Same type in and out, no allocation; the
 successor container has the type of `rules` because every shipped rule is
 stateless.
 """
-function realize(rules::RFCavityNoise, base::ThinRFCavity{M,T}, ctx::TrackingContext) where {M,T}
+function _realize_draws(rules::RFCavityNoise, base::ThinRFCavity{M,T}, ctx::TrackingContext) where {M,T}
     dphase, phase_rule = _turn_offset(rules.phase, ctx, 1, T)
     dstrength, strength_rule = _turn_offset(rules.strength, ctx, 2, T)
     realised = ThinRFCavity{M,T}(base.method, base.strength * (one(T) + dstrength), base.k,
                                  base.phase + dphase, base.L, base.beta0, base.gamma0,
                                  base.ds_turn)
-    return realised, RFCavityNoise(phase_rule, strength_rule)
+    return realised, RFCavityNoise(phase_rule, strength_rule), (dphase, dstrength)
+end
+
+function realize(rules::RFCavityNoise, base::ThinRFCavity, ctx::TrackingContext)
+    realised, successor, _ = _realize_draws(rules, base, ctx)
+    return realised, successor
 end
 
 """
@@ -538,6 +546,21 @@ phase_noise" in its message) and the provenance slots from this declaration.
 """
 _slot_rules(rules::RFCavityNoise) =
     (("phase_noise", rules.phase), ("strength_noise", rules.strength))
+
+"""
+    _slot_nominals(rules::RFCavityNoise, base::ThinRFCavity) -> Tuple
+
+The two slots' nominal parameters in the order of `_slot_rules`: `(phase =
+base.phase, strength = base.strength)` for the phase slot and again for the
+strength slot -- the realised phase is `phase + d`, the realised strength
+`strength (1 + d)`. Written by the run artifact as `nominal_phase` and
+`nominal_strength` on each active slot's provenance group
+(`docs/design/turn_modulation_record.md`, D3 and D7). `strength` is the
+compiled `qV/(P0 c)` the kick uses, not the voltage.
+"""
+_slot_nominals(rules::RFCavityNoise, base::ThinRFCavity) =
+    ((phase = base.phase, strength = base.strength),
+     (phase = base.phase, strength = base.strength))
 
 """
     _turn_rule_values(spec::ElementSpec{:thin_rf_cavity}) -> Vector{Any}

@@ -18,6 +18,13 @@ copying it): rule white at scale 1 (phase rms 10 urad, relative strength rms
 1e-4 per active harmonic), OCTOPUS_RADIATION=0 so the crab noise is the only
 stochastic drive, seed 123456789, the example's beams and optics, moments
 every turn; sizes N in {1e5, 1e6} macroparticles and 2000 turns by default.
+Since 2026-10-15 every arm also records the realised turn-modulation
+series by the harness default (OCTOPUS_RECORD_TURN_MODULATION, which this
+driver's environment stripping leaves at its default of on): 8 B per
+active slot per turn, measured at +11 us/turn for eight slots at the
+artifact's default capacity (docs/history/turn_modulation_record_2026_10_15.md),
+below this driver's resolution; the digests are of the moments and the
+luminosity, which recording leaves bitwise unchanged.
 `harness=weak_strong` runs test/examples/weak_strong_tracking.jl instead: the
 same case WITHOUT the noise and with radiation excitation on, which carried
 the MPI and timing toggles first and is the driver's dry-run target.

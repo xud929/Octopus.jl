@@ -2060,6 +2060,19 @@ function validate_configuration_metadata()
         isequal(getproperty(default_tracking, name), meta.default) || push!(errors,
             "TrackingTask.$(name) metadata default disagrees with constructor")
     end
+    # RunArtifact's own options (2026-10-15, with `record_turn_modulation`;
+    # `append` and `capacity` had shipped without a schema), the same three
+    # checks against a CONSTRUCTED artifact -- the constructor touches no file,
+    # so the probe path is never created.
+    default_artifact = RunArtifact("validate_configuration_metadata_probe.h5")
+    Set(keys(run_artifact_option_schema())) ⊆ Set(fieldnames(RunArtifact)) ||
+        push!(errors, "RunArtifact schema names a key the type does not have")
+    for (name, meta) in pairs(run_artifact_option_schema())
+        meta.consumer === :unspecified && push!(errors,
+            "RunArtifact.$(name) has no runtime consumer")
+        isequal(getproperty(default_artifact, name), meta.default) || push!(errors,
+            "RunArtifact.$(name) metadata default disagrees with constructor")
+    end
     # `perturbs_timing` is a DECLARED fact, and a declared fact with no consumer
     # is the shape this campaign keeps closing. Its consumer is cross-schema
     # AGREEMENT: a keyword declared in more than one schema must answer this the
@@ -2348,7 +2361,9 @@ function configuration_report(task::StrongStrongTask, beam1::Beam, beam2::Beam)
             task.artifact === nothing ? :inactive_dependency : :resolved,
             task.artifact === nothing ? "run-artifact output disabled" :
             (task.artifact.append ? "continuing" : "rewriting") *
-            " the run artifact at " * task.artifact.path,
+            " the run artifact at " * task.artifact.path *
+            (task.artifact.record_turn_modulation ?
+             ", recording the turn-modulation series" : ""),
             :strong_strong_output),),
         diagnostics=configuration_report(task.diagnostics; backend=backend_type(policy)),
         solvers=Tuple(configuration_report(solver; policy=public_policy,
@@ -2594,11 +2609,19 @@ function _execute_strong_strong_task!(
     # that a consumer is NAMED, which is exactly the gap
     # `SolverOptionEffectivenessContract`'s docstring calls out. The task
     # options sit outside every effectiveness contract's schema sweep, so
-    # nothing else would have caught it (2026-08-05_b audit, U5-3).
+    # nothing else would have caught it (2026-08-05_b audit, U5-3). The
+    # artifact's `record_turn_modulation` rides here too (review F3,
+    # 2026-10-15): its schema named the `:turn_modulation` receipt as its
+    # consumer, which the switch leaves unchanged by design (D9 of
+    # docs/design/turn_modulation_record.md), so the declared boundary
+    # carried the value nowhere. The value is the REQUEST, as `append` is;
+    # the effect is the `series` dataset the artifact reads back.
     _record_execution!(:strong_strong_output, backend_type(policy),
                        (artifact=task.artifact === nothing ? nothing :
                                  task.artifact.path,
-                        append=task.artifact !== nothing && task.artifact.append))
+                        append=task.artifact !== nothing && task.artifact.append,
+                        record_turn_modulation=task.artifact !== nothing &&
+                                               task.artifact.record_turn_modulation))
     blocks1 = _strong_strong_runtime_blocks(task, 1)
     blocks2 = _strong_strong_runtime_blocks(task, 2)
     _validate_strong_strong_blocks(blocks1, blocks2)
@@ -2640,8 +2663,13 @@ function _execute_strong_strong_task!(
     # during their prepare through the active-artifact scope.
     if task.artifact !== nothing
         labels = [String(b.collision.label) for b in blocks1 if b.collision !== nothing]
+        # The recorder's columns walk both lines in the order of `prov` (beam
+        # 1's elements, then beam 2's), so the k-th entry describes the k-th
+        # element group (docs/design/turn_modulation_record.md D5, D8).
+        columns = vcat(_turn_modulation_columns!(Any[], _strong_strong_physics_line(blocks1)),
+                       _turn_modulation_columns!(Any[], _strong_strong_physics_line(blocks2)))
         prepare_run_artifact!(task.artifact, labels, Int(first_turn), Int(turns);
-                              turn_modulation=prov)
+                              turn_modulation=prov, turn_modulation_columns=columns)
     end
     # Absolute window, matching Tasks.jl: `should_run` sees `first_turn + offset`.
     Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => task.artifact,
@@ -2795,6 +2823,14 @@ function _execute_strong_strong_turns!(
     if task.diagnostics.record_turn_times
         backend === CUDABackend && CUDA.synchronize()
     end
+    # One turn-modulation series recorder per beam (or `nothing`: no artifact,
+    # the switch off, a non-root rank, no modulated element in that line),
+    # resolved once. Within a turn each beam's blocks run in line order, so
+    # each recorder meets its beam's modulated elements as the provenance
+    # lists them; the two beams interleave block by block, which is why the
+    # recorders are per beam (docs/design/turn_modulation_record.md D5, D8).
+    sink1 = _turn_modulation_sink(art, 1)
+    sink2 = _turn_modulation_sink(art, 2)
     for offset in 0:(turns - 1)
         turn = first_turn + offset
         turn_t0 = task.diagnostics.record_turn_times ? time_ns() : UInt64(0)
@@ -2808,13 +2844,15 @@ function _execute_strong_strong_turns!(
         # rows_valid_through_turn 799, owner-observed 2026-08-19; the
         # weak-strong loop always had the assignment first).
         art === nothing || (art.current_turn = Int64(ctx.turn))
+        _tm_begin_turn!(sink1)
+        _tm_begin_turn!(sink2)
         turn_range = _cuda_nvtx_push(backend, "strongstrong turn")
         for j in eachindex(blocks1)
             line_range = _cuda_nvtx_push(backend, "strongstrong line tracking")
             _execute_strong_strong_segment_pair!(
                 beam1.rep, blocks1[j].entries, task.plan_cache1,
                 beam2.rep, blocks2[j].entries, task.plan_cache2,
-                policy, ctx1, ctx2, streams, j,
+                policy, ctx1, ctx2, streams, j, sink1, sink2,
             )
             _cuda_nvtx_pop(backend, line_range)
             if blocks1[j].collision !== nothing
@@ -2838,6 +2876,10 @@ function _execute_strong_strong_turns!(
             end
         end
         _cuda_nvtx_pop(backend, turn_range)
+        # Both beams' rows of this turn closed (and flushed every `capacity`
+        # turns) before the turn is counted.
+        _tm_end_turn!(sink1, turn)
+        _tm_end_turn!(sink2, turn)
         _strong_strong_maybe_log_cuda_memory(backend, ctx.turn, memory_log_every)
         if task.diagnostics.record_turn_times
             backend === CUDABackend && CUDA.synchronize()
@@ -3033,18 +3075,25 @@ end
 
 # One context per beam: they differ only in `index_offset`, each beam's own
 # shard offset under a divided run (step 4b), and are the same object in a
-# single-process run.
+# single-process run. One turn-modulation sink per beam likewise (`nothing`
+# when that beam records nothing); the recording hook runs on the host before
+# either beam's launch is queued, on both streams' paths alike.
 function _execute_strong_strong_segment_pair!(rep1, entries1::Tuple, plan_cache1,
                                               rep2, entries2::Tuple, plan_cache2,
-                                              policy, ctx1, ctx2, streams, block_index::Integer)
+                                              policy, ctx1, ctx2, streams, block_index::Integer,
+                                              sink1=nothing, sink2=nothing)
     if policy isa ResolvedCUDAExecutionPolicy && streams !== nothing
-        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, policy, ctx1, block_index, streams[1])
-        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, policy, ctx2, block_index, streams[2])
+        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, policy, ctx1, block_index,
+                                        streams[1], sink1)
+        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, policy, ctx2, block_index,
+                                        streams[2], sink2)
         CUDA.synchronize(streams[1])
         CUDA.synchronize(streams[2])
     else
-        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, policy, ctx1, block_index)
-        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, policy, ctx2, block_index)
+        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, policy, ctx1, block_index,
+                                        nothing, sink1)
+        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, policy, ctx2, block_index,
+                                        nothing, sink2)
     end
     return nothing
 end
@@ -3058,7 +3107,7 @@ function _strong_strong_segment_streams(policy)
 end
 
 function _execute_strong_strong_segment!(rep, entries::Tuple, plan_cache, policy, ctx,
-                                         block_index::Integer, stream=nothing)
+                                         block_index::Integer, stream=nothing, sink=nothing)
     isempty(entries) && return nothing
     # Active-hook state alone is not unique: blocks before and after a collision
     # commonly have the same hook state but contain different physics elements.
@@ -3068,7 +3117,7 @@ function _execute_strong_strong_segment!(rep, entries::Tuple, plan_cache, policy
     plan = get!(plan_cache, plan_key) do
         _build_tracking_plan(entries, plan_key[2])
     end
-    _execute_tracking_plan_turn!(rep, plan, policy, ctx; stream=stream)
+    _execute_tracking_plan_turn!(rep, plan, policy, ctx; stream=stream, sink=sink)
     return nothing
 end
 

@@ -109,6 +109,7 @@ Use Julia help:
 ?name
 ?symbol
 ?RunArtifact
+?run_artifact_option_schema
 ?TaskOutput
 ```
 
@@ -119,7 +120,9 @@ environment variables) live in `test/examples/`.
 
 A task's outputs land in ONE run artifact — an HDF5 file the task carries
 (`artifact = RunArtifact(path)` or `artifact = path` on `TrackingTask` and
-`StrongStrongTask`; design note `docs/design/run_artifact.md`). Probes are
+`StrongStrongTask`; its options `append`, `capacity` and
+`record_turn_modulation` are described by `run_artifact_option_schema()`;
+design note `docs/design/run_artifact.md`). Probes are
 named views into it: `MomentObserver(; name = ...)`,
 `CoordinateSnapshotObserver(; name = ...)`, `BPMObserver(...; artifact =
 true)`. Common access pattern:
@@ -243,7 +246,16 @@ runs divided under the MPI execution policy (`config.execution =
 :multiprocess`, package mode under a launcher; `OCTOPUS_USE_MPI=1` on the
 harness), and `profiling/crab_cavity_noise_backends.jl` benchmarks it across
 CPU threads, MPI ranks and CUDA with output digests; the numbers are in
-`docs/history/crab_cavity_noise_mpi_benchmark_2026_10_14.md`. To read the
+`docs/history/crab_cavity_noise_mpi_benchmark_2026_10_14.md`. Since
+2026-10-15 the example's default run records the realised offsets
+(`record_turn_modulation = true` in its output block) and prints, per
+cavity and active slot, the recorded series' rms against the rule's sigma;
+the harness toggle `OCTOPUS_RECORD_TURN_MODULATION` (default on) refuses a
+run whose series are short, whose white rms leaves
+`max(10 %, 5/sqrt(2 turns))` of its sigma or whose table series differ
+from the record, and appends `record=` and `rms_*` fields to its
+`CRAB-NOISE` line (record
+`docs/history/turn_modulation_record_2026_10_15.md`, section 3). To read the
 `:turn_modulation` execution receipt, the run's own statement of which
 elements and slots it realised and over which window, wrap the `execute!`
 call in `with_execution_audit` and filter `execution_receipts` -- outside an
@@ -255,6 +267,47 @@ audit no receipt is recorded, while the artifact's provenance
 audit = with_execution_audit() do; execute!(task, beam; turns = turns); end
 receipts = filter(r -> r.consumer === :turn_modulation, execution_receipts(audit))
 ```
+
+To record the offsets the rules realised, turn by turn, switch the run
+artifact's `record_turn_modulation` option on and read the series back
+through the existing provenance reader (design
+`docs/design/turn_modulation_record.md`, stage 1 landed 2026-10-15;
+`?RunArtifact`, `?run_artifact_option_schema`, `?turn_modulation_provenance`;
+off by default):
+
+```julia
+task = TrackingTask(line; artifact = RunArtifact(path; record_turn_modulation = true))
+slot = read(TaskOutput(path), :turn_modulation)[1].elements[1].slots[1]   # or turn_modulation_provenance(path)
+```
+
+`slot.series` is a `Vector{Float64}` with one entry per turn of that
+`execute!` window (entry `i` is absolute turn `first_turn + i - 1`), or
+`nothing` when the run did not record; `slot.nominal` holds the nominal
+parameters of the harmonic (or cavity) the slot modulates, `(phase,
+strengthX, strengthY)` on a crab cavity slot and `(phase, strength)` on an
+RF cavity slot, written whether or not the run recorded (`nothing` only for
+a file written before 2026-10-15). The numbers are the OFFSETS the rule
+produced, not the realised values: on a phase slot radians, the realised
+phase being `slot.nominal.phase + slot.series[i]`; on a strength slot the
+dimensionless factor `d`, the realised strengths being
+`slot.nominal.strengthX * (1 + d)` and `slot.nominal.strengthY * (1 + d)`
+(on the RF cavity `slot.nominal.strength * (1 + d)`), exactly as the element
+forms them. The recorded sequence is the one the element used (one
+evaluation, shared between the realised element and the recorder), and
+recording changes nothing in the tracking: the coordinates, the luminosity,
+the moments and the receipt are bitwise identical with the switch on and
+off; the cost is 8 bytes per active slot per turn, batched with the
+artifact's `capacity`, written by rank 0 under MPI and host-side on CUDA.
+Each execution entry also carries `state = nothing`, the group reserved for
+a future stateful rule's checkpoint; the bare `read(TaskOutput(path))`
+table of contents stays metadata-only and reports the recorded row count in
+`series` instead of the column. Each element entry carries `first_turn` and
+`turns`, the window the series covers (`nothing` when the run did not
+record); the row count is authoritative, so a series shorter than `turns`
+-- a run killed before its window completed -- reads as it stands with one
+warning naming the dataset (2026-10-15). Series and nominals are stored as
+`Float64` whatever the element's numeric type, so "exactly as the element
+forms them" is bitwise for `Float64` lines.
 
 Bounds the wrapper enforces at `TurnModulated(base, rule)`: a `PinkNoise` is
 refused on a rule container with more than 64 slots (the pink component

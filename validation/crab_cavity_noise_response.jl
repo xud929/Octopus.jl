@@ -169,11 +169,24 @@ Error metrics and tolerances (each printed as PASS/FAIL with its number):
                `turn_modulation_provenance(path)` lists both cavities, each
                slot with kind :table, the rule's digest, name and length, and
                `read(TaskOutput(path), :turn_modulation)` returns the same.
+  recorded     per rule, a CPU `TrackingTask` of the two cavities alone (the
+               same 256-macroparticle beam) tracks N turns from turn 0 with
+               the artifact's `record_turn_modulation = true`
+               (docs/design/turn_modulation_record.md), and the `series`
+               every active slot reads back through the public reader
+               (`turn_modulation_provenance(path)`) equals the hook's replay
+               above -- the rules' own values on turns 0:N-1 -- BITWISE, and
+               for the table rule the record's first N entries as well: the
+               turn loop of `execute!` handed the element the value the pure
+               hook produces on every turn and the recorder wrote that value,
+               not a re-evaluation (D5 of the record note). Cheap: a few
+               seconds per rule.
 Outputs: `<out>/noise_summary.tsv` (one row per rule, cavity, slot and
 check), `<out>/noise_correlations.tsv` (one row per pair),
 `<out>/noise_pink_bands.tsv` (per pink slot and band: measured, reference
-mean and sd, z), the artifact
-`<out>/noise_table_provenance.h5`, and one machine-readable line
+mean and sd, z), the artifacts
+`<out>/noise_table_provenance.h5` and `<out>/noise_recorded_<rule>.h5` (one
+per rule, the recorded series), and one machine-readable line
 `CRAB-NOISE-RULES turns=... checks=... failed=... verdict=PASS|FAIL`; exit 1
 on any FAIL.
 
@@ -684,6 +697,9 @@ function run_noise_part()
     push!(corr_rows, join(["rule", "slot_a", "slot_b", "rho", "bartlett_se", "tolerance", "pass"], '\t'))
     rule_seqs = Dict{Symbol,Vector{Vector{Float64}}}()   # 8 sequences per rule, slot order
     table_rule_digests = Dict{Symbol,Vector{UInt64}}()
+    # The rules' own values per (rule, cavity), four slots over turns 0:N-1:
+    # the bitwise reference of the `recorded` item below.
+    rule_draws = Dict{Tuple{Symbol,Symbol},Vector{Vector{Float64}}}()
     for rule in (:white, :pink, :table)
         println("rule $(rule)")
         seqs8 = Vector{Float64}[]
@@ -695,6 +711,7 @@ function run_noise_part()
             # generator vector (a name clash that made the item compare a scalar).
             seqs, rule_values, exact_ok, recover_ulps, inactive_ok = realise_sequences(w, N)
             append!(seqs8, seqs)
+            rule_draws[(rule, cav)] = rule_values
             # The pink rms verdict reads the slot over the long window (header).
             seqs_long = rule === :pink ? realise_sequences(w, N_LONG)[1] : nothing
             if rule === :table
@@ -874,6 +891,47 @@ function run_noise_part()
     same = read(TaskOutput(artifact_path), :turn_modulation) == prov
     ok = verdict!(same, "read(out, :turn_modulation) == turn_modulation_provenance", string(same), "equal")
     push!(rows, join(["table", "both", "-", "read_turn_modulation", same, true, "exact", ok], '\t'))
+
+    # The recorded series through a run artifact (`record_turn_modulation =
+    # true`; docs/design/turn_modulation_record.md, the `recorded` item of the
+    # header): per rule, the two cavities alone track the same beam over the
+    # N turns from turn 0 with the artifact recording, and every active slot's
+    # `series`, read back through the public reader, must equal the hook's
+    # replay above (`rule_draws`, the rules' own values on turns 0:N-1)
+    # bitwise -- and, for the table rule, the record's first N entries. The
+    # global seed is the task's context key, reset before each run as the
+    # replay's `TrackingContext(seed = SEED, rng_method = :philox)` keyed it.
+    println()
+    println("recorded series through a run artifact (record_turn_modulation = true, $(N) turns from turn 0, the two cavities alone)")
+    for rule in (:white, :pink, :table)
+        recorded_path = joinpath(OUT_DIR, "noise_recorded_$(rule).h5")
+        set_global_rng!(seed=SEED, method=:philox)
+        specs_r = (cavity_spec(rule, 1.0, :tccb, tables[:tccb]),
+                   cavity_spec(rule, 1.0, :tcca, tables[:tcca]))
+        task_r = TrackingTask(specs_r; policy=policy,
+                              artifact=RunArtifact(recorded_path; capacity=1024, record_turn_modulation=true))
+        t_run = @elapsed execute!(task_r, beam; turns=N)
+        prov_r = turn_modulation_provenance(recorded_path)
+        shape_ok = length(prov_r) == 1 && length(prov_r[1].elements) == 2
+        ok = verdict!(shape_ok, "$(rule): recording artifact lists one execution with two elements",
+                      "executions = $(length(prov_r)), elements = $(isempty(prov_r) ? 0 : length(prov_r[1].elements)), execute! $(round(t_run; digits=1)) s",
+                      "1 and 2")
+        push!(rows, join([rule, "both", "-", "recorded_elements", isempty(prov_r) ? 0 : length(prov_r[1].elements), 2, "exact", ok], '\t'))
+        shape_ok || continue
+        for (c, cav) in enumerate(cavities)
+            el = prov_r[1].elements[c]
+            draws = rule_draws[(rule, cav)]
+            labels_ok = [s.slot for s in el.slots] == slot_labels
+            lengths = [s.series === nothing ? 0 : length(s.series) for s in el.slots]
+            series_ok = labels_ok && all(el.slots[k].series !== nothing && el.slots[k].series == draws[k] for k in 1:4)
+            record_ok = rule !== :table || all(el.slots[k].series == tables[cav][k][1:N] for k in 1:4)
+            ok = verdict!(series_ok && record_ok, "$(cav) recorded series == hook replay ($(rule))",
+                          "lengths $(lengths), labels $(labels_ok), bitwise $(series_ok)" *
+                          (rule === :table ? ", == record $(record_ok)" : ""),
+                          "bitwise over $(N) turns, 4 slots" * (rule === :table ? "; and the record's first $(N) entries" : ""))
+            push!(rows, join([rule, cav, "all active slots", "recorded_series_bitwise", series_ok && record_ok, true, "exact", ok], '\t'))
+        end
+    end
 
     summary_path = joinpath(OUT_DIR, "noise_summary.tsv")
     open(summary_path, "w") do io

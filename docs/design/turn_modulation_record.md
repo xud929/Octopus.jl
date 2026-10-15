@@ -2,9 +2,19 @@
 
 > **Status: designed 2026-10-15 in owner discussion, its four open questions
 > decided by the owner the same day (section 8); stage 0 of section 7 (the
-> relative strength semantics) in progress 2026-10-15, record
-> `../history/crab_cavity_noise_relative_strength_2026_10_15.md`; stages 1
-> and 2 not implemented.** This
+> relative strength semantics) landed as f7cfe6a, re-validated and gated,
+> pushed as c070750 (CI run 454 green), record
+> `../history/crab_cavity_noise_relative_strength_2026_10_15.md`; stage 1
+> implementation landed 2026-10-15 (the recorder, the
+> `record_turn_modulation` option with its metadata query
+> `run_artifact_option_schema()`, the writer and the readers; section 9
+> says where it departs from the sketches) and verified the same day by the
+> one-particle probe on CPU threads, CUDA and two MPI ranks (the record's
+> section 2.2), the examples update landed and the implementation reviewed
+> and fixed the same day (the record's sections 3 and 4), the gate pending,
+> record
+> `../history/turn_modulation_record_2026_10_15.md`; stage 2 not
+> implemented.** This
 > note records the decisions for recording, turn by turn, the offsets the
 > turn-modulation rules produce during a run, so that a reader of the run
 > artifact can verify that `execute!` realised a new value every turn and
@@ -98,6 +108,20 @@ recording adds and hold `nothing` when the run did not record. A new
 public option lands as every public option does (AGENTS.md Invariants):
 runtime consumer, structured metadata, inactive and invalid behaviour, an
 effectiveness test at the consumer boundary.
+
+*Remark (2026-10-15, review of stage 1, F3).* One new name did land with
+the option: the exported metadata query `run_artifact_option_schema()`,
+which the suite's schema-export tripwire requires ("every public
+configuration schema is exported", `test/runtests.jl`: every
+`*_option_schema` binding of the module must be exported) and which D2 did
+not foresee; no reader name was added. The option's declared consumer is
+the `:strong_strong_output` receipt, which carries `record_turn_modulation`
+beside `append` and the artifact path since the same review (the
+`:turn_modulation` receipt stays unchanged, D9; naming it as the consumer
+had declared a boundary that carried nothing). The weak-strong
+`TrackingTask` records no output receipt at all, so its evidence of effect
+is the artifact file -- the `series` dataset present exactly when the
+option is on -- as the suite's recorder testset reads it.
 
 **D3. The offsets are recorded, not the realised values.** The offset is
 the rule's output and the primary datum: it exists before any element is
@@ -221,7 +245,10 @@ cavity carrying the rules and a `MomentObserver` every turn; one particle
 placed by `initial_offset` with a 1e-40 m emittance; `z` constant since
 nothing else acts, so the observer's row for turn `n` is the state right
 after that turn's kick and the per-turn step of the mean `px` is the kick
-alone.
+alone. The probe is `test/turn_modulation_probe.jl`, functions only, included
+by the suite's testset "Turn modulation: the one-particle probe verifies the
+loop per harmonic" for the CPU and CUDA arms and run as that testset's
+two-rank `mpiexec` child.
 
 1. Recording on against recording off, same seed and rules: every moment
    column bitwise identical. The switch has no effect on the tracking.
@@ -296,7 +323,73 @@ CUDA active before the push, recorded in the batch's history record.
    today, so that the implementation of the first stateful rule picks up
    from this note and the todo row.
 
-## 9. References
+## 9. Stage 1 as built (2026-10-15)
+
+Where the implementation departs from or sharpens the sketches above; the
+record `../history/turn_modulation_record_2026_10_15.md` carries the code
+locations, the tests and the measurements.
+
+- **The shared evaluation (D5)** is a third method per rule container,
+  `_realize_draws(rules, base, ctx) -> (element, rules′, draws)` (the crab
+  cavity's `2N` draws in slot order, the RF cavity's two), and `realize` is
+  its two-element projection. The recording form of the hook is
+  `update(elem, ctx, sink)` / `update_line(line, ctx, sink)`; the
+  two-argument forms forward with `sink = nothing`, whose
+  `_record_turn_draws!` is a no-op, so the plain hook is unchanged in type
+  and allocation. The nominals come from a sibling `_slot_nominals(rules,
+  base)` per container (the harmonic's `(phase, strengthX, strengthY)` on
+  both of its slots; the RF cavity's `(phase, strength)`), collected with
+  the active-slot indices by `_turn_modulation_columns!` over the line in
+  provenance order; tripwires pin that the three per-container methods are
+  declared on the same set of containers and that `_realize_draws` projects
+  to `realize` with one draw per declared slot.
+- **The recorder (D6, D8)** is `TurnModulationRecorder`, one per beam with a
+  modulated element, built by `prepare_run_artifact!` on rank 0 when the
+  switch is on, resolved once per `execute!` and handed to the segments of
+  the general tracking loop and of the strong-strong loop (per-beam sinks,
+  since the two beams interleave block by block); a per-turn protocol
+  (`_tm_begin_turn!`, `_tm_end_turn!`) checks that every listed element was
+  met exactly once and drops a miscounted turn loudly rather than writing a
+  misaligned column; the flushes every `capacity` turns and at finalize
+  write complete rows only. The fast tracking loop is untouched: it is never
+  taken with an artifact.
+- **The option (D2)** refuses a non-`Bool` by an `ArgumentError` naming the
+  keyword and the value, and the strong-strong `configuration_report`
+  prints it in the `:artifact` output entry. One name D2 did not foresee was
+  added: the exported metadata query `run_artifact_option_schema()`,
+  describing `append`, `capacity` and `record_turn_modulation` as
+  `ConfigurationOptionMeta` (the structured metadata the Invariants require
+  of every public option; `append` and `capacity` had shipped without one),
+  checked by a `RunArtifact` block of `validate_configuration_metadata()`.
+  No reader name was added, as D2 requires; the `:turn_modulation` receipt
+  is unchanged (D9), while the `:strong_strong_output` receipt carries the
+  option beside `append` since the 2026-10-15 review (F3; the remark under
+  D2).
+- **The readers after the review (2026-10-15, F2)**: each element entry
+  carries `first_turn` and `turns` from the `series` dataset's attributes
+  (`nothing` when the run did not record), and a series shorter than its
+  `turns` -- a run stopped before its window completed -- is read as it
+  stands with one warning naming the dataset; the row count is
+  authoritative (before, such a file read back silently).
+- **The layout (D3, D7)**: the nominal attributes are written by the
+  provenance writer at prepare whether or not the run records, so a
+  switch-off run differs from a pre-stage-1 file only by them; the `series`
+  dataset is extendable, chunked `(256, ncols)`, created with zero rows. The
+  reserved `state` group (D10) is skipped by the readers' element count.
+- **The readers (D2, D9)**: each slot entry gains `nominal` (`nothing` only
+  for a pre-nominal file) and `series` (`nothing` when the run did not
+  record); each execution entry gains `state = nothing`; the table of
+  contents stays metadata-only, its `series` field the recorded row count.
+  Torn by name: a `series` missing `columns`, `first_turn` or `turns`,
+  `columns` not naming the slot groups in index order, a data width other
+  than the column count, a recorded element without nominals.
+- **Cost (section 4)**, measured at landing on the CPU (4 threads, 1024
+  particles, 8 active slots, 2000 turns): +11.2 us per turn at
+  `capacity = 64` (the HDF5 extend and flush every 64 turns), within noise
+  at `capacity = 1024`; 68.6 bytes per turn for 8 columns, the 8 bytes per
+  slot per turn plus the chunked dataset's overhead.
+
+## 10. References
 
 - `turn_modulation.md`: the wrapper, the pure hook, the rules, the slot
   protocol, the provenance, the decisions D1-D8 this note builds on.

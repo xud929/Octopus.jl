@@ -21,7 +21,13 @@ the one U11-1 arc walker; the reader surfaces `s` beside the columns);
 weak-strong label names and a first-class live text mirror remain an open
 ledger row. Prerequisites had landed before implementation: the luminosity-sink
 unification (2026-08-17), the keyword retirement, and the weak-strong
-fresh-observer append fix (2026-08-18).
+fresh-observer append fix (2026-08-18). The artifact's third option,
+`record_turn_modulation` (stage 1 of `turn_modulation_record.md`, landed
+2026-10-15, record `../history/turn_modulation_record_2026_10_15.md`),
+records the turn-modulation rules' offsets turn by turn, and the artifact's
+options gained their structured metadata the same day, the exported
+`run_artifact_option_schema()`; see "Artifact options" and the
+turn-modulation series paragraph of the schema below.
 
 ## The problem
 
@@ -92,7 +98,16 @@ One group per producer, position and provenance as attributes:
     /turn_modulation/3/1/phase_noise[1]   attrs only: element_count on the
                              execution slot (/3 = ledger row 3); element, beam,
                              slot_count per element; index, kind, rng_id,
-                             digest, name, length per slot
+                             digest, name, length per slot, and the slot's
+                             nominals (nominal_phase, nominal_strengthX,
+                             nominal_strengthY; RF: nominal_phase,
+                             nominal_strength)
+    /turn_modulation/3/1/series           (turns x active slots) Float64, the
+                             recorded offsets, with record_turn_modulation
+                             = true only; attrs: columns, first_turn, turns
+    /turn_modulation/3/state              RESERVED for a stateful rule's
+                             checkpoint (turn_modulation_record.md, D10);
+                             written by nothing today
 
 **Independent turn axes per dataset.** This is the payoff of declaring
 channels on producers: each collision writes its own `(turns, values)` pair,
@@ -126,6 +141,142 @@ slot: an empty `turn_modulation_provenance(path)` (or `read(out,
 modulated element -- a file from before the group existed reads the same,
 and neither is an error. Counts that disagree with the subgroups present
 mark a torn group, refused by name.
+
+**Turn-modulation series.** With `record_turn_modulation = true` on the
+`RunArtifact` (`turn_modulation_record.md`, D3-D8; stage 1 landed
+2026-10-15, record `../history/turn_modulation_record_2026_10_15.md`), the
+same execution-slot group gains, under each modulated element `<k>`, one
+two-dimensional `Float64` dataset `/turn_modulation/<slot>/<k>/series` of
+`turns` rows by one column per ACTIVE slot in provenance order (extendable,
+chunked `(256, ncols)`, created with zero rows at prepare), with the
+attributes `columns` (the slot labels in column order), `first_turn` and
+`turns` (the window, as the receipt records it). Row `i` holds the offsets
+the rules produced for absolute turn `first_turn + i - 1`: radians on a
+phase slot; on a strength slot the dimensionless relative factor `d` that
+scales both planes' strengths of the harmonic, `S_X (1 + d)` and
+`S_Y (1 + d)` (the RF cavity's compiled `strength`, `qV/(P0 c)`, likewise).
+The offsets are recorded, not the realised values, which are the thing
+under test; the nominals a reader needs to form them are attributes of each
+active slot's group beside `index` and `kind` (`nominal_phase`,
+`nominal_strengthX`, `nominal_strengthY` on a crab cavity slot, the
+harmonic's three parameters on both of its slots; `nominal_phase`,
+`nominal_strength` on an RF cavity slot), written by the provenance writer
+at prepare WHETHER OR NOT the run records, so the realised phase is
+`nominal_phase + d` and the realised strength `nominal_strengthX * (1 + d)`
+exactly as the element forms them, while an offset recovered from element
+fields, `(S + d) - S`, would miss a replay by a relative 1e-12. The rows are
+the draws of the very evaluation that built the realised element
+(`_realize_draws`, whose two-element projection is `realize`; the recording
+form of the hook, `update(elem, ctx, sink)`, hands them to the sink in line
+order) -- the recorder never reads the compiled element and never
+re-evaluates a rule. The sink is a `TurnModulationRecorder`, one per beam
+that has a modulated element, built by `prepare_run_artifact!` on rank 0
+only and resolved once per `execute!` by `_turn_modulation_sink(art, beam)`
+(`nothing` with no artifact, the switch off, a non-root rank or no modulated
+element, and `nothing` IS the plain hook: one dispatch, zero allocation);
+`_tm_begin_turn!` opens each turn's row and `_tm_end_turn!` closes it,
+checking that every element the provenance lists was met exactly once -- a
+miscount drops the turn's partial values and raises, naming the beam and
+the turn, never writing a misaligned column -- and the complete rows are
+appended every `capacity` turns and at finalize, the batching the
+luminosity rows take, so after a crash the dataset holds the turns
+completed through the last flush. The row count is authoritative: a dataset
+shorter than its `turns` attribute is such a stopped run, read as it stands
+with one warning naming the dataset (the readers' element entry carries
+`first_turn` and `turns` from the attributes beside `element` and `beam`,
+`nothing` when the run did not record; review F2, 2026-10-15), and the
+`/execution` ledger's `current_turn` is a separate progress mark that a
+`TrackingTask` without strong beams writes to the file only at finalize,
+while the strong-strong loop stamps it before each turn (persisted at the
+luminosity flushes) and closes the turn's series row after it, so on a
+killed run the two can disagree and the rows decide. The series and the
+nominals are stored as `Float64` whatever the element's numeric type `T`, so
+"exactly as the element forms them" holds bit for bit for `T = Float64` and
+to `Float64` rounding otherwise. On CUDA the values are host-side already
+(the rebuild runs before any device conversion); under MPI every rank
+realises the same draws and rank 0 writes. Like the provenance, a `series`
+is never rewritten or deleted, so chunked and repositioned runs stack one
+dataset per execution slot, and a knob change between windows shows as a
+different nominal in the next slot. The group `/turn_modulation/<slot>/state`
+is RESERVED for the checkpoint of a future stateful rule (D10): one group
+per execution slot, written once after the window's last turn by stateful
+rules only, holding one dataset per stateful slot; no shipped rule is
+stateful (a tripwire pins it), nothing writes the group today, the readers'
+element count skips it, and they return `nothing` for it. The readers keep
+their shape: `turn_modulation_provenance(path)` and `read(out,
+:turn_modulation)` return the same vector as before; each slot entry gains
+`nominal` (a NamedTuple of the slot's nominal attributes, `(phase,
+strengthX, strengthY)` or `(phase, strength)`; `nothing` only for a file
+written before they existed) and `series` (the slot's column as a
+`Vector{Float64}`, or `nothing` when the run did not record), and each
+execution entry gains `state = nothing`. The table of contents (`read(out)`)
+stays metadata-only: its `series` field is the recorded ROW COUNT, not the
+column. Torn, refused by name: a `series` missing `columns`, `first_turn` or
+`turns`; `columns` not naming the slot groups in index order; a data width
+other than the column count; a recorded element whose slot groups carry no
+nominals.
+
+### Artifact options
+
+`RunArtifact(path; append=false, capacity=64, record_turn_modulation=false)`
+-- the sink's options, each documented in full in `?RunArtifact`; everything
+else about a run's output is decided on the producers ("What each party
+owns" above).
+
+- `append`: `false` recreates the file per `execute!`; `true` continues it
+  across `execute!` calls and process restarts under the replay idempotence
+  rule (rows at or beyond the incoming window's first turn are dropped per
+  group first); a file whose luminosity groups do not match the task's
+  collision labels is refused rather than silently mixed.
+- `capacity`: the rows per group buffered between flushes, the ONE batching
+  knob for every row-shaped producer (luminosity, moments, BPM readings and
+  the turn-modulation series; snapshots write their block per fire); at
+  least 1, refused by name otherwise.
+- `record_turn_modulation` (stage 1 of `turn_modulation_record.md`, landed
+  2026-10-15): `true` records the turn-modulation rules' offsets turn by
+  turn as the `series` dataset above, for every active slot of every
+  modulated element, over every `execute!` window the artifact is attached
+  to. Default `false`: no `series` dataset and no recorder; the slot groups
+  still carry their nominal attributes (the provenance writer writes them
+  regardless), everything else is identical to a run that never had the
+  option, and the readers' `series` field is `nothing`. Inactive: `true` on
+  a line with no modulated element has nothing to record and writes nothing,
+  as the provenance writes nothing for such an `execute!`; the readers'
+  empty vector says so, and it is not an error. Invalid: a value that is not
+  a `Bool` is refused by name, an `ArgumentError` naming the keyword and the
+  value (`record_turn_modulation = 1` is not coerced), as a `capacity` below
+  1 is. The strong-strong `configuration_report` prints it in the `:artifact`
+  output entry (", recording the turn-modulation series"). The switch
+  changes nothing in the tracking: the tracked coordinates, the luminosity,
+  the moments and the `:turn_modulation` receipt are bitwise identical with
+  it on and off (pinned by the suite's "The run artifact records the
+  realised turn modulation", CPU and CUDA arms; by decision D2 the switch is
+  not a keyword of `with_execution_audit`, so a run's output never depends
+  on whether a contract wrapped it). Cost: 8 bytes per active slot per turn,
+  one `Float64`, batched with `capacity`: 8 MB per million turns per slot,
+  64 MB per million turns for the crab-noise example's eight active slots,
+  which is why the default is off. Measured at landing (CPU, 4 threads, 1024
+  particles, two crab cavities with 8 active slots, a dispersion element and
+  an every-turn `MomentObserver`, 2000 turns, best of 2): at `capacity = 64`
+  off 0.276 s, on 0.298 s, +11.2 us per turn, the HDF5 extend and flush
+  every 64 turns amortised; at `capacity = 1024` off 0.161 s, on 0.159 s,
+  within noise; the file grew from 158607 to 295778 bytes, 68.6 bytes per
+  turn for 8 columns (64 of data). Structured metadata:
+  `run_artifact_option_schema()` (exported; `append`, `capacity` and
+  `record_turn_modulation` as `ConfigurationOptionMeta`, category `:output`,
+  consumers `:strong_strong_output` for `append` and
+  `record_turn_modulation` -- that receipt carries both requested values
+  beside the path since the 2026-10-15 review (F3; the `:turn_modulation`
+  receipt it had named is unchanged by the switch, D9, so the declared
+  boundary carried nothing), while the weak-strong `TrackingTask` records no
+  output receipt and its evidence is the artifact file itself -- and
+  `:observer_output` for `capacity`), checked by a
+  `RunArtifact` block of `validate_configuration_metadata()` (every key a
+  field of the type, every declared default equal to a constructed
+  artifact's, every option naming its consumer). As every public option
+  (AGENTS.md Invariants), it lands with its runtime consumer, its structured
+  metadata, its inactive and invalid behaviour and its effectiveness test at
+  the consumer boundary.
 
 ### Buffer protocol — three shapes, one protocol, not one buffer type
 

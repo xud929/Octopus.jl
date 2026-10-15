@@ -1,4 +1,4 @@
-export RunArtifact, TaskOutput, turn_modulation_provenance
+export RunArtifact, TaskOutput, turn_modulation_provenance, run_artifact_option_schema
 
 # ---------------------------------------------------------------------------
 # The run artifact: one HDF5 output file per task, one group per producer.
@@ -8,11 +8,48 @@ export RunArtifact, TaskOutput, turn_modulation_provenance
 # weak-strong per strong beam, INDEPENDENT turn axes), the /losses writer,
 # the probe row-matrix machinery the named observer views bind through
 # (/moments|snapshot|bpm/<name>), and the TaskOutput reader. The standalone
-# per-observer writers retired behind it (step 4).
+# per-observer writers retired behind it (step 4). Since 2026-10-15 it also
+# carries the turn-modulation series recorder (`TurnModulationRecorder`, the
+# `record_turn_modulation` option; docs/design/turn_modulation_record.md).
 # ---------------------------------------------------------------------------
 
 """
-    RunArtifact(path; append=false, capacity=64)
+    TurnModulationRecorder
+
+The run artifact's sink for ONE beam's turn-modulation series during one
+`execute!` (docs/design/turn_modulation_record.md, D5-D8). Built by
+`prepare_run_artifact!` on rank 0 when `record_turn_modulation` is on and the
+beam's line has a modulated element; handed to the turn loop by
+`_turn_modulation_sink(art, beam)`; filled by the recording hook
+(`update(elem, ctx, sink)`, `src/elements/turn_modulated.jl`) through
+`_record_turn_draws!`, once per modulated element per turn IN LINE ORDER, with
+the draws of the very evaluation that built the realised element; flushed by
+`_ra_flush_turn_modulation!` every `capacity` turns and at finalize, the
+batching the luminosity rows take. The loop's per-turn protocol:
+`_tm_begin_turn!` before the segments run, `_tm_end_turn!` after them, which
+checks that every element the provenance lists was met exactly once -- a
+miscount drops the turn's partial values and raises, naming the beam and the
+turn; it never writes a misaligned column -- and counts the row.
+
+`keys[k]` is element `k`'s group path under `/turn_modulation/<slot>`,
+`active[k]` the indices of its ACTIVE slots into the draws tuple, `buffers[k]`
+its pending values turn-major; `cursor` counts the elements met this turn,
+`rows` the pending turns. `file` and `capacity` are the artifact's, fixed for
+the `execute!`.
+"""
+mutable struct TurnModulationRecorder
+    const file::HDF5.File
+    const capacity::Int
+    const beam::Int
+    const keys::Vector{String}
+    const active::Vector{Vector{Int}}
+    const buffers::Vector{Vector{Float64}}
+    cursor::Int
+    rows::Int
+end
+
+"""
+    RunArtifact(path; append=false, capacity=64, record_turn_modulation=false)
 
 The one-output-file-per-task sink (docs/design/run_artifact.md): an HDF5 file
 with one group per producer, owned by the task that carries it.
@@ -47,9 +84,20 @@ The artifact carries every product of the run:
   line order with `element`, `beam` (1 for a `TrackingTask` line, 1 or 2 for
   the strong-strong task's two lines) and `slot_count`; one subgroup per
   ACTIVE slot below it, named by the slot label, with `index`, `kind`
-  (`white`, `pink` or `table`), `rng_id`, `digest`, `name`, `length`.
-  Attributes only; nothing here is ever rewritten or deleted, so a
-  continued file keeps every generation of rules it ran. Read it with
+  (`white`, `pink` or `table`), `rng_id`, `digest`, `name`, `length` and the
+  slot's nominal parameters as `nominal_<name>` attributes (`nominal_phase`,
+  `nominal_strengthX`, `nominal_strengthY` on a crab cavity slot, the
+  harmonic's three; `nominal_phase`, `nominal_strength` on an RF cavity
+  slot; docs/design/turn_modulation_record.md, D3). With
+  `record_turn_modulation=true` each element subgroup also holds the
+  dataset `series`: `turns` rows by one `Float64` column per active slot in
+  provenance order, the OFFSETS the rules produced -- radians on a phase
+  slot, the dimensionless relative factor `d` on a strength slot, row `i`
+  being absolute turn `first_turn + i - 1` -- with the attributes `columns`,
+  `first_turn` and `turns` (D7). The subgroup name `state` under a slot
+  group is RESERVED for a future stateful rule's checkpoint (D10); nothing
+  writes it. Nothing here is ever rewritten or deleted, so a continued file
+  keeps every generation of rules it ran. Read it with
   [`turn_modulation_provenance`](@ref) or `read(out, :turn_modulation)`: an
   empty vector means no `execute!` recorded in the file had a modulated
   element.
@@ -76,6 +124,25 @@ nothing. A snapshot's volume knobs are its SCHEDULE and `npart`. The file
 handle is held open for the whole `execute!`, so flushing costs no
 open/close.
 
+`record_turn_modulation=false` (default) leaves the per-turn offsets of the
+turn-modulation rules unrecorded; `true` records them, on every turn of every
+`execute!` the artifact serves, as the `series` dataset beside each modulated
+element's provenance (docs/design/turn_modulation_record.md): one row per
+turn, one column per active slot, fed by the SAME evaluation that builds the
+realised element -- the hook hands the recorder its draws; nothing is read
+back from the element and no rule is evaluated twice -- buffered `capacity`
+rows at a time and flushed through the same single-threaded writer as the
+luminosity rows, written by rank 0 under MPI (every rank realises the same
+values) and host-side on CUDA (the rules never reach the device). Off,
+nothing in the tracking changes and no `series` is written; on, nothing in
+the tracking changes either -- the coordinates, the luminosity, the moments
+and the `:turn_modulation` receipt are bitwise what they are with it off --
+and the file grows by 8 bytes per active slot per turn, which is why the
+default is off. A value that is not `true` or `false` is refused by name.
+Inactive on a line with no modulated element: there is nothing to record and
+nothing is written, as the provenance writes nothing for such an `execute!`.
+Structured metadata: [`run_artifact_option_schema`](@ref).
+
 Pass it to the task (`StrongStrongTask(...; artifact=RunArtifact(path))`, or
 a bare path as sugar). The artifact path is registered by artifact identity,
 so the same task continuing is silent while a second writer on the path
@@ -85,8 +152,14 @@ mutable struct RunArtifact
     path::String
     append::Bool
     capacity::Int
+    record_turn_modulation::Bool
     # execute!-scoped state
     file::Union{Nothing,HDF5.File}
+    # The series recorders of the current execute!, one per beam whose line
+    # has a modulated element; empty unless `record_turn_modulation` is on,
+    # and on rank 0 only (the other ranks hold no file). Built at prepare,
+    # flushed and emptied at finalize.
+    turn_modulation_recorders::Vector{TurnModulationRecorder}
     pending_turns::Dict{String,Vector{Int64}}
     pending_values::Dict{String,Vector{Float64}}
     execution_slot::Int
@@ -101,13 +174,75 @@ mutable struct RunArtifact
     probe_names::Set{String}
 end
 
-function RunArtifact(path::AbstractString; append::Bool=false, capacity::Integer=64)
+function RunArtifact(path::AbstractString; append::Bool=false, capacity::Integer=64,
+                     record_turn_modulation=false)
     cap = Int(capacity)
     cap >= 1 || throw(ArgumentError("RunArtifact capacity must be at least 1; got $(cap)."))
-    return RunArtifact(String(path), Bool(append), cap, nothing,
+    # Refused BY NAME, not coerced: `record_turn_modulation=1` is not a request
+    # this option understands, and a truthy non-Bool read as `true` would be
+    # a configuration the caller never wrote.
+    record_turn_modulation isa Bool || throw(ArgumentError(
+        "RunArtifact record_turn_modulation must be true or false; got " *
+        "$(repr(record_turn_modulation))."))
+    return RunArtifact(String(path), Bool(append), cap, record_turn_modulation, nothing,
+                       TurnModulationRecorder[],
                        Dict{String,Vector{Int64}}(), Dict{String,Vector{Float64}}(),
                        0, UInt64(0), false, Int64(0), Set{String}())
 end
+
+"""
+    run_artifact_option_schema() -> NamedTuple
+
+Public configuration options of [`RunArtifact`](@ref) -- `append`, `capacity`
+and `record_turn_modulation` -- as `ConfigurationOptionMeta`, the twin of
+`tracking_task_option_schema()`. Checked by `validate_configuration_metadata()`:
+every key is a field of the type, every declared default equals what the
+constructor builds, and every option names the runtime boundary that applies
+it: `append` is read at the artifact's prepare and reported by the
+`:strong_strong_output` receipt, `capacity` by every row-shaped producer and
+reported by the `:observer_output` receipts, `record_turn_modulation` at the
+prepare of the `/turn_modulation` provenance, where it creates the `series`
+datasets and the recorders the turn loops fill -- its effect is the dataset
+itself, read back through `turn_modulation_provenance`. Its declared consumer
+is the `:strong_strong_output` receipt, which carries the requested value
+beside `append` and the artifact path (since the 2026-10-15 review, F3: the
+`:turn_modulation` receipt is unchanged by the switch, D9 of
+docs/design/turn_modulation_record.md, so naming it as the consumer declared
+a boundary that carried nothing). The weak-strong `TrackingTask` records no
+output receipt at all; its evidence of effect is the artifact file -- the
+`series` dataset present exactly when the option is on -- as the suite's
+"The run artifact records the realised turn modulation" reads it.
+"""
+run_artifact_option_schema() = (
+    append=ConfigurationOptionMeta(Bool, false,
+        "`false` recreates the file per `execute!`; `true` continues it across " *
+        "`execute!` calls and process restarts under the replay idempotence rule " *
+        "(rows at or beyond the incoming window's first turn are dropped per group " *
+        "first). A file whose luminosity groups do not match the task's collision " *
+        "labels is refused rather than silently mixed.";
+        category=:output, consumer=:strong_strong_output),
+    capacity=ConfigurationOptionMeta(Int, 64,
+        "Rows per group buffered between flushes, the ONE batching knob for every " *
+        "row-shaped producer (luminosity, moments, BPM readings, the turn-modulation " *
+        "series); snapshots write their block per fire. At least 1, refused by name " *
+        "otherwise.";
+        category=:output, consumer=:observer_output),
+    record_turn_modulation=ConfigurationOptionMeta(Bool, false,
+        "Record the turn-modulation rules' per-turn offsets as the `series` dataset " *
+        "beside each modulated element's `/turn_modulation` provenance: one row per " *
+        "turn, one Float64 column per active slot (radians on a phase slot, the " *
+        "relative factor d on a strength slot), from the same evaluation that builds " *
+        "the realised element, batched with `capacity`, written by rank 0, host-side " *
+        "on CUDA. OFF by default because it costs 8 bytes per active slot per turn " *
+        "without bound; the tracking, the luminosity, the moments and the " *
+        ":turn_modulation receipt are bitwise identical with it on and off. Inactive " *
+        "on a line with no modulated element (nothing to record, nothing written); a " *
+        "value other than true or false is refused by name. Read back with " *
+        "turn_modulation_provenance(path) or read(TaskOutput(path), :turn_modulation): " *
+        "each slot entry's `series` (nothing when the run did not record) and `nominal`, " *
+        "each element entry's `first_turn` and `turns` (the window the series covers).";
+        category=:output, consumer=:strong_strong_output),
+)
 
 # HDF5 attribute write-or-overwrite (plain assignment refuses an existing
 # attribute in HDF5.jl, and the cursor is rewritten at every flush).
@@ -158,14 +293,22 @@ group's cursor are a torn tail) and the replay rule (rows at or beyond
 `first_turn` are dropped), append this execution's ledger row, record the
 line's turn-modulation provenance `turn_modulation` (the receipt entries of
 `_turn_modulation_entries`) under `/turn_modulation/<slot>` for that row --
-nothing when empty -- register the path by artifact identity, and hold the
-file open.
+nothing when empty -- with each active slot's nominal parameters from
+`turn_modulation_columns` (the aligned entries of `_turn_modulation_columns!`,
+required whenever `turn_modulation` is non-empty), create the `series`
+datasets and this execution's recorders when `record_turn_modulation` is on,
+register the path by artifact identity, and hold the file open.
 """
 function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
                                first_turn::Int, planned_turns::Int;
-                               turn_modulation::AbstractVector=Any[])
+                               turn_modulation::AbstractVector=Any[],
+                               turn_modulation_columns::AbstractVector=Any[])
     art.file === nothing || error("RunArtifact at $(art.path) is already open; " *
                                   "one artifact serves one execute! at a time")
+    # A recorder outlives nothing: whatever the previous execute! left is gone
+    # before this one decides whether it records (on every rank, so a
+    # non-root rank never holds one either).
+    empty!(art.turn_modulation_recorders)
     # One run, one output file, written by rank 0. Every rank still runs the
     # observers -- their reductions are collectives and a rank that skipped
     # them would hang its peers -- but only rank 0 opens the file, so the
@@ -240,7 +383,14 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
         end
         art.execution_slot = n + 1
         # Keyed by the ledger row just appended, so written after it.
-        _ra_write_turn_modulation!(file, art.path, art.execution_slot, turn_modulation)
+        _ra_write_turn_modulation!(file, art.path, art.execution_slot, turn_modulation,
+                                   turn_modulation_columns)
+        # The series datasets and the recorders, after the provenance they sit
+        # beside; the ONE branch the switch takes at prepare (the turn loops
+        # read the recorders back through `_turn_modulation_sink`).
+        art.record_turn_modulation &&
+            _ra_create_turn_modulation_series!(art, file, art.execution_slot, turn_modulation,
+                                               turn_modulation_columns, first_turn, planned_turns)
         art.start_time_ns = time_ns()
         art.current_turn = Int64(first_turn) - 1
         empty!(art.probe_names)
@@ -263,16 +413,34 @@ end
 # modulated element in line order (`/turn_modulation/<slot>/<k>`, attrs
 # `element`, `beam`, `slot_count`); one subgroup per ACTIVE slot below it named
 # by the slot label (`.../<k>/phase_noise[1]`, attrs `index`, `kind`, `rng_id`,
-# `digest`, `name`, `length`; HDF5 link names admit the brackets). Written at
+# `digest`, `name`, `length`, and the slot's nominal parameters as
+# `nominal_<name>`; HDF5 link names admit the brackets). Written at
 # prepare from the receipt the task records (`_turn_modulation_entries`), so
 # the artifact and the `:turn_modulation` receipt derive from the one walk;
 # never rewritten or deleted, so a continued file keeps every generation.
+#
+# The SERIES (docs/design/turn_modulation_record.md, D3-D8; 2026-10-15): with
+# `record_turn_modulation` on, each element group `<k>` also holds the dataset
+# `series`, `turns` rows by one Float64 column per active slot in provenance
+# order -- the OFFSETS the rules produced, row i being absolute turn
+# `first_turn + i - 1` -- with the attributes `columns`, `first_turn`, `turns`,
+# created at prepare (zero rows) and appended by the recorder every `capacity`
+# turns and at finalize. The nominals a reader forms the realised values from
+# are the slot groups' `nominal_*` attributes, written with the provenance
+# whether or not the run records. The group name `state` directly under a slot
+# group is RESERVED for the checkpoint of a future stateful rule (D10: one
+# dataset per stateful slot, written once after the window's last turn); no
+# shipped rule is stateful, nothing writes it today, and the readers return
+# `nothing` for it.
 # ---------------------------------------------------------------------------
 
 """
 Write `/turn_modulation/<slot>` for the ledger row `slot` just appended:
 nothing when `entries` is empty (an unmodulated `execute!` leaves no group for
-its slot), otherwise the element groups and their slot groups. Nothing here is
+its slot), otherwise the element groups and their slot groups, each slot group
+carrying its nominal parameters from `columns` (the entries of
+`_turn_modulation_columns!`, aligned with `entries`; a misaligned pair is
+refused by name). Nothing here is
 ever rewritten or deleted -- every execution that had a modulated element
 keeps its own record, so a continued file holds every generation of rules it
 ran; a slot group that already exists can only mean the ledger and the
@@ -280,14 +448,24 @@ provenance disagree, and is refused by `_ra_check_turn_modulation_slot`, which
 `prepare_run_artifact!` runs BEFORE appending the row (U5-3) and this writer
 runs again.
 """
-function _ra_write_turn_modulation!(file, path::String, slot::Int, entries)
+function _ra_write_turn_modulation!(file, path::String, slot::Int, entries, columns)
     isempty(entries) && return nothing
     _ra_check_turn_modulation_slot(file, path, slot, entries)
+    length(columns) == length(entries) || throw(ArgumentError(
+        "RunArtifact at $(path): the turn-modulation provenance lists $(length(entries)) " *
+        "modulated element(s) but the recorder's column walk lists $(length(columns)); " *
+        "the two walks over the line disagree"))
     root = haskey(file, "turn_modulation") ? file["turn_modulation"] :
            HDF5.create_group(file, "turn_modulation")
     g = HDF5.create_group(root, string(slot))
     _ra_set_attr!(g, "element_count", Int64(length(entries)))
     for (k, entry) in enumerate(entries)
+        col = columns[k]
+        (length(col.active) == length(entry.slots) && length(col.nominal) == length(entry.slots)) ||
+            throw(ArgumentError(
+                "RunArtifact at $(path): modulated element $(k) ($(entry.element)) has " *
+                "$(length(entry.slots)) active slot(s) in its provenance but " *
+                "$(length(col.active)) in the recorder's column walk"))
         eg = HDF5.create_group(g, string(k))
         _ra_set_attr!(eg, "element", String(entry.element))
         _ra_set_attr!(eg, "beam", Int64(entry.beam))
@@ -300,8 +478,152 @@ function _ra_write_turn_modulation!(file, path::String, slot::Int, entries)
             _ra_set_attr!(sg, "digest", UInt64(s.digest))
             _ra_set_attr!(sg, "name", String(s.name))
             _ra_set_attr!(sg, "length", Int64(s.length))
+            for (name, value) in pairs(col.nominal[i])
+                _ra_set_attr!(sg, _RA_TM_NOMINAL_PREFIX * String(name), Float64(value))
+            end
         end
     end
+    return nothing
+end
+
+# The attribute prefix of a slot group's nominal parameters and the reserved
+# subgroup name of an execution slot (D10), the two names the writer and the
+# readers share.
+const _RA_TM_NOMINAL_PREFIX = "nominal_"
+const _RA_TM_STATE = "state"
+
+"""
+Create the `series` dataset of every modulated element of the ledger row
+`slot` (zero rows, one column per active slot, extendable; attributes
+`columns`, `first_turn`, `turns`) and build this execution's recorders, one
+per beam that has a modulated element, in `art.turn_modulation_recorders`.
+Called by `prepare_run_artifact!` on rank 0 after the provenance groups are
+written and only when `record_turn_modulation` is on; nothing when `entries`
+is empty (the option is inactive on a line with no modulated element).
+"""
+function _ra_create_turn_modulation_series!(art::RunArtifact, file, slot::Int, entries, columns,
+                                            first_turn::Int, planned_turns::Int)
+    empty!(art.turn_modulation_recorders)
+    isempty(entries) && return nothing
+    beams = Int[]
+    for entry in entries
+        Int(entry.beam) in beams || push!(beams, Int(entry.beam))
+    end
+    for beam in beams
+        keys_b = String[]
+        active_b = Vector{Int}[]
+        for (k, entry) in enumerate(entries)
+            Int(entry.beam) == beam || continue
+            labels = String[String(s.slot) for s in entry.slots]
+            ncols = length(labels)
+            key = "turn_modulation/$(slot)/$(k)"
+            eg = file[key]
+            d = HDF5.create_dataset(eg, "series", HDF5.datatype(Float64),
+                                    HDF5.dataspace((0, ncols); max_dims=(-1, ncols));
+                                    chunk=(256, ncols))
+            _ra_set_attr!(d, "columns", labels)
+            _ra_set_attr!(d, "first_turn", Int64(first_turn))
+            _ra_set_attr!(d, "turns", Int64(planned_turns))
+            push!(keys_b, key)
+            push!(active_b, collect(Int, columns[k].active))
+        end
+        push!(art.turn_modulation_recorders,
+              TurnModulationRecorder(file, art.capacity, beam, keys_b, active_b,
+                                     [Float64[] for _ in keys_b], 0, 0))
+    end
+    return nothing
+end
+
+"""
+    _turn_modulation_sink(art, beam) -> Union{Nothing,TurnModulationRecorder}
+
+The recorder the turn loop hands the recording hook for `beam`'s line, or
+`nothing`: no artifact, the switch off, a non-root rank, or a line with no
+modulated element. Resolved once per `execute!`, before the first turn.
+"""
+_turn_modulation_sink(::Nothing, beam::Integer) = nothing
+function _turn_modulation_sink(art::RunArtifact, beam::Integer)
+    for rec in art.turn_modulation_recorders
+        rec.beam == beam && return rec
+    end
+    return nothing
+end
+
+"""
+    _record_turn_draws!(rec::TurnModulationRecorder, draws::Tuple)
+
+The recording hook's hand-over of one modulated element's draws (see
+`src/elements/turn_modulated.jl`): the next element of this beam's provenance
+in line order; its ACTIVE slots' values are appended to the element's buffer.
+A modulated element the provenance did not list is an error naming the beam,
+never an extra column.
+"""
+function _record_turn_draws!(rec::TurnModulationRecorder, draws::Tuple)
+    k = rec.cursor + 1
+    k <= length(rec.keys) || error(
+        "the turn-modulation recorder of beam $(rec.beam) met modulated element $(k) " *
+        "this turn but the provenance lists $(length(rec.keys)); the line and its " *
+        "provenance disagree")
+    rec.cursor = k
+    buf = rec.buffers[k]
+    for s in rec.active[k]
+        push!(buf, Float64(draws[s]))
+    end
+    return nothing
+end
+
+"""The turn loop's per-turn protocol: nothing on `nothing`, the recorder's otherwise."""
+_tm_begin_turn!(::Nothing) = nothing
+_tm_begin_turn!(rec::TurnModulationRecorder) = (rec.cursor = 0; nothing)
+_tm_end_turn!(::Nothing, turn::Integer) = nothing
+function _tm_end_turn!(rec::TurnModulationRecorder, turn::Integer)
+    if rec.cursor != length(rec.keys)
+        # Drop this turn's partial values first, so what the crash path flushes
+        # stays rectangular, then say what happened.
+        for k in eachindex(rec.keys)
+            resize!(rec.buffers[k], rec.rows * length(rec.active[k]))
+        end
+        met = rec.cursor
+        rec.cursor = 0
+        error("turn $(turn): the turn-modulation recorder of beam $(rec.beam) met $(met) " *
+              "modulated element(s) but the provenance lists $(length(rec.keys)); the " *
+              "turn's offsets are dropped, not written misaligned")
+    end
+    rec.rows += 1
+    rec.rows >= rec.capacity && _ra_flush_turn_modulation!(rec)
+    return nothing
+end
+
+"""
+Append the pending COMPLETE turns of every element of `rec` to its `series`
+dataset and flush the file: `rows` new rows per dataset, each buffer
+turn-major, the batching the luminosity rows take (`capacity` turns per flush,
+and the tail at finalize). Values beyond the complete rows belong to a turn
+that did not finish -- the crash path's finalize, a run stopped between
+`_tm_begin_turn!` and `_tm_end_turn!` -- and are dropped, never written as a
+misaligned row; the dataset's row count after a crash is the number of turns
+completed through the last flush, and the ledger's `current_turn` carries the
+progress, as for every producer.
+"""
+function _ra_flush_turn_modulation!(rec::TurnModulationRecorder)
+    for k in eachindex(rec.keys)
+        ncols = length(rec.active[k])
+        buf = rec.buffers[k]
+        nvals = rec.rows * ncols
+        length(buf) >= nvals || error(
+            "the turn-modulation recorder of beam $(rec.beam) holds $(length(buf)) value(s) " *
+            "for element $(k) where $(rec.rows) complete turn(s) of $(ncols) column(s) need " *
+            "$(nvals)")
+        if rec.rows > 0
+            d = rec.file[rec.keys[k]]["series"]
+            n = size(d, 1)
+            HDF5.set_extent_dims(d, (n + rec.rows, ncols))
+            d[(n + 1):(n + rec.rows), :] = permutedims(reshape(view(buf, 1:nvals), ncols, rec.rows))
+        end
+        empty!(buf)
+    end
+    rec.rows == 0 || HDF5.flush(rec.file)
+    rec.rows = 0
     return nothing
 end
 
@@ -428,12 +750,15 @@ function _ra_write_losses!(art::RunArtifact, record, s_positions, summary,
     return nothing
 end
 
-"""Flush every pending group, stamp this execution's elapsed time, close."""
+"""Flush every pending group (the luminosity channels, the turn-modulation series), stamp this execution's elapsed time, close."""
 function finalize_run_artifact!(art::RunArtifact)
     art.file === nothing && return nothing
     try
         for label in collect(keys(art.pending_turns))
             _ra_flush_luminosity!(art, label)
+        end
+        for rec in art.turn_modulation_recorders
+            _ra_flush_turn_modulation!(rec)
         end
         ex = art.file["execution"]
         ex["current_turn"][art.execution_slot] = art.current_turn
@@ -442,6 +767,7 @@ function finalize_run_artifact!(art::RunArtifact)
     finally
         close(art.file)
         art.file = nothing
+        empty!(art.turn_modulation_recorders)
     end
     return nothing
 end
@@ -726,8 +1052,9 @@ end
 An attribute of a provenance group read WITHOUT a default: a group lacking it
 is TORN, refused by an `ArgumentError` naming the group and the attribute. One
 message shape for every attribute the reader needs -- the counts through
-`_ra_tm_count` and the eight others (`index`, `kind`, `rng_id`, `digest`,
-`name`, `length` on a slot group; `element`, `beam` on an element group) --
+`_ra_tm_count`, the eight others (`index`, `kind`, `rng_id`, `digest`,
+`name`, `length` on a slot group; `element`, `beam` on an element group) and
+the series dataset's three (`columns`, `first_turn`, `turns`) --
 where a bare `attributes(g)[name]` surfaced `KeyError: key "index" not found`,
 naming the attribute but not the group (2026-10-13 neighbour audit, U5-1).
 """
@@ -742,20 +1069,82 @@ end
 _ra_tm_count(g, name::String, where::String) = Int(_ra_tm_attr(g, name, where))
 
 """
+The nominal parameters of a slot group as a NamedTuple, from its `nominal_*`
+attributes in name order (`(phase, strengthX, strengthY)` on a crab cavity
+slot, `(phase, strength)` on an RF cavity slot), or `nothing` when the group
+carries none -- a file written before the nominals existed (2026-10-15), the
+posture of the `/losses` reader for its later-added attributes. A group whose
+element recorded a `series` must carry them: `_ra_turn_modulation` refuses that
+combination as torn.
+"""
+function _ra_tm_nominal(sg)
+    a = HDF5.attributes(sg)
+    names = sort!([String(n) for n in keys(a) if startswith(String(n), _RA_TM_NOMINAL_PREFIX)])
+    isempty(names) && return nothing
+    offset = length(_RA_TM_NOMINAL_PREFIX)
+    return (; (Symbol(n[(offset + 1):end]) => Float64(read(a[n])) for n in names)...)
+end
+
+"""
+The recorded `series` of an element group as `(columns, first_turn, turns)`:
+one `Vector{Float64}` per column in the order of `labels` (the element's slot
+labels by `index`) and the window the dataset's two attributes declare; or
+`nothing` when the element recorded none (the run had `record_turn_modulation`
+off, or predates it). With `data=false` (the table of contents) the dataset is
+not read: the recorded row count stands in for each column. Torn by name: a
+missing `columns`, `first_turn` or `turns` attribute, a `columns` attribute
+that does not name the slot groups in index order, or a data width other than
+the column count. The ROW COUNT is authoritative for how many turns were
+recorded: a dataset with fewer rows than its `turns` attribute is a run
+stopped before its window completed (killed, or interrupted between two
+flushes), read as it stands -- never padded, never refused -- with one
+warning naming the dataset (review F2, 2026-10-15; before, it read back
+silently).
+"""
+function _ra_tm_series(eg, where_e::String, labels::Vector{String}, data::Bool)
+    haskey(eg, "series") || return nothing
+    d = eg["series"]
+    where_d = where_e * "/series"
+    columns = String.(_ra_tm_attr(d, "columns", where_d))
+    first_turn = Int(_ra_tm_attr(d, "first_turn", where_d))
+    turns = Int(_ra_tm_attr(d, "turns", where_d))
+    columns == labels || throw(ArgumentError(
+        "$(where_d) is torn: its columns $(columns) do not name the slot groups " *
+        "$(labels) in index order"))
+    nrows, ncols = size(d)
+    ncols == length(columns) || throw(ArgumentError(
+        "$(where_d) is torn: $(ncols) data column(s) for $(length(columns)) labelled column(s)"))
+    nrows < turns && @warn(
+        "$(where_d) holds $(nrows) recorded turn(s) of the $(turns) its turns attribute " *
+        "declares (first_turn $(first_turn)): the run was stopped before its window " *
+        "completed; the rows are read as they stand and the row count is authoritative")
+    data || return (columns=fill(nrows, ncols), first_turn=first_turn, turns=turns)
+    block = nrows == 0 ? zeros(Float64, 0, ncols) : read(d)
+    return (columns=[Vector{Float64}(block[:, j]) for j in 1:ncols],
+            first_turn=first_turn, turns=turns)
+end
+
+"""
 Read a present `/turn_modulation` group: one entry per execution slot that
-recorded modulation, in ledger order. Every count is checked against the
+recorded modulation, in ledger order, in the shape `turn_modulation_provenance`
+documents -- each slot entry carrying its `nominal` and its `series`, the
+latter the recorded column (or the row count with `data=false`, the table of
+contents' metadata-only read) or `nothing` when the run did not record; each
+execution entry carrying `state = nothing`, the reserved checkpoint group of
+docs/design/turn_modulation_record.md D10, which nothing writes today and
+which the element count skips. Every count is checked against the
 subgroups present and every attribute is read without a default; a mismatch,
 a missing count or a missing attribute is a TORN group, refused by an
 `ArgumentError` naming the group (and the attribute) rather than read short.
 """
-function _ra_turn_modulation(f)
+function _ra_turn_modulation(f; data::Bool=true)
     root = f["turn_modulation"]
     slots = sort!([parse(Int, String(k)) for k in keys(root) if root[k] isa HDF5.Group])
     out = NamedTuple[]
     for slot in slots
         where = "/turn_modulation/$(slot)"
         g = root[string(slot)]
-        present = count(k -> g[k] isa HDF5.Group, keys(g))
+        present = count(k -> String(k) != _RA_TM_STATE && g[k] isa HDF5.Group, keys(g))
         n = _ra_tm_count(g, "element_count", where)
         present == n || throw(ArgumentError(
             "$(where) is torn: element_count = $(n) but $(present) element group(s) present"))
@@ -779,20 +1168,40 @@ function _ra_turn_modulation(f)
                                  rng_id=UInt64(_ra_tm_attr(sg, "rng_id", where_s)),
                                  digest=UInt64(_ra_tm_attr(sg, "digest", where_s)),
                                  name=String(_ra_tm_attr(sg, "name", where_s)),
-                                 length=Int(_ra_tm_attr(sg, "length", where_s)))))
+                                 length=Int(_ra_tm_attr(sg, "length", where_s)),
+                                 nominal=_ra_tm_nominal(sg))))
             end
             sort!(entries; by=first)
+            ordered = NamedTuple[s for (_, s) in entries]
+            series = _ra_tm_series(eg, where_e, String[s.slot for s in ordered], data)
+            if series !== nothing
+                # A recorded element whose slot group lost its nominals is torn
+                # like any other missing attribute: the series cannot be formed
+                # into realised values without them.
+                for s in ordered
+                    s.nominal === nothing && throw(ArgumentError(
+                        "$(where_e)/$(s.slot) is torn: the $(_RA_TM_NOMINAL_PREFIX)* " *
+                        "attributes are missing although the element recorded a series"))
+                end
+            end
+            slots_out = NamedTuple[merge(s, (series = series === nothing ? nothing : series.columns[j],))
+                                   for (j, s) in enumerate(ordered)]
+            # The window the series covers, from the dataset's attributes
+            # (`nothing`, like `series`, when the run did not record): a reader
+            # compares it with the row count, which is authoritative (F2).
             push!(elements, (element=String(_ra_tm_attr(eg, "element", where_e)),
                              beam=Int(_ra_tm_attr(eg, "beam", where_e)),
-                             slots=NamedTuple[s for (_, s) in entries]))
+                             first_turn=series === nothing ? nothing : series.first_turn,
+                             turns=series === nothing ? nothing : series.turns,
+                             slots=slots_out))
         end
-        push!(out, (execution=slot, elements=elements))
+        push!(out, (execution=slot, elements=elements, state=nothing))
     end
     return out
 end
 
-_ra_turn_modulation_or_empty(f) =
-    haskey(f, "turn_modulation") ? _ra_turn_modulation(f) : NamedTuple[]
+_ra_turn_modulation_or_empty(f; data::Bool=true) =
+    haskey(f, "turn_modulation") ? _ra_turn_modulation(f; data=data) : NamedTuple[]
 
 """
     turn_modulation_provenance(path::AbstractString) -> Vector{NamedTuple}
@@ -805,22 +1214,59 @@ whose line had a modulated element, in `/execution` ledger order,
     (execution = 1,                             # the /execution ledger row
      elements  = [(element = "ThinCrabCavity",  # one per modulated element, line order
                    beam    = 1,                 # 1; a strong-strong task records 1 then 2
+                   first_turn = 0, turns = 5,   # the window the series covers (its
+                                                # dataset's attributes); nothing when
+                                                # the run did not record
                    slots   = [(slot = "phase_noise[1]", kind = :white,
                                rng_id = 0x0000000000000007, digest = 0x0000000000000000,
-                               name = "", length = 0),
+                               name = "", length = 0,
+                               nominal = (phase = 0.0, strengthX = 0.002, strengthY = 0.0),
+                               series = [dphi_1, dphi_2, ...]),   # or nothing
                               (slot = "strength_noise[1]", kind = :table,
                                rng_id = 0x0000000000000000, digest = <FNV-1a 64 of the
-                               table's bytes>, name = "amp", length = 10)])])
+                               table's bytes>, name = "amp", length = 10,
+                               nominal = (phase = 0.0, strengthX = 0.002, strengthY = 0.0),
+                               series = [d_1, d_2, ...])])],      # or nothing
+     state     = nothing)                       # reserved (D10), written by nothing
 
 so a table's identity (`digest`, `name`, `length`) and a stream rule's
 `rng_id` travel with the file (`kind` is `:white`, `:pink` or `:table`; the
-fields a kind does not use hold zeros and `""`). Nothing in the group is ever
+fields a kind does not use hold zeros and `""`). `nominal` is the slot's
+nominal parameters, read from its `nominal_*` attributes (the harmonic's
+`phase`, `strengthX`, `strengthY` on a crab cavity slot; `phase`, `strength`
+on an RF cavity slot; `nothing` for a file written before they existed).
+`series` is the slot's recorded column when the run had
+`RunArtifact(...; record_turn_modulation=true)` and `nothing` otherwise
+(docs/design/turn_modulation_record.md): one `Float64` per turn of that
+`execute!` window, entry `i` the OFFSET the rule produced for absolute turn
+`first_turn + i - 1` (the ledger row's `start_turn`; the dataset's `first_turn`
+and `turns` attributes repeat the window), radians on a phase slot and the
+dimensionless relative factor `d` on a strength slot, so the realised values
+are `nominal.phase + series[i]` and `nominal.strengthX * (1 + series[i])`,
+`nominal.strengthY * (1 + series[i])` (`nominal.strength * (1 + series[i])` on
+the RF cavity), exactly as the element formed them. The series and the
+nominals are stored as `Float64` whatever the element's numeric type `T`, so
+"exactly as the element formed them" holds bit for bit for `T = Float64` and
+to `Float64` rounding for any other `T`. The element entry's `first_turn` and
+`turns` are the window the series covers, read from the dataset's attributes
+(`nothing` when the run did not record); the ROW COUNT of a series is
+authoritative: a run stopped before its window completed (killed, or
+interrupted between two flushes) leaves fewer rows than `turns`, and such a
+series is read as it stands with a warning naming the dataset, never padded
+or refused. The `/execution` ledger's `current_turn` is a separate progress
+mark: a `TrackingTask` without strong beams writes it to the file only at
+finalize, while the strong-strong loop stamps it before each turn (persisted
+at the luminosity flushes) and closes the turn's series row after it, so on a
+killed run the two can disagree and the rows decide. `state` is `nothing`: the
+group reserved for a future stateful rule's checkpoint (D10) is written by
+nothing today. Nothing in the group is ever
 rewritten or deleted: a continued (`append=true`) file keeps one entry per
 modulated execution, so every generation of rules it ran is on record. An
 empty vector means no `execute!` recorded in this file had a modulated
 element -- an unmodulated run, or a file from before the group existed;
 neither is an error (the `/losses` reader's posture for its later-added
-attributes). A group whose counts disagree with the subgroups present is
+attributes). A group whose counts disagree with the subgroups present, or a
+series whose columns do not name the slot groups, is
 torn and refused with a message saying so. `read(out, :turn_modulation)` on a
 [`TaskOutput`](@ref) returns the same vector.
 """
@@ -863,7 +1309,10 @@ ledger -- one entry per `execute!`, `current_turn`/`elapsed` updated at every
 flush. `:turn_modulation` returns the turn-by-turn modulation provenance, one
 entry per `execute!` that had a modulated element, the vector
 [`turn_modulation_provenance`](@ref) documents (empty when no recorded
-`execute!` had one or the file predates the group).
+`execute!` had one or the file predates the group), each slot entry with its
+`nominal` and, when the run recorded (`record_turn_modulation=true`), its
+`series`, each element entry with the window the series covers (`first_turn`,
+`turns`; the row count is authoritative, a shorter series warns by name).
 """
 function Base.read(out::TaskOutput, kind::Symbol;
                    name::Union{Nothing,AbstractString}=nothing,
@@ -940,7 +1389,10 @@ The artifact's table of contents, RECURSIVE and metadata-only (shape and
 attribute reads; no data): each named kind maps to `Dict(name =>
 (columns, rows[, s]))` -- `s` is the probe's arc position where stamped --
 and the single products carry their own `(columns, rows, ...)`;
-`turn_modulation`, attributes only, is its provenance vector whole. One call
+`turn_modulation` is its provenance vector whole (attributes, the nominals
+included), with each slot's `series` standing as the recorded ROW COUNT in
+place of the column that `read(out, :turn_modulation)` returns (`nothing`
+when the run did not record). One call
 tells you how to write every subsequent `read(out, kind; ...)`;
 `read(out, :all)` returns the same nesting with the data in it.
 """
@@ -960,8 +1412,9 @@ function Base.read(out::TaskOutput)
                           rows=haskey(obj, "data") ? size(obj["data"], 1) : 0,
                           apertures=String.(read(obj["aperture_names"])))
             elseif k == "turn_modulation"
-                # Attributes only, so the provenance IS the metadata.
-                toc[k] = _ra_turn_modulation(f)
+                # The provenance IS the metadata; a recorded series is read as
+                # its row count here, not as data.
+                toc[k] = _ra_turn_modulation(f; data=false)
             elseif obj isa HDF5.Group
                 groups = Dict{String,NamedTuple}()
                 for name in keys(obj)
