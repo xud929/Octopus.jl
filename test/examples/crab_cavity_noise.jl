@@ -83,13 +83,18 @@ config-that-was-never-read defect class, AGENTS.md Invariants):
                               every `phase_noise` slot is `nothing`, not a
                               zero-sigma rule (an amplitude-only run)
     OCTOPUS_STRENGTH_REL_RMS  relative rms of the kick strength per active
-                              harmonic (1e-4); the absolute sigma of harmonic i
-                              is this times |strengthX[i]|, and the realised
-                              offset is added to BOTH planes' strengths of the
-                              harmonic (the vertical strength is zero here, so
-                              the vertical plane gets a pure noise kick; the
-                              shipped behaviour, an owner decision). ZERO
-                              MEANS NO RULE on the strength (a phase-only run)
+                              harmonic (1e-4): the strength rule's sigma
+                              DIRECTLY (times OCTOPUS_NOISE_SCALE), no
+                              |strengthX[i]| factor -- a realised value d is
+                              a dimensionless relative factor scaling BOTH
+                              planes' strengths of its harmonic,
+                              strengthX[i] (1 + d) and strengthY[i] (1 + d),
+                              one voltage driver per cavity (owner decision,
+                              relative since 2026-10-15; the vertical
+                              strength is zero here and stays exactly zero,
+                              so amplitude noise alone excites no vertical
+                              growth without beam-beam). ZERO MEANS NO RULE
+                              on the strength (a phase-only run)
     OCTOPUS_CHROMATICITY      <xi_x>,<xi_y> of the ChromaticityKickSpec
                               (2.0,2.0; the kbb = 0 controls use 0,0)
     OCTOPUS_PINK_OCTAVES      the pink rule's octave count (16); read by the
@@ -112,8 +117,10 @@ config-that-was-never-read defect class, AGENTS.md Invariants):
                               <cavity>_phase_noise_<i> / <cavity>_strength_noise_<i>
                               (cavity tccb or tcca, i an active harmonic, 1 or
                               2 here) and whose rows, one per ABSOLUTE turn
-                              from turn 0, hold the additive offsets in the
-                              parameter's unit (rad; the strength unit),
+                              from turn 0, hold the per-turn values in the
+                              slot's unit (offsets in rad on a phase column;
+                              dimensionless relative factors d on a strength
+                              column, realised as S (1 + d)),
                               Float64 printed at full precision (`repr`, or
                               C's %.17g: `parse(Float64, s)` round-trips both
                               exactly). The table rules take their offsets
@@ -128,12 +135,12 @@ config-that-was-never-read defect class, AGENTS.md Invariants):
                               other than 1 with the file, OCTOPUS_TABLE_SEED
                               with the file. A valid column this run does not
                               need (its parameter has rms 0) is reported as
-                              unused. Purpose: a white run's realised offsets
+                              unused. Purpose: a white run's realised values
                               (exactly sigma times its draws, which the white
-                              rule adds to the nominal value as one Float64)
-                              fed back through the table rule track bit for
-                              bit; a measured LLRF record is passed the same
-                              way
+                              rule applies to the nominal as one Float64:
+                              added to a phase, scaling a strength) fed back
+                              through the table rule track bit for bit; a
+                              measured LLRF record is passed the same way
     OCTOPUS_KBB_SCALE         multiplies the beam-beam strength kbb (1.0);
                               0.0 switches the kick off while the luminosity
                               bookkeeping (klum) stays, so the noise-only
@@ -224,8 +231,9 @@ ends with the one line the validation driver parses (rank 0's under MPI):
 
 where phase_rms and strength_rel_rms are the EFFECTIVE values that ran:
 OCTOPUS_*_RMS times OCTOPUS_NOISE_SCALE when the parameter carries rules, 0
-when it carries none (rms 0, or rule none); with a file table they are the
-selectors that activated the slots, and the offsets are the file's. The
+when it carries none (rms 0, or rule none); strength_rel_rms is the strength
+rule's sigma itself, the relative rms of S (1 + d); with a file table they
+are the selectors that activated the slots, and the values are the file's. The
 emittances are the rms emittances from the artifact's central second moments,
 eps_x = sqrt(<x^2><px^2> - <x px>^2) from the columns m200000, m020000,
 m110000 of /moments/weak_beam and eps_y likewise from m002000, m000200,
@@ -657,16 +665,19 @@ end
 
 # ---------------------------------------------------------------------------
 # The noise rules, as the example builds them: per active harmonic i,
-# `phase_noise[i]` with sigma = phase_rms * scale and `strength_noise[i]` with
-# sigma = strength_rel_rms * scale * |strengthX[i]|; zero-weight harmonics
+# `phase_noise[i]` with sigma = phase_rms * scale (rad, added to the phase)
+# and `strength_noise[i]` with sigma = strength_rel_rms * scale, the relative
+# rms itself (a realised value d scales both planes to S (1 + d); relative
+# since 2026-10-15, no |strengthX[i]| factor); zero-weight harmonics
 # stay inactive, and a parameter whose rms is 0 carries no rule at all.
 # Explicit stream ids (tccb 10 + slot, tcca 20 + slot; slot = i for a phase,
 # N + i for a strength; the beam claims 1, the radiation 2) keep the
 # provenance record identical from run to run -- with the default `rng_id = 0`
 # the id would come from a process-global counter and depend on construction
 # order -- and disjoint between the cavities, because two elements sharing an
-# id draw identical offsets. The strength offset is added to BOTH planes'
-# strengths of its harmonic (the example's comment on the same lines).
+# id draw identical values. The strength factor scales BOTH planes' strengths
+# of its harmonic, one voltage driver per cavity (the example's comment on
+# the same lines); the vertical strength is zero here and stays exactly zero.
 # ---------------------------------------------------------------------------
 # The synthetic record's master generator exists only on the path that reads
 # the seed: the table rule without a file (the header's "inert otherwise").
@@ -692,7 +703,7 @@ function crab_noise_rules(cavity::String, id_base::Int)
     end : ()
     strength = strength_on ? ntuple(N_harmonics) do i
         harmonic_active(i) || return nothing
-        noise_rule("strength_noise", cavity, i, strength_sigma_rel * abs(cc_strength_x[i]),
+        noise_rule("strength_noise", cavity, i, strength_sigma_rel,
                    id_base + N_harmonics + i)
     end : ()
     return (phase_noise = phase, strength_noise = strength)

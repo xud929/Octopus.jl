@@ -10046,8 +10046,9 @@ end
     # wrong entry count and a non-rule entry -- on the friendly constructor AND
     # on a raw spec that bypassed it; the table indexes absolute turns and runs
     # off its end with a BoundsError on the by-hand path; `strength_noise`
-    # moves BOTH planes by one offset and leaves the phase alone; the stream
-    # collector reports each distinct id of one cavity once.
+    # scales BOTH planes by one relative factor, S (1 + d), and leaves the
+    # phase alone; the stream collector reports each distinct id of one cavity
+    # once.
     @test_throws ArgumentError TurnTable(Float64[])
     @test_throws ArgumentError TurnTable([NaN])
     @test_throws ArgumentError TurnTable([1.0, Inf])
@@ -10116,14 +10117,47 @@ end
     ws = compile_runtime(ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), strengthY=(1.0e-3,), phase=(0.1,),
                                                 strength_noise=(WhiteNoise(1.0e-4; rng_id=3),)))
     cav5 = realize(ws.rule, ws.base, TrackingContext(turn=5, seed=42))[1]
-    off5 = 1.0e-4 * draw(5, 42, 2, 3)       # strength harmonic 1 of N = 1 is slot N + 1 = 2
-    @test off5 != 0.0
-    # `nominal + off` is the representable pin; `(nominal + off) - nominal == off`
-    # would re-round and differ in the last bits between the two planes.
-    @test cav5.strengthX[1] == 2.0e-3 + off5
-    @test cav5.strengthY[1] == 1.0e-3 + off5
-    @test cav5.strengthX[1] != 2.0e-3 + 1.0e-4 * draw(5, 42, 1, 3)   # slot 1 is the phase's draw
+    d5 = 1.0e-4 * draw(5, 42, 2, 3)         # strength harmonic 1 of N = 1 is slot N + 1 = 2
+    @test d5 != 0.0
+    # RELATIVE scaling (owner decision 2026-10-15, docs/design/turn_modulation_record.md
+    # section 5): the one draw d of a harmonic scales BOTH planes, S (1 + d), one
+    # voltage driver per cavity. `nominal * (1 + d)` is the representable pin;
+    # the superseded additive pin `nominal + d` (2026-10-12) is asserted false.
+    @test cav5.strengthX[1] == 2.0e-3 * (1 + d5)
+    @test cav5.strengthY[1] == 1.0e-3 * (1 + d5)
+    @test cav5.strengthX[1] != 2.0e-3 + d5 && cav5.strengthY[1] != 1.0e-3 + d5
+    @test cav5.strengthX[1] != 2.0e-3 * (1 + 1.0e-4 * draw(5, 42, 1, 3))   # slot 1 is the phase's draw
     @test cav5.phase == ws.base.phase
+    # The falsifier of the decision: a cavity whose vertical strength is zero
+    # acquires NO vertical kick from amplitude noise -- strengthY[1] is EXACTLY
+    # 0.0 on every turn (0 * (1 + d) with 1 + d > 0), while strengthX[1] is
+    # Sx (1 + d) bitwise for the hook's own draw d (slot N + 1 = 4 here); under
+    # the additive semantics strengthY[1] was d itself. Harmonics 2 and 3 are
+    # inactive and stay bitwise untouched.
+    wh = compile_runtime(ThinCrabCavitySpec{3}(394.0e6; strengthX=(2.0e-3, 0.0, 0.0), phase=(0.0, 0.0, 0.0),
+                                                strength_noise=(WhiteNoise(1.0e-4; rng_id=3), nothing, nothing)))
+    for turn in 0:7
+        ctx = TrackingContext(turn=turn, seed=42)
+        cavh = realize(wh.rule, wh.base, ctx)[1]
+        dh = Octopus._turn_offset(wh.rule.strength[1], ctx, 4, Float64)[1]
+        @test dh == 1.0e-4 * draw(turn, 42, 4, 3) && dh != 0.0
+        @test cavh.strengthY[1] === 0.0
+        @test cavh.strengthX[1] == 2.0e-3 * (1 + dh)
+        @test cavh.strengthX[2:3] === (0.0, 0.0) && cavh.strengthY[2:3] === (0.0, 0.0) && cavh.phase === wh.base.phase
+    end
+    # A strength table holds RELATIVE factors: all zeros leave both strengths
+    # bitwise unchanged on every turn (S * (1 + 0.0) is S), 0.5 scales both by
+    # exactly 1.5 (S * 1.5 is the pin).
+    wz = compile_runtime(ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), strengthY=(1.0e-3,), phase=(0.1,),
+                                                strength_noise=(TurnTable([0.0, 0.0, 0.0]; name="zero"),)))
+    for turn in 0:2
+        cz = realize(wz.rule, wz.base, TrackingContext(turn=turn, seed=1))[1]
+        @test cz.strengthX === wz.base.strengthX && cz.strengthY === wz.base.strengthY && cz.phase === wz.base.phase
+    end
+    whalf = compile_runtime(ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), strengthY=(1.0e-3,), phase=(0.1,),
+                                                   strength_noise=(TurnTable([0.5]; name="half"),)))
+    chalf = realize(whalf.rule, whalf.base, TrackingContext(turn=0, seed=1))[1]
+    @test chalf.strengthX[1] == 2.0e-3 * 1.5 && chalf.strengthY[1] == 1.0e-3 * 1.5 && chalf.phase === whalf.base.phase
     @test Octopus._collect_turn_modulation_ids!(UInt64[], ThinCrabCavitySpec{2}(394.0e6;
               phase_noise=(WhiteNoise(1.0e-2; rng_id=7), WhiteNoise(1.0e-2; rng_id=7)))) == UInt64[7]
     @test Octopus._collect_turn_modulation_ids!(UInt64[], ThinCrabCavitySpec{2}(394.0e6;
@@ -10540,9 +10574,11 @@ end
     r32 = Octopus.realize(w32.rule, w32.base, sb_ctx(3))[1]
     off64 = Octopus._turn_offset(PinkNoise(1.0e-4; rng_id=7), sb_ctx(3), 64, Float64)[1]
     @test off64 != 0.0
-    # `nominal + off` is the representable pin (the strengths differ per plane:
-    # strengthX is 2e-3, strengthY 0 on this fixture), one offset in both planes.
-    @test r32.strengthX[32] == w32.base.strengthX[32] + off64 && r32.strengthY[32] == w32.base.strengthY[32] + off64
+    # Relative scaling (2026-10-15): `nominal * (1 + d)` is the representable pin,
+    # one factor on both planes; strengthY is 0 on this fixture and stays
+    # EXACTLY 0.0 (a horizontal cavity's amplitude noise kicks nothing vertically).
+    @test r32.strengthX[32] == w32.base.strengthX[32] * (1 + off64) && r32.strengthY[32] === 0.0
+    @test r32.strengthX[32] != w32.base.strengthX[32] + off64   # the superseded additive pin
     @test r32.strengthX[1:31] == w32.base.strengthX[1:31] && r32.phase == w32.base.phase
     n32 = 20
     rep32 = Phase6DRep(collect(range(-1.0e-3, 1.0e-3; length=n32)), zeros(n32), zeros(n32), zeros(n32),
@@ -10797,15 +10833,17 @@ end
     @test slots[1].digest == 0 && slots[1].name == "" && slots[1].length == 0
     @test propertynames(slots[1]) == (:slot, :kind, :rng_id, :digest, :name, :length)
 
-    # (h) strength_noise accepts a pink rule: one realised offset (slot N + 1 = 2,
-    # the formula with rng_id 9) moves both planes of its harmonic bitwise and
-    # leaves the phase alone.
+    # (h) strength_noise accepts a pink rule: one realised relative factor d
+    # (slot N + 1 = 2, the formula with rng_id 9) scales both planes of its
+    # harmonic as S (1 + d) bitwise (2026-10-15) and leaves the phase alone; the
+    # vertical nominal is 0 here and stays EXACTLY 0.0.
     ws = compile_runtime(sp_cavity(strength_noise=(PinkNoise(1.0e-3; rng_id=9),)))
     @test ws isa TurnModulated
     rs = Octopus.realize(ws.rule, ws.base, sp_ctx(3))[1]
     off_s = sp_formula(3, 2; sigma=1.0e-3, rng_id=9)
-    @test off_s != 0 && rs.strengthX[1] == ws.base.strengthX[1] + off_s
-    @test rs.strengthY[1] == ws.base.strengthY[1] + off_s && rs.phase[1] == ws.base.phase[1]
+    @test off_s != 0 && rs.strengthX[1] == ws.base.strengthX[1] * (1 + off_s)
+    @test rs.strengthY[1] === 0.0 && rs.phase[1] == ws.base.phase[1]
+    @test rs.strengthX[1] != ws.base.strengthX[1] + off_s   # the superseded additive pin
     @test Octopus._turn_modulation_slots(ws.rule)[1].slot == "strength_noise[1]"
 
     # (i) Two cavities sharing a pink rng_id warn like two white ones; a pink
@@ -10895,8 +10933,9 @@ end
     @test getparam(hspec, :strength_noise, 1) === nothing
     @test !hasparam(hspec, :frequency) && hasparam(hspec, :harmon)
 
-    # (b) `realize`: the slot-1 draw times sigma lands on `phase`, the slot-2
-    # draw on `strength`, each as `nominal + offset` (the representable pin);
+    # (b) `realize`: the slot-1 draw times sigma lands on `phase` as
+    # `nominal + offset`, the slot-2 draw d on `strength` as `nominal * (1 + d)`,
+    # V (1 + d) for the voltage (relative, 2026-10-15; the representable pins);
     # every other field -- `method`, `k`, `L`, `beta0`, `gamma0`, the survey
     # `ds_turn` -- is carried bit for bit; the type is preserved and the call
     # allocates nothing. The measured fixture: the realised phase on turns 0..3.
@@ -10906,7 +10945,8 @@ end
         cav, rules = realize(both.rule, both.base, TrackingContext(turn=turn, seed=42))
         @test typeof(cav) === typeof(both.base) && typeof(rules) === typeof(both.rule)
         @test cav.phase == both.base.phase + 1.0e-2 * draw(turn, 1)
-        @test cav.strength == both.base.strength + 1.0e-7 * draw(turn, 2)
+        @test cav.strength == both.base.strength * (1 + 1.0e-7 * draw(turn, 2))   # V (1 + d)
+        @test cav.strength != both.base.strength + 1.0e-7 * draw(turn, 2)         # the superseded additive pin
         @test cav.phase != both.base.phase + 1.0e-2 * draw(turn, 2)   # slot 2 is the strength's
         @test cav.method === both.base.method && cav.k === both.base.k && cav.L === both.base.L
         @test cav.beta0 === both.base.beta0 && cav.gamma0 === both.base.gamma0
@@ -10914,6 +10954,15 @@ end
     end
     offsets = [realize(w.rule, w.base, TrackingContext(turn=t, seed=42))[1].phase for t in 0:3]
     @test isapprox(offsets, [-1.431204e-2, 1.905802e-2, 1.415707e-2, -1.372681e-2]; atol=5.0e-7)
+    # A strength table holds RELATIVE factors: zeros leave the strength bitwise
+    # unchanged (V * (1 + 0.0) is V), 0.5 scales it by exactly 1.5 (V * 1.5 is
+    # the pin).
+    wz = compile_runtime(rf(strength_noise=TurnTable([0.0, 0.0]; name="zero")))
+    for turn in 0:1
+        @test realize(wz.rule, wz.base, TrackingContext(turn=turn, seed=42))[1].strength === wz.base.strength
+    end
+    whalf = compile_runtime(rf(strength_noise=TurnTable([0.5]; name="half")))
+    @test realize(whalf.rule, whalf.base, TrackingContext(turn=0, seed=42))[1].strength == whalf.base.strength * 1.5
     ctx1 = TrackingContext(turn=1, seed=42)
     alloc_realize(rule, base, ctx) = @allocated realize(rule, base, ctx)
     alloc_realize(both.rule, both.base, ctx1)
@@ -10998,7 +11047,7 @@ end
     # and a run restored with `start_turn=3` on a copy of the 3-turn state agree
     # bit for bit, for the white rule on the phase and for an 8-entry table on
     # the strength (absolute-turn indexing: the restored run reads entry 4
-    # first). Particles with nonzero z, so a strength offset has an effect.
+    # first). Particles with nonzero z, so a strength factor has an effect.
     for (rule_kind, kw) in (("white", (phase_noise=WhiteNoise(1.0e-2; rng_id=21),)),
                             ("table", (strength_noise=TurnTable(collect(1.0e-7:1.0e-7:8.0e-7); name="volt"),)))
         spec_e = rf(; kw...)

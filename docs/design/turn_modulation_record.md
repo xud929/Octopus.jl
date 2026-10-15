@@ -1,7 +1,10 @@
 # Recording the realised turn modulation in the run artifact
 
 > **Status: designed 2026-10-15 in owner discussion, its four open questions
-> decided by the owner the same day (section 8); not implemented.** This
+> decided by the owner the same day (section 8); stage 0 of section 7 (the
+> relative strength semantics) in progress 2026-10-15, record
+> `../history/crab_cavity_noise_relative_strength_2026_10_15.md`; stages 1
+> and 2 not implemented.** This
 > note records the decisions for recording, turn by turn, the offsets the
 > turn-modulation rules produce during a run, so that a reader of the run
 > artifact can verify that `execute!` realised a new value every turn and

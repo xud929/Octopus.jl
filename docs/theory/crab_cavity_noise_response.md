@@ -14,7 +14,8 @@ The crab-cavity-noise example in `examples/` and the validation script
 campaign this note opens, and at the note's first commit neither exists yet.
 The numbers they measure belong to the campaign's record under
 `docs/history/`, not to this note. The rules themselves (white, pink, table,
-their additive semantics and measured spectra) are designed in
+their offset semantics, additive on a phase and relative on a strength since
+2026-10-15, and their measured spectra) are designed in
 [Turn-by-turn lattice modulation](../design/turn_modulation.md), sections
 5.1, 5.2, 5.5 and 5.6; the strong-beam model is the
 [Weak–Strong Six-Dimensional Source Model](weak_strong_6d_model.md); the
@@ -33,9 +34,12 @@ beam-line is the EIC weak–strong case of `examples/weak_strong_tracking.jl`.
   timing jitter, under which harmonic $i$ sees $i$ times the fundamental's
   phase noise and the two harmonics' kick errors are fully correlated
   (section 2.4: the rate changes by the factor 0.59); (ii) the amplitude
-  rule's absolute sigma is $10^{-4}\,|\texttt{strengthX}_i|$, and by the
-  shipped rule semantics the same absolute offset lands on
-  $\texttt{strengthY}_i = 0$ as well (section 3.2); (iii) the two cavities,
+  rule's sigma is the relative rms $10^{-4}$ itself, one dimensionless factor
+  $1 + d$ scaling both planes' strengths of the harmonic, so the absolute
+  horizontal error is $10^{-4}\,|\texttt{strengthX}_i|$ and the vertical one
+  $10^{-4}\,|\texttt{strengthY}_i| = 0$ (owner decision 2026-10-15, section
+  3.2; until then the shipped rule added the absolute offset
+  $10^{-4}\,|\texttt{strengthX}_i|$ to both planes); (iii) the two cavities,
   a quarter betatron wavelength before and after the IP, carry independent
   streams.
 
@@ -73,9 +77,10 @@ with $x$, $y$, $z$ unchanged; $p_{x,y}$ are the transverse momenta in units
 of the reference momentum (radians), $s_i$ is in m⁻¹, $\phi_i$ in radians.
 The two active harmonics are separate cavities; harmonic 3 is inactive. The
 `realize` method of the `CrabCavityNoise` container adds the realised phase
-offset to `phase[i]` and the realised strength offset to **both**
-`strengthX[i]` and `strengthY[i]`, once per turn on the host, before the
-turn is tracked.
+offset to `phase[i]` and scales **both** `strengthX[i]` and `strengthY[i]`
+by the realised factor $1 + d_i$ (the relative semantics of 2026-10-15,
+section 3.2; before that date it added one absolute offset to both), once
+per turn on the host, before the turn is tracked.
 
 Assumptions:
 
@@ -89,10 +94,11 @@ Assumptions:
    longitudinal slices with the Hirata virtual drift; in the boosted frame
    the crabbed collision is head-on, so a transverse displacement of the
    weak bunch at the IP is a displacement relative to the strong beam.
-3. Noise is sampled once per turn, additive on `phase[i]` (rad) or on
-   `strengthX[i]` and `strengthY[i]` (m⁻¹), independent across cavities
-   (distinct `rng_id`) and across harmonics (distinct slots of one
-   `rng_id`), Gaussian with the stated ensemble rms.
+3. Noise is sampled once per turn, additive on `phase[i]` (rad) or a
+   dimensionless relative factor $d$ on both `strengthX[i]` and
+   `strengthY[i]` (the absolute strength error is $s_i d$, in m⁻¹),
+   independent across cavities (distinct `rng_id`) and across harmonics
+   (distinct slots of one `rng_id`), Gaussian with the stated ensemble rms.
 4. Small-offset regime: offsets much smaller than $\sigma^*$ and total
    growth over a run much smaller than $\varepsilon$; the response is linear
    in $\delta\phi$ and $\delta s$.
@@ -228,12 +234,14 @@ $$
 $$
 
 (small-argument values $(ik\sigma_z)^2 = 0.0614$, $0.2455$). In normalised
-units, with $\delta s = 10^{-4}|s_i|$:
+units, with $\delta s = \sigma_A|s_i|$ at $\sigma_A = 10^{-4}$ (the relative
+factor $d$ of rms $\sigma_A$ acting on $s_i$, section 3.2; $a_y = 0$ for the
+example's horizontal cavities):
 
-| $i$ | $\delta s$ [m⁻¹] | rms kick [rad] | $a_x$ | $a_y$ (section 3.2) |
-|---|---|---|---|---|
-| 1 | $5.168\times10^{-8}$ | $3.01\times10^{-9}$ | $1.021\times10^{-3}$ | $9.50\times10^{-4}$ |
-| 2 | $1.292\times10^{-8}$ | $6.89\times10^{-10}$ | $2.34\times10^{-4}$ | $2.18\times10^{-4}$ |
+| $i$ | $\delta s$ [m⁻¹] | rms kick [rad] | $a_x$ |
+|---|---|---|---|
+| 1 | $5.168\times10^{-8}$ | $3.01\times10^{-9}$ | $1.021\times10^{-3}$ |
+| 2 | $1.292\times10^{-8}$ | $6.89\times10^{-10}$ | $2.34\times10^{-4}$ |
 
 Compared with section 2 at the production point, the amplitude noise's rms
 normalised kick is 2.5 times the phase noise's and its growth rate (which
@@ -242,19 +250,36 @@ emittance directly, with no decoherence needed (section 4.2).
 
 ### 3.2 The vertical plane
 
-`realize` adds the one realised strength offset to `strengthY[i]` as well.
-The example's cavities have `strengthY = 0`, so a horizontal cavity acquires
-a *vertical* crabbing error of the same absolute slope $\delta s$. With
-$\beta_{cc,y} = 100$ m, $\beta_y^* = 0.072$ m, $\sigma_y^* = 8.5$ µm the
-normalised amplitude is $a_y = \sqrt{\beta_{cc,y}\beta_y^*}\,\delta s\,
-\langle\sin^2 ikz\rangle^{1/2}/(ik\,\sigma_y^*)$, 0.93 times $a_x$, so the
-vertical emittance grows at 0.865 times the horizontal rate under amplitude
-noise, and not at all under phase noise. The vertical telescope has zero
-phase advance, so the kick arrives at the IP as an angle rather than an
-offset; by the lemma of section 2.3 that leaves the growth rate unchanged.
-Whether this both-planes semantics is the intended physics of a voltage
-error is an owner decision (section 8); the validation measures the vertical
-rate either way.
+The strength rule's offset is a relative factor: `realize` scales both
+planes' strengths of the harmonic by the same $1 + d$, so the absolute
+errors are $\delta s_X = s_i d$ and $\delta s_Y = s_{y,i} d$ (owner decision
+2026-10-15, one voltage driver per cavity: design note section 10 and
+`../design/turn_modulation_record.md`, section 5). The horizontal
+crabbing-angle error of 3.1 is unchanged by the convention, $\delta s = s_i d$
+being the same number as before for the same relative rms. The example's
+cavities have `strengthY = 0`, so their vertical kick error is $s_{y,i} d =
+0$: a horizontal cavity's amplitude noise excites no vertical emittance
+growth of its own, and whatever vertical growth the colliding runs show is
+the beam-beam coupling of 4.5 alone. Without the strong beam, vertical
+emittance growth under horizontal amplitude noise falsifies the
+implementation (section 7). A cavity with both strengths set receives the
+error in both planes in proportion to its strengths: with $\beta_{cc,y} =
+100$ m, $\beta_y^* = 0.072$ m, $\sigma_y^* = 8.5$ µm,
+$a_y/a_x = (s_{y,i}/s_i)\,\sqrt{\beta_{cc,y}\beta_y^*}\,\sigma_x^*/
+(\sqrt{\beta_{cc,x}\beta_x^*}\,\sigma_y^*) = 0.93\,s_{y,i}/s_i$, and the
+vertical telescope's zero phase advance delivers the kick to the IP as an
+angle rather than an offset, which by the lemma of section 2.3 leaves the
+growth rate unchanged.
+
+Superseded model (the semantics shipped 2026-10-12 to 2026-10-15 as the
+default taken in the owner's absence, and the one the 2026-10-14 record
+measured): one absolute offset $\delta s$ added to both `strengthX[i]` and
+`strengthY[i]` gave a horizontal cavity a vertical crabbing error of the
+same absolute slope, $a_y = \sqrt{\beta_{cc,y}\beta_y^*}\,\delta s\,
+\langle\sin^2 ikz\rangle^{1/2}/(ik\,\sigma_y^*) = 0.93\,a_x$
+($9.50\times10^{-4}$ and $2.18\times10^{-4}$ on harmonics 1 and 2), hence a
+vertical rate 0.865 of the horizontal under amplitude noise, measured 1.16
+with the beam-beam coupling included.
 
 ## 4. Emittance growth of the weak beam
 
@@ -394,9 +419,12 @@ vertically beyond its baseline). The mechanism is the $x$-dependence of the
 flat strong beam's vertical force: an offset $d\,\sigma_x^*$ changes the
 vertical kick on a particle at $(x, y)$ by $\partial_x F_y(x, y)\,d\,\sigma_x^*$
 to first order, a stochastic vertical kick that grows $\varepsilon_y$ by the
-random-kick formula of 4.1. The same term lifts the amplitude runs'
-vertical rate above the both-planes prediction of 3.2 (scale 1: measured
-$1.180\times10^{-6}$ against $9.5\times10^{-7}$ per turn). The ratio
+random-kick formula of 4.1. Under the superseded additive strength
+semantics the same term lifted the amplitude runs' vertical rate above the
+both-planes prediction (scale 1: measured $1.180\times10^{-6}$ against
+$9.5\times10^{-7}$ per turn, the 2026-10-14 record); under the relative
+semantics of 3.2 the amplitude runs' vertical rate is this coupling alone,
+which the re-validation of 2026-10-15 measures. The ratio
 $R = (d\langle J_y\rangle/dn)/(d\langle J_x\rangle/dn)$ for white horizontal
 offset noise, $\langle(\partial_x F_y)^2\rangle\,\beta_y^*/\varepsilon_y$ over the
 weak-beam distribution against the horizontal response of 4.3, is not
@@ -520,11 +548,15 @@ small-offset regime holds to $s \sim 100$).
 | | pink ($\bar\rho_x = 0.15$) | $x$ | $2.5\times10^{-8}$ | 7.1 | 350 s |
 | | table, white record | $x$ | as white | | |
 | | any | $y$ | 0 | | |
-| amplitude, $\sigma_A = 10^{-4}$ | white | $x$ | $1.10\times10^{-6}$ | 309 | 8 s |
-| | white | $y$ | $9.5\times10^{-7}$ | 267 | 9 s |
-| | pink ($\bar\rho$) | $x$ | $1.6\times10^{-7}$ | 45 | 55 s |
-| | pink ($\bar\rho$) | $y$ | $1.6\times10^{-7}$ | 45 | 55 s |
+| amplitude, $\sigma_A = 10^{-4}$ (relative) | white | $x$ | $1.10\times10^{-6}$ | 309 | 8 s |
+| | white | $y$ | 0 without the strong beam; the coupling of 4.5 only with it | | |
+| | pink ($\bar\rho_x$) | $x$ | $1.6\times10^{-7}$ | 45 | 55 s |
+| | pink | $y$ | 0 without the strong beam; the coupling only with it | | |
 | phase, common-timing alternative | white | $x$ | $1.01\times10^{-7}$ | 28.5 | 87 s |
+
+The amplitude rows' vertical entries read $9.5\times10^{-7}$ (white) and
+$1.6\times10^{-7}$ (pink) per turn under the superseded additive semantics of
+3.2; those are the numbers the 2026-10-14 record measured against.
 
 Harmonic 2 carries 1.3 % of the phase-noise rate and 5 % of the
 amplitude-noise rate. The central values carry the exact bunch averages, a
@@ -597,7 +629,9 @@ filesystem dominates, as the example's output block records).
 
 **Sweep.** Phase rules act on harmonics 1 and 2 of both cavities with
 distinct `rng_id`s per cavity (also distinct from the beam's 1 and the
-radiation's 2); strength rules likewise with $\sigma = s\cdot10^{-4}|s_i|$.
+radiation's 2); strength rules likewise with the relative
+$\sigma = s\cdot10^{-4}$ handed over directly (the factor on both planes'
+strengths; before 2026-10-15 the absolute $s\cdot10^{-4}|s_i|$).
 
 | run | rule | $s$ | `kbb` | $\xi'$ | turns | purpose |
 |---|---|---|---|---|---|---|
@@ -606,23 +640,25 @@ radiation's 2); strength rules likewise with $\sigma = s\cdot10^{-4}|s_i|$.
 | P1 | phase `PinkNoise`(16 octaves) | 1 | on | 2/2 | $2^{17}$ | pink/white ratio vs $\bar\rho_x$ |
 | T1 | phase `TurnTable` = W1's realised offsets | 1 | on | 2/2 | $10^5$ | bitwise reproduction of W1 |
 | T2 | phase `TurnTable` = independent seeded white record | 1 | on | 2/2 | $10^5$ | table reproduces the white rate |
-| A1 A4 | strength `WhiteNoise` | 1, 4 | on | 2/2 | $10^5$ | $x$ and $y$ rates; no centroid motion |
-| AP1 | strength `PinkNoise` | 1 | on | 2/2 | $2^{17}$ | pink/white in $x$ and $y$ |
-| AT1 | strength `TurnTable` = seeded white record $\times\lvert s_i\rvert$ | 1 | on | 2/2 | $10^5$ | table reproduces white |
+| A1 A4 | strength `WhiteNoise` | 1, 4 | on | 2/2 | $10^5$ | $x$ rate; $y$ the coupling of 4.5 only; no centroid motion |
+| AP1 | strength `PinkNoise` | 1 | on | 2/2 | $2^{17}$ | pink/white in $x$ ($y$ information) |
+| AT1 | strength `TurnTable` = seeded white record of relative factors | 1 | on | 2/2 | $10^5$ | table reproduces white |
 | C0 | none | – | 0 | 0/0 | $10^5$ | linear baseline |
 | C1 | phase `WhiteNoise` | 1 | 0 | 0/0 | $10^5$ | direct term: centroid vs exact linear prediction; $\varepsilon_c$ flat |
-| C2 | strength `WhiteNoise` | 1 | 0 | 0/0 | $10^5$ | direct term lands in $\varepsilon_c$; centroid flat |
+| C2 | strength `WhiteNoise` | 1 | 0 | 0/0 | $10^5$ | direct term lands in $\varepsilon_c$ in $x$; $\varepsilon_{c,y}$ at the baseline; centroid flat |
 | C3 (optional) | phase `WhiteNoise` | 1 | 0 | 2/2 | $10^5$ | reversible chromatic decoherence $\le 7\,\%$ of $J_c$ |
 
 **Acceptance.**
 
 1. Rates (baseline-subtracted $\bar J_{\rm raw}$ slope over $\varepsilon$)
-   for W1, A1 ($x$ and $y$), T2, AT1 within a factor 1.25 of section 6;
-   the baseline slope below 5 % of the $s = 1$ prediction.
+   for W1, A1 ($x$), T2, AT1 within a factor 1.25 of section 6; the
+   baseline slope below 5 % of the $s = 1$ prediction. A1's vertical rate
+   is reported as the coupling of 4.5, not judged against a prediction.
 2. The exponent of rate versus $s$ from W1–W3 (and A1, A4) equal to 2 within
    $\pm0.1$ (log–log fit).
-3. P1/W1 and AP1/A1 rate ratios equal to $\bar\rho$ within $\pm25\,\%$
-   ($\bar\rho_x = 0.15$: accept $[0.11, 0.19]$; $\bar\rho_y = 0.17$).
+3. P1/W1 and AP1/A1 rate ratios in $x$ equal to $\bar\rho_x = 0.15$ within
+   $\pm25\,\%$ (accept $[0.11, 0.19]$); the vertical AP1/A1 ratio is
+   information, its rates being the coupling's.
 4. T1's moment columns equal W1's to $10^{-10}$ relative (bitwise is
    expected; the tolerance covers reduction order).
 5. With the strong beam on, the $\varepsilon_c$ slope is at least 0.8 of the
@@ -633,8 +669,12 @@ radiation's 2); strength rules likewise with $\sigma = s\cdot10^{-4}|s_i|$.
    $\langle\cos ikz\rangle$ from the sampled $z$) to 1 % of its rms
    excursion; the $\varepsilon_c$ slope is below 1 % of the predicted raw
    rate; $\bar J_{\rm raw} - \varepsilon_c = J_c$ turn by turn.
-7. C2: the $\varepsilon_c$ slope equals the predicted rate within a factor
-   1.25 and the centroid stays within its sampling noise.
+7. C2: the horizontal $\varepsilon_c$ growth follows the covariance
+   propagation of the realised strength factors through the linear maps
+   (the record's control part; a first-moment rate ratio carries a 100 %
+   single-realisation floor without tune spread), the vertical
+   $\varepsilon_c$ stays at the C0 baseline, and the centroid stays within
+   its sampling noise.
 8. Fit quality: slopes from the two halves of the window agree within twice
    the expected spectral scatter; residual rms below 5 % of the total growth.
 
@@ -644,25 +684,42 @@ ignored); a phase-noise rate off by $(4/3)^2$, by $1/\langle\cos^2 kz\rangle$,
 or by 2 (weights, bunch factor, or one cavity silent); two cavities sharing a
 stream (their kicks correlate and the rate departs from the independent
 prediction by a factor of order $1\pm\cos(\cdot)$); T1 differing from W1
-(the table and white paths add different numbers); no vertical growth under
-amplitude noise, or vertical growth under phase noise WITHOUT the strong
-beam (the both-planes semantics not as coded; with the strong beam on, 4.5
-makes vertical growth under phase noise expected, at a fraction $R$ of the
-horizontal rate, measured 0.2 at the production point); a rate that depends
-on $N$ or on the backend beyond tolerance.
+(the table and white paths add different numbers); vertical growth under
+horizontal amplitude noise WITHOUT the strong beam (a horizontal cavity
+kicking vertically: the relative strength semantics not as coded), or
+vertical growth under phase noise without the strong beam (with the strong
+beam on, 4.5 makes vertical growth under either noise expected, at the
+coupling's fraction $R$ of the horizontal rate, measured 0.2 for phase noise
+at the production point); a horizontal amplitude-noise rate that changes
+with the convention (the absolute horizontal error $s_i d$ is the same
+number for the same relative rms); a rate that depends on $N$ or on the
+backend beyond tolerance.
 
 ## 8. Owner-facing ambiguities
 
 1. **Per-harmonic independent streams versus common timing.** Adopted:
    independent, 10 µrad on each of the two active harmonics of each cavity.
    Common timing gives 0.59 of the rate (section 2.4).
-2. **The both-planes strength semantics.** A horizontal cavity with
-   `strengthY = 0` acquires vertical crabbing noise of the same absolute
-   slope, so the vertical emittance grows at 0.87 of the horizontal rate
-   under amplitude noise. A physical voltage error scales both planes
-   proportionally and would give no vertical noise here. Decide: keep the
-   semantics and validate the vertical rate (a free check of the $y$
-   mapping), or change the rule to a relative scaling.
+2. **The both-planes strength semantics (decided 2026-10-15 by the owner:
+   a relative factor on both planes).** As raised: a horizontal cavity with
+   `strengthY = 0` acquired vertical crabbing noise of the same absolute
+   slope, so the vertical emittance grew at 0.87 of the horizontal rate
+   under amplitude noise, where a physical voltage error scales both planes
+   proportionally and gives no vertical noise here. The owner's reasoning:
+   one voltage driver excites a cavity's horizontal and vertical kick, so
+   one relative amplitude error $d$ scales both, $S_X(1+d)$ and $S_Y(1+d)$;
+   a second driver is a second cavity. The additive semantics, the
+   2026-10-12 default taken in the owner's absence, made a horizontal
+   cavity kick vertically (predicted 0.865 of the horizontal rate; the
+   2026-10-14 record measured 1.16 including the beam-beam coupling).
+   Under the relative semantics the horizontal physics is unchanged (the
+   absolute horizontal kick error is $S_X d$, the same number as before for
+   the same relative rms) and a horizontal cavity's vertical kick is zero;
+   the falsifier is vertical emittance growth under horizontal amplitude
+   noise without beam-beam. The RF cavity's voltage follows the same
+   convention, $V(1+d)$. Implementation: stage 0 of
+   `../design/turn_modulation_record.md`, in progress 2026-10-15; record
+   `../history/crab_cavity_noise_relative_strength_2026_10_15.md`.
 3. **The production point is loud.** Doubling times of a minute (phase)
    and eight seconds (amplitude); fine as a test point, where $10^5$ turns
    (1.3 s of beam) give 2–11 % growth, but not an LLRF specification. The

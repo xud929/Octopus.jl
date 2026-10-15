@@ -9,7 +9,12 @@
 > on both proton crab cavities of the EIC weak-strong case) with the theory
 > note `../theory/crab_cavity_noise_response.md`, which derives the kick
 > errors, the IP offsets and the emittance growth the rules drive, and the
-> campaign record `../history/crab_cavity_noise_validation_2026_10_14.md`.**
+> campaign record `../history/crab_cavity_noise_validation_2026_10_14.md`.
+> Strength semantics changed 2026-10-15 (owner decision, section 10, stage 0
+> of `turn_modulation_record.md`): the `strength_noise` offset is a
+> dimensionless relative factor `d` scaling both planes' strengths,
+> `S (1 + d)`, on the crab cavity and the RF cavity alike; record
+> `../history/crab_cavity_noise_relative_strength_2026_10_15.md`.**
 > Designed
 > 2026-10-12 in owner discussion. This note records the architecture decision
 > for element parameters that change from one turn to the next inside a
@@ -164,11 +169,13 @@ The artifact reserves a per-window checkpoint group for such state
 (`turn_modulation_record.md`, D10), written by nothing today.
 
 **D7. The table rule is a pure consumer (owner decision, 2026-10-12).** It
-takes a vector of per-turn additive offsets in the parameter's own unit and
-nothing else. Spectrum synthesis, the revolution frequency, unit conversion,
-normalisation, Gaussianity and periodicity are the data producer's
+takes a vector of per-turn offsets in the slot's own unit (radians on a
+phase slot; on a strength slot, since 2026-10-15, dimensionless relative
+factors) and nothing else. Spectrum synthesis, the revolution frequency, unit
+conversion, normalisation, Gaussianity and periodicity are the data producer's
 responsibility and the rule neither checks nor claims them. The rule owns
-exactly: the additive semantics, absolute-turn indexing, the length, finiteness
+exactly: the offset semantics (added to a phase, the factor `1 + d` on a
+strength), absolute-turn indexing, the length, finiteness
 and element-type guardrails, and provenance in the run artifact. The
 alternative, a rule that takes a spectrum and a revolution frequency, was
 rejected because the revolution frequency is a ring-level quantity the cavity
@@ -190,10 +197,16 @@ length `N` mirroring the harmonic-tuple convention:
 
 - `phase_noise`: per harmonic, a rule or `nothing`; unit rad; default a tuple
   of `nothing` (inactive).
-- `strength_noise`: per harmonic, a rule or `nothing`; unit that of
-  `strengthX` and `strengthY`; default inactive. A single rule per harmonic
-  perturbs both planes' strengths by the same realised offset, which is what
-  one cavity voltage does; separate planes are not a use case this note knows.
+- `strength_noise`: per harmonic, a rule or `nothing`; dimensionless, a
+  relative factor; default inactive. A single rule per harmonic realises one
+  factor `d` and scales both planes' strengths by it, `strengthX (1 + d)` and
+  `strengthY (1 + d)`: one voltage driver excites a cavity's horizontal and
+  vertical kick, so one relative amplitude error scales both, and a second
+  driver is a second cavity (owner decision 2026-10-15, section 10; the RF
+  cavity's voltage follows the same convention, `V (1 + d)`). Separate planes
+  are not a use case this note knows. Until 2026-10-15 the rule added one
+  absolute offset in the strengths' unit to both planes, the default taken in
+  the owner's absence, which made a horizontal cavity kick vertically.
 
 Every rule type is a public object with `ParamMeta`-grade metadata (type,
 unit, meaning, inactive behaviour) so `element_help`,
@@ -525,7 +538,7 @@ its metadata.
 
 ```julia
 struct TurnTable{T}
-    offsets::Vector{T}      # entry i is the additive offset on absolute turn i - 1
+    offsets::Vector{T}      # entry i is the offset on absolute turn i - 1 (rad, or a relative factor)
     digest::UInt64          # recorded in the run artifact
     name::String            # whatever the producer called it; provenance only
 end
@@ -537,13 +550,17 @@ Before the first turn of every `execute!` window the task checks
 `first_turn + turns <= length(offsets)` and throws otherwise, so a run never
 runs out mid-window and never wraps: a wrapped sequence is periodic in the
 table length and would correlate turn `t` with turn `t - N` silently.
-`realize` returns `base` with `offsets[ctx.turn + 1]` added to the nominal
-value, and the rule unchanged.
+`realize` returns `base` with `offsets[ctx.turn + 1]` applied to the nominal
+value (added to a phase; on a strength the factor `1 + offsets[ctx.turn + 1]`
+on both planes, since 2026-10-15), and the rule unchanged.
 
 What the rule does **not** do, by D7: no spectrum, no revolution frequency, no
-units beyond "same as the parameter", no Gaussianity check, no periodicity
-check. A producer who wants relative amplitude noise multiplies by the nominal
-strength before handing over the table.
+units beyond the slot's own (radians on a phase slot; on a strength slot the
+dimensionless relative factor, so a strength table holds relative factors and
+its entries do not depend on the nominal strength), no Gaussianity check, no
+periodicity check. Before 2026-10-15 a producer who wanted relative amplitude
+noise multiplied by the nominal strength before handing over the table; under
+the relative semantics that table is wrong by the nominal strength.
 
 ### 5.7 Summary
 
@@ -714,8 +731,10 @@ Tests the implementation owes, each shown to fail without its feature:
   planes.
   Decided 2026-10-15 by the owner: relative scaling per harmonic, `S (1 + d)`
   on both planes of the crab cavity and on the RF cavity's voltage, one
-  voltage driver per cavity; implementation owed (`turn_modulation_record.md`,
-  section 7 stage 0). Why it must be decided (2026-10-14, the theory note
+  voltage driver per cavity; implementation in progress 2026-10-15 as stage 0
+  of `turn_modulation_record.md` (section 7), record
+  `../history/crab_cavity_noise_relative_strength_2026_10_15.md`. Why it must
+  be decided (2026-10-14, the theory note
   `../theory/crab_cavity_noise_response.md`, sections 3.2 and 8): under this
   semantics a horizontal cavity with `strengthY = 0` acquires vertical
   crabbing noise of the same absolute slope, so at the production point

@@ -19,8 +19,8 @@ Run from the project root; the first argument selects the part, the rest are
     julia --project=. validation/crab_cavity_noise_response.jl tablefile [path=<out>/W1_realised_offsets.tsv turns=100000 scale=1 phase_rms=10e-6 strength_rel_rms=0 out=<dir>]
     julia --project=. validation/crab_cavity_noise_response.jl pilot     [turns=6000 n_macro=100000 turns_timing=1000 n_macro_timing=1000000 moment_step=1 gpu=1 threads=4 n0=2000 artifact_dir=<out> out=<dir>]
     julia --project=. validation/crab_cavity_noise_response.jl sweep     tag=<tag> [cases=B0,W1,A1,W2,W3,P1,T2,A4,AP1,AT1,C0,C1,C2,T1 turns=100000 turns_pink=131072 turns_a4=25000 turns_a4s=12500 n_macro=1000000 moment_step=1 gpu=1 threads=4 n0=2000 radiation=0 artifact_dir=<out> table_file=<out>/W1_realised_offsets_T<turns>.tsv out=<dir>]
-    julia --project=. validation/crab_cavity_noise_response.jl control   tsv=<sweep tsv> [case=C1 baseline=C0 tol_centroid=0.01]
-    julia --project=. validation/crab_cavity_noise_response.jl report    tsv=<sweep tsv> [ref_y_over_x_phase=<none> ref_phase_white_x=1.72e-7 ref_amp_white_x=1.10e-6 ref_amp_white_y=9.5e-7 ref_pink_ratio_x=0.15 ref_pink_ratio_y=0.17 tol_rate=1.25 tol_exp=0.1 tol_ratio=0.25 tol_t1=1e-10 tol_epsc_frac=0.8 tol_jc_frac=0.10 tol_baseline=0.05 tol_halves=0.20 tol_resid=0.05 tol_c1_epsc=0.01]
+    julia --project=. validation/crab_cavity_noise_response.jl control   tsv=<sweep tsv> [case=C1 baseline=C0 tol_centroid=0.01 cov_cases=C0,C1,C3,C2 tol_c2=0.10 tol_c2_y=0.05 n0=2000]
+    julia --project=. validation/crab_cavity_noise_response.jl report    tsv=<sweep tsv> [ref_y_over_x_phase=<none> ref_phase_white_x=1.72e-7 ref_amp_white_x=1.10e-6 ref_pink_ratio_x=0.15 ref_pink_ratio_y=0.17 tol_rate=1.25 tol_exp=0.1 tol_ratio=0.25 tol_t1=1e-10 tol_epsc_frac=0.8 tol_jc_frac=0.10 tol_baseline=0.05 tol_halves=0.20 tol_resid=0.05 tol_c1_epsc=0.01]
 
 `out` (every part) is the output directory, default `result/crab_noise/`
 under the project root (git-ignored; never evidence). Everything a verdict
@@ -47,7 +47,11 @@ realises it on every absolute turn 0:N-1 (N = `turns`, default 65536 = 2^16,
 a power of two for whole octave bands) with a `TrackingContext(turn, seed =
 123456789, rng_method = :philox)` -- the example's seed, the context
 `execute!` builds. Per rule the specification is sigma_phase = 10e-6 rad on
-harmonics 1-2 and sigma_strength_i = 1e-4 |strengthX_i| on harmonics 1-2,
+harmonics 1-2 and sigma_strength = 1e-4 on harmonics 1-2 -- the RELATIVE rms
+itself: a strength value d is a dimensionless factor the cavity realises as
+strengthX_i (1 + d) and strengthY_i (1 + d), one voltage driver per cavity
+(owner decision, relative since 2026-10-15; before, one absolute offset of
+rms 1e-4 |strengthX_i| was ADDED to both planes) --
 harmonic 3 (weight 0) inactive; two cavities with the example's explicit
 stream ids (examples/crab_cavity_noise.jl: tccb `10 + slot`, tcca `20 +
 slot`, slot = i for `phase_noise[i]` and 3 + i for `strength_noise[i]`, so
@@ -135,18 +139,31 @@ Error metrics and tolerances (each printed as PASS/FAIL with its number):
                computed from the two sequences' sample autocorrelations for
                every pair and printed; for white pairs it reproduces
                1/sqrt(N) to a few percent.
-  both planes  the realised strengthX offset equals the strengthY offset on
-               every turn to within 4 ulp of the nominal strength (one
-               draw is added to both planes; the X offset is recovered by
-               subtracting the nonzero nominal, the Y one is exact).
+  exact        on every turn the element applied the rules' own values
+               (`_turn_offset`: sigma times the counter-RNG draw, the pink
+               sum, the table entry) BITWISE: phase_i == nominal + d on a
+               phase slot and, on a strength slot, strengthX_i == strengthX_i
+               (1 + d) with strengthY_i EXACTLY 0.0 (nominal 0: a horizontal
+               cavity's amplitude noise kicks nothing vertically -- the
+               falsifier of the one-driver decision of 2026-10-15; the
+               additive semantics before it put d itself on the Y plane).
+               The pink-construction and table items compare the rules' own
+               values; the strength sequences the statistics read are the
+               factors recovered from the realised X plane,
+               (strengthX_realised - strengthX)/strengthX: the subtraction is
+               exact (Sterbenz), the (1 + d) rounding, the product's and the
+               division's each cost up to one ulp of 1, so the recovered
+               factor is within 4 eps(1.0) of d (checked and printed).
   inactive     harmonic 3 (phase and strength) and the base element are
                untouched bitwise on every turn.
   scale        rebuilding every rule with sigma x `scale_check` (the record
                x `scale_check` for the table) multiplies every realised
                sequence by exactly that factor: |rms_scaled/(scale rms) - 1|
                <= 1e-12 (the same normals, scaled).
-  table        the realised phase sequence equals the record bitwise on every
-               turn (the strength one via the Y plane); a short CPU
+  table        every slot's realised value equals the record bitwise on every
+               turn (the rule's value, applied by the element per the `exact`
+               item; a strength slot's recovered factors agree with the
+               record to 4 eps(1.0)); a short CPU
                `TrackingTask` run (256 macroparticles, 16 turns, the
                table-carrying cavity alone) writes a run artifact whose
                `turn_modulation_provenance(path)` lists both cavities, each
@@ -167,7 +184,10 @@ writes them as the table file the harness's OCTOPUS_TABLE_FILE reads: a TSV
 with one column per active slot, `<cavity>_phase_noise_<i>` /
 `<cavity>_strength_noise_<i>`, one row per turn, each value its shortest
 round-trip repr (exact Float64). The phase offset is `sigma * n` exactly
-(nominal phase 0); the strength offset is read from the Y plane (nominal 0).
+(nominal phase 0); the strength factor is the rule's own value `sigma * n`
+(`_turn_offset`), exact -- the realised strength is strengthX (1 + sigma n),
+from which the factor is not recoverable bitwise -- and the X plane is
+asserted equal to strengthX (1 + d), the Y plane to 0.0, turn by turn.
 Prints each column's FNV-1a digest, the value the run artifact records.
 
 PART `pilot` (the calibration; GPU). Runs the developer harness
@@ -255,11 +275,12 @@ the colliding runs, C0 for the kbb = 0 chrom 0 controls):
      regime's edge; the B0 slope below tol_baseline of the s = 1 prediction;
  (1b) INFO rows "beam-beam-mediated vertical response": the y/x rate ratio
      under phase noise (W1-W3, P1, T1, T2; measured/predicted when
-     ref_y_over_x_phase is given) and the vertical excess over the
-     both-planes prediction under amplitude noise (A1, A4, AP1, AT1); judged
-     only through the kbb = 0 controls: C1 must show no vertical growth
-     beyond C0 (6), C2 the both-planes vertical growth (part `control`'s
-     covariance propagation in y);
+     ref_y_over_x_phase is given) and the vertical rate under amplitude
+     noise (A05-A4, AP1, AT1), the beam-beam coupling ALONE since the
+     relative strength rule leaves strengthY = 0 (no both-planes term,
+     2026-10-15; `ref_amp_white_y` is retired and refused); judged only
+     through the kbb = 0 controls: C1 must show no vertical growth beyond C0
+     (6) and C2 none either (7), both at 5 % of the predicted x rate;
  (2) exponent of rate against s from W1-W3 and A05, A1, A2 (weighted log-log fit
      over the cases resolved at 2 se) equal to 2 within tol_exp;
  (3) P1/W1 (x), AP1/A1 (x) within tol_ratio of ref_pink_ratio_x; AP1/A1 (y)
@@ -276,11 +297,16 @@ the colliding runs, C0 for the kbb = 0 chrom 0 controls):
      strong beam nothing couples the planes, so growth there would be the
      code's); the centroid against the realisation-aware linear prediction
      is part `control` (below), which `report` points to;
- (7) C2: the diffusion prediction of the eps_c slopes is INFO only (the
+ (7) C2: the diffusion prediction of the eps_c x slope is INFO only (the
      kick sequence is common to every particle and does not decohere
      without tune spread, so one realisation's rate has a 100 % floor); the
-     verdict is part `control`'s covariance propagation; the centroid
-     action below 10/N of eps (sampling) stays a verdict;
+     x verdict is part `control`'s covariance propagation; no vertical
+     growth beyond C0 (|y eps_c rate| <= 5 % of the predicted x rate) is a
+     verdict: under the relative strength rule a horizontal cavity's
+     amplitude noise excites nothing vertically without beam-beam, the
+     falsifier of the 2026-10-15 decision (the additive semantics grew y at
+     0.87 of the x prediction, measured 1.99e-7 per turn on 2026-10-14); the
+     centroid action below 10/N of eps (sampling) stays a verdict;
  (8) fit quality: the two-half slopes within tol_halves of the rate and the
      residual rms below tol_resid of the growth for the white drives; A4s
      and A4 (21 % and 39 % growth) are INFO; (8b) derives the single-realisation scatter
@@ -291,7 +317,8 @@ the colliding runs, C0 for the kbb = 0 chrom 0 controls):
 Falsifiers are printed by name when they trigger: no s^2 scaling; pink equal
 to white; W1 closer to (4/3)^2, 1/<cos^2 kz> or 2 times the prediction than
 to it; T1 differing from W1; vertical growth under phase noise without the
-strong beam (C1); none under amplitude noise. The
+strong beam (C1) or under horizontal amplitude noise without the strong beam
+(C2). The
 reference numbers are arguments with the theory note's section 6 values as
 defaults; no verdict uses a constant that is not printed.
 Prints `CRAB-NOISE-REPORT checks=.. failed=.. verdict=PASS|FAIL`; exit 1 on FAIL.
@@ -313,21 +340,28 @@ turn-by-turn table) and `CRAB-NOISE-CONTROL ... verdict=PASS|FAIL`.
 The same part then runs the covariance propagation (acceptance 7) over
 `cov_cases` (default C0,C1,C3,C2): the initial sample's central 6x6 second
 moments propagated turn by turn through the same maps with the REALISED
-strength offsets of both cavities and the linearised shipped kick px -= d z,
-py -= d z, pz -= d (x + y), d = sum_i <cos(i k z)> Delta_i (the regression of
--Delta_i sin(i k z)/(i k) and -Delta_i (x + y) cos(i k z) on the coordinates
-for the sampled Gaussian z; the unexplained nonlinear variance, 0.06 % at
-k sigma_z = 0.25 and 1.0 % at 0.50, and the error of a bare linearisation,
-6 % and 27 %, are printed). Validated where the answer is known -- C0 flat,
-C1 and C3 flat in the model (a dipole drive), their measured eps_c slopes
-being the model's floor (the z-dependence of the phase kick) and the
-chromatic decoherence it does not contain -- and judged on C2: the measured
-eps_c slopes in x and y against the propagated ones over [n0, T] within
-`tol_c2` (0.10; the model residual is 0.1 %, the fit windows are identical,
-so the margin is two orders of magnitude). Exact for a linear kick on any
-distribution, so no decoherence is required: a y agreement falsifies a
-strength offset that did not reach strengthY, an x agreement a kick model
-other than -Delta sin(i k z)/(i k) with the realised Delta. Prints
+relative strength factors d_i of both cavities (S -> S (1 + d_i), so the
+per-turn kick change is dpx = -S_X,i d_i sin(i k z)/(i k), dpy = -S_Y,i d_i
+sin(i k z)/(i k), zero for the EIC cavity whose strengthY is 0, and dpz =
+-(S_X,i x + S_Y,i y) d_i cos(i k z)) and the linearised shipped kick px -= dX
+z, py -= dY z, pz -= dX x + dY y, dX = sum_i <cos(i k z)> S_X,i d_i, dY =
+sum_i <cos(i k z)> S_Y,i d_i = 0 here (the regression of -S d sin(i k z)/(i k)
+and -S d x cos(i k z) on the coordinates for the sampled Gaussian z; the
+unexplained nonlinear variance, 0.06 % at k sigma_z = 0.25 and 1.0 % at 0.50,
+and the error of a bare linearisation, 6 % and 27 %, are printed). Validated
+where the answer is known -- C0 flat, C1 and C3 flat in the model (a dipole
+drive), their measured eps_c slopes being the model's floor (the z-dependence
+of the phase kick) and the chromatic decoherence it does not contain -- and
+judged on C2: the measured eps_c x slope against the propagated one over
+[n0, T] within `tol_c2` (0.10; the model residual is 0.1 %, the fit windows
+are identical, so the margin is two orders of magnitude), and the measured
+eps_c y slope minus the baseline's within `tol_c2_y` (0.05) of the propagated
+x slope, the propagated y being exactly flat (dY = 0). Exact for a linear
+kick on any distribution, so no decoherence is required: a flat y falsifies a
+strength factor that reached strengthY = 0 as the additive both-planes
+semantics did before 2026-10-15 (it predicted 0.87 of the x rate; the
+FALSIFIER line names it), an x agreement falsifies a kick model other than
+-S_X d sin(i k z)/(i k) with the realised d. Prints
 `CRAB-NOISE-CONTROL-COVARIANCE checks=.. failed=.. verdict=..`.
 =#
 
@@ -369,7 +403,8 @@ const HARMONIC_WEIGHTS = (4.0 / 3.0, -1.0 / 3.0, 0.0)
 const CCKICK = tan(HALF_CROSSING) / sqrt(BETA_X_STAR * CRAB_BETA_X)
 const CC_STRENGTH_X = CCKICK .* HARMONIC_WEIGHTS
 const SIGMA_PHASE = 10.0e-6            # rad, harmonics 1-2
-const REL_AMPLITUDE = 1.0e-4           # of |strengthX_i|, harmonics 1-2
+const REL_AMPLITUDE = 1.0e-4           # the strength rule's sigma, the RELATIVE rms (S (1 + d)), harmonics 1-2
+const CC_STRENGTH_Y = (0.0, 0.0, 0.0)  # the example's vertical strengths: a horizontal cavity
 const RNG_ID_BASE = (tccb = 10, tcca = 20) # the example's: rng_id = base + slot
 const TABLE_SEED = 20261014                # the example's table_seed
 const TABLE_TURNS_DEFAULT = 1_048_576      # the example's table_turns
@@ -516,7 +551,7 @@ chi2_quantile_wh(nu, z) = nu * (1 - 2 / (9nu) + z * sqrt(2 / (9nu)))^3
 function cavity_spec(rule::Symbol, scale::Float64, cav::Symbol, tables)
     base = RNG_ID_BASE[cav]
     sig_phase = scale * SIGMA_PHASE
-    sig_strength = scale .* REL_AMPLITUDE .* abs.(CC_STRENGTH_X)
+    sig_strength = (scale * REL_AMPLITUDE, scale * REL_AMPLITUDE)   # the relative rms itself, no |strengthX_i| factor
     make(sigma, slot, k, label) =
         rule === :white ? WhiteNoise(sigma; rng_id=base + slot) :
         rule === :pink ? PinkNoise(sigma; rng_id=base + slot, octaves=PINK_OCTAVES) :
@@ -524,37 +559,55 @@ function cavity_spec(rule::Symbol, scale::Float64, cav::Symbol, tables)
     phase_rules = (make(sig_phase, 1, 1, "phase_noise[1]"), make(sig_phase, 2, 2, "phase_noise[2]"), nothing)
     strength_rules = (make(sig_strength[1], 4, 3, "strength_noise[1]"),
                       make(sig_strength[2], 5, 4, "strength_noise[2]"), nothing)
-    return ThinCrabCavitySpec{3}(CC_FREQUENCY; strengthX=CC_STRENGTH_X, strengthY=(0.0, 0.0, 0.0),
+    return ThinCrabCavitySpec{3}(CC_FREQUENCY; strengthX=CC_STRENGTH_X, strengthY=CC_STRENGTH_Y,
                                  phase=(0.0, 0.0, 0.0), phase_noise=phase_rules,
                                  strength_noise=strength_rules)
 end
 
-# Realise a compiled cavity on turns 0:N-1 through the pure hook. Returns the
-# four active slot sequences (phase 1, phase 2, strength 1 via the Y plane,
-# strength 2 via the Y plane), the worst |dX - dY| in ulps of the nominal
-# strength, and whether the inactive harmonic 3 stayed untouched.
+# Realise a compiled cavity on turns 0:N-1 through the pure hook. Returns
+#   seqs    the four active slot sequences AS THE ELEMENT CARRIES THEM: phase
+#           1, phase 2 as the realised phase minus the nominal (exact, nominal
+#           0); strength 1, strength 2 as the RELATIVE factor recovered from
+#           the X plane, (strengthX_realised - strengthX)/strengthX -- the
+#           subtraction is exact by Sterbenz, the (1 + d) rounding, the
+#           product's and the division's each cost up to one ulp of 1;
+#   draws   the rules' own values on each turn (`_turn_offset`: phase slots
+#           1, 2 and strength slots 3 + i), the bitwise reference for the
+#           pink-construction and table items;
+#   exact_ok whether the element applied every value BITWISE on every turn:
+#           phase_i == nominal + d (additive) and strengthX_i == strengthX_i
+#           (1 + d) with strengthY_i === 0.0 (relative, 2026-10-15: a
+#           horizontal cavity's amplitude noise kicks nothing vertically);
+#   worst_recover_ulps  max |recovered - d| over the strength slots in eps(1.0);
+#   inactive_ok  whether the inactive harmonic 3 stayed untouched.
 function realise_sequences(w::TurnModulated, N::Int)
     base = w.base
     seqs = [zeros(N) for _ in 1:4]
-    worst_plane_ulps = 0.0
+    draws = [zeros(N) for _ in 1:4]
+    exact_ok = true
+    worst_recover_ulps = 0.0
     inactive_ok = true
     for t in 0:N-1
         ctx = TrackingContext(turn=t, seed=SEED, rng_method=:philox)
         u = Octopus.update(w, ctx)
         typeof(u) === typeof(w) || error("update changed the wrapper type on turn $(t)")
         c = u.inner
-        seqs[1][t+1] = c.phase[1] - base.phase[1]
-        seqs[2][t+1] = c.phase[2] - base.phase[2]
         for i in 1:2
-            dX = c.strengthX[i] - base.strengthX[i]
-            dY = c.strengthY[i] - base.strengthY[i]
-            seqs[2+i][t+1] = dY
-            worst_plane_ulps = max(worst_plane_ulps, abs(dX - dY) / eps(abs(base.strengthX[i])))
+            dp = Octopus._turn_offset(w.rule.phase[i], ctx, i, Float64)[1]
+            draws[i][t+1] = dp
+            seqs[i][t+1] = c.phase[i] - base.phase[i]
+            exact_ok &= c.phase[i] == base.phase[i] + dp
+            d = Octopus._turn_offset(w.rule.strength[i], ctx, 3 + i, Float64)[1]
+            draws[2+i][t+1] = d
+            exact_ok &= c.strengthX[i] == base.strengthX[i] * (1 + d) && c.strengthY[i] === 0.0
+            recovered = (c.strengthX[i] - base.strengthX[i]) / base.strengthX[i]
+            seqs[2+i][t+1] = recovered
+            worst_recover_ulps = max(worst_recover_ulps, abs(recovered - d) / eps(1.0))
         end
         inactive_ok &= c.phase[3] == base.phase[3] && c.strengthX[3] == base.strengthX[3] &&
                        c.strengthY[3] == base.strengthY[3] && u.base === w.base
     end
-    return seqs, worst_plane_ulps, inactive_ok
+    return seqs, draws, exact_ok, worst_recover_ulps, inactive_ok
 end
 
 function run_noise_part()
@@ -573,15 +626,14 @@ function run_noise_part()
     println("crab cavity noise, part noise: turns = $(N), seed = $(SEED), rng_method = philox, ",
             "rng_ids tccb = $(RNG_ID_BASE.tccb) + slot, tcca = $(RNG_ID_BASE.tcca) + slot (slots 1, 2, 4, 5), pink octaves = $(PINK_OCTAVES), ",
             "table_turns = $(L), table_seed = $(TABLE_SEED)")
-    @printf("specification: sigma_phase = %.3e rad (h1, h2); relative amplitude %.1e of |strengthX| = (%.4e, %.4e) -> sigma_strength = (%.4e, %.4e); h3 inactive\n",
-            SIGMA_PHASE, REL_AMPLITUDE, abs(CC_STRENGTH_X[1]), abs(CC_STRENGTH_X[2]),
-            REL_AMPLITUDE * abs(CC_STRENGTH_X[1]), REL_AMPLITUDE * abs(CC_STRENGTH_X[2]))
+    @printf("specification: sigma_phase = %.3e rad (h1, h2), added to the phase; sigma_strength = %.1e (h1, h2), the RELATIVE rms: a value d scales strengthX_i = (%.4e, %.4e) to strengthX_i (1 + d) and strengthY_i = 0 stays exactly 0 (relative, 2026-10-15); h3 inactive\n",
+            SIGMA_PHASE, REL_AMPLITUDE, CC_STRENGTH_X[1], CC_STRENGTH_X[2])
     println("the stream ids, the table construction (master Xoshiro($(TABLE_SEED)), one UInt64 seed per active slot in construction order, sigma .* randn) and the table names follow examples/crab_cavity_noise.jl",
             isfile(example_path) ? " (present in this tree)" : " (NOT present in this tree: the construction is the one its 2026-10-13 text declared)")
     println()
 
     slot_labels = ["phase_noise[1]", "phase_noise[2]", "strength_noise[1]", "strength_noise[2]"]
-    slot_sigmas = [SIGMA_PHASE, SIGMA_PHASE, REL_AMPLITUDE * abs(CC_STRENGTH_X[1]), REL_AMPLITUDE * abs(CC_STRENGTH_X[2])]
+    slot_sigmas = [SIGMA_PHASE, SIGMA_PHASE, REL_AMPLITUDE, REL_AMPLITUDE]   # rad, rad, relative, relative
     cavities = (:tccb, :tcca)
     sigmas8 = vcat(slot_sigmas, slot_sigmas)
     all_tables = synthetic_tables(sigmas8, L)
@@ -639,7 +691,9 @@ function run_noise_part()
             spec = cavity_spec(rule, 1.0, cav, tables[cav])
             w = compile_runtime(spec)
             w isa TurnModulated || error("compile_runtime did not wrap the $(cav) cavity; got a $(typeof(w))")
-            seqs, plane_ulps, inactive_ok = realise_sequences(w, N)
+            # `rule_values`, not `draws`: the pink item below rebinds `draws` to the
+            # generator vector (a name clash that made the item compare a scalar).
+            seqs, rule_values, exact_ok, recover_ulps, inactive_ok = realise_sequences(w, N)
             append!(seqs8, seqs)
             # The pink rms verdict reads the slot over the long window (header).
             seqs_long = rule === :pink ? realise_sequences(w, N_LONG)[1] : nothing
@@ -648,7 +702,7 @@ function run_noise_part()
             end
             # Scale linearity: the same draws at scale_check times the specification.
             w_s = compile_runtime(cavity_spec(rule, scale_check, cav, tables_s[cav]))
-            seqs_s, _, _ = realise_sequences(w_s, N)
+            seqs_s, _, exact_ok_s, _, _ = realise_sequences(w_s, N)
             for (k, label) in enumerate(slot_labels)
                 sigma = slot_sigmas[k]
                 s = seqs[k]
@@ -676,9 +730,11 @@ function run_noise_part()
                     slot_no = k <= 2 ? k : k + 1
                     gens = pink_generators(RNG_ID_BASE[cav] + slot_no, slot_no, N, PINK_OCTAVES)
                     rec = pink_reconstruct(gens, sigma, N, PINK_OCTAVES)
-                    same_cells = rec == s
+                    # The rule's own value is the bitwise object; the element carries it as
+                    # phase + d or strengthX (1 + d), asserted by the exact item below.
+                    same_cells = rec == rule_values[k]
                     ok = verdict!(same_cells, "$(cav) $(label) == counter-RNG construction",
-                                  string(same_cells), "bitwise, sum_k normal(turn >> k) sigma / sqrt(K), key layout of turn_modulated.jl")
+                                  string(same_cells), "bitwise, sum_k normal(turn >> k) sigma / sqrt(K), key layout of turn_modulated.jl; the rule's value, applied by the element per the exact item")
                     push!(rows, join([rule, cav, label, "pink_cells_bitwise", same_cells, true, "exact", ok], '\t'))
                     draws = reduce(vcat, gens)
                     M = length(draws)
@@ -724,15 +780,31 @@ function run_noise_part()
                               @sprintf("rms_scaled/(scale rms) = %.15f", ratio_s), "|ratio - 1| <= 1e-12")
                 push!(rows, join([rule, cav, label, "scale_linearity", ratio_s, 1.0, 1e-12, ok], '\t'))
                 if rule === :table
-                    exact = seqs[k] == tables[cav][k][1:N]
-                    ok = verdict!(exact, "$(cav) $(label) realised == record bitwise",
-                                  string(exact), "every turn, the record's first $(N) entries")
+                    rec = tables[cav][k][1:N]
+                    exact = rule_values[k] == rec
+                    ok = verdict!(exact, "$(cav) $(label) realised value == record bitwise",
+                                  string(exact), "every turn, the record's first $(N) entries (the rule's value; applied by the element per the exact item)")
                     push!(rows, join([rule, cav, label, "table_bitwise", exact, true, "exact", ok], '\t'))
+                    if k > 2
+                        # The factor recovered from the realised X plane carries the roundings.
+                        dev = maximum(abs.(seqs[k] .- rec)) / eps(1.0)
+                        ok = verdict!(dev <= 4, "$(cav) $(label) recovered factor == record",
+                                      @sprintf("worst %.2f ulp(1)", dev), "<= 4 ulp(1)")
+                        push!(rows, join([rule, cav, label, "table_recovered_ulps", dev, 0.0, 4, ok], '\t'))
+                    end
                 end
             end
-            ok = verdict!(plane_ulps <= 4, "$(cav) strength offset X == Y (both planes)",
-                          @sprintf("worst |dX - dY| = %.2f ulp of the nominal", plane_ulps), "<= 4 ulp")
-            push!(rows, join([rule, cav, "strength_noise[1:2]", "both_planes_ulps", plane_ulps, 0.0, 4, ok], '\t'))
+            # The element applies every value bitwise: phase + d on a phase slot and,
+            # by the relative semantics (owner decision 2026-10-15), one factor d per
+            # harmonic on both planes -- strengthX (1 + d), the zero vertical nominal
+            # staying EXACTLY 0.0, the falsifier of the decision (the additive
+            # semantics before it put d itself on the Y plane).
+            ok = verdict!(exact_ok && exact_ok_s, "$(cav) exact: phase + d; X == S (1 + d), Y === 0.0",
+                          "bitwise on every turn at scale 1 ($(exact_ok)) and at scale $(scale_check) ($(exact_ok_s))", "exact (strength relative, 2026-10-15)")
+            push!(rows, join([rule, cav, "all active slots", "exact_application", exact_ok && exact_ok_s, true, "exact", ok], '\t'))
+            ok = verdict!(recover_ulps <= 4, "$(cav) recovered strength factor vs the rule's value",
+                          @sprintf("worst %.2f ulp(1)", recover_ulps), "<= 4 ulp(1): the (1 + d), product and division roundings")
+            push!(rows, join([rule, cav, "strength_noise[1:2]", "recovered_factor_ulps", recover_ulps, 0.0, 4, ok], '\t'))
             ok = verdict!(inactive_ok, "$(cav) harmonic 3 and base untouched", string(inactive_ok), "bitwise")
             push!(rows, join([rule, cav, "harmonic 3", "inactive", inactive_ok, true, "exact", ok], '\t'))
         end
@@ -901,7 +973,9 @@ end
 # per active slot, `<cavity>_phase_noise_<i>` / `<cavity>_strength_noise_<i>`,
 # one row per turn, every value printed as its shortest round-trip repr
 # (exact Float64). The phase offset is `sigma * n` exactly (nominal phase 0);
-# the strength offset is read from the Y plane, whose nominal is 0.
+# the strength factor is the rule's own value `sigma * n` (`_turn_offset`),
+# exact, with the realised X plane asserted equal to strengthX (1 + d) and the
+# Y plane to 0.0 on every turn (relative semantics, 2026-10-15).
 function write_table_file(path::AbstractString; turns::Int, scale::Float64, phase_rms::Float64,
                           strength_rel_rms::Float64)
     set_global_rng!(seed = SEED, method = :philox)
@@ -909,24 +983,32 @@ function write_table_file(path::AbstractString; turns::Int, scale::Float64, phas
     for (cav, base) in pairs(RNG_ID_BASE)
         rule(sigma, slot) = sigma > 0 ? WhiteNoise(sigma; rng_id = base + slot) : nothing
         sp = scale * phase_rms
-        ss = scale .* strength_rel_rms .* abs.(CC_STRENGTH_X)
-        spec = ThinCrabCavitySpec{3}(CC_FREQUENCY; strengthX = CC_STRENGTH_X, strengthY = (0.0, 0.0, 0.0),
+        ss = scale * strength_rel_rms          # the relative rms, the rule's sigma (S (1 + d))
+        spec = ThinCrabCavitySpec{3}(CC_FREQUENCY; strengthX = CC_STRENGTH_X, strengthY = CC_STRENGTH_Y,
                                      phase = (0.0, 0.0, 0.0),
                                      phase_noise = (rule(sp, 1), rule(sp, 2), nothing),
-                                     strength_noise = (rule(ss[1], 4), rule(ss[2], 5), nothing))
+                                     strength_noise = (rule(ss, 4), rule(ss, 5), nothing))
         w = compile_runtime(spec)
         w isa TurnModulated || error("no rule active for the table file (phase_rms = $(phase_rms), strength_rel_rms = $(strength_rel_rms))")
         ph = [zeros(turns), zeros(turns)]
         st = [zeros(turns), zeros(turns)]
         for t in 0:turns-1
-            u = Octopus.update(w, TrackingContext(turn = t, seed = SEED, rng_method = :philox))
+            ctx = TrackingContext(turn = t, seed = SEED, rng_method = :philox)
+            u = Octopus.update(w, ctx)
             for i in 1:2
                 ph[i][t+1] = u.inner.phase[i] - w.base.phase[i]
-                st[i][t+1] = u.inner.strengthY[i] - w.base.strengthY[i]
+                if ss > 0
+                    d = Octopus._turn_offset(w.rule.strength[i], ctx, 3 + i, Float64)[1]
+                    u.inner.strengthX[i] == w.base.strengthX[i] * (1 + d) || error(
+                        "turn $(t), $(cav) strength_noise[$(i)]: the realised strengthX is not strengthX (1 + d) for the rule's value d")
+                    u.inner.strengthY[i] === 0.0 || error(
+                        "turn $(t), $(cav) strength_noise[$(i)]: the realised strengthY is $(u.inner.strengthY[i]), not 0.0 -- the relative semantics did not hold")
+                    st[i][t+1] = d
+                end
             end
         end
         sp > 0 && foreach(i -> push!(cols, "$(cav)_phase_noise_$(i)" => ph[i]), 1:2)
-        all(ss[1:2] .> 0) && foreach(i -> push!(cols, "$(cav)_strength_noise_$(i)" => st[i]), 1:2)
+        ss > 0 && foreach(i -> push!(cols, "$(cav)_strength_noise_$(i)" => st[i]), 1:2)
     end
     mkpath(dirname(path))
     open(path, "w") do io
@@ -1378,11 +1460,14 @@ function realised_band_ratio(r, lo::Float64, hi::Float64)
             weights = [(abs(CC_STRENGTH_X[i]) * exp(-(i * kcc * sz)^2 / 2) / (i * kcc))^2 for i in 1:2]
             pick = (u, i) -> u.inner.phase[i]
         elseif strength_rel > 0
-            spec = ThinCrabCavitySpec{3}(CC_FREQUENCY; strengthX = CC_STRENGTH_X, strengthY = (0.0, 0.0, 0.0), phase = (0.0, 0.0, 0.0),
-                                         strength_noise = (mk(strength_rel * abs(CC_STRENGTH_X[1]), base + 4),
-                                                           mk(strength_rel * abs(CC_STRENGTH_X[2]), base + 5), nothing))
-            weights = [exp(-(i * kcc * sz)^2) * sz^2 for i in 1:2]
-            pick = (u, i) -> u.inner.strengthY[i]
+            # The relative rule (2026-10-15): sigma is the relative rms itself, the
+            # realised factor d is dimensionless and the kick it drives is
+            # -S_X,i d sin(i k z)/(i k), so S_X,i^2 enters the band-power weights;
+            # d is recovered from the X plane (strengthY stays exactly 0).
+            spec = ThinCrabCavitySpec{3}(CC_FREQUENCY; strengthX = CC_STRENGTH_X, strengthY = CC_STRENGTH_Y, phase = (0.0, 0.0, 0.0),
+                                         strength_noise = (mk(strength_rel, base + 4), mk(strength_rel, base + 5), nothing))
+            weights = [CC_STRENGTH_X[i]^2 * exp(-(i * kcc * sz)^2) * sz^2 for i in 1:2]
+            pick = (u, i) -> (u.inner.strengthX[i] - CC_STRENGTH_X[i]) / CC_STRENGTH_X[i]
         else
             return NaN
         end
@@ -1406,9 +1491,12 @@ function run_report_part()
     isempty(tsv) && error("report needs tsv=<sweep tsv>")
     # Reference numbers (docs/theory/crab_cavity_noise_response.md section 6)
     # and tolerances (section 7), every one overridable.
+    haskey(OPTS, "ref_amp_white_y") && error(
+        "ref_amp_white_y is retired (2026-10-15): the relative strength rule leaves strengthY = 0, so there is " *
+        "no both-planes vertical prediction; the vertical rate under amplitude noise is the beam-beam coupling " *
+        "alone (INFO) and C2 must show none without beam-beam (7)")
     ref = (phase_white_x = opt_float("ref_phase_white_x", 1.72e-7),
            amp_white_x = opt_float("ref_amp_white_x", 1.10e-6),
-           amp_white_y = opt_float("ref_amp_white_y", 9.5e-7),
            pink_ratio_x = opt_float("ref_pink_ratio_x", 0.15),
            pink_ratio_y = opt_float("ref_pink_ratio_y", 0.17),
            y_over_x_phase = haskey(OPTS, "ref_y_over_x_phase") ? opt_float("ref_y_over_x_phase", 0.0) : nothing)
@@ -1434,7 +1522,7 @@ function run_report_part()
     end
     note(msg) = println("  NOTE  ", msg)
     println("crab cavity noise, part report on ", tsv, " (", length(rows), " rows: ", join(sort(collect(keys(byid))), ", "), ")")
-    println("reference rates per turn at scale 1 (relative d<J_raw>/dn): phase white x $(ref.phase_white_x); amplitude white x $(ref.amp_white_x), y $(ref.amp_white_y); pink/white $(ref.pink_ratio_x) (x), $(ref.pink_ratio_y) (y); scaling s^2")
+    println("reference rates per turn at scale 1 (relative d<J_raw>/dn): phase white x $(ref.phase_white_x); amplitude white x $(ref.amp_white_x) (y: none -- the relative strength rule leaves strengthY = 0, so the vertical response is the beam-beam coupling alone, INFO); pink/white $(ref.pink_ratio_x) (x), $(ref.pink_ratio_y) (y); scaling s^2")
 
     # Baselines by (kbb, chrom): B0 for the colliding runs, C0 for the linear controls.
     baseline_for(r) = num(r, "kbb_scale") == 0 && replace(r["chrom"], " " => "") in ("0,0", "(0.0,0.0)", "0.0,0.0") ? get(byid, "C0", nothing) :
@@ -1505,15 +1593,17 @@ function run_report_part()
     end
     for id in ("A05", "A1", "A2", "A4s", "A4", "AP1", "AT1")
         haskey(byid, id) || continue
-        (ry, sy) = rates[(id, :y)]
-        pred_y = parse(Float64, byid[id]["scale"])^2 * (id == "AP1" ? ref.pink_ratio_y : 1.0) * ref.amp_white_y
-        @printf("  INFO  %-50s y %+.3e +- %.1e, both-planes prediction %.3e, excess %+.3f of it\n", "$(id) beam-beam-mediated vertical response (amplitude)", ry, sy, pred_y, ry / pred_y - 1)
+        (ry, sy) = rates[(id, :y)]; (rx, sx) = rates[(id, :x)]
+        @printf("  INFO  %-50s y %+.3e +- %.1e, y/x = %.4f (x %+.3e): the beam-beam coupling alone -- the relative strength rule leaves strengthY = 0 (no both-planes term, 2026-10-15); judged on C2 in (7)\n",
+                "$(id) beam-beam-mediated vertical response (amplitude)", ry, sy, ry / rx, rx)
     end
     if haskey(byid, "B0")
         b = byid["B0"]
         for plane in (:x, :y)
             bs = num(b, "jraw_slope_$(plane)") / EPS_DESIGN[plane]
-            pred = plane === :x ? ref.phase_white_x : ref.amp_white_y
+            # Both planes against the smallest s = 1 prediction, the phase x rate: no
+            # vertical prediction exists under the relative strength rule (strengthY = 0).
+            pred = ref.phase_white_x
             verdict!(abs(bs) <= tol_baseline * pred, "B0 baseline J_raw slope $(plane)",
                      @sprintf("%+.3e per turn = %.3f of the s = 1 prediction %.2e", bs, abs(bs) / pred, pred),
                      @sprintf("<= %.2f of it", tol_baseline))
@@ -1563,7 +1653,7 @@ function run_report_part()
     if haskey(byid, "AP1") && haskey(byid, "A1")
         (rp, sp) = rates[("AP1", :y)]; (rw, sw) = rates[("A1", :y)]
         q = rp / rw
-        @printf("  INFO  %-50s %.3f +- %.3f, rho_bar_y %.3f (vertical: carries the beam-beam-mediated response, no verdict)\n", "AP1/A1 amplitude y", q, abs(q) * hypot(sp / rp, sw / rw), ref.pink_ratio_y)
+        @printf("  INFO  %-50s %.3f +- %.3f, rho_bar_y %.3f (vertical: the beam-beam coupling alone under the relative strength rule, no verdict)\n", "AP1/A1 amplitude y", q, abs(q) * hypot(sp / rp, sw / rw), ref.pink_ratio_y)
     end
 
     println()
@@ -1605,9 +1695,15 @@ function run_report_part()
             jc2 = num(r, "jc_mean2_$(plane)") / EPS_DESIGN[plane]
             h1 = num(r, "jraw_h1_$(plane)") / EPS_DESIGN[plane]; h2 = num(r, "jraw_h2_$(plane)") / EPS_DESIGN[plane]
             resid = num(r, "jraw_resid_$(plane)") / EPS_DESIGN[plane]
-            if is_info
-                @printf("  INFO  %-50s eps_c/J_raw %.3f, J_c2/growth %.3f, halves %+.3e/%+.3e (first/second %.3f, difference %.3f of the rate), residual/growth %.3f; %s turns at %.0f %% growth, the regime's edge (the small-growth set A05, A1, A2 carries the verdicts)\n",
-                        "$(id) $(plane) fit quality", re / rj, jc2 / growth, h1, h2, h1 / h2, abs(h1 - h2) / abs(rj), resid / abs(growth), r["turns"], 100growth)
+            # The vertical plane of an amplitude run is the beam-beam coupling alone
+            # (the relative strength rule leaves strengthY = 0): no prediction, so its
+            # fit-quality items are INFO; C2 judges the plane in (7).
+            is_y_amp = plane === :y && id in ("A05", "A1", "A2", "A4s", "A4", "AP1", "AT1")
+            if is_info || is_y_amp
+                reason = is_y_amp ? "the vertical response under amplitude noise is the beam-beam coupling alone (relative strength rule, strengthY = 0, 2026-10-15): no prediction, no verdict; C2 judges the plane in (7)" :
+                                    "$(r["turns"]) turns at $(round(Int, 100growth)) % growth, the regime's edge (the small-growth set A05, A1, A2 carries the verdicts)"
+                @printf("  INFO  %-50s eps_c/J_raw %.3f, J_c2/growth %.3f, halves %+.3e/%+.3e (first/second %.3f, difference %.3f of the rate), residual/growth %.3f; %s\n",
+                        "$(id) $(plane) fit quality", re / rj, jc2 / growth, h1, h2, h1 / h2, abs(h1 - h2) / abs(rj), resid / abs(growth), reason)
                 continue
             end
             verdict!(re >= tol_epsc_frac * rj, "$(id) $(plane) eps_c slope / J_raw slope", @sprintf("%.3f (eps_c %+.3e, J_raw %+.3e)", re / rj, re, rj), @sprintf(">= %.2f", tol_epsc_frac))
@@ -1650,7 +1746,7 @@ function run_report_part()
     println("  the pink construction's band statistics at nu = 0.228 equal a white drive's, so no pink-specific tolerance follows from this model; where the measured half-slope ratios exceed the realised drives' band-power ratios the scatter sits in the beam's response, not in the drive, and the two-half and residual items stay INFO for the pink runs")
 
     println()
-    println("(6) C1 linear phase control (kbb = 0, chrom 0): eps_c slope below $(100tol_c1_epsc) % of the predicted raw rate; J_raw - eps_c - J_c identity; (7) C2 linear amplitude control: the first-moment prediction is INFO (a single realisation without tune spread has a 100 % floor); the verdict is part `control`'s covariance propagation")
+    println("(6) C1 linear phase control (kbb = 0, chrom 0): eps_c slope below $(100tol_c1_epsc) % of the predicted raw rate; J_raw - eps_c - J_c identity; (7) C2 linear amplitude control: the first-moment prediction in x is INFO (a single realisation without tune spread has a 100 % floor), the x verdict is part `control`'s covariance propagation, and no vertical growth beyond C0 is a verdict (the relative strength rule leaves strengthY = 0)")
     if haskey(byid, "C1")
         r = byid["C1"]
         (re, see) = rate(r, "epsc", :x)
@@ -1673,10 +1769,20 @@ function run_report_part()
     end
     if haskey(byid, "C2")
         r = byid["C2"]
-        for (plane, pred) in ((:x, ref.amp_white_x), (:y, ref.amp_white_y))
-            (re, see) = rate(r, "epsc", plane)
-            @printf("  INFO  %-50s %+.3e +- %.1e, first-moment prediction %.3e, ratio %.3f; halves %+.3e/%+.3e: the kick sequence is common to every particle and without tune spread does not decohere, so a rate fit has the 100 %% single-realisation floor; judged by `control` (covariance propagation, `P control tsv=<this tsv>`)\n",
-                    "C2 eps_c $(plane) slope vs the diffusion prediction", re, see, pred, re / pred, num(r, "epsc_h1_$(plane)") / EPS_DESIGN[plane], num(r, "epsc_h2_$(plane)") / EPS_DESIGN[plane])
+        (re, see) = rate(r, "epsc", :x)
+        @printf("  INFO  %-50s %+.3e +- %.1e, first-moment prediction %.3e, ratio %.3f; halves %+.3e/%+.3e: the kick sequence is common to every particle and without tune spread does not decohere, so a rate fit has the 100 %% single-realisation floor; judged by `control` (covariance propagation, `P control tsv=<this tsv>`)\n",
+                "C2 eps_c x slope vs the diffusion prediction", re, see, ref.amp_white_x, re / ref.amp_white_x, num(r, "epsc_h1_x") / EPS_DESIGN.x, num(r, "epsc_h2_x") / EPS_DESIGN.x)
+        # The relative strength rule's falsifier (owner decision 2026-10-15):
+        # strengthY = 0 stays exactly 0, so without beam-beam the vertical
+        # emittance must not grow beyond C0 (the additive both-planes semantics
+        # before it grew y at 0.87 of the x prediction, measured +1.99e-7 per
+        # turn in eps_c on 2026-10-14).
+        (rey, seey) = rate(r, "epsc", :y)
+        verdict!(abs(rey) <= 0.05 * ref.amp_white_x, "C2 no vertical growth beyond C0 under amplitude noise (kbb = 0): judges (1b)",
+                 @sprintf("y eps_c rate %+.3e +- %.1e = %.2e of the predicted x rate %.2e; halves %+.3e/%+.3e", rey, seey, abs(rey) / ref.amp_white_x, ref.amp_white_x,
+                          num(r, "epsc_h1_y") / EPS_DESIGN.y, num(r, "epsc_h2_y") / EPS_DESIGN.y), "<= 0.05 of it")
+        abs(rey) > 0.05 * ref.amp_white_x && println("  FALSIFIER  C2: vertical growth under horizontal amplitude noise without beam-beam -- the strength factor reached strengthY (the additive both-planes semantics predicted 0.87 of the x rate)")
+        for plane in (:x, :y)
             n = parse(Float64, r["n_macro"])
             jc = num(r, "jc_mean_$(plane)") / EPS_DESIGN[plane]
             verdict!(jc <= 10 / n, "C2 $(plane) centroid action / eps (sampling: 1/N = $(1 / n))", @sprintf("%.3e", jc), "<= 10/N")
@@ -1741,6 +1847,7 @@ function run_control_part()
     tol = opt_float("tol_centroid", 0.01)
     cov_ids = String.(split(opt("cov_cases", "C0,C1,C3,C2"), ','))
     tol_c2 = opt_float("tol_c2", 0.10)
+    tol_c2_y = opt_float("tol_c2_y", 0.05)   # the vertical verdict: |y - baseline| <= this of the propagated x slope
     n0 = opt_int("n0", N0_DEFAULT)
     rows = read_tsv(tsv)
     byid = Dict(r["id"] => r for r in rows)
@@ -1780,23 +1887,36 @@ function run_control_part()
     Mt = linear6d_matrix(beta1 = (BETA_X_STAR, 0.072, beta_z), beta2 = (BETA_X_STAR, 0.072, beta_z),
                          dmu = (2pi * 0.228, 2pi * 0.210, 2pi * (-0.01)))
     Mb_inv, Ma_inv = inv(Mb), inv(Ma)
-    # The realised offsets of one cavity through the rules' own path: phase
-    # (slots 1, 2) or strength (slots 4, 5), white rules at `sigma_i`.
+    # The realised values of one cavity through the rules' own path: phase
+    # offsets (slots 1, 2) or RELATIVE strength factors d (slots 4, 5; the
+    # cavity realises strengthX_i (1 + d), asserted here turn by turn, and its
+    # strengthY_i = 0 stays exactly 0 -- relative semantics, 2026-10-15), white
+    # rules at `sigma_i`.
     function realised_white(cav, kind::Symbol, sigmas, turns)
         base = RNG_ID_BASE[cav]
         if kind === :phase
-            spec = ThinCrabCavitySpec{3}(CC_FREQUENCY; strengthX = CC_STRENGTH_X, strengthY = (0.0, 0.0, 0.0), phase = (0.0, 0.0, 0.0),
+            spec = ThinCrabCavitySpec{3}(CC_FREQUENCY; strengthX = CC_STRENGTH_X, strengthY = CC_STRENGTH_Y, phase = (0.0, 0.0, 0.0),
                                          phase_noise = (WhiteNoise(sigmas[1]; rng_id = base + 1), WhiteNoise(sigmas[2]; rng_id = base + 2), nothing))
         else
-            spec = ThinCrabCavitySpec{3}(CC_FREQUENCY; strengthX = CC_STRENGTH_X, strengthY = (0.0, 0.0, 0.0), phase = (0.0, 0.0, 0.0),
+            spec = ThinCrabCavitySpec{3}(CC_FREQUENCY; strengthX = CC_STRENGTH_X, strengthY = CC_STRENGTH_Y, phase = (0.0, 0.0, 0.0),
                                          strength_noise = (WhiteNoise(sigmas[1]; rng_id = base + 4), WhiteNoise(sigmas[2]; rng_id = base + 5), nothing))
         end
         w = compile_runtime(spec)
         seq = [zeros(turns), zeros(turns)]
         for t in 0:turns-1
-            u = Octopus.update(w, TrackingContext(turn = t, seed = SEED, rng_method = :philox))
+            ctx = TrackingContext(turn = t, seed = SEED, rng_method = :philox)
+            u = Octopus.update(w, ctx)
             for i in 1:2
-                seq[i][t+1] = kind === :phase ? u.inner.phase[i] : u.inner.strengthY[i]
+                if kind === :phase
+                    seq[i][t+1] = u.inner.phase[i]
+                else
+                    d = Octopus._turn_offset(w.rule.strength[i], ctx, 3 + i, Float64)[1]
+                    u.inner.strengthX[i] == CC_STRENGTH_X[i] * (1 + d) || error(
+                        "turn $(t), $(cav) strength_noise[$(i)]: the realised strengthX is not strengthX (1 + d) for the rule's value d")
+                    u.inner.strengthY[i] === 0.0 || error(
+                        "turn $(t), $(cav) strength_noise[$(i)]: the realised strengthY is $(u.inner.strengthY[i]), not 0.0 -- the relative semantics did not hold")
+                    seq[i][t+1] = d
+                end
             end
         end
         return seq
@@ -1864,7 +1984,7 @@ function run_control_part()
 
     # ---- the covariance test (acceptance 7) ----
     println()
-    println("covariance test: the central 6x6 second moments of the initial sample propagated through the line's linear maps with the realised strength offsets and the linearised shipped kick px -= d z, py -= d z, pz -= d (x + y), d = sum_i c_i Delta_i")
+    println("covariance test: the central 6x6 second moments of the initial sample propagated through the line's linear maps with the realised RELATIVE strength factors d_i of both cavities (S -> S (1 + d_i): dpx = -S_X,i d_i sin(i k z)/(i k), dpy = -S_Y,i d_i sin(i k z)/(i k), dpz = -(S_X,i x + S_Y,i y) d_i cos(i k z)) and the linearised shipped kick px -= dX z, py -= dY z, pz -= dX x + dY y, dX = sum_i c_i S_X,i d_i, dY = sum_i c_i S_Y,i d_i -- zero here (strengthY = 0), so the propagated eps_c y is flat and the measured one must sit at the baseline (the relative semantics' falsifier)")
     exact_var = [(1 - exp(-2 * (i * kcc)^2 * sz2)) / 2 / ((i * kcc)^2 * sz2) for i in 1:2]
     @printf("linear-kick model at k sigma_z = %.3f and %.3f: a pure linearisation (c_i = 1) overstates the kick variance by %.1f %% and %.1f %% (exact <sin^2(i k z)>/(i k)^2 over sigma_z^2 = %.4f, %.4f); with the regression coefficients c_i = <cos(i k z)> the unexplained variance is %.2f %% and %.2f %% of each harmonic's (harmonic 2 carries %.1f %% of the kick variance), %.2f %% of the summed kick\n",
             kcc * sqrt(sz2), 2kcc * sqrt(sz2), 100(1 / exact_var[1] - 1), 100(1 / exact_var[2] - 1), exact_var[1], exact_var[2],
@@ -1872,8 +1992,10 @@ function run_control_part()
             100 * CC_STRENGTH_X[2]^2 / (CC_STRENGTH_X[1]^2 + CC_STRENGTH_X[2]^2),
             100 * (CC_STRENGTH_X[1]^2 * (exact_var[1] - bunch[1]^2) + CC_STRENGTH_X[2]^2 * (exact_var[2] - bunch[2]^2)) /
                 (CC_STRENGTH_X[1]^2 * exact_var[1] + CC_STRENGTH_X[2]^2 * exact_var[2]))
-    G = zeros(6, 6)
-    G[2, 5] = -1.0; G[4, 5] = -1.0; G[6, 1] = -1.0; G[6, 3] = -1.0
+    GX = zeros(6, 6)
+    GX[2, 5] = -1.0; GX[6, 1] = -1.0      # px -= dX z, pz -= dX x
+    GY = zeros(6, 6)
+    GY[4, 5] = -1.0; GY[6, 3] = -1.0      # py -= dY z, pz -= dY y (dY = 0 for a horizontal cavity)
     I6 = Matrix{Float64}(I, 6, 6)
     for id in cov_ids
         haskey(byid, id) || (println("  NOTE  $(id) missing: not propagated"); continue)
@@ -1888,22 +2010,26 @@ function run_control_part()
             println("  NOTE  $(id) is a $(r["rule"]) run: the test regenerates white offsets only")
             continue
         end
-        d = Dict(cav => zeros(turns) for cav in (:tccb, :tcca))
+        dX = Dict(cav => zeros(turns) for cav in (:tccb, :tcca))
+        dY = Dict(cav => zeros(turns) for cav in (:tccb, :tcca))
         if has_strength
             for cav in (:tccb, :tcca)
-                Δ = realised_white(cav, :strength, strength_sigma_rel .* abs.(CC_STRENGTH_X[1:2]), turns)
-                d[cav] .= bunch[1] .* Δ[1] .+ bunch[2] .* Δ[2]
+                # The relative factors d_i (the rule's sigma is the relative rms itself);
+                # the kick change per plane is the nominal strength times d_i.
+                Δ = realised_white(cav, :strength, (strength_sigma_rel, strength_sigma_rel), turns)
+                dX[cav] .= bunch[1] * CC_STRENGTH_X[1] .* Δ[1] .+ bunch[2] * CC_STRENGTH_X[2] .* Δ[2]
+                dY[cav] .= bunch[1] * CC_STRENGTH_Y[1] .* Δ[1] .+ bunch[2] * CC_STRENGTH_Y[2] .* Δ[2]
             end
         end
         Σ = copy(Σ0)
         ex_pred, ey_pred = zeros(turns), zeros(turns)
         for n in 1:turns
             Σ = Mb_inv * Σ * transpose(Mb_inv)
-            K = I6 + d[:tccb][n] * G
+            K = I6 + dX[:tccb][n] * GX + dY[:tccb][n] * GY
             Σ = K * Σ * transpose(K)
             Σ = Mb * Σ * transpose(Mb)
             Σ = Ma * Σ * transpose(Ma)
-            K = I6 + d[:tcca][n] * G
+            K = I6 + dX[:tcca][n] * GX + dY[:tcca][n] * GY
             Σ = K * Σ * transpose(K)
             Σ = Ma_inv * Σ * transpose(Ma_inv)
             Σ = Mt * Σ * transpose(Mt)
@@ -1915,6 +2041,9 @@ function run_control_part()
         idx = [Int(tt) + 1 for tt in t if 0 <= tt < turns]
         length(idx) == length(t) || error("moment rows outside the run's turns")
         win = findall(>=(n0), t)
+        # The baseline's series for the vertical verdict (same seed, same sample, no drive).
+        m_base = (has_strength && id != base_id) ? read(TaskOutput(byid[base_id]["artifact_copy"]), :moments; name = "weak_beam") : nothing
+        fp_x = window_fit(t[win], ex_pred[idx][win])
         for (plane, pred) in ((:x, ex_pred), (:y, ey_pred))
             meas = plane_series(m, plane).epsc
             fm = window_fit(t[win], meas[win])
@@ -1923,12 +2052,36 @@ function run_control_part()
             growth = fm.slope * (t[win[end]] - t[win[1]])
             series_dev = sqrt(mean(abs2, meas[idx] .- pred[idx])) / max(abs(growth), 1e-300)
             label = "$(id) eps_c $(plane)"
-            if has_strength
+            if has_strength && plane === :x
                 ratio = fm.slope / fp.slope
                 verdict!(abs(ratio - 1) <= tol_c2, label * " measured / propagated slope",
                          @sprintf("measured %+.3e, propagated %+.3e per turn (relative), ratio %.4f; halves measured %+.3e/%+.3e, propagated %+.3e/%+.3e; series rms deviation %.4f of the growth",
                                   fm.slope / eps, fp.slope / eps, ratio, fm.h1 / eps, fm.h2 / eps, fp.h1 / eps, fp.h2 / eps, series_dev),
                          @sprintf("|ratio - 1| <= %.2f", tol_c2))
+            elseif has_strength
+                # The vertical plane: dY = 0, so the propagated eps_c y is exactly flat and
+                # the measured slope minus the baseline's must vanish to tol_c2_y of the
+                # propagated x slope -- the relative semantics' falsifier (the additive
+                # both-planes semantics before 2026-10-15 predicted 0.87 of the x rate).
+                base_slope = 0.0
+                base_text = "no baseline row"
+                if m_base !== nothing
+                    tb = Vector{Float64}(m_base.turn)
+                    if tb == t
+                        base_slope = window_fit(tb[win], plane_series(m_base, plane).epsc[win]).slope
+                        base_text = @sprintf("baseline %s %+.3e", base_id, base_slope / eps)
+                    else
+                        base_text = "baseline $(base_id) has another turn axis: not subtracted"
+                    end
+                end
+                ry = (fm.slope - base_slope) / eps
+                rx_prop = fp_x.slope / EPS_DESIGN.x
+                ok_y = abs(ry) <= tol_c2_y * rx_prop
+                verdict!(ok_y, label * " no growth beyond the baseline (dY = 0)",
+                         @sprintf("measured %+.3e, %s, difference %+.3e per turn (relative) = %.2e of the propagated x slope %+.3e; propagated y %+.3e",
+                                  fm.slope / eps, base_text, ry, abs(ry) / rx_prop, rx_prop, fp.slope / eps),
+                         @sprintf("|.| <= %.2f of it", tol_c2_y))
+                ok_y || println("  FALSIFIER  $(id): vertical growth under horizontal amplitude noise without beam-beam -- the strength factor reached strengthY (the additive both-planes semantics before 2026-10-15 predicted 0.87 of the x rate)")
             else
                 expectation = r["rule"] == "none" ? "no drive: both flat" :
                               (chrom in ("0.0,0.0", "0,0") ? "phase noise is a dipole drive: the linear model keeps eps_c flat; the measured slope is the floor the model misses (the z-dependence of the phase kick, cos(i k z) = 1 - (i k z)^2/2 + ...)" :
@@ -1937,7 +2090,7 @@ function run_control_part()
             end
         end
         if has_strength
-            println("  INFO  $(id): the propagation is exact for a linear kick on any distribution and needs no decoherence; a y agreement falsifies a strength offset that did not reach strengthY (the both-planes semantics), an x agreement falsifies a kick model other than -Delta sin(i k z)/(i k) with the realised Delta")
+            println("  INFO  $(id): the propagation is exact for a linear kick on any distribution and needs no decoherence; a flat y (at the baseline) falsifies a strength factor that reached strengthY = 0 as the additive both-planes semantics did before 2026-10-15, an x agreement falsifies a kick model other than -S_X d sin(i k z)/(i k) with the realised relative factor d")
         end
     end
     println("CRAB-NOISE-CONTROL-COVARIANCE checks=$(checks) failed=$(failed) verdict=$(failed == 0 ? "PASS" : "FAIL")")

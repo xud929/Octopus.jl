@@ -16,12 +16,17 @@ metadata. See `element_help(:thin_crab_cavity)` for the parameter schema.
 per harmonic: each entry is `nothing` (inactive, the default for every
 harmonic when the keyword is omitted or `()`) or a rule, `WhiteNoise(sigma;
 rng_id)`, `PinkNoise(sigma; rng_id, octaves)` or `TurnTable(offsets; name)`,
-whose realised additive offset is applied once per turn by the
+whose realised per-turn value is applied once per turn by the
 `TurnModulated` wrap that `compile_runtime` builds around the nominal cavity
-(`docs/design/turn_modulation.md`). A `phase_noise` offset is in rad; a
-`strength_noise` offset is in the unit of `strengthX`/`strengthY` and is added
-to BOTH planes' strengths of its harmonic. The nominal values stored here,
-knob-driven or not, are never changed by a rule. The whole keyword is a tuple
+(`docs/design/turn_modulation.md`). A `phase_noise` value is an offset in rad
+added to `phase[i]`; a `strength_noise` value `d` is a dimensionless RELATIVE
+factor scaling BOTH planes' strengths of its harmonic, `strengthX[i] (1 + d)`
+and `strengthY[i] (1 + d)`: one voltage driver excites a cavity's horizontal
+and vertical kick, so one relative amplitude error scales both, and a second
+driver is a second cavity (owner decision; relative, 2026-10-15). A plane
+whose nominal strength is zero therefore stays exactly zero under amplitude
+noise. The nominal values stored here, knob-driven or not, are never changed
+by a rule. The whole keyword is a tuple
 (or vector) of `N` entries or `()`: a bare `nothing`, the RF cavity's scalar
 spelling of inactive, is refused here and at compile with a message naming
 the parameter (an owner item in `docs/todo.md` decides whether to accept it).
@@ -236,12 +241,12 @@ _is_turn_rule(entry) = entry === nothing || entry isa AbstractTurnRule
         strengthY=ParamMeta(default=(), meaning="vertical kick strength tuple of length N"),
         phase=ParamMeta(unit="rad", default=(), meaning="phase tuple of length N"),
         phase_noise=ParamMeta(unit="rad", default=(), meaning="per-harmonic turn-by-turn additive phase modulation, tuple of length N: each entry nothing (inactive) or a rule (WhiteNoise, PinkNoise, TurnTable) realised once per turn on the host by the TurnModulated wrap at compile_runtime, never read by the kernel; see src/elements/turn_modulated.jl"),
-        strength_noise=ParamMeta(default=(), meaning="per-harmonic turn-by-turn additive strength modulation in the unit of strengthX/strengthY, tuple of length N: each entry nothing or a rule; one realised offset per harmonic is added to both planes"),
+        strength_noise=ParamMeta(default=(), meaning="per-harmonic turn-by-turn RELATIVE strength modulation, dimensionless, tuple of length N: each entry nothing or a rule whose realised per-turn value d scales BOTH planes' strengths of its harmonic, strengthX[i] (1 + d) and strengthY[i] (1 + d) -- one voltage driver per cavity (relative, 2026-10-15); a WhiteNoise sigma is the relative rms itself and a TurnTable holds relative factors"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = ThinCrabCavitySpec{2}(1.0e8; strengthX=(1.0, 0.5), strengthY=(0.25, 0.125), phase=(0.0, 0.1))
-    construction_help = "Friendly constructor: ThinCrabCavitySpec{N}(frequency; strengthX, strengthY, phase, phase_noise, strength_noise, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:thin_crab_cavity}(; N=N, frequency=frequency, strengthX=strengthX, strengthY=strengthY, phase=phase, phase_noise=phase_noise, strength_noise=strength_noise, tracking_method=tracking_method, kwargs...). Harmonic tuples must have length N; omitted tuples are filled with zeros. Turn-by-turn modulation: phase_noise and strength_noise are per-harmonic tuples of length N whose entries are nothing (inactive, the default when the keyword is omitted or ()) or a rule, WhiteNoise(sigma; rng_id), PinkNoise(sigma; rng_id, octaves) or TurnTable(offsets; name); the rule's realised additive offset (rad for phase_noise; the strength unit for strength_noise, added to both planes of its harmonic) is applied once per turn by the TurnModulated wrap that compile_runtime builds, never by the kernel. The whole keyword must be a tuple or vector of N entries or (): a bare nothing (the RF cavity's scalar spelling of inactive) is refused at construction and at compile, not read as all-inactive; a PinkNoise on a cavity with more than 32 harmonics is refused at compile (the pink stride of the counter-RNG keying). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: ThinCrabCavitySpec{N}(frequency; strengthX, strengthY, phase, phase_noise, strength_noise, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:thin_crab_cavity}(; N=N, frequency=frequency, strengthX=strengthX, strengthY=strengthY, phase=phase, phase_noise=phase_noise, strength_noise=strength_noise, tracking_method=tracking_method, kwargs...). Harmonic tuples must have length N; omitted tuples are filled with zeros. Turn-by-turn modulation: phase_noise and strength_noise are per-harmonic tuples of length N whose entries are nothing (inactive, the default when the keyword is omitted or ()) or a rule, WhiteNoise(sigma; rng_id), PinkNoise(sigma; rng_id, octaves) or TurnTable(offsets; name); the rule's realised per-turn value is applied once per turn by the TurnModulated wrap that compile_runtime builds, never by the kernel: an offset in rad added to the phase for phase_noise; for strength_noise a dimensionless relative factor d scaling both planes of its harmonic, strengthX[i] (1 + d) and strengthY[i] (1 + d) -- one voltage driver per cavity, so a WhiteNoise sigma is the relative rms itself and a TurnTable holds relative factors (relative, 2026-10-15). The whole keyword must be a tuple or vector of N entries or (): a bare nothing (the RF cavity's scalar spelling of inactive) is refused at construction and at compile, not read as all-inactive; a PinkNoise on a cavity with more than 32 harmonics is refused at compile (the pink stride of the counter-RNG keying). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end
 
 @inline function _cavity_get(cavity, row::Integer, harmonic::Integer)
@@ -283,11 +288,13 @@ end
     CrabCavityNoise(phase::Tuple, strength::Tuple)
 
 The rule container `TurnModulated` carries for a `ThinCrabCavity{N}`: one
-entry per harmonic for the phase (`phase_noise`, rad) and one per harmonic for
-the strength (`strength_noise`, the unit of `strengthX`/`strengthY`), each
-`nothing` (inactive) or a rule (`WhiteNoise`, `PinkNoise`, `TurnTable`). One realised
-strength offset per harmonic is added to BOTH planes' strengths, which is what
-one cavity voltage does. Slot numbering handed to `_turn_offset`: harmonic `i`
+entry per harmonic for the phase (`phase_noise`, an offset in rad) and one per
+harmonic for the strength (`strength_noise`, a dimensionless relative factor),
+each `nothing` (inactive) or a rule (`WhiteNoise`, `PinkNoise`, `TurnTable`).
+One realised strength factor `d` per harmonic scales BOTH planes' strengths,
+`strengthX[i] (1 + d)` and `strengthY[i] (1 + d)`, which is what one cavity
+voltage does (relative, 2026-10-15; before, one absolute offset was added to
+both planes). Slot numbering handed to `_turn_offset`: harmonic `i`
 of the phase is slot `i`, of the strength slot `N + i`, so one `rng_id` shared
 by every entry of one cavity still draws independently per entry.
 """
@@ -300,8 +307,10 @@ end
     realize(rules::CrabCavityNoise, base::ThinCrabCavity{N,M,T}, ctx) -> (cavity, rules′)
 
 The cavity to track on turn `ctx.turn`: `base` with each harmonic's realised
-phase offset added to `phase[i]` and its realised strength offset added to
-both `strengthX[i]` and `strengthY[i]`, together with the rules' successors.
+phase offset added to `phase[i]` and its realised strength factor `d` scaling
+both planes, `strengthX[i] (1 + d)` and `strengthY[i] (1 + d)`, together with
+the rules' successors (relative scaling, 2026-10-15; an inactive slot's `d` is
+zero and leaves the strengths bitwise unchanged, a zero nominal stays zero).
 Phase harmonic `i` is handed slot `i`, strength harmonic `i` slot `N + i`.
 Every tuple is rebuilt with `ntuple(..., Val(N))`, so the result has exactly
 the type of `base` and the call allocates nothing; the successor container has
@@ -314,8 +323,8 @@ function realize(rules::CrabCavityNoise, base::ThinCrabCavity{N,M,T},
     realised = ThinCrabCavity{N,M,T}(
         base.method,
         base.kcc,
-        ntuple(a -> base.strengthX[a] + strength_draws[a][1], Val(N)),
-        ntuple(b -> base.strengthY[b] + strength_draws[b][1], Val(N)),
+        ntuple(a -> base.strengthX[a] * (one(T) + strength_draws[a][1]), Val(N)),
+        ntuple(b -> base.strengthY[b] * (one(T) + strength_draws[b][1]), Val(N)),
         ntuple(c -> base.phase[c] + phase_draws[c][1], Val(N)),
     )
     successor = CrabCavityNoise(
@@ -335,7 +344,8 @@ parameters pass through `_rule_tuple` here as well, so a raw spec is checked.
 A rule bound to a numeric type (`_rule_numeric_type`, a `TurnTable{T′}`) other
 than the cavity's `T` is refused with an `ArgumentError` rather than promoted.
 `inner` is the NOMINAL cavity: a knob-driven `phase` has already resolved
-into it, and the rule's offset is added at run time on top of it.
+into it, and the rule's realised value is applied at run time on top of it
+(added to the phase, scaling the strengths as `S (1 + d)`).
 """
 function _turn_modulation_wrap(spec::ElementSpec{:thin_crab_cavity}, inner::ThinCrabCavity{N,M,T}) where {N,M,T}
     phase_rules = _rule_tuple(Val(N), getparam(spec, :phase_noise, ()), :phase_noise)

@@ -16,8 +16,11 @@ export TurnModulated, WhiteNoise, PinkNoise, TurnTable, update, update_line, rea
 # and forwards tracking to the REALISED element (D4); nominal and realised
 # stay separate so the contextless `track!` path, where no update ever runs,
 # tracks the noiseless element (D5, the RF-cavity lesson); rules may carry
-# state but need not (D6); the table rule is a pure consumer of additive
-# per-turn offsets in the parameter's own unit (D7, owner decision); the rule
+# state but need not (D6); the table rule is a pure consumer of per-turn
+# values in the slot's own unit -- offsets in rad on a phase, dimensionless
+# relative factors on a strength, realised as `S (1 + d)` (D7, owner
+# decision; the strength relative since 2026-10-15, before that one offset
+# added to both planes); the rule
 # never reaches the device -- the kernel sees only the realised element (D8).
 #
 # One deliberate deviation from the note's field names: the realised element
@@ -64,8 +67,9 @@ export TurnModulated, WhiteNoise, PinkNoise, TurnTable, update, update_line, rea
     AbstractTurnRule
 
 The root of every per-slot turn-modulation rule (`WhiteNoise`, `PinkNoise`,
-`TurnTable`). A concrete rule defines `_turn_offset` (its additive offset on
-one turn) and `_rule_kind` (its provenance kind label). The rule catalogue is
+`TurnTable`). A concrete rule defines `_turn_offset` (its value on one turn,
+which the element's `realize` adds to a phase or scales a strength by as
+`S (1 + d)`) and `_rule_kind` (its provenance kind label). The rule catalogue is
 DERIVED from the concrete subtypes of this root (`_turn_rule_names`, the crab
 cavity's `_is_turn_rule`, the generic `_push_rule_slot!`, the suite's catalogue
 tripwire), never hand-copied into a case list.
@@ -145,9 +149,11 @@ end
 """
     WhiteNoise(sigma; rng_id=0)
 
-A per-turn additive offset drawn once per turn from a standard normal scaled
-by `sigma`, in the unit of the parameter it modulates (rad on a phase, the
-strength unit on a strength). Stateless: the draw is the Octopus counter RNG
+A per-turn value drawn once per turn from a standard normal scaled by
+`sigma`, in the slot's unit: an offset in rad added to a phase; on a strength
+a dimensionless relative factor `d`, realised by the element as `S (1 + d)`,
+so `sigma` IS the relative rms of the strength (relative, 2026-10-15).
+Stateless: the draw is the Octopus counter RNG
 (`octopus_normal`, Philox4x32) keyed on `(seed, turn, rng_id)` with the
 particle-index slot fixed at 0 and the component `_RULE_COMPONENT_BASE + slot`
 (the band reserved for the rules; the key layout is documented above), so the
@@ -184,16 +190,19 @@ end
 """
     TurnTable(offsets::AbstractVector{<:AbstractFloat}; name="")
 
-A per-turn table of additive offsets in the parameter's own unit: entry `i`
-is the offset applied on ABSOLUTE turn `i - 1` (one-based storage of the
-task's zero-based turn), so the first entry is the first turn of the run and
-a checkpoint restored with `start_turn = N` reads entry `N + 1`. Stateless:
-the table is data.
+A per-turn table of values in the slot's own unit -- on a phase slot offsets
+in rad, added to the phase; on a strength slot dimensionless RELATIVE factors
+`d`, realised by the element as `S (1 + d)` (relative, 2026-10-15; the phase
+stays additive) -- where entry `i` is the value applied on ABSOLUTE turn
+`i - 1` (one-based storage of the task's zero-based turn), so the first entry
+is the first turn of the run and a checkpoint restored with `start_turn = N`
+reads entry `N + 1`. Stateless: the table is data.
 
 A pure CONSUMER (design decision D7, owner, 2026-10-12): spectrum synthesis,
 the revolution frequency, unit conversion, normalisation, Gaussianity and
 periodicity are the producer's; this rule neither checks nor claims them. It
-owns exactly the additive semantics, the absolute-turn indexing, the
+owns exactly the value-as-is semantics (an entry is applied unscaled, by the
+element's `realize`), the absolute-turn indexing, the
 guardrails (length at least one, every entry finite, element type equal to
 the line's numeric type -- a `Float32` table on a `Float64` line is refused
 at compile, no silent promotion) and provenance: `digest` (FNV-1a 64 over
@@ -245,9 +254,10 @@ _check_pink_octaves(octaves::Int) =
 """
     PinkNoise(sigma; rng_id=0, octaves=16)
 
-A per-turn additive offset with an approximately 1/f (pink) spectrum, in the
-unit of the parameter it modulates (rad on a phase, the strength unit on a
-strength), by the Voss-McCartney construction of the design note's section
+A per-turn value with an approximately 1/f (pink) spectrum, in the slot's
+unit (an offset in rad on a phase; on a strength a dimensionless relative
+factor `d`, realised as `S (1 + d)`, so `sigma` is the relative rms), by the
+Voss-McCartney construction of the design note's section
 5.2 (Voss and Clarke [6]; McCartney's variant as described by Whittle [7]):
 the sum of `octaves` (`K`) independent unit-normal generators, generator `k`
 (`k = 0, ..., K - 1`) holding its value for `2^k` turns, divided by `sqrt(K)`
@@ -337,9 +347,10 @@ _turn_rule_names() =
     join(sort!(String[string(nameof(T)) for T in _concrete_octopus_subtypes(AbstractTurnRule)]), ", ")
 
 # ---------------------------------------------------------------------------
-# The scalar rule interface. A rule is a per-turn additive offset generator
-# for ONE scalar parameter slot of an element; the element's `realize` method
-# decides which slots exist and hands each rule its slot number. Stateless
+# The scalar rule interface. A rule is a per-turn value generator for ONE
+# scalar parameter slot of an element; the element's `realize` method decides
+# which slots exist, hands each rule its slot number and applies the value
+# (added to a phase; a strength is scaled as `S (1 + d)`). Stateless
 # rules return themselves as `rule′`; a stateful one (an IIR filter, documented
 # in the design note's section 5.3 and not shipped here) returns its successor.
 # ---------------------------------------------------------------------------
@@ -347,10 +358,11 @@ _turn_rule_names() =
 """
     _turn_offset(rule, ctx::TrackingContext, slot::Integer, ::Type{T}) -> (offset::T, rule′)
 
-The additive offset `rule` contributes on turn `ctx.turn` to the parameter
-slot `slot` of an element whose numeric type is `T`, with the rule's successor
-(`rule` itself for every stateless rule). `nothing` is the inactive rule:
-offset zero, no draw, no state.
+The value `rule` contributes on turn `ctx.turn` to the parameter slot `slot`
+of an element whose numeric type is `T`, with the rule's successor (`rule`
+itself for every stateless rule): an offset the element adds to a phase, a
+relative factor `d` it scales a strength by as `S (1 + d)`. `nothing` is the
+inactive rule: value zero, no draw, no state.
 """
 @inline _turn_offset(::Nothing, ctx::TrackingContext, slot::Integer, ::Type{T}) where {T} =
     (zero(T), nothing)

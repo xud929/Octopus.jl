@@ -243,10 +243,11 @@ its kick, closing the ring with the full `eta = alpha_c - 1/gamma0²`
 same `TurnModulated` wrap the crab cavity uses
 (`docs/design/turn_modulation.md`): each is `nothing` (inactive, the default)
 or ONE rule, `WhiteNoise(sigma; rng_id)`, `PinkNoise(sigma; rng_id, octaves)`
-or `TurnTable(offsets; name)`, whose realised additive offset -- rad on the
-phase; the unit of `strength`, the dimensionless `qV/(P0 c)`, on the
-strength, so a relative voltage jitter is the producer's sigma times the
-nominal strength -- is applied once per turn by the wrap that
+or `TurnTable(offsets; name)`, whose realised per-turn value -- an offset in
+rad added to the phase; a dimensionless RELATIVE factor `d` on the strength,
+realised as `strength (1 + d)`, so a relative voltage jitter's rms IS the
+rule's sigma and a table holds relative factors (relative, 2026-10-15) -- is
+applied once per turn by the wrap that
 `compile_runtime` builds around the nominal cavity, never by the kernel. The
 phase and the strength are scalars, so a tuple is refused. The nominal values
 stored here are never changed by a rule, and the survey binding (`ds_turn`, a
@@ -428,12 +429,12 @@ end
         gamma0=ParamMeta(required=true, meaning="reference Lorentz factor, dimensionless. With beta0, fixes the exact conversion between longitudinal conventions"),
         L=ParamMeta(default=0, unit="m", meaning="cavity length, which buys DRIFT SPACE only: the kick stays a single localised impulse at the centre, as AT's CavityPass does, so a lattice gets the right arc positions without the element pretending to integrate the field. L = 0 is the exact limit of that rather than a separate model. No transit-time factor, no RF focusing and no velocity-slip term -- see the element docstring"),
         phase_noise=ParamMeta(unit="rad", default=nothing, meaning="turn-by-turn additive phase modulation: nothing (inactive) or ONE rule (WhiteNoise, PinkNoise, TurnTable) realised once per turn on the host by the TurnModulated wrap at compile_runtime, never read by the kernel; the phase is a scalar, so a tuple is refused; see src/elements/turn_modulated.jl"),
-        strength_noise=ParamMeta(default=nothing, meaning="turn-by-turn additive modulation of the dimensionless strength qV/(P0 c): nothing (inactive) or ONE rule (WhiteNoise, PinkNoise, TurnTable), the strength being a scalar; a relative voltage jitter is the producer's sigma times the nominal strength"),
+        strength_noise=ParamMeta(default=nothing, meaning="turn-by-turn RELATIVE modulation of the strength qV/(P0 c), dimensionless: nothing (inactive) or ONE rule (WhiteNoise, PinkNoise, TurnTable), the strength being a scalar, whose realised per-turn value d scales the strength to strength (1 + d) -- one voltage driver (relative, 2026-10-15); a WhiteNoise sigma is the relative voltage jitter's rms itself and a TurnTable holds relative factors"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV)
-    construction_help = "Friendly constructor: ThinRFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0) or ThinRFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0, tracking_method=Symplectic6DMap()); keyword-only alternative ThinRFCavitySpec(harmon=h; ...) stores the harmonic number instead of a frequency -- f = h*beta0*c/C resolves against the line's total arc length when a task compiles the line, and a harmon cavity compiled bare throws at its first kick rather than guess a circumference (give exactly one of frequency/harmon). Turn-by-turn modulation: phase_noise and strength_noise are each nothing (inactive, the default) or ONE rule, WhiteNoise(sigma; rng_id), PinkNoise(sigma; rng_id, octaves) or TurnTable(offsets; name) -- the phase and the strength are scalars, so a tuple is refused -- whose realised additive offset (rad for phase_noise; the unit of strength, the dimensionless qV/(P0 c), for strength_noise, so a relative voltage jitter is the producer's sigma times the nominal strength) is applied once per turn by the TurnModulated wrap that compile_runtime builds, never by the kernel; the survey binding (ds_turn, a harmon cavity's k) is carried into every realised cavity. A THIN RF cavity WITHOUT acceleration -- Bmad's rfcavity, not its lcavity -- so the reference energy is constant through it and phase = 0 is no net acceleration. Thin means ONE localised kick: L buys drift space so the cavity occupies its proper arc length, but there is no transit-time factor and no RF focusing, the same standing as ThinCrabCavity and ThinMultipole. THIRD model boundary, CONDITIONAL since the F16 closure (2026-08-14): a cavity compiled BARE -- outside a task line -- has no velocity-slip term, so a ring it closes has slip factor alpha_c alone, missing -1/gamma0^2 (the recorded 1.84x synchrotron-tune error at a 2.5 GeV proton with alpha_c = 0.2, and the wrong side of transition whenever alpha_c < 1/gamma0^2). A cavity compiled THROUGH A TASK LINE is bound to the geometric survey and applies the exact velocity slip as a symplectic z-shift ds_turn*(beta/beta0 - 1) before its kick, closing the ring with the full eta = alpha_c - 1/gamma0^2 on every path and backend; a cavity hidden inside a kept-whole own-state sub-line is refused loudly at compile rather than silently left uncorrected. Physics: docs/theory/arc_survey_and_velocity_slip.md. Frequency in Hz and phase in radians, matching ThinCrabCavity so that `phase` means one thing across every RF element. The energy is an ARGUMENT and not a field: voltage and e0 are reduced to a dimensionless strength at construction, so nothing on the element can disagree with BeamParams.E0. The body is written in the TIME_ENERGY convention and conjugated back by convert_longitudinal, which is why there is no beta factor in it. Design: docs/theory/rf_cavity_and_reference_energy.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: ThinRFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0) or ThinRFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0, tracking_method=Symplectic6DMap()); keyword-only alternative ThinRFCavitySpec(harmon=h; ...) stores the harmonic number instead of a frequency -- f = h*beta0*c/C resolves against the line's total arc length when a task compiles the line, and a harmon cavity compiled bare throws at its first kick rather than guess a circumference (give exactly one of frequency/harmon). Turn-by-turn modulation: phase_noise and strength_noise are each nothing (inactive, the default) or ONE rule, WhiteNoise(sigma; rng_id), PinkNoise(sigma; rng_id, octaves) or TurnTable(offsets; name) -- the phase and the strength are scalars, so a tuple is refused -- whose realised per-turn value (an offset in rad added to the phase for phase_noise; for strength_noise a dimensionless relative factor d scaling the strength to strength (1 + d), one voltage driver, so a relative voltage jitter's rms is the rule's sigma itself and a table holds relative factors -- relative, 2026-10-15) is applied once per turn by the TurnModulated wrap that compile_runtime builds, never by the kernel; the survey binding (ds_turn, a harmon cavity's k) is carried into every realised cavity. A THIN RF cavity WITHOUT acceleration -- Bmad's rfcavity, not its lcavity -- so the reference energy is constant through it and phase = 0 is no net acceleration. Thin means ONE localised kick: L buys drift space so the cavity occupies its proper arc length, but there is no transit-time factor and no RF focusing, the same standing as ThinCrabCavity and ThinMultipole. THIRD model boundary, CONDITIONAL since the F16 closure (2026-08-14): a cavity compiled BARE -- outside a task line -- has no velocity-slip term, so a ring it closes has slip factor alpha_c alone, missing -1/gamma0^2 (the recorded 1.84x synchrotron-tune error at a 2.5 GeV proton with alpha_c = 0.2, and the wrong side of transition whenever alpha_c < 1/gamma0^2). A cavity compiled THROUGH A TASK LINE is bound to the geometric survey and applies the exact velocity slip as a symplectic z-shift ds_turn*(beta/beta0 - 1) before its kick, closing the ring with the full eta = alpha_c - 1/gamma0^2 on every path and backend; a cavity hidden inside a kept-whole own-state sub-line is refused loudly at compile rather than silently left uncorrected. Physics: docs/theory/arc_survey_and_velocity_slip.md. Frequency in Hz and phase in radians, matching ThinCrabCavity so that `phase` means one thing across every RF element. The energy is an ARGUMENT and not a field: voltage and e0 are reduced to a dimensionless strength at construction, so nothing on the element can disagree with BeamParams.E0. The body is written in the TIME_ENERGY convention and conjugated back by convert_longitudinal, which is why there is no beta factor in it. Design: docs/theory/rf_cavity_and_reference_energy.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end
 
 # ---------------------------------------------------------------------------
@@ -455,9 +456,10 @@ end
     RFCavityNoise(phase, strength)
 
 The rule container `TurnModulated` carries for a `ThinRFCavity`: one entry for
-the phase (`phase_noise`, rad, slot 1) and one for the strength
-(`strength_noise`, the unit of `strength`, the dimensionless qV/(P0 c), slot
-2), each `nothing` (inactive) or a rule (`WhiteNoise`, `PinkNoise`,
+the phase (`phase_noise`, an offset in rad, slot 1) and one for the strength
+(`strength_noise`, a dimensionless relative factor `d` realised as
+`strength (1 + d)`, slot 2; relative, 2026-10-15), each `nothing` (inactive)
+or a rule (`WhiteNoise`, `PinkNoise`,
 `TurnTable`). Two scalars, no tuple: the RF cavity has one phase and one
 strength, which is why `_rule_scalar` refuses a tuple where the crab cavity's
 `_rule_tuple` requires one.
@@ -471,8 +473,10 @@ end
     realize(rules::RFCavityNoise, base::ThinRFCavity{M,T}, ctx) -> (cavity, rules′)
 
 The cavity to track on turn `ctx.turn`: `base` with the realised phase offset
-(slot 1) added to `phase` and the realised strength offset (slot 2) added to
-`strength`, together with the rules' successors. EVERY other field is carried
+(slot 1) added to `phase` and the realised strength factor `d` (slot 2)
+scaling `strength` to `strength (1 + d)` (relative, 2026-10-15; an inactive
+slot's `d` is zero and leaves the strength bitwise unchanged), together with
+the rules' successors. EVERY other field is carried
 verbatim -- `method`, `k`, `L`, `beta0`, `gamma0` and the survey channel
 `ds_turn` -- so a survey-bound base realises survey-bound cavities, and a
 harmon cavity realised before binding keeps `k = NaN` and refuses to kick
@@ -483,7 +487,7 @@ stateless.
 function realize(rules::RFCavityNoise, base::ThinRFCavity{M,T}, ctx::TrackingContext) where {M,T}
     dphase, phase_rule = _turn_offset(rules.phase, ctx, 1, T)
     dstrength, strength_rule = _turn_offset(rules.strength, ctx, 2, T)
-    realised = ThinRFCavity{M,T}(base.method, base.strength + dstrength, base.k,
+    realised = ThinRFCavity{M,T}(base.method, base.strength * (one(T) + dstrength), base.k,
                                  base.phase + dphase, base.L, base.beta0, base.gamma0,
                                  base.ds_turn)
     return realised, RFCavityNoise(phase_rule, strength_rule)
@@ -500,7 +504,8 @@ A rule bound to a numeric type (`_rule_numeric_type`, a `TurnTable{T′}`) other
 than the cavity's `T` is refused with an `ArgumentError` rather than promoted.
 `inner` is the NOMINAL cavity, unbound at this point (`k` is NaN for a harmon
 spec and `ds_turn` is NaN for every spec; a task binds them on the wrapper's
-`base` afterwards), and the rule's offset is added at run time on top of it.
+`base` afterwards), and the rule's realised value is applied at run time on
+top of it (added to the phase, scaling the strength as `strength (1 + d)`).
 """
 function _turn_modulation_wrap(spec::ElementSpec{:thin_rf_cavity}, inner::ThinRFCavity{M,T}) where {M,T}
     phase_rule = _rule_scalar(getparam(spec, :phase_noise, nothing), :phase_noise)

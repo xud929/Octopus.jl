@@ -47,15 +47,19 @@ INPUTS. `input.crab_noise`:
     table_seed       seed of the synthetic record's generator (:table only)
 
 For each harmonic i with a nonzero weight, `phase_noise[i]` is the rule with
-sigma = phase_rms * scale and `strength_noise[i]` the rule with sigma =
-strength_rel_rms * scale * |strengthX[i]|; harmonics with zero weight stay
-inactive (`nothing`). A strength offset is ONE absolute number added to both
-planes' strengths of its harmonic (`?ThinCrabCavitySpec`): with the vertical
-strength zero here, the vertical plane receives a pure noise kick of that rms.
-`:table` hands a synthetic Gaussian white record of the stated rms to
+sigma = phase_rms * scale (rad, added to the phase) and `strength_noise[i]`
+the rule with sigma = strength_rel_rms * scale, the relative rms ITSELF: a
+realised strength value d is ONE dimensionless factor per turn scaling both
+planes' strengths of its harmonic, strengthX[i] (1 + d) and strengthY[i]
+(1 + d) (`?ThinCrabCavitySpec`; one voltage driver per cavity, owner decision,
+relative since 2026-10-15). With the vertical strength zero here the vertical
+kick stays exactly zero, so amplitude noise excites no vertical emittance
+growth without beam-beam. Harmonics with zero weight stay inactive
+(`nothing`). `:table` hands a synthetic Gaussian white record of the stated
+rms (rad on a phase slot, relative factors on a strength slot) to
 `TurnTable(offsets; name = "<cavity>_<slot>_synthetic_white")`, one
 `Random.Xoshiro` substream per slot derived from `table_seed`; a MEASURED LLRF
-record (phase in rad, strength in the cavity's unit, one entry per turn) would
+record (phase in rad, strength as relative factors, one entry per turn) would
 be passed the same way, and the task refuses a table shorter than the run.
 `:none` leaves every entry inactive, which is the weak-strong example's case.
 `case_name` derives from the rule and the scale (`crab_noise_white_x1`), so
@@ -163,7 +167,7 @@ input = (
         # amplitude noise rms 1e-4, per active harmonic, each cavity with
         # independent streams.
         phase_rms = 10.0e-6,        # rad, rms of the RF phase offset per active harmonic
-        strength_rel_rms = 1.0e-4,  # relative rms of the kick strength per active harmonic
+        strength_rel_rms = 1.0e-4,  # relative rms of the kick strength per active harmonic (the strength rule's sigma)
         scale = 1.0,                # multiplies both rms values (amplitude sweeps)
         # Read by :pink only: the Voss-McCartney octave count (`?PinkNoise`);
         # inert under the other rules.
@@ -368,16 +372,19 @@ function crab_noise_rules(cavity::String, id_base::Int)
         noise_rule(phase_sigma, id_base + i,
                    "$(cavity)_phase_noise[$(i)]_synthetic_white")
     end
-    # The strength rule's realised offset is ONE absolute number per turn
-    # added to BOTH `strengthX[i]` and `strengthY[i]` (`?ThinCrabCavitySpec`,
-    # docs/design/turn_modulation.md): a horizontal cavity with amplitude
-    # noise therefore also kicks vertically, with the same absolute rms
-    # (relative rms times |strengthX[i]|, here 1e-4 of the horizontal
-    # strength, on a vertical strength of zero). The shipped behaviour is an
-    # owner decision and is kept; the vertical emittance responds to it.
+    # The strength rule's realised value d is ONE dimensionless relative
+    # factor per turn scaling BOTH `strengthX[i]` and `strengthY[i]` to
+    # S (1 + d) (`?ThinCrabCavitySpec`, docs/design/turn_modulation_record.md
+    # section 5): one voltage driver excites a cavity's horizontal and vertical
+    # kick, so one relative amplitude error scales both and a second driver is
+    # a second cavity (owner decision, relative since 2026-10-15). The rule's
+    # sigma is therefore the relative rms itself, no |strengthX[i]| factor;
+    # with the vertical strength zero here the vertical kick stays exactly
+    # zero, so amplitude noise excites no vertical emittance growth without
+    # beam-beam.
     strength = ntuple(N_harmonics) do i
         active(i) || return nothing
-        noise_rule(strength_sigma_rel * abs(cc_strength_x[i]),
+        noise_rule(strength_sigma_rel,
                    id_base + N_harmonics + i,
                    "$(cavity)_strength_noise[$(i)]_synthetic_white")
     end
@@ -431,8 +438,9 @@ ip2tcca_inv = Linear6DSpec{Float64}(matrix = inv(Matrix(Linear6D(ip2tcca))))
 
 # The proton crab cavities, upstream (tccb) and downstream (tcca) of the IP,
 # each with its own noise rules. The nominal strengths and phases are the
-# weak-strong example's; a rule adds a realised offset per turn and never
-# changes the nominal value stored here.
+# weak-strong example's; a rule's realised value per turn is added to the
+# phase or scales the strengths (S (1 + d)) and never changes the nominal
+# value stored here.
 tccb = ThinCrabCavitySpec{N_harmonics}(input.crab_cavity.frequency;
     strengthX = cc_strength_x,
     strengthY = input.crab_cavity.strength_y,

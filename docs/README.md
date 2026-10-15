@@ -98,7 +98,9 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   staging; open questions and references.
 - [`turn_modulation_record.md`](design/turn_modulation_record.md) — recording
   the realised turn-modulation offsets in the run artifact (designed
-  2026-10-15, not implemented): a `RunArtifact` switch, off by default, writes
+  2026-10-15; stage 0, the relative strength semantics, in progress
+  2026-10-15, record `history/crab_cavity_noise_relative_strength_2026_10_15.md`;
+  the recorder not implemented): a `RunArtifact` switch, off by default, writes
   one row per turn of the rules' offsets for the active slots beside the
   provenance, with the nominals stored per execution slot; the offsets are
   the primary datum and the realised values the derived one; no empty beam,
@@ -358,9 +360,9 @@ reference material, not API docs; the implementing code links back to them.
   their stated uncertainty (section 6), the measurement plan that
   `validation/crab_cavity_noise_response.jl` executes (section 7) and the
   owner-facing ambiguities (section 8: per-harmonic independent streams
-  versus common timing; the both-planes strength semantics, under which a
-  horizontal cavity's amplitude noise grows the vertical emittance at 0.87 of
-  the horizontal rate). Used by `examples/crab_cavity_noise.jl` and its
+  versus common timing; the strength semantics, decided relative on
+  2026-10-15 after the additive default had a horizontal cavity's amplitude
+  noise grow the vertical emittance at 0.87 of the horizontal rate). Used by `examples/crab_cavity_noise.jl` and its
   harness `test/examples/crab_cavity_noise.jl`; the measured numbers belong
   to `history/crab_cavity_noise_validation_2026_10_14.md`, not to the note.
 
@@ -471,6 +473,19 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   the every-turn moment observer and artifact row, not the tracking, dominate
   the CPU per-turn cost; the production benchmark across the threads, MPI and
   CUDA arms; the verification and the gate; the ledger rows.
+- [`crab_cavity_noise_relative_strength_2026_10_15.md`](history/crab_cavity_noise_relative_strength_2026_10_15.md) —
+  the strength rule's semantics change, stage 0 of
+  `design/turn_modulation_record.md`: the owner's decision that one
+  turn-modulation amplitude error is a relative factor scaling both planes'
+  strengths of a crab cavity harmonic and the RF cavity's voltage,
+  `S (1 + d)`, and why (one voltage driver per cavity, a second driver is a
+  second cavity); what the additive default of 2026-10-12 had done (a
+  horizontal cavity kicking vertically: predicted 0.865 of the horizontal
+  rate, measured 1.16 with the beam-beam coupling); what changed in source,
+  metadata, tests, example, harness and validation script; the re-validation
+  of the amplitude arms (A05, A1, A2, A4, A4s, AP1, AT1, C2 and the
+  covariance control) with its expectations and numbers; the corrections to
+  the 2026-10-14 record; the gate; the ledger.
 - [`twiss_dispersion_degeneracy_theory_2026_09_11.md`](history/twiss_dispersion_degeneracy_theory_2026_09_11.md) —
   derivation record for theory Section 13 (mode degeneracy) and the analysis
   design note: provenance of the ported working notes and the convention key,

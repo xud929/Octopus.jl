@@ -213,6 +213,20 @@ parameters as scalars, one rule or `nothing` each
 ?turn_modulation_provenance
 ```
 
+Offset semantics (owner decision 2026-10-15, stage 0 of
+`docs/design/turn_modulation_record.md`): a `phase_noise` rule's offsets are
+radians added to the nominal phase; a `strength_noise` rule's offsets are
+dimensionless relative factors `d`, one per harmonic, scaling both planes'
+strengths of the harmonic, `strengthX (1 + d)` and `strengthY (1 + d)`, and
+on the RF cavity the voltage, `V (1 + d)` (one voltage driver per cavity; a
+second driver is a second cavity). A rule's `sigma` is therefore the phase
+rms in radians or the relative amplitude rms itself: `WhiteNoise(1e-4)` on a
+strength slot is a 1e-4 relative amplitude noise, with no multiplication by
+the nominal strength, and a strength `TurnTable` holds relative factors.
+Before 2026-10-15 the strength offset was added in the strengths' unit to
+both planes; a strength table produced for that convention is wrong by the
+nominal strength under this one.
+
 A bare `track!` through a `TurnModulated` line tracks the NOMINAL element on
 every turn; the rules are realised only by a task's `execute!`, which calls
 `update_line` before each turn (design decision D5). CUDA.jl also exports an
