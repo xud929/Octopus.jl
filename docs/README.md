@@ -96,6 +96,14 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   table) with measured spectra; the owner's producer/consumer boundary for the
   table rule; the million-turn synthesis example; the verification plan and
   staging; open questions and references.
+- [`turn_modulation_record.md`](design/turn_modulation_record.md) — recording
+  the realised turn-modulation offsets in the run artifact (designed
+  2026-10-15, not implemented): a `RunArtifact` switch, off by default, writes
+  one row per turn of the rules' offsets for the active slots beside the
+  provenance, with the nominals stored per execution slot; the offsets are
+  the primary datum and the realised values the derived one; no empty beam,
+  no switch on the audit, no new reader name, no asynchronous writer; the
+  one-particle probe with three comparisons is the verification.
 
 ## Development guides (`guides/`)
 

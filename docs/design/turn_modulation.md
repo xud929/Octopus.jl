@@ -723,6 +723,10 @@ Tests the implementation owes, each shown to fail without its feature:
   Decided 2026-10-12 in the owner's absence from this note's default (owner
   to confirm): refused at compile, no promotion and no opt-in.
 
+Recording the realised offsets in the run artifact, turn by turn, is designed
+in `turn_modulation_record.md` (2026-10-15, not implemented): the switch on
+`RunArtifact`, the offsets as the primary datum, the one-particle probe.
+
 ## 11. References
 
 1. P. Baudrenghien and T. Mastoridis, "Transverse emittance growth due to rf
