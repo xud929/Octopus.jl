@@ -130,6 +130,30 @@ phase-space storage. A supplied policy selects execution for that storage; it
 does not migrate arrays. Storage/backend and CUDA-device mismatches are rejected
 before tracking mutates the beam.
 
+Precision. Elements compile in the type their parameters promote to over a
+`Float64` floor (`numeric_type(spec)`, or `_linear_map_eltype` in the untyped
+friendly constructors), so integers and `Float32` inputs give a `Float64`
+element and nothing is narrowed; the kinds with a `Spec{T}` form
+(`Linear6DSpec`, the three linear maps, `ChromaticityKickSpec`,
+`ThinStrongBeamSpec`, `LumpedRadSpec`, `ThinCrabCavitySpec{N,T}`) store and
+compile `T` as given. A `Float64` element tracking a `Float32` beam promotes
+the arithmetic to `Float64` and narrows on store: measured 2026-10-16 over all
+31 registered kinds, every kind does so on the CPU and 19 on CUDA, while 12
+fail at device compile with an `InvalidIRError` because a kernel branch on a
+runtime flag returns a tuple of the beam's type on one side and of the
+element's on the other (the thick-magnet family, both strong beams, the
+accelerating cavity, the RF cavity, the radiation element, and `:line`
+through its drift). The two modulated cavities and the radiation element are
+refused a mismatched beam BY NAME when a task compiles the line, on both
+backends and in either direction (`_required_beam_eltype`, `src/track/Track.jl`;
+the check in `_runtime_entries` and its strong-strong twin; fix D of the
+crab-cavity noise neighbour audit): a `Float32` beam goes through
+`ThinCrabCavitySpec{N,Float32}` and `LumpedRadSpec{Float32}`, and not through
+an RF cavity, which has no typed form. Every other kind keeps the promoting
+behaviour, device failures included; whether the refusal becomes the general
+rule is an open point for the owner, raised by fix D of the 2026-10-16
+crab-cavity noise neighbour audit.
+
 Use `CPUThreadsExecutionPolicy(threads=:auto)` for CPU storage. An explicit
 integer is an Octopus logical-worker limit within Julia's default thread pool
 and must not exceed `Threads.nthreads(:default)`.

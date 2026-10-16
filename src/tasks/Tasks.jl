@@ -1468,7 +1468,7 @@ function _runtime_entries(task::TrackingTask, rep=nothing)
         # (post-construction knob binding), so both kinds of change reach this
         # task at its next execute!.
         ((!knob_dependent || kepoch == knob_epoch()) && sepoch == _spec_epoch() &&
-         crecord === record) && return entries
+         crecord === record) && return _checked_beam_eltype(entries, rep)
     end
     kepoch = knob_epoch()
     sepoch = _spec_epoch()
@@ -1483,7 +1483,59 @@ function _runtime_entries(task::TrackingTask, rep=nothing)
     # modulated elements (a SpectralNoise beside its offline twin, one spec
     # placed twice), which the constructor's spec-layer checks cannot see.
     _warn_resolved_duplicate_tables(((task.elements, _physics_line(entries), nothing),))
+    return _checked_beam_eltype(entries, rep)
+end
+
+# The beam's element type meets the compiled line HERE and nowhere earlier:
+# `compile_runtime` sees a spec alone, so the check runs on every call with a
+# representation, cached entries included (a task re-run on a beam of another
+# type is a new mismatch), and never on the bare `_runtime_entries(task)`.
+_checked_beam_eltype(entries::Tuple, ::Nothing) = entries
+function _checked_beam_eltype(entries::Tuple, rep)
+    _check_beam_eltype(_physics_line(entries), eltype(first(coordinate_arrays(rep))))
     return entries
+end
+
+"""
+    _check_beam_eltype(elem, B::Type)
+
+Walk a compiled runtime line (tuples, the three wrappers, `CompositeLine`) and
+refuse, by name, every element whose `_required_beam_eltype`
+(`src/track/Track.jl`) is a type other than the beam's element type `B`. A
+plain element answers `nothing` and passes: it promotes with the beam. Called
+by `_runtime_entries` for a `TrackingTask` and by
+`_check_strong_strong_beam_eltype` for each strong-strong line, before any
+turn runs and before the stored turn advances. The message names the element
+kind, the beam's type, the element's type and the remedy, and is built on
+the host (no kernel reaches it). Owner's policy, fix D of the 2026-10-16
+crab-cavity noise neighbour audit: before it a Float32 beam through a Float64
+RF cavity or radiation element narrowed every coordinate on the CPU and
+failed at CUDA device compile with an `InvalidIRError`.
+"""
+_check_beam_eltype(elem, ::Type{B}) where {B} =
+    _refuse_beam_eltype(elem, _required_beam_eltype(elem), B)
+_check_beam_eltype(elems::Tuple, ::Type{B}) where {B} =
+    (foreach(e -> _check_beam_eltype(e, B), elems); nothing)
+# The wrapper's NOMINAL element: `inner` is rebuilt from `base` every turn by
+# `realize`, with exactly the type of `base`, so the two agree.
+_check_beam_eltype(w::TurnModulated, ::Type{B}) where {B} =
+    _check_beam_eltype(w.base, B)
+_check_beam_eltype(elem::Union{MisalignedElement,RefTilted}, ::Type{B}) where {B} =
+    _check_beam_eltype(elem.inner, B)
+_check_beam_eltype(elem::CompositeLine, ::Type{B}) where {B} =
+    _check_beam_eltype(elem.ops, B)
+
+_refuse_beam_eltype(elem, ::Nothing, ::Type{B}) where {B} = nothing
+function _refuse_beam_eltype(elem, ::Type{T}, ::Type{B}) where {T,B}
+    T === B && return nothing
+    throw(ArgumentError(
+        "$(nameof(typeof(elem))): the beam's coordinates are $(B) but the element " *
+        "compiled in $(T). A beam whose element type differs from this kind's is " *
+        "refused at compile rather than tracked: a narrower beam would have the " *
+        "CPU kernel narrow every coordinate on store and the CUDA kernel fail to " *
+        "compile (its branches return tuples of two types), a wider beam would " *
+        "let the element's $(T) parameters set the precision of its kick " *
+        "silently. Remedy: $(_beam_eltype_remedy(elem, B))."))
 end
 
 """

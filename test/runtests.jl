@@ -10290,6 +10290,7 @@ end
                         (Octopus._requires_tracking_context, 1), (Octopus.update, 1),
                         (Octopus._check_turn_window, 1), (Octopus._turn_modulation_provenance!, 2),
                         (Octopus._turn_modulation_columns!, 2), (Octopus._each_modulated, 2),
+                        (Octopus._check_beam_eltype, 1),
                         (Octopus.track_luminous, 1), (Octopus.track_particle, 2)]
     # The device conversion (design D8): `cudaconvert` recurses through the
     # fused tuple with `Adapt.adapt_structure`, so a wrapper without its own
@@ -12261,6 +12262,284 @@ end
     else
         @test_skip "fast lane: the effectiveness contract runs only in its lane-gated testset"
     end
+end
+
+@testset "Precision policy of the modulated cavities and the radiation element: the Float64 floor and the by-name refusal of a mismatched beam" begin
+    # Fix D of the 2026-10-16 crab-cavity noise neighbour audit (leads U2-1,
+    # S2-2, S2-3, S1-9), owner's policy: every untyped constructor promotes
+    # over a Float64 FLOOR and never narrows, a deliberately typed form exists
+    # where the siblings have one (`ThinCrabCavitySpec{N,T}` beside
+    # `LumpedRadSpec{T}`), and ONE by-name refusal, at the seam where a task's
+    # compiled line meets the beam (`_runtime_entries` and its strong-strong
+    # twin), of a beam whose element type differs from a declaring element's
+    # (`_required_beam_eltype`, src/track/Track.jl). RED on 8ace18b, each part
+    # for its own reason: (a) the crab cavity's type followed `frequency`
+    # alone, so a Float32 frequency narrowed Float64 strengths and phases and a
+    # complex strength raised an InexactError; (b) and (c) a Float32 beam
+    # through a Float64 crab cavity, RF cavity or radiation element ran on the
+    # CPU narrowing every coordinate on store, and on CUDA failed at device
+    # compile (RF cavity, radiation: `InvalidIRError`) or narrowed (crab
+    # cavity); (d) the typed form did not exist (a TypeError ends the unfixed
+    # run there, after the three parts above have reported).
+    set_global_rng!(seed=0x5eed, method=:philox)
+    rep32() = Phase6DRep(Float32[1.0e-3, -5.0e-4, 2.0e-4, 0.0], Float32[2.0e-4, 1.0e-4, -3.0e-4, 0.0],
+                         Float32[-5.0e-4, 2.5e-4, 1.0e-4, 0.0], Float32[1.0e-4, -2.0e-4, 5.0e-5, 0.0],
+                         Float32[2.0e-3, -1.0e-3, 5.0e-4, 0.0], Float32[1.0e-3, -5.0e-4, 2.0e-4, 0.0])
+    rep64() = Phase6DRep([1.0e-3, -5.0e-4, 2.0e-4, 0.0], [2.0e-4, 1.0e-4, -3.0e-4, 0.0],
+                         [-5.0e-4, 2.5e-4, 1.0e-4, 0.0], [1.0e-4, -2.0e-4, 5.0e-5, 0.0],
+                         [2.0e-3, -1.0e-3, 5.0e-4, 0.0], [1.0e-3, -5.0e-4, 2.0e-4, 0.0])
+    cpu = CPUThreadsExecutionPolicy()
+    crab64 = ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), strengthY=(1.0e-3, 0.0), phase=(0.1, 0.2))
+    rf64 = ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV, phase=0.3, L=0.5)
+    rad64 = LumpedRadSpec{Float64}(damping_turns=(100.0, 100.0, 50.0), sigma=(1.0e-3, 1.0e-3, 1.0e-3), rng_id=4107)
+    refusal(spec, rep, policy) = try
+        execute!(TrackingTask((spec,); policy=policy), rep; turns=1)
+        nothing
+    catch e
+        e
+    end
+    message(err) = err isa ArgumentError ? sprint(showerror, err) : ""
+    cuda_rep(h) = Phase6DRep((Octopus.CUDA.CuArray(a) for a in coordinate_arrays(h))...)
+
+    # (a) The Float64 floor on the crab cavity: a Float32 frequency promotes,
+    # nothing narrows, on the friendly form, the keyword (reflection) form, the
+    # raw spec and the direct runtime constructor; a complex strength widens.
+    s32f = ThinCrabCavitySpec{2}(1.0f8; strengthX=(1.0, 0.5), strengthY=(0.25f0, 0.0), phase=(0.0, 0.1))
+    @test Octopus.param(s32f, :frequency) === 1.0e8
+    @test Octopus.param(s32f, :strengthX) === (1.0, 0.5)        # was (1.0f0, 0.5f0)
+    @test Octopus.param(s32f, :strengthY) === (0.25, 0.0)
+    @test Octopus.param(s32f, :phase) === (0.0, 0.1)            # was (0.0f0, 0.1f0)
+    c64 = compile_runtime(s32f)
+    @test c64 isa Octopus.ThinCrabCavity{2,Symplectic6DMap,Float64}
+    @test c64.strengthX === (1.0, 0.5) && c64.phase === (0.0, 0.1)
+    @test c64.kcc === 2.0 * Float64(pi) * 1.0e8 / Float64(CLIGHT)
+    @test numeric_type(s32f) === Float64
+    @test compile_runtime(ThinCrabCavitySpec(; frequency=1.0f8, N=2, strengthX=(1.0, 0.5))) isa
+          Octopus.ThinCrabCavity{2,Symplectic6DMap,Float64}
+    raw = compile_runtime(ElementSpec{:thin_crab_cavity}(; N=1, frequency=1.0f8, strengthX=(2.0e-3,),
+                                                           strengthY=(0.0,), phase=(0.0,)))
+    @test raw isa Octopus.ThinCrabCavity{1,Symplectic6DMap,Float64} && raw.strengthX === (2.0e-3,)
+    direct = ThinCrabCavity{1}(394.0f6; strengthX=(2.0e-3,))
+    @test direct isa Octopus.ThinCrabCavity{1,Symplectic6DMap,Float64} && direct.strengthX === (2.0e-3,)
+    @test compile_runtime(ThinCrabCavitySpec{1}(1.0e8; strengthX=(1.0 + 1.0e-8im,))) isa
+          Octopus.ThinCrabCavity{1,Symplectic6DMap,ComplexF64}                # was InexactError
+    @test_throws ArgumentError ThinCrabCavitySpec{1}(0.0f0)
+
+    # (b) The by-name refusal of a Float32 beam through a Float64 element of
+    # each declaring kind, on the CPU: the message names the kind, both types
+    # and the remedy; the stored turn does not advance; the refusal reaches
+    # through the three wrappers, a BeamLine, the cached line, a `Beam`, and
+    # each strong-strong line with the beam in front.
+    remedies = (("ThinCrabCavity", crab64, "ThinCrabCavitySpec{2,Float32}(frequency; ...)"),
+                ("ThinRFCavity", rf64, "build the beam in Float64 (Beam(n, policy, Float64))"),
+                ("LumpedRad", rad64, "LumpedRadSpec{Float32}(; ...)"))
+    for (kind, spec, remedy) in remedies
+        task = TrackingTask((spec,); policy=cpu)
+        err = try
+            execute!(task, rep32(); turns=1)
+            nothing
+        catch e
+            e
+        end
+        @testset let kind = kind
+            @test err isa ArgumentError
+            @test occursin(kind * ": the beam's coordinates are Float32 but the element compiled in Float64", message(err))
+            @test occursin("Remedy: ", message(err)) && occursin(remedy, message(err))
+            @test task.next_turn[] == 0
+        end
+    end
+    wrapped = ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), x_offset=1.0e-4, ref_tilt=0.01,
+                                    phase_noise=(WhiteNoise(1.0e-3; rng_id=4108), nothing))
+    @test compile_runtime(wrapped) isa Octopus.RefTilted{<:Octopus.MisalignedElement{<:TurnModulated}}
+    @test occursin("ThinCrabCavity: the beam's coordinates are Float32", message(refusal(wrapped, rep32(), cpu)))
+    @test occursin("ThinCrabCavity: the beam's coordinates are Float32",
+                   message(refusal(BeamLine("precision_line", DriftSpec(L=0.5), crab64), rep32(), cpu)))
+    cached = TrackingTask((crab64,); policy=cpu)
+    execute!(cached, rep64(); turns=1)                            # compiles and caches the line
+    err_cached = try
+        execute!(cached, rep32(); turns=1)
+        nothing
+    catch e
+        e
+    end
+    @test occursin("ThinCrabCavity: the beam's coordinates are Float32", message(err_cached))
+    @test cached.next_turn[] == 1
+    err_beam = try
+        execute!(TrackingTask((rf64,); policy=cpu), Beam(8, cpu, Float32; rng_id=4112); turns=1)
+        nothing
+    catch e
+        e
+    end
+    @test occursin("ThinRFCavity: the beam's coordinates are Float32", message(err_beam))
+    mkb(T, id) = Beam(64, cpu, T; charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV,
+                      npart=1.7e11, rng_id=id)
+    ss = StrongStrongTask((StrongStrongCollision(:ip), DriftSpec(L=1.0)),
+                          (StrongStrongCollision(:ip), rad64))
+    err_ss = try
+        execute!(ss, mkb(Float32, 4113), mkb(Float32, 4114); turns=1)
+        nothing
+    catch e
+        e
+    end
+    @test occursin("in beam 2's line: LumpedRad: the beam's coordinates are Float32", message(err_ss))
+
+    # (c) The same refusal on CUDA, an ArgumentError before any device compile
+    # (not the InvalidIRError the RF cavity and the radiation element raised,
+    # and not the silent narrowing of the crab cavity).
+    if CUDA_TESTS_ACTIVE
+        for (kind, spec, remedy) in remedies
+            err = refusal(spec, cuda_rep(rep32()), CUDAExecutionPolicy())
+            @testset let kind = kind
+                @test err isa ArgumentError
+                @test occursin(kind * ": the beam's coordinates are Float32 but the element compiled in Float64", message(err))
+            end
+        end
+    else
+        @test_skip "CUDA inactive: the device side of the by-name refusal is not exercised"
+    end
+
+    # (d) The deliberately typed form, as the siblings have one: it stores and
+    # compiles Float32, is the one place "a Float64 turn table on a Float32
+    # cavity" is reachable, and refuses a Float64 beam (the other direction);
+    # the RF twin has no typed form, compiles Float32 inputs to Float64
+    # (numeric_type's floor) and takes a Float64 table.
+    s32 = ThinCrabCavitySpec{1,Float32}(394.0f6; strengthX=(2.0e-3,), phase=(0.1,))
+    @test Octopus.param(s32, :strengthX) === (2.0f-3,) && Octopus.param(s32, :frequency) === 394.0f6
+    c32 = compile_runtime(s32)
+    @test c32 isa Octopus.ThinCrabCavity{1,Symplectic6DMap,Float32}
+    @test numeric_type(s32) === Float64                          # the generic floor, as for XYCouplingSpec{Float32}
+    err_table = try
+        compile_runtime(ThinCrabCavitySpec{1,Float32}(394.0f6; strengthX=(2.0f-3,),
+                                                       phase_noise=(TurnTable([0.01, 0.02]),)))
+        nothing
+    catch e
+        e
+    end
+    @test occursin("phase_noise[1]: a Float64 turn table on a Float32 cavity", message(err_table))
+    @test compile_runtime(ThinCrabCavitySpec{1,Float32}(394.0f6; strengthX=(2.0f-3,),
+                                                         phase_noise=(TurnTable([0.01f0, 0.02f0]),))) isa TurnModulated
+    reverse = refusal(s32, rep64(), cpu)
+    @test occursin("ThinCrabCavity: the beam's coordinates are Float64 but the element compiled in Float32", message(reverse))
+    @test occursin("ThinCrabCavitySpec{1,Float64}(frequency; ...)", message(reverse))
+    rf32 = ThinRFCavitySpec(197.0f6; voltage=1.0f6, e0=275.0f9, mc2=Float32(PMASS_EV), phase=0.3f0)
+    @test Octopus.param(rf32, :strength) isa Float32 && numeric_type(rf32) === Float64
+    @test compile_runtime(rf32) isa Octopus.ThinRFCavity{Symplectic6DMap,Float64}
+    @test compile_runtime(ThinRFCavitySpec(197.0f6; voltage=1.0f6, e0=275.0f9, mc2=Float32(PMASS_EV),
+                                           strength_noise=TurnTable([0.01, 0.02]))) isa TurnModulated
+
+    # (e) A Float64 beam through each kind is unchanged: the compiled fields
+    # are the independently written expressions, the compiled element IS the
+    # hand-built runtime, and the task route tracks bitwise as the bare
+    # `track!` over that runtime does, on the same machine. The CPU digests of
+    # this fixture were captured on the unfixed tree 8ace18b and re-measured on
+    # the fixed tree bitwise equal (crab 0x492c1c30b5967ac6, RF
+    # 0xbbbff952530665cc, radiation 0x09802b6943e3e9c6; the fix D report); they
+    # are printed here and not pinned, because the suite pins no
+    # machine-specific bitwise literal (docs/experiences.md, the CPU-rounding
+    # lessons).
+    digest(rep) = Octopus._fnv1a64(reinterpret(UInt8, vcat(map(Array, coordinate_arrays(rep))...)))
+    rt_crab = compile_runtime(crab64)
+    @test rt_crab === ThinCrabCavity{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), strengthY=(1.0e-3, 0.0), phase=(0.1, 0.2))
+    @test rt_crab.kcc === 2.0 * Float64(pi) * 394.0e6 / Float64(CLIGHT)
+    rt_rf = compile_runtime(rf64)
+    beta0, gamma0 = reference_beta_gamma(275.0e9, PMASS_EV)
+    @test rt_rf.strength === rf_strength(; voltage=12.0e6, e0=275.0e9, beta0=beta0)
+    @test rt_rf.k === 2.0 * Float64(pi) * 400.8e6 / Float64(CLIGHT) && rt_rf.phase === 0.3 && rt_rf.L === 0.5
+    @test rt_rf.beta0 === beta0 && rt_rf.gamma0 === gamma0
+    rt_rad = compile_runtime(rad64)
+    @test rt_rad.damping === (exp(-1 / 100.0), exp(-1 / 100.0), exp(-1 / 50.0))
+    @test rt_rad.excitation[1] === 1.0e-3 * sqrt(-expm1(-2 / 100.0)) && rt_rad.excitation[7] === 1.0e-3 * sqrt(-expm1(-2 / 50.0))
+    for (label, spec, runtime) in (("crab", crab64, rt_crab),
+                                   ("rf", rf64, Octopus._attach_survey(rt_rf, 0.5)),   # one cavity: ds_turn = L
+                                   ("rad", rad64, rt_rad))
+        set_global_rng!(seed=0x5eed, method=:philox)
+        via_task = rep64()
+        execute!(TrackingTask((spec,); policy=cpu), via_task; turns=3)
+        set_global_rng!(seed=0x5eed, method=:philox)
+        via_track = rep64()
+        track!(via_track, (runtime,), 3; policy=cpu)
+        @testset let label = label, digest_task = repr(digest(via_task))
+            println("precision policy: Float64 ", label, " CPU digest ", digest_task)
+            @test digest(via_task) == digest(via_track)
+            @test all(a == b for (a, b) in zip(coordinate_arrays(via_task), coordinate_arrays(via_track)))
+        end
+    end
+
+    # (f) The explicit Float32 cavity, modulated, tracks a Float32 beam on both
+    # backends and the two agree within a stated Float32 tolerance. Measured:
+    # 68 ulp32 by the S2 unit on the unfixed tree's Float32-frequency cavity
+    # (pink, 16 turns, 256 particles, phase 0; libdevice sinf/cosf and FMA
+    # contraction in theta, the Float64 mechanism of the CPU/CUDA identity
+    # testset, two orders larger in Float32) and 2.0 ulp32 on this fixture
+    # (RTX 4500 Ada, 2026-10-16; the fix D probe log). The pin, 1024, is above
+    # ten times the larger measurement (the one-tenth / ten rule) and is
+    # printed so another machine's log carries its own number; a wrong turn's
+    # realisation on one backend is 1e5 ulp32 and fails it.
+    n32 = 256
+    big32() = Phase6DRep(collect(Float32, range(-1.0f-3, 1.0f-3; length=n32)), zeros(Float32, n32),
+                         collect(Float32, range(0.5f-3, -0.5f-3; length=n32)), zeros(Float32, n32),
+                         collect(Float32, range(-2.0f-3, 2.0f-3; length=n32)), zeros(Float32, n32))
+    mod32 = ThinCrabCavitySpec{1,Float32}(394.0f6; strengthX=(2.0f-3,), strengthY=(1.0f-3,), phase=(0.1f0,),
+                                          phase_noise=(PinkNoise(1.0e-2; rng_id=4109),),
+                                          strength_noise=(WhiteNoise(1.0e-3; rng_id=4110),))
+    @test compile_runtime(mod32) isa TurnModulated{<:Octopus.ThinCrabCavity{1,Symplectic6DMap,Float32}}
+    set_global_rng!(seed=0x5eed, method=:philox)
+    r32 = big32()
+    execute!(TrackingTask((mod32,); policy=cpu), r32; turns=16)
+    @test eltype(r32.px) === Float32 && all(isfinite, r32.px) && any(!iszero, r32.px)
+    if CUDA_TESTS_ACTIVE
+        set_global_rng!(seed=0x5eed, method=:philox)
+        g32 = cuda_rep(big32())
+        execute!(TrackingTask((mod32,); policy=CUDAExecutionPolicy()), g32; turns=16)
+        Octopus.CUDA.synchronize()
+        ulps32 = maximum(maximum(abs.(Float64.(c) .- Float64.(Array(g))) ./
+                                 eps.(max.(abs.(c), abs.(Array(g)), floatmin(Float32))); init=0.0)
+                         for (c, g) in zip(coordinate_arrays(r32), coordinate_arrays(g32)))
+        gap = maximum(maximum(abs.(Float64.(c) .- Float64.(Array(g))); init=0.0)
+                      for (c, g) in zip(coordinate_arrays(r32), coordinate_arrays(g32)))
+        @testset let max_ulps32 = ulps32, max_abs_gap = gap
+            println("precision policy: Float32 crab cavity CPU/CUDA max ulps32 = ", max_ulps32, " max |gap| = ", max_abs_gap)
+            @test max_ulps32 <= 1024.0
+        end
+    else
+        @test_skip "CUDA inactive: the Float32 CPU/CUDA agreement of the typed crab cavity is not measured"
+    end
+
+    # (g) The tripwire: the declaring kinds are DERIVED from the method table of
+    # `_required_beam_eltype` (and each owns a remedy), pinned against the
+    # three this testset exercises in both directions; every OTHER registered
+    # kind takes a Float32 beam through its example on the CPU, the standing
+    # promoting behaviour (31 of 31 kinds measured 2026-10-16; the device side
+    # of the rest is recorded in docs/current_runtime.md, not pinned, since 12
+    # kinds fail there today and a pin would freeze a defect).
+    op_types(f) = Set(Any[Base.unwrap_unionall(Base.unwrap_unionall(m.sig).parameters[2]).name.wrapper
+                          for m in methods(f) if Base.unwrap_unionall(m.sig).parameters[2] !== Any])
+    declaring = op_types(Octopus._required_beam_eltype)
+    @testset let declaring_kinds = sort!(string.(nameof.(collect(declaring))))
+        @test declaring == Set(Any[Octopus.ThinCrabCavity, Octopus.ThinRFCavity, Octopus.LumpedRad])
+        @test op_types(Octopus._beam_eltype_remedy) == declaring
+    end
+    @test Octopus._required_beam_eltype(compile_runtime(DriftSpec(L=0.5))) === nothing
+    @test Octopus._required_beam_eltype(rt_crab) === Float64 && Octopus._required_beam_eltype(c32) === Float32
+    declared_kinds = Symbol[]
+    for kind in sort!(collect(keys(Octopus.ELEMENT_META_BY_KIND)))
+        example = example_spec(ElementSpec{kind})
+        runtime = compile_runtime(example)
+        if Octopus._required_beam_eltype(runtime) !== nothing
+            push!(declared_kinds, kind)
+            @testset let kind = kind
+                @test occursin("the beam's coordinates are Float32", message(refusal(example, rep32(), cpu)))
+            end
+        else
+            set_global_rng!(seed=0x5eed, method=:philox)
+            rep = rep32()
+            @testset let kind = kind
+                @test (execute!(TrackingTask((example,); policy=cpu), rep; turns=1); eltype(rep.x) === Float32)
+            end
+        end
+    end
+    @test declared_kinds == [:lumped_radiation, :thin_crab_cavity, :thin_rf_cavity]
+    set_global_rng!(seed=0x5eed, method=:philox)
 end
 
 @testset "Thin elements, markers and RBEND" begin

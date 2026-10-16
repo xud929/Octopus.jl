@@ -62,6 +62,19 @@ docstrings of public objects.
    `track_particle(TrackingMethod, runtime_element, coords...)`. Every branch
    reachable from a CUDA kernel must compile as device IR, throws included, so
    their messages stay static.
+   - Numeric type: an untyped friendly constructor promotes its named numeric
+     parameters over a `Float64` floor (`_linear_map_eltype`, or
+     `numeric_type(spec)` at compile) and never narrows -- a `Float32` input
+     gives a `Float64` element, a dual or complex input widens it; a `Spec{T}`
+     form, where the kind offers one, stores and compiles `T` as given. A
+     `Float64` element tracking a `Float32` beam promotes and narrows on store
+     (the standing behaviour, `../current_runtime.md` "Current Backends"). If
+     the kernel branches on a runtime flag and returns the beam's type on one
+     side and the element's on the other, it does not compile as device IR
+     for a mismatched beam: declare `_required_beam_eltype`
+     (`src/track/Track.jl`) so the task refuses such a beam at compile by
+     name, as the two modulated cavities and the radiation element do; the
+     suite derives the declaring set from the method table.
 7. Confirm `element_help(MyElementSpec)` and `element_help(:my_element)` give a
    useful summary, and run `validate_element_metadata()`.
 8. Add a testset in `test/runtests.jl` (the suite is a single file; element

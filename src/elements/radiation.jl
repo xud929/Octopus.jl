@@ -15,6 +15,14 @@ excitation element. `Radiation6DMap()` permits both components,
 `Damping6DMap()` permits damping only, and `Diffusion6DMap()` permits
 excitation only. `is_damping` and `is_excitation` enable or disable the
 component permitted by the selected method.
+
+Numeric type: `T` (default `Float64`) is stored and compiled as given, so
+`LumpedRadSpec{Float32}` is the Float32 element. A beam whose element type
+differs from the element's is refused by name when a task compiles the line
+(`_required_beam_eltype`, `src/track/Track.jl`; fix D, 2026-10-16): track a
+`Float32` beam through `LumpedRadSpec{Float32}` and a `Float64` beam through
+the default. Before, a `Float32` beam through the `Float64` element narrowed
+every coordinate on the CPU and failed at CUDA device compile.
 """
 LumpedRadSpec(; kwargs...) = LumpedRadSpec{Float64}(; kwargs...)
 function (::Type{LumpedRadSpec{T}})(;
@@ -79,6 +87,19 @@ struct LumpedRad{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     coupling::XYCoupling{Symplectic6DMap,T}
     rng_id::UInt64
 end
+
+# A mismatched beam is refused at compile by name (`_required_beam_eltype`,
+# src/track/Track.jl; the check in src/tasks/Tasks.jl). The context-aware
+# kernel returns the input tuple untouched when `is_excitation` is false and
+# the damped-and-excited tuple otherwise, so a Float32 beam through a Float64
+# element returns tuples of two types: the CPU narrowed every coordinate on
+# store, CUDA failed at device compile (`InvalidIRError`, `jl_f_tuple` in
+# `fusedTrack`; 2026-10-16 neighbour audit, S1-9). The remedy names the typed
+# form, `LumpedRadSpec{T}`, which compiles to `LumpedRad{M,T}`.
+_required_beam_eltype(::LumpedRad{M,T}) where {M,T} = T
+_beam_eltype_remedy(::LumpedRad{M,T}, ::Type{B}) where {M,T,B} =
+    "build the element in the beam's type, LumpedRadSpec{$(B)}(; ...), or the " *
+    "beam in $(T) (Beam(n, policy, $(T)))"
 
 function LumpedRad(spec::ElementSpec{:lumped_radiation},
                    method::AbstractTrackingMethod=tracking_method(spec))
