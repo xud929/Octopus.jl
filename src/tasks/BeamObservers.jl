@@ -213,11 +213,12 @@ function _register_observer_path!(observer, path::AbstractString)
             live = prior.value
             if live !== nothing && live !== observer
                 @warn "a second live observer is initializing an output path " *
-                      "that another live observer is writing: this " *
-                      "initialization truncates the first observer's rows, " *
-                      "and later flushes from both will interleave into a " *
-                      "self-consistent but wrong file. Give each observer " *
-                      "its own path (U7-10)." path = key first_observer =
+                      "that another live observer is writing: a replacing " *
+                      "initialization truncates the first observer's rows, an " *
+                      "appending one continues them, and later flushes from both " *
+                      "will interleave into a self-consistent but wrong file. " *
+                      "Give each observer its own path (U7-10; wording scoped " *
+                      "2026-10-16, S5-5)." path = key first_observer =
                       typeof(live) second_observer = typeof(observer)
             end
         end

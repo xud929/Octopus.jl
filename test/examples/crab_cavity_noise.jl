@@ -192,7 +192,15 @@ config-that-was-never-read defect class, AGENTS.md Invariants):
                               observers
     OCTOPUS_RADIATION         1|0 (1): with 0 the lumped radiation element is
                               omitted from the line, so the only stochastic
-                              drive is the crab noise
+                              drive is the crab noise. In effect it is the
+                              only one either way: the shipped
+                              `damping_turns = 1e100` gives the element an
+                              excitation scale sqrt(-expm1(-2/tau)) = 1.4e-50,
+                              below half an ulp of every coordinate, so the
+                              moments are bitwise identical with radiation on
+                              and off (2 turns, 2026-10-16 neighbour audit);
+                              the toggle removes an inert element unless the
+                              damping turns are set
     OCTOPUS_SEED              the task seed (123456789, the example's); names
                               the output directory
     OCTOPUS_RESULT_DIR        output root (test/result beside the tests, as

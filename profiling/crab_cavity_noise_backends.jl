@@ -16,7 +16,11 @@ Fixed case (the production point; the harness owns the physics literals and
 this driver passes only switches, so it tracks the harness rather than
 copying it): rule white at scale 1 (phase rms 10 urad, relative strength rms
 1e-4 per active harmonic), OCTOPUS_RADIATION=0 so the crab noise is the only
-stochastic drive, seed 123456789, the example's beams and optics, moments
+stochastic drive (a formality: the example's radiation element ships with
+`damping_turns = 1e100`, an excitation scale of 1.4e-50 that leaves every
+moment bitwise unchanged, so the toggle removes an inert element unless the
+damping turns are set; 2026-10-16 neighbour audit), seed 123456789, the
+example's beams and optics, moments
 every turn; sizes N in {1e5, 1e6} macroparticles and 2000 turns by default.
 Since 2026-10-15 every arm also records the realised turn-modulation
 series by the harness default (OCTOPUS_RECORD_TURN_MODULATION, which this

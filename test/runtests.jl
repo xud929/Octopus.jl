@@ -10096,6 +10096,54 @@ end
             end
         end
     end
+    # HETEROGENEOUS lines (2026-10-16 neighbour audit, finding U1-1): the
+    # pins above cycle one wrapped type with one plain type, and under that
+    # shape the `ntuple(i -> ..., Val(N))` form of `update_line` stayed
+    # concrete. Once a line held about four distinct element types with two or
+    # more wrapped (three sufficed with the recording sink) Julia stopped
+    # propagating `i` into `line[i]`, the result inferred as an
+    # `NTuple{40, Union{...}}` and the hook allocated 246 kB per turn plain
+    # and 129 kB with the sink on the four-type line, 204 kB with the sink on
+    # the three-wrapped line -- the per-turn hot path of any ring carrying a
+    # noisy crab cavity and a noisy RF cavity. `update_line` now unrolls with
+    # literal indices; pinned at 0 B on both hooks, type preserved, the sink
+    # meeting every wrapped element once.
+    hetero_rf(rule) = compile_runtime(ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9,
+                                                       mc2=PMASS_EV, phase_noise=rule))
+    hetero_drift = compile_runtime(DriftSpec(L=0.1))
+    hetero_crab_pink = compile_runtime(mixed_spec(phase_noise=(nothing, PinkNoise(2.0e-3; rng_id=32, octaves=4))))
+    hetero_shapes = (
+        ("crab white, dispersion, RF white, drift (4 types, 2 wrapped kinds)",
+         (w, disp, hetero_rf(WhiteNoise(1.0e-2; rng_id=31)), hetero_drift)),
+        ("crab white, crab (nothing, pink), RF table, dispersion (4 types, 3 wrapped kinds)",
+         (w, hetero_crab_pink, hetero_rf(mixed_table), disp)),
+    )
+    p_sink_h = tempname() * ".h5"
+    Octopus.HDF5.h5open(p_sink_h, "w") do f_sink
+        for (shape, cycle) in hetero_shapes
+            line_h = Tuple(cycle[mod1(i, length(cycle))] for i in 1:40)
+            wrapped = [e for e in line_h if e isa TurnModulated]
+            bufs_h = [sizehint!(Float64[], 4096) for _ in wrapped]
+            rec_h = Octopus.TurnModulationRecorder(f_sink, 10^6, 1, ["h$(i)" for i in eachindex(wrapped)],
+                                                   [active_slots(e) for e in wrapped], bufs_h, 0, 0)
+            up_h = update_line(line_h, ctx3)
+            alloc_update(line_h, ctx3)
+            alloc_update_sink(line_h, ctx3, rec_h)
+            @testset let shape = shape
+                @test length(unique(typeof.(line_h))) == 4
+                @test typeof(up_h) === typeof(line_h)
+                Octopus._tm_begin_turn!(rec_h)
+                @test typeof(update_line(line_h, ctx3, rec_h)) === typeof(line_h)
+                @test alloc_update(line_h, ctx3) == 0
+                @test alloc_update_sink(line_h, ctx3, rec_h) == 0
+                Octopus._tm_begin_turn!(rec_h)
+                foreach(empty!, bufs_h)
+                update_line(line_h, ctx3, rec_h)
+                @test rec_h.cursor == length(wrapped)
+            end
+        end
+    end
+    rm(p_sink_h; force=true)
     rm(p_sink; force=true)
 
     # (e) Test 5, the guardrails. Construction refuses what no run could use;
@@ -10806,7 +10854,10 @@ end
     end
     @test :spectral_turn_table in names(Octopus) && :SpectralNoise in names(Octopus)
 
-    # Check 1 on one table: the population rms equals sigma within 1e-12
+    # Check 1 on one table (measured 2026-10-16 on these tables, the pins'
+    # envelope: flat rms_rel 2.2e-16, periodogram_rel 8.9e-16,
+    # outside_over_peak 6.6e-32, dc_over_peak 1.5e-33; pink -1.2e-15, 1.5e-14,
+    # 3.4e-33, 5.0e-35): the population rms equals sigma within 1e-12
     # relative, the periodogram over c^2 equals S(f_k) within 1e-10 relative on
     # every band bin, every bin outside the band is below 1e-12 of the band
     # peak, the DC bin too and the mean is zero to rounding (measured 1.6e-17
@@ -16742,6 +16793,207 @@ end
     foreach(x -> rm(x; force=true), (p, p_clean, p2, p3, p4, pss))
 end
 
+@testset "Neighbour audit 2026-10-16: the ledger stamps at every flush, a prepare refusal closes the artifact, the seed keyword refuses, radiation streams span both strong-strong lines" begin
+    # docs/history/audit_crab_cavity_noise_neighbours_2026_10_16.md, findings
+    # U5-1, U5-2, U3-1 and S1-3. Each pin failed on the pre-fix tree (the
+    # auditor's probe: 8 of 10 red on 3126908, all green after the fixes).
+    mktempdir() do dir
+        set_global_rng!(seed=0x5eed, method=:philox)
+        ip = StrongStrongCollision(:ip)
+        mkp() = Phase6DRep([1.0e-4], [0.0], [3.0e-5], [0.0], [1.0e-2], [0.0])
+        crab(rng, rules) = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,),
+                                                 phase_noise=rules, tracking_method=Symplectic6DMap())
+        # (a) U3-1: the retired seed keyword refuses by name, naming the
+        # replacement, on both task kinds; the value used to be IGNORED after
+        # a deprecation warning (coordinates bitwise identical for any seed).
+        for f in (() -> TrackingTask((DriftSpec(L=1.0),); seed=1),
+                  () -> StrongStrongTask((ip, DriftSpec(L=1.0)), (ip, DriftSpec(L=1.0)); seed=1))
+            err = try; f(); "did not throw" catch e; sprint(showerror, e) end
+            @test occursin("retired", err) && occursin("set_global_rng!", err)
+        end
+        # (b) S1-3: the radiation duplicate-stream warning spans both
+        # strong-strong lines, as the turn-modulation one does; distinct ids
+        # are silent. Before the fix the constructor never called it.
+        rad(id) = LumpedRadSpec(damping_turns=(20.0, 25.0, 30.0), beta=(0.7, 0.9, 1.1),
+                                alpha=(0.2, -0.1, 0.05), sigma=(1.2e-3, 0.8e-3, 2.0e-3), rng_id=id)
+        @test_logs (:warn, r"share an rng_id") match_mode = :any StrongStrongTask(
+            (ip, rad(21)), (ip, rad(21)))
+        @test_logs StrongStrongTask((ip, rad(21)), (ip, rad(22)))
+        # (c) U5-1: the `/execution` ledger is persisted by EVERY flush -- the
+        # probe rows and the turn-modulation series as well as the luminosity
+        # channel -- so a weak-strong run without a strong beam reports its
+        # progress while running and after a kill. Before the fix the first
+        # two flushes left the nothing-known sentinel (-1).
+        tbl = TurnTable(collect(0.001:0.001:0.064); name="amp")
+        w = compile_runtime(crab(7, (tbl,)))
+        entries = Octopus._turn_modulation_entries((w,), 1)
+        columns = Octopus._turn_modulation_columns!(Any[], (w,))
+        art = RunArtifact(joinpath(dir, "ledger.h5"); capacity=4, record_turn_modulation=true)
+        Octopus.prepare_run_artifact!(art, ["L"], 0, 10; turn_modulation=entries,
+                                      turn_modulation_columns=columns)
+        ledger() = read(art.file["execution/current_turn"])[1]
+        @test ledger() == -1
+        art.current_turn = 3
+        key = Octopus._ra_bind_probe!(art, "moments", "m", ["turn", "x"], 0)
+        Octopus._ra_push_probe_rows!(art, key, [3.0 1.0])
+        @test ledger() == 3
+        art.current_turn = 5
+        rec = Octopus._turn_modulation_sink(art, 1)
+        @test rec.owner === art
+        for t in 0:3
+            Octopus._tm_begin_turn!(rec)
+            Octopus._record_turn_draws!(rec, (1.0t,))
+            Octopus._tm_end_turn!(rec, t)
+        end
+        @test size(art.file["turn_modulation/1/1/series"], 1) == 4
+        @test ledger() == 5
+        art.current_turn = 7
+        for t in 0:3
+            Octopus.push_luminosity!(art, "L", t, 1.0)
+        end
+        @test ledger() == 7
+        art.current_turn = 9
+        Octopus.finalize_run_artifact!(art)
+        @test read(TaskOutput(joinpath(dir, "ledger.h5")), :execution).current_turn == [9]
+        # The hand-built recorder of the direct-API tests has no owner and
+        # flushes without a stamp (the 8-argument constructor).
+        rec0 = Octopus.TurnModulationRecorder(art.file === nothing ? Octopus.HDF5.h5open(joinpath(dir, "x.h5"), "w") : art.file,
+                                              4, 1, String[], Vector{Int}[], Vector{Float64}[], 0, 0)
+        @test rec0.owner === nothing
+        close(rec0.file)
+        # (d) U5-2: a refusal between `prepare_run_artifact!` and the turn
+        # loop (a duplicate probe name) closes the artifact on the
+        # strong-strong task as it always did on the weak-strong twin, so
+        # the same task's next execute! and a fresh task on the same path
+        # are not wedged by an open handle.
+        mkb(rng_id, charge, mc2, E0) = Beam(64, CPUThreadsExecutionPolicy(), Float64;
+            beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3),
+            cutoff=5.0, rng_id=rng_id, charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+        b1, b2 = mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9)
+        p_dss = joinpath(dir, "dup_ss.h5")
+        white(rng) = (WhiteNoise(1.0e-3; rng_id=rng),)
+        tss = StrongStrongTask((ip, crab(11, white(11)), ScheduledObserver(MomentObserver(; name="m", orders=1)),
+                                ScheduledObserver(MomentObserver(; name="m", orders=1))),
+                               (ip, crab(12, white(12))); artifact=RunArtifact(p_dss; record_turn_modulation=true))
+        @test_throws ArgumentError execute!(tss, b1, b2; turns=2)
+        @test tss.artifact.file === nothing
+        @test isempty(tss.artifact.turn_modulation_recorders)
+        fresh = StrongStrongTask((ip, crab(11, white(11))), (ip, crab(12, white(12)));
+                                 artifact=RunArtifact(p_dss; record_turn_modulation=true))
+        # The refused task's probes stay registered as live observers of the
+        # path (the observer registry, not the artifact), so the fresh task's
+        # initialisation warns about them; the warning is the registry's and
+        # is asserted here so the suite log carries no unexplained line.
+        @test_logs (:warn, r"second live observer") match_mode = :any execute!(fresh, b1, b2; turns=2)
+        @test read(TaskOutput(p_dss), :execution).turns == [2]
+        wt = TrackingTask((crab(13, white(13)), ScheduledObserver(MomentObserver(; name="m", orders=1)),
+                           ScheduledObserver(MomentObserver(; name="m", orders=1)));
+                          artifact=RunArtifact(joinpath(dir, "dup_ws.h5")))
+        @test_throws ArgumentError execute!(wt, mkp(); turns=2)
+        @test wt.artifact.file === nothing
+        # (e) U5-5 and S4-6: the artifact's keyword list and its option schema
+        # are one set (a fourth keyword without a schema entry passed every
+        # check before this pin), and the refusals name the keyword.
+        kw_method = only(m for m in methods(RunArtifact) if m.nargs == 2 && m.sig.parameters[2] <: AbstractString &&
+                         !isempty(Base.kwarg_decl(m)))
+        @test Set(Base.kwarg_decl(kw_method)) == Set(keys(run_artifact_option_schema()))
+        for (kw, msg) in ((:(append = 1), "append"), (:(capacity = true), "capacity"),
+                          (:(capacity = 2.0), "capacity"), (:(record_turn_modulation = 1), "record_turn_modulation"))
+            err = try; eval(:(RunArtifact("x.h5"; $kw))); "did not throw" catch e; sprint(showerror, e) end
+            @test occursin("RunArtifact $(msg)", err)
+        end
+        # (f) S5-1: the loss record's owner survives a garbage collection
+        # between two windows. The owner was a `WeakRef` to the immutable
+        # rep, cleared at the first GC: the second window then reallocated
+        # the record (counts [1] again, the earlier loss "unattributed" with a
+        # warning) and recompiled the line, so a spectral table changed seed
+        # between windows. Now the key is the beam's storage.
+        ap = ApertureSpec(shape=:rectangle, x_limit=1.5e-4, y_limit=1.0, name="tight")
+        rep_l = Phase6DRep([1.0e-4, 2.0e-4], [0.0, 0.0], [3.0e-5, 0.0], [0.0, 0.0], [1.0e-2, -1.0e-2], [0.0, 0.0])
+        tl = TrackingTask((ap, CrabDispersionSpec{Float64}(zeta1=0.1)))
+        execute!(tl, rep_l; turns=1)
+        rec1 = tl.loss_record[]
+        @test Octopus.loss_counts(rec1) == [1]
+        GC.gc(true)
+        @test tl.loss_owner[].value !== nothing
+        @test_logs execute!(tl, rep_l; turns=1)
+        @test tl.loss_record[] === rec1
+        @test Octopus.loss_counts(rec1) == [2]
+        sl = Octopus.loss_summary(rep_l, rec1)
+        @test (sl.dead, sl.logged, sl.unattributed) == (2, 2, 0)
+        set_global_rng!(seed=21, method=:philox)
+        p_gc = joinpath(dir, "gc.h5")
+        rep_s = Phase6DRep([1.0e-4], [0.0], [3.0e-5], [0.0], [1.0e-2], [0.0])
+        ts = TrackingTask((crab(5, (SpectralNoise(1.0e-4, (1 / 64, 0.5), :flat; rng_id=5, turns=64),)), ap);
+                          artifact=RunArtifact(p_gc; append=true))
+        execute!(ts, rep_s; turns=2)
+        set_global_rng!(seed=22, method=:philox)
+        GC.gc(true)
+        execute!(ts, rep_s; turns=2)
+        prov = turn_modulation_provenance(p_gc)
+        @test length(prov) == 2
+        @test prov[1].elements[1].slots[1].digest == prov[2].elements[1].slots[1].digest
+        @test occursin("seed=21", prov[2].elements[1].slots[1].name)
+        set_global_rng!(seed=0x5eed, method=:philox)
+        # (g) U1-3 (localised by U9 as U9-1..3): neither turn loop walks the
+        # heterogeneous entries tuple per turn any more. The per-turn plan
+        # key boxed the WHOLE isbits entries tuple once per element (quadratic
+        # in the line length) and the `get!` do-block copied it again, so
+        # with an artifact attached an eight-type line of 40 crab cavities
+        # cost about 200 kB per turn over the fast path at 1 and at 4 threads
+        # (pre-fix 206,845 B at 4 threads; fixed 448); the strong-strong loop
+        # paid the same per block per beam and re-copied each block at every
+        # `blocks[j]` read of its heterogeneous tuple. Slopes between two
+        # turn counts, so the once-per-execute! walks cancel; the strong-strong
+        # pair is compared with a one-type pair of the SAME length so the
+        # per-element thread overhead cancels too (what remains is the larger
+        # per-element closures of the bigger elements, about 30 kB).
+        crabN(N) = ThinCrabCavitySpec{N}(394.0e6; strengthX=ntuple(_ -> 2.0e-3, N),
+                                        strengthY=ntuple(_ -> 5.0e-4, N), phase=ntuple(_ -> 0.1, N))
+        hetero = Tuple(crabN(mod1(i, 8)) for i in 1:40)
+        rep4() = Phase6DRep(collect(range(-1.0e-3, 1.0e-3; length=4)), zeros(4), zeros(4), zeros(4),
+                            zeros(4), zeros(4))
+        function ws_slope(task)
+            r = rep4()
+            execute!(task, r; turns=5); execute!(task, r; turns=5)
+            a1 = @allocated execute!(task, r; turns=50)
+            a2 = @allocated execute!(task, r; turns=250)
+            return (a2 - a1) / 200
+        end
+        plain_slope = ws_slope(TrackingTask(hetero))
+        rec_slope = ws_slope(TrackingTask(hetero; artifact=RunArtifact(joinpath(dir, "slope_ws.h5");
+                                                                     capacity=10^6, record_turn_modulation=true)))
+        @test rec_slope - plain_slope < 40_000
+        mkb_s(rng_id, charge, mc2, E0) = begin
+            set_global_rng!(seed=5, method=:philox)
+            Beam(64, CPUThreadsExecutionPolicy(), Float64;
+                beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+                sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
+                charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+        end
+        L6s(b, t) = Linear6DSpec{Float64}(; beta1=b, beta2=b, alpha1=(0.0, 0.0, 0.0),
+                                          alpha2=(0.0, 0.0, 0.0), dmu=2pi .* t)
+        l6a = L6s((0.55, 0.056, 12.7), (0.08, 0.14, -0.069))
+        l6b = L6s((0.8, 0.072, 90.9), (0.228, 0.210, -0.01))
+        function ss_slope(l1, l2, name)
+            b1 = mkb_s(1, -1.0, EMASS_EV, 10.0e9); b2 = mkb_s(2, 1.0, PMASS_EV, 275.0e9)
+            task = StrongStrongTask(l1, l2; artifact=RunArtifact(joinpath(dir, name); capacity=10^6,
+                                                                 record_turn_modulation=true))
+            execute!(task, b1, b2; turns=3); execute!(task, b1, b2; turns=3)
+            a1 = @allocated execute!(task, b1, b2; turns=10)
+            a2 = @allocated execute!(task, b1, b2; turns=30)
+            return (a2 - a1) / 20
+        end
+        homo40 = Tuple(crabN(1) for _ in 1:40)
+        homo = ss_slope((ip, homo40..., l6a), (ip, homo40..., l6b), "slope_ss_homo.h5")
+        het = ss_slope((ip, hetero..., l6a), (ip, hetero..., l6b), "slope_ss_hetero.h5")
+        @test het - homo < 100_000
+        # The blocks are a vector, not a tuple (read once per turn, no copy).
+        @test Octopus._strong_strong_runtime_blocks(StrongStrongTask((ip, l6a), (ip, l6b)), 1) isa Vector
+        set_global_rng!(seed=0x5eed, method=:philox)
+    end
+end
+
 @testset "The run artifact records the realised turn modulation" begin
     # docs/design/turn_modulation_record.md (2026-10-15, stage 1): the artifact
     # option `record_turn_modulation` records, turn by turn, the OFFSETS the
@@ -16982,8 +17234,10 @@ end
     @test prov_r[1].elements[1].slots[3].series == table.offsets[5:8]
     @test prov_r[1].elements[1].slots[1].series == replay(wk.rule.phase[1], 1, 4:7)
     @test prov_r[1].elements[1].slots[2].series == replay(wk.rule.phase[2], 2, 4:7)
-    @test prov_r[1].elements[1].slots[1].series == prov_6[1].elements[1].slots[1].series[5:6] ∪
-          replay(wk.rule.phase[1], 1, 6:7)   # the overlap with the 6-turn run agrees
+    @test prov_r[1].elements[1].slots[1].series == vcat(prov_6[1].elements[1].slots[1].series[5:6],
+          replay(wk.rule.phase[1], 1, 6:7))   # the overlap with the 6-turn run agrees
+    # (`vcat`, not `∪`: the union would drop a repeated draw and shrink the
+    # right-hand side -- 2026-10-16 neighbour audit U6-4.)
 
     # (h) The RF cavity by the same wrap: one phase and one strength column,
     # the nominals `(phase, strength)` of the compiled cavity.
@@ -17445,7 +17699,7 @@ end
     mpi_arm = @isdefined(_lane_gate) ? _lane_gate("Turn modulation: the one-particle probe, two-rank arm") : true
     if mpi_arm
         launcher = try
-            MPICH_jll.mpiexec(exe -> exe)
+            MPICH_jll.mpiexec()
         catch err
             @info "MPICH_jll provided no mpiexec; the probe's MPI arm was NOT exercised" err
             nothing
@@ -19349,7 +19603,7 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
     root = pkgdir(Octopus)
     child = joinpath(root, "test", "mpi_seam_check.jl")
     launcher = try
-        MPICH_jll.mpiexec(exe -> exe)
+        MPICH_jll.mpiexec()
     catch err
         @info "MPICH_jll provided no mpiexec; the MPI seam was NOT exercised" err
         nothing
@@ -20173,7 +20427,7 @@ if _lane_gate("The developer harnesses run divided under an MPI launcher")
     end
     @test length(mpi_harnesses) >= 2    # the two arms of 2026-09-06
     launcher = try
-        MPICH_jll.mpiexec(exe -> exe)
+        MPICH_jll.mpiexec()
     catch err
         @info "MPICH_jll provided no mpiexec; the harness MPI branch was NOT exercised" err
         nothing

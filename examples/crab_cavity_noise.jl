@@ -285,6 +285,13 @@ input = (
         hvoffset = nothing,
     ),
 
+    # The weak-strong example's block, unchanged. Inert in effect: with
+    # `damping_turns = 1e100` the element's excitation scale,
+    # sqrt(-expm1(-2/tau)) = 1.4e-50, is below half an ulp of every
+    # coordinate, so the moments are bitwise identical with the element in
+    # and out of the line (the harness's OCTOPUS_RADIATION toggle, 2 turns,
+    # 2026-10-16 neighbour audit); a stochastic radiation drive needs the
+    # damping turns set.
     radiation = (
         damping_turns = (1.0e100, 1.0e100, 1.0e100),
         is_damping = false,

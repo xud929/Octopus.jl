@@ -331,7 +331,9 @@ product of the run like any other, so the artifact gives them their own
 channel — an `/execution/` group with ONE ROW PER `execute!` (execution
 index, start turn, window length, CURRENT TURN and elapsed updated at every
 flush -- live progress and rate from one `h5ls`, and the run-level
-how-far-did-it-get answer after a crash -- plus backend),
+how-far-did-it-get answer after a crash; as landed the row holds
+`start_turn`, `turns`, `current_turn` and `elapsed`, no backend column --
+2026-10-16 neighbour audit),
 appended and never overwritten, so a swap-out run's every execution keeps
 its record; rows from a replayed window are RETAINED too, distinguishable by
 execution index, because both attempts' timings are exactly what a retry

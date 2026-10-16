@@ -2394,11 +2394,18 @@ function StrongStrongTask(line1, line2;
     line_tuple1 = _element_tuple(line1)
     line_tuple2 = _element_tuple(line2)
     # A cavity in beam 1 and one in beam 2 sharing an rng_id draw identical
-    # per-turn offsets, so the duplicate-stream check spans both lines. The
-    # radiation sibling warning is deliberately NOT added here: that gap is
-    # pre-existing and stays ledgered.
+    # per-turn offsets, so the duplicate-stream checks span both lines: the
+    # turn-modulation one since stages 3-4, the radiation sibling since the
+    # 2026-10-16 neighbour audit (lead S1-3; the "stays ledgered" gap had no
+    # ledger row). Both are the TrackingTask constructor's calls.
+    _warn_duplicate_radiation_streams((line_tuple1..., line_tuple2...))
     _warn_duplicate_turn_modulation_streams((line_tuple1..., line_tuple2...))
-    seed !== nothing && @warn "StrongStrongTask seed keyword is deprecated; use set_global_rng!(seed=...) instead." seed
+    # Retired with the TrackingTask twin (2026-10-16 neighbour audit, U3-1):
+    # the keyword warned and then ignored the value.
+    seed === nothing || throw(ArgumentError(
+        "the StrongStrongTask seed keyword was retired (it was ignored after a " *
+        "deprecation warning): seed the counter RNG with " *
+        "set_global_rng!(seed=$(seed)) before constructing the task"))
     solver = poisson_solver === nothing ? default_poisson_solver : poisson_solver
     # The retired keywords are kept in the signature only to throw a precise
     # error naming the replacement (a non-default request is honoured or
@@ -2672,14 +2679,25 @@ function _execute_strong_strong_task!(
                               turn_modulation=prov, turn_modulation_columns=columns)
     end
     # Absolute window, matching Tasks.jl: `should_run` sees `first_turn + offset`.
-    Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => task.artifact,
-                           _ACTIVE_PROBE_S_MAP =>
-                               (task.artifact === nothing ? nothing :
-                                _line_probe_s_map(task.line1, task.line2))) do
-        prepare_observers!(_line_observers(blocks1), _strong_strong_physics_line(blocks1);
-                           turns=Int(turns), first_turn=Int(first_turn))
-        prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2);
-                           turns=Int(turns), first_turn=Int(first_turn))
+    # A refusal here (a duplicate probe name, a continued group's column
+    # mismatch) must not leave the artifact open: the task would then refuse
+    # its next execute! as "already open" and the path would refuse a fresh
+    # task's truncation while this process holds the handle (2026-10-16
+    # neighbour audit, lead U5-2; the TrackingTask twin closes through its
+    # `finally`). Close it and rethrow, as the turn loop's crash path does.
+    try
+        Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => task.artifact,
+                               _ACTIVE_PROBE_S_MAP =>
+                                   (task.artifact === nothing ? nothing :
+                                    _line_probe_s_map(task.line1, task.line2))) do
+            prepare_observers!(_line_observers(blocks1), _strong_strong_physics_line(blocks1);
+                               turns=Int(turns), first_turn=Int(first_turn))
+            prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2);
+                               turns=Int(turns), first_turn=Int(first_turn))
+        end
+    catch
+        task.artifact === nothing || finalize_run_artifact!(task.artifact)
+        rethrow()
     end
     line_observers_finalized = false
     try
@@ -2848,20 +2866,25 @@ function _execute_strong_strong_turns!(
         _tm_begin_turn!(sink2)
         turn_range = _cuda_nvtx_push(backend, "strongstrong turn")
         for j in eachindex(blocks1)
+            # Each block read once per turn (a pointer load, see
+            # `_split_strong_strong_line`), never re-indexed below.
+            block1 = blocks1[j]
+            block2 = blocks2[j]
             line_range = _cuda_nvtx_push(backend, "strongstrong line tracking")
             _execute_strong_strong_segment_pair!(
-                beam1.rep, blocks1[j].entries, task.plan_cache1,
-                beam2.rep, blocks2[j].entries, task.plan_cache2,
+                beam1.rep, block1, task.plan_cache1,
+                beam2.rep, block2, task.plan_cache2,
                 policy, ctx1, ctx2, streams, j, sink1, sink2,
             )
             _cuda_nvtx_pop(backend, line_range)
-            if blocks1[j].collision !== nothing
+            collision = block1.collision
+            if collision !== nothing
                 # Resolved once per execute! by the preflight walk (U5-8);
                 # solvers are immutable, so the answer cannot change per turn.
                 solver = solvers[j]
                 collision_range = _cuda_nvtx_push(backend, "strongstrong collision")
                 lum = _strong_strong_collide!(
-                    task, blocks1[j].collision.label, solver, beam1, beam2, policy, ctx,
+                    task, collision.label, solver, beam1, beam2, policy, ctx,
                 )
                 _cuda_nvtx_pop(backend, collision_range)
                 # The artifact's channel: THIS collision's own turn axis, a
@@ -2870,7 +2893,7 @@ function _execute_strong_strong_turns!(
                 # text row's whole-row drop rule below applies only to the
                 # fixed-width mirror).
                 if art !== nothing && _strong_strong_luminosity_evaluated(solver, ctx)
-                    push_luminosity!(art, String(blocks1[j].collision.label),
+                    push_luminosity!(art, String(collision.label),
                                      ctx.turn, Float64(lum))
                 end
             end
@@ -3078,21 +3101,35 @@ end
 # single-process run. One turn-modulation sink per beam likewise (`nothing`
 # when that beam records nothing); the recording hook runs on the host before
 # either beam's launch is queued, on both streams' paths alike.
-function _execute_strong_strong_segment_pair!(rep1, entries1::Tuple, plan_cache1,
-                                              rep2, entries2::Tuple, plan_cache2,
+# A compiled segment of a strong-strong line: the entries between two
+# collisions (or before the first / after the last), the collision that
+# closes it (`nothing` for the trailing block) and the hoisted hooks.
+struct StrongStrongBlock{E,C}
+    entries::E
+    collision::C
+    # The block's in-line hook entries, resolved once here so the per-turn plan
+    # key never walks the heterogeneous entries tuple (U1-3 / U9-3, 2026-10-16).
+    hooks::Vector{Any}
+end
+StrongStrongBlock(entries::Tuple, collision) =
+    StrongStrongBlock{typeof(entries),typeof(collision)}(entries, collision,
+                                                         _line_hook_entries(entries))
+
+function _execute_strong_strong_segment_pair!(rep1, block1::StrongStrongBlock, plan_cache1,
+                                              rep2, block2::StrongStrongBlock, plan_cache2,
                                               policy, ctx1, ctx2, streams, block_index::Integer,
                                               sink1=nothing, sink2=nothing)
     if policy isa ResolvedCUDAExecutionPolicy && streams !== nothing
-        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, policy, ctx1, block_index,
+        _execute_strong_strong_segment!(rep1, block1, plan_cache1, policy, ctx1, block_index,
                                         streams[1], sink1)
-        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, policy, ctx2, block_index,
+        _execute_strong_strong_segment!(rep2, block2, plan_cache2, policy, ctx2, block_index,
                                         streams[2], sink2)
         CUDA.synchronize(streams[1])
         CUDA.synchronize(streams[2])
     else
-        _execute_strong_strong_segment!(rep1, entries1, plan_cache1, policy, ctx1, block_index,
+        _execute_strong_strong_segment!(rep1, block1, plan_cache1, policy, ctx1, block_index,
                                         nothing, sink1)
-        _execute_strong_strong_segment!(rep2, entries2, plan_cache2, policy, ctx2, block_index,
+        _execute_strong_strong_segment!(rep2, block2, plan_cache2, policy, ctx2, block_index,
                                         nothing, sink2)
     end
     return nothing
@@ -3106,24 +3143,24 @@ function _strong_strong_segment_streams(policy)
     return nothing
 end
 
-function _execute_strong_strong_segment!(rep, entries::Tuple, plan_cache, policy, ctx,
+function _execute_strong_strong_segment!(rep, block::StrongStrongBlock, plan_cache, policy, ctx,
                                          block_index::Integer, stream=nothing, sink=nothing)
+    entries = block.entries
     isempty(entries) && return nothing
     # Active-hook state alone is not unique: blocks before and after a collision
     # commonly have the same hook state but contain different physics elements.
     # `:isolated` explicitly: a strong-strong block never carries a weak-strong
     # luminosity route, and the plan key gained a third element (2026-09-08).
-    plan_key = (Int(block_index), _active_plan_key(entries, ctx, false, :isolated))
-    plan = get!(plan_cache, plan_key) do
-        _build_tracking_plan(entries, plan_key[2])
+    # The key reads the block's hoisted hooks and the cache is probed without a
+    # closure (the do-block would copy the entries tuple every turn): U1-3.
+    plan_key = (Int(block_index), _active_plan_key(block.hooks, ctx, false, :isolated))
+    plan = get(plan_cache, plan_key, nothing)
+    if plan === nothing
+        plan = _build_tracking_plan(entries, plan_key[2])
+        plan_cache[plan_key] = plan
     end
     _execute_tracking_plan_turn!(rep, plan, policy, ctx; stream=stream, sink=sink)
     return nothing
-end
-
-struct StrongStrongBlock{E,C}
-    entries::E
-    collision::C
 end
 
 function _strong_strong_runtime_blocks(task::StrongStrongTask, which::Integer)
@@ -3152,7 +3189,13 @@ function _split_strong_strong_line(line::Tuple)
     hook_counter = Ref(0)
     _append_strong_strong_line!(blocks, current, line, hook_counter)
     push!(blocks, StrongStrongBlock(Tuple(current), nothing))
-    return Tuple(blocks)
+    # A `Vector{Any}`, not a Tuple: the turn loop indexes the blocks with a
+    # runtime index, and `getindex` on a heterogeneous tuple of isbits blocks
+    # BOXES A COPY of the whole block (its entries tuple inline) at every
+    # access -- about 56 kB per turn on two 41-element lines of nine element
+    # types (2026-10-16 neighbour audit, U9-3). Boxed once here, a block is a
+    # pointer load per turn and the segment call specialises on it.
+    return blocks
 end
 
 function _append_strong_strong_line!(blocks, current, line::Tuple, hook_counter)
@@ -3182,7 +3225,7 @@ function _append_strong_strong_line!(blocks, current, element, hook_counter)
     return nothing
 end
 
-function _validate_strong_strong_blocks(blocks1::Tuple, blocks2::Tuple)
+function _validate_strong_strong_blocks(blocks1::AbstractVector, blocks2::AbstractVector)
     length(blocks1) == length(blocks2) ||
         throw(ArgumentError("line1 and line2 must contain the same number of StrongStrongCollision markers"))
     for (i, (b1, b2)) in enumerate(zip(blocks1, blocks2))
@@ -3234,7 +3277,7 @@ function _collision_solver(task::StrongStrongTask, c1::StrongStrongCollision, c2
     return task.default_poisson_solver
 end
 
-function _line_observers(lines::Tuple)
+function _line_observers(lines::AbstractVector)
     observers = Any[]
     for block in lines, entry in block.entries
         entry isa LineObserverEntry && push!(observers, entry.observer)
@@ -3242,7 +3285,7 @@ function _line_observers(lines::Tuple)
     return Tuple(observers)
 end
 
-function _strong_strong_physics_line(lines::Tuple)
+function _strong_strong_physics_line(lines::AbstractVector)
     elems = Any[]
     for block in lines, entry in block.entries
         entry isa PhysicsEntry && push!(elems, entry.element)
@@ -3250,7 +3293,7 @@ function _strong_strong_physics_line(lines::Tuple)
     return Tuple(elems)
 end
 
-function _finalize_strong_strong_line_observers!(lines::Tuple)
+function _finalize_strong_strong_line_observers!(lines::AbstractVector)
     for block in lines
         _finalize_line_observers!(block.entries)
     end

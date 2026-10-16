@@ -424,7 +424,13 @@ semantics the same term lifted the amplitude runs' vertical rate above the
 both-planes prediction (scale 1: measured $1.180\times10^{-6}$ against
 $9.5\times10^{-7}$ per turn, the 2026-10-14 record); under the relative
 semantics of 3.2 the amplitude runs' vertical rate is this coupling alone,
-which the re-validation of 2026-10-15 measures. The ratio
+which the re-validation of 2026-10-15 measured (the relative-strength
+record, section 3): $y/x = 0.296$, $0.187$ and $0.085$ at scales 0.5, 1
+and 2 (A05, A1, A2), 0.97, 0.84 and 0.63 of the excesses the 2026-10-14
+record had attributed to the coupling, falling with the scale like the
+phase arms' ratios above; 0.247 for the pink drive (AP1/A1 in $y$); and
+the `kbb = 0` control's vertical emittance identical to the no-noise
+baseline, so the falsifier of 3.2 did not fire. The ratio
 $R = (d\langle J_y\rangle/dn)/(d\langle J_x\rangle/dn)$ for white horizontal
 offset noise, $\langle(\partial_x F_y)^2\rangle\,\beta_y^*/\varepsilon_y$ over the
 weak-beam distribution against the horizontal response of 4.3, is not
@@ -718,7 +724,9 @@ backend beyond tolerance.
    the falsifier is vertical emittance growth under horizontal amplitude
    noise without beam-beam. The RF cavity's voltage follows the same
    convention, $V(1+d)$. Implementation: stage 0 of
-   `../design/turn_modulation_record.md`, in progress 2026-10-15; record
+   `../design/turn_modulation_record.md`, landed 2026-10-15 as f7cfe6a,
+   re-validated, gated and pushed as c070750 (CI run 454 green; the status
+   brought current by the 2026-10-16 neighbour audit); record
    `../history/crab_cavity_noise_relative_strength_2026_10_15.md`.
 3. **The production point is loud.** Doubling times of a minute (phase)
    and eight seconds (amplitude); fine as a test point, where $10^5$ turns

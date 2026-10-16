@@ -260,6 +260,11 @@ cavity = ThinCrabCavitySpec{1}(394.0e6; strengthX = (2.0e-3,), phase = (0.0,), p
 table = spectral_turn_table(:pink, 1.0e-5, (1.0e-4, 1.0e-2); turns = 2^20, seed = 42, rng_id = 7, slot = 1)   # the same table, offline
 ```
 
+A resolved spectral slot reads back from the receipt and the artifact as a
+table (`kind = :table`, `rng_id = 0`, as for any `TurnTable`): the stream id
+survives only inside the canonical name above, so a reader selecting slots
+by `rng_id` must parse it from there (2026-10-16 neighbour audit, U7-7).
+
 Offset semantics (owner decision 2026-10-15, stage 0 of
 `docs/design/turn_modulation_record.md`): a `phase_noise` rule's offsets are
 radians added to the nominal phase; a `strength_noise` rule's offsets are

@@ -369,8 +369,9 @@ artifact turn by turn (`RunArtifact(path; record_turn_modulation = true)`,
 the `series` dataset beside the `/turn_modulation` provenance, fed from the
 same evaluation the realised element is built from, so a reader verifies
 from the artifact alone that the loop realised a new value every turn and
-that the kick consumed it): `turn_modulation_record.md`, stage 1 in
-progress 2026-10-15.
+that the kick consumed it): `turn_modulation_record.md`, stage 1 landed
+2026-10-15 as 77c0bcc, pushed as a710f5a (CI run 455 green; the status
+brought current by the 2026-10-16 neighbour audit).
 
 ### 4.5 Turn indexing
 
@@ -772,7 +773,13 @@ Tests the implementation owes, each shown to fail without its feature:
   horizontal rate (9.5e-7 against 1.10e-6 per turn), where a physical voltage
   error, scaling both planes proportionally, would give no vertical noise;
   the alternative is a relative (multiplicative) scaling per harmonic. The
-  validation sweep measures the vertical rate under the shipped semantics.
+  2026-10-14 validation sweep measured the vertical rate under the additive
+  semantics then shipped (scale 1: 1.180e-6 per turn, 1.16 of the horizontal,
+  beam-beam coupling included); the 2026-10-15 re-validation under the
+  relative semantics measures the beam-beam coupling alone, y/x = 0.296,
+  0.187 and 0.085 at scales 0.5, 1 and 2, and no vertical growth without
+  the strong beam (the relative-strength record, section 3; this sentence
+  re-scoped by the 2026-10-16 neighbour audit).
 - Whether the table may be a `Float32` vector on a `Float64` line with an
   explicit opt-in, for memory on very long runs. Default is to refuse.
   Decided 2026-10-12 in the owner's absence from this note's default (owner

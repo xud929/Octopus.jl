@@ -82,7 +82,7 @@ in, on the producer's side of the D7 boundary.
 - **FFTW is a core dependency** (`using FFTW` in `src/Octopus.jl`, the PIC
   spectral solvers), so the synthesis needs no new package.
 
-## 3. Decisions (proposed; owner to confirm, section 9)
+## 3. Decisions (decided by the owner 2026-10-16, section 9)
 
 **D1. One function, on the producer's side of D7.** A factory that returns a
 `TurnTable{T}`; the rule itself gains no field and no behaviour. Nothing in
@@ -226,7 +226,7 @@ warns.)
 the table is named
 
 ```
-spectral(<label>; sigma=<sigma>, band=<lb>..<ub>, turns=<N>, seed=<seed>, rng_id=<rng_id>, amplitudes=<fixed|rayleigh>)
+spectral(<label>; sigma=<sigma>, band=<lb>..<ub>, turns=<N>, seed=<seed>, rng_id=<rng_id>, slot=<s>, amplitudes=<fixed|rayleigh>)
 ```
 
 with the floats in shortest round-trip form and `<label>` the preset
@@ -236,7 +236,10 @@ what it is today, FNV-1a over the bytes of what actually ran. (2026-10-16:
 the name gains `, amplitudes=<fixed|rayleigh>`, the owner's Q3 decision,
 D5; and with D11 the field `stream=` reads `rng_id=`, the rule's table
 carrying the global seed in force at compile and its claimed id, so the
-receipt shows how to regenerate the table offline with the factory.)
+receipt shows how to regenerate the table offline with the factory;
+and with review F1 (the D4 remark) the field `slot=<s>` after `rng_id=`,
+the slot the rule occupies on its element, 0 for an offline table -- the
+template above re-issued with it by the 2026-10-16 neighbour audit.)
 
 **D8. Element type by keyword, `Float64` default.** `T = Float32` produces
 a `Float32` table for a `Float32` line (the consumer refuses a mismatch);
@@ -347,9 +350,13 @@ zeros elsewhere; `irfft(X, N)`; convert to `T`; `TurnTable(x; name)`. The
 rule's resolution in the cavity's `compile_runtime` calls the factory with
 the claimed id and the global seed and hands the table to the wrap, so the
 runtime element holds a `TurnTable{T}` and no `SpectralNoise` (D11). Cost
-`O(N log N)`: 0.62 s and 8.4 MB at 2^20 turns on the section 6 machine,
-dominated by the transform; a sweep of thirty band centres is twenty
-seconds of synthesis against hours of tracking.
+`O(N log N)`: 0.058-0.071 s and 8.4 MB at 2^20 turns as landed (the
+implementer's 0.058 s with `:fixed`, the fixer's 0.063-0.070 s, the
+reviewer's 71 ms; the D11 remark and the record; the section 6 sketch's
+0.62 s of 2026-10-12 was the pre-implementation figure, corrected here by
+the 2026-10-16 neighbour audit), dominated by the transform; a sweep of
+thirty band centres is about two seconds of synthesis against hours of
+tracking.
 
 Question Q1 asks whether the same body is also exposed as a constructor
 method, `TurnTable(spectrum, sigma, band; kwargs...)`, which the type of the

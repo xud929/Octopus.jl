@@ -13,6 +13,11 @@ export RunArtifact, TaskOutput, turn_modulation_provenance, run_artifact_option_
 # `record_turn_modulation` option; docs/design/turn_modulation_record.md).
 # ---------------------------------------------------------------------------
 
+# The recorder needs its artifact for the ledger stamp at every series flush
+# (2026-10-16 neighbour audit, U5-1), and the artifact holds its recorders:
+# the abstract root breaks the definition cycle.
+abstract type AbstractRunArtifact end
+
 """
     TurnModulationRecorder
 
@@ -46,7 +51,13 @@ mutable struct TurnModulationRecorder
     const buffers::Vector{Vector{Float64}}
     cursor::Int
     rows::Int
+    # The artifact this recorder writes for, or `nothing` for a recorder built
+    # by hand (the suite's direct-API tests); the series flush stamps the
+    # ledger through it.
+    const owner::Union{Nothing,AbstractRunArtifact}
 end
+TurnModulationRecorder(file, capacity, beam, keys, active, buffers, cursor, rows) =
+    TurnModulationRecorder(file, capacity, beam, keys, active, buffers, cursor, rows, nothing)
 
 """
     RunArtifact(path; append=false, capacity=64, record_turn_modulation=false)
@@ -148,7 +159,7 @@ a bare path as sugar). The artifact path is registered by artifact identity,
 so the same task continuing is silent while a second writer on the path
 draws the collision warning.
 """
-mutable struct RunArtifact
+mutable struct RunArtifact <: AbstractRunArtifact
     path::String
     append::Bool
     capacity::Int
@@ -174,8 +185,15 @@ mutable struct RunArtifact
     probe_names::Set{String}
 end
 
-function RunArtifact(path::AbstractString; append::Bool=false, capacity::Integer=64,
+function RunArtifact(path::AbstractString; append=false, capacity=64,
                      record_turn_modulation=false)
+    # Refused BY NAME (2026-10-16 neighbour audit, S4-6): `append=1` used to
+    # die in a TypeError that named no keyword, and `capacity=true` was
+    # accepted as 1 because `Integer` admits `Bool`.
+    append isa Bool || throw(ArgumentError(
+        "RunArtifact append must be true or false; got $(repr(append))."))
+    (capacity isa Integer && !(capacity isa Bool)) || throw(ArgumentError(
+        "RunArtifact capacity must be an integer number of turns; got $(repr(capacity))."))
     cap = Int(capacity)
     cap >= 1 || throw(ArgumentError("RunArtifact capacity must be at least 1; got $(cap)."))
     # Refused BY NAME, not coerced: `record_turn_modulation=1` is not a request
@@ -354,6 +372,11 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
                 _ra_truncate_group!(g, min(cursor, Int64(first_turn) - 1))
             end
         end
+        # A file without the ledger is not one this writer made (2026-10-16
+        # neighbour audit, U5-9: it used to surface as a raw KeyError).
+        haskey(file, "execution") || throw(ArgumentError(
+            "RunArtifact(append=true): $(art.path) carries no /execution ledger, so it " *
+            "is not a run artifact this writer can continue; use a new path or append=false"))
         ex = file["execution"]
         if !haskey(ex, "current_turn")
             # A step-1 file from before the column existed: add it, padding
@@ -372,7 +395,10 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
         # the append, the refusal left a phantom row (`start_turn`, `turns`,
         # `current_turn = first_turn - 1`, `elapsed = 0.0`) that the reader
         # paired with the stranger group (2026-10-13 neighbour audit, U5-3).
-        _ra_check_turn_modulation_slot(file, art.path, n + 1, turn_modulation)
+        # Since the 2026-10-16 neighbour audit (U5-6) the whole writer validation
+        # runs here, the column walk included: its refusals left the same
+        # phantom row through the writer's later check.
+        _ra_validate_turn_modulation!(file, art.path, n + 1, turn_modulation, turn_modulation_columns)
         for (name, val) in (("start_turn", Int64(first_turn)),
                             ("turns", Int64(planned_turns)),
                             ("current_turn", Int64(first_turn) - 1),
@@ -435,6 +461,35 @@ end
 # ---------------------------------------------------------------------------
 
 """
+Every refusal of the provenance writer, run BEFORE anything is written: the
+slot group must not exist, and the recorder's column walk must agree with
+the provenance element for element and slot for slot. `prepare_run_artifact!`
+runs it before it appends the ledger row and the writer runs it again before
+it creates the first group, so a refusal leaves neither a ledger row without
+its provenance (the phantom row, 2026-10-16 neighbour audit U5-6) nor a slot
+group every reader rejects as torn (U5-3). The message names both counts of
+the column walk (U5-4: it used to print the active count for either).
+"""
+function _ra_validate_turn_modulation!(file, path::String, slot::Int, entries, columns)
+    isempty(entries) && return nothing
+    _ra_check_turn_modulation_slot(file, path, slot, entries)
+    length(columns) == length(entries) || throw(ArgumentError(
+        "RunArtifact at $(path): the turn-modulation provenance lists $(length(entries)) " *
+        "modulated element(s) but the recorder's column walk lists $(length(columns)); " *
+        "the two walks over the line disagree"))
+    for (k, entry) in enumerate(entries)
+        col = columns[k]
+        (length(col.active) == length(entry.slots) && length(col.nominal) == length(entry.slots)) ||
+            throw(ArgumentError(
+                "RunArtifact at $(path): modulated element $(k) ($(entry.element)) has " *
+                "$(length(entry.slots)) active slot(s) in its provenance but " *
+                "$(length(col.active)) active and $(length(col.nominal)) nominal " *
+                "entries in the recorder's column walk"))
+    end
+    return nothing
+end
+
+"""
 Write `/turn_modulation/<slot>` for the ledger row `slot` just appended:
 nothing when `entries` is empty (an unmodulated `execute!` leaves no group for
 its slot), otherwise the element groups and their slot groups, each slot group
@@ -450,22 +505,13 @@ runs again.
 """
 function _ra_write_turn_modulation!(file, path::String, slot::Int, entries, columns)
     isempty(entries) && return nothing
-    _ra_check_turn_modulation_slot(file, path, slot, entries)
-    length(columns) == length(entries) || throw(ArgumentError(
-        "RunArtifact at $(path): the turn-modulation provenance lists $(length(entries)) " *
-        "modulated element(s) but the recorder's column walk lists $(length(columns)); " *
-        "the two walks over the line disagree"))
+    _ra_validate_turn_modulation!(file, path, slot, entries, columns)
     root = haskey(file, "turn_modulation") ? file["turn_modulation"] :
            HDF5.create_group(file, "turn_modulation")
     g = HDF5.create_group(root, string(slot))
     _ra_set_attr!(g, "element_count", Int64(length(entries)))
     for (k, entry) in enumerate(entries)
         col = columns[k]
-        (length(col.active) == length(entry.slots) && length(col.nominal) == length(entry.slots)) ||
-            throw(ArgumentError(
-                "RunArtifact at $(path): modulated element $(k) ($(entry.element)) has " *
-                "$(length(entry.slots)) active slot(s) in its provenance but " *
-                "$(length(col.active)) in the recorder's column walk"))
         eg = HDF5.create_group(g, string(k))
         _ra_set_attr!(eg, "element", String(entry.element))
         _ra_set_attr!(eg, "beam", Int64(entry.beam))
@@ -529,7 +575,7 @@ function _ra_create_turn_modulation_series!(art::RunArtifact, file, slot::Int, e
         end
         push!(art.turn_modulation_recorders,
               TurnModulationRecorder(file, art.capacity, beam, keys_b, active_b,
-                                     [Float64[] for _ in keys_b], 0, 0))
+                                     [Float64[] for _ in keys_b], 0, 0, art))
     end
     return nothing
 end
@@ -622,7 +668,13 @@ function _ra_flush_turn_modulation!(rec::TurnModulationRecorder)
         end
         empty!(buf)
     end
-    rec.rows == 0 || HDF5.flush(rec.file)
+    if rec.rows > 0
+        # Rows first, the ledger after, flushed together (the luminosity
+        # channel's ordering): a crash in between leaves rows the ledger does
+        # not yet claim, which is the conservative side.
+        rec.owner === nothing || _ra_stamp_ledger!(rec.owner)
+        HDF5.flush(rec.file)
+    end
     rec.rows = 0
     return nothing
 end
@@ -642,6 +694,30 @@ function push_luminosity!(art::RunArtifact, label::String, turn::Integer, value:
     return nothing
 end
 
+"""
+    _ra_stamp_ledger!(art)
+
+Persist the `/execution` ledger's live-progress columns, `current_turn` and
+`elapsed`, for this `execute!`'s row. Called by EVERY flush -- the luminosity
+channel, the probe rows (moments, BPM), the turn-modulation series -- and by
+finalize, so a reader of a running or killed file learns how far the run got
+whatever channels it carries. Before the 2026-10-16 neighbour audit (leads
+U5-1 and U4-1) only the luminosity flush and finalize stamped it, so a
+weak-strong task without a strong beam, the crab-noise example's own shape,
+showed the nothing-known sentinel after a kill with tens of thousands of rows
+on file. `current_turn` is the turn being processed when the flush ran (both
+loops assign it at the top of the turn, before any channel push); each
+channel's own cursor (`rows_valid_through_turn`, a series' row count) says
+where that channel stands, so within one turn the ledger may lead a channel
+by one.
+"""
+function _ra_stamp_ledger!(art::RunArtifact)
+    ex = art.file["execution"]
+    ex["current_turn"][art.execution_slot] = art.current_turn
+    ex["elapsed"][art.execution_slot] = (time_ns() - art.start_time_ns) / 1.0e9
+    return nothing
+end
+
 function _ra_flush_luminosity!(art::RunArtifact, label::String)
     t = get(art.pending_turns, label, nothing)
     (t === nothing || isempty(t)) && return nothing
@@ -652,9 +728,7 @@ function _ra_flush_luminosity!(art::RunArtifact, label::String)
     # Rows first, cursor after, flushed together: a crash in between leaves
     # rows beyond the cursor, which the next open truncates -- conservative.
     _ra_set_attr!(g, "rows_valid_through_turn", t[end])
-    ex = art.file["execution"]
-    ex["current_turn"][art.execution_slot] = art.current_turn
-    ex["elapsed"][art.execution_slot] = (time_ns() - art.start_time_ns) / 1.0e9
+    _ra_stamp_ledger!(art)
     HDF5.flush(art.file)
     empty!(t)
     empty!(v)
@@ -760,9 +834,7 @@ function finalize_run_artifact!(art::RunArtifact)
         for rec in art.turn_modulation_recorders
             _ra_flush_turn_modulation!(rec)
         end
-        ex = art.file["execution"]
-        ex["current_turn"][art.execution_slot] = art.current_turn
-        ex["elapsed"][art.execution_slot] = (time_ns() - art.start_time_ns) / 1.0e9
+        _ra_stamp_ledger!(art)
         HDF5.flush(art.file)
     finally
         close(art.file)
@@ -883,6 +955,8 @@ function _ra_push_probe_rows!(art::RunArtifact, key::String, rows::AbstractMatri
     HDF5.set_extent_dims(d, (n + size(rows, 1), size(d, 2)))
     d[(n + 1):(n + size(rows, 1)), :] = Float64.(rows)
     _ra_set_attr!(g, "rows_valid_through_turn", Int64(round(Int64, rows[end, 1])))
+    # The ledger after the rows and the cursor, flushed together (U5-1).
+    _ra_stamp_ledger!(art)
     HDF5.flush(art.file)
     return nothing
 end
@@ -1118,6 +1192,13 @@ function _ra_tm_series(eg, where_e::String, labels::Vector{String}, data::Bool)
         "$(where_d) holds $(nrows) recorded turn(s) of the $(turns) its turns attribute " *
         "declares (first_turn $(first_turn)): the run was stopped before its window " *
         "completed; the rows are read as they stand and the row count is authoritative")
+    # The other side (2026-10-16 neighbour audit, U5-10): more rows than the
+    # window declares is not a run this writer produced; read as they stand,
+    # said out loud.
+    nrows > turns && @warn(
+        "$(where_d) holds $(nrows) recorded turn(s) but its turns attribute declares " *
+        "$(turns) (first_turn $(first_turn)): more rows than the window planned, which " *
+        "no run of this writer produces; the rows are read as they stand")
     data || return (columns=fill(nrows, ncols), first_turn=first_turn, turns=turns)
     block = nrows == 0 ? zeros(Float64, 0, ncols) : read(d)
     return (columns=[Vector{Float64}(block[:, j]) for j in 1:ncols],
@@ -1254,10 +1335,11 @@ authoritative: a run stopped before its window completed (killed, or
 interrupted between two flushes) leaves fewer rows than `turns`, and such a
 series is read as it stands with a warning naming the dataset, never padded
 or refused. The `/execution` ledger's `current_turn` is a separate progress
-mark: a `TrackingTask` without strong beams writes it to the file only at
-finalize, while the strong-strong loop stamps it before each turn (persisted
-at the luminosity flushes) and closes the turn's series row after it, so on a
-killed run the two can disagree and the rows decide. `state` is `nothing`: the
+mark: both loops assign it at the top of each turn and every flush persists
+it (luminosity, probe rows, series; since the 2026-10-16 neighbour audit,
+before which a `TrackingTask` without strong beams wrote it only at
+finalize), so on a killed run the ledger may lead a channel by the one turn
+in flight and the rows decide. `state` is `nothing`: the
 group reserved for a future stateful rule's checkpoint (D10) is written by
 nothing today. Nothing in the group is ever
 rewritten or deleted: a continued (`append=true`) file keeps one entry per
@@ -1306,7 +1388,8 @@ beside the columns (`nothing` for task-hook probes and pre-attribute files).
 the per-aperture names/counts/arc positions, and the reconciliation summary
 when the run recorded one (`nothing` otherwise). `:execution` returns the
 ledger -- one entry per `execute!`, `current_turn`/`elapsed` updated at every
-flush. `:turn_modulation` returns the turn-by-turn modulation provenance, one
+flush of every channel (luminosity, probe rows, turn-modulation series) and
+at finalize. `:turn_modulation` returns the turn-by-turn modulation provenance, one
 entry per `execute!` that had a modulated element, the vector
 [`turn_modulation_provenance`](@ref) documents (empty when no recorded
 `execute!` had one or the file predates the group), each slot entry with its

@@ -242,8 +242,10 @@ its kick, closing the ring with the full `eta = alpha_c - 1/gamma0²`
 `phase_noise` and `strength_noise` declare turn-by-turn modulation, by the
 same `TurnModulated` wrap the crab cavity uses
 (`docs/design/turn_modulation.md`): each is `nothing` (inactive, the default)
-or ONE rule, `WhiteNoise(sigma; rng_id)`, `PinkNoise(sigma; rng_id, octaves)`
-or `TurnTable(offsets; name)`, whose realised per-turn value -- an offset in
+or ONE rule, `WhiteNoise(sigma; rng_id)`, `PinkNoise(sigma; rng_id, octaves)`,
+`TurnTable(offsets; name)` or `SpectralNoise(sigma, band, spectrum; rng_id,
+turns)`, which resolves to a `TurnTable` when the line compiles, whose
+realised per-turn value -- an offset in
 rad added to the phase; a dimensionless RELATIVE factor `d` on the strength,
 realised as `strength (1 + d)`, so a relative voltage jitter's rms IS the
 rule's sigma and a table holds relative factors (relative, 2026-10-15) -- is

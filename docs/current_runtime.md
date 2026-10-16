@@ -141,10 +141,15 @@ launcher started; an integer must match the communicator exactly. MPI itself is
 a weak dependency: without it loaded the process is a communicator of one and
 the collective seam runs its serial passthrough. A tracking task is divided by
 holding a shard of the beam: `Beam(n, policy, ...)` takes `n` as the WHOLE
-beam and hands each rank its own contiguous, chunk-aligned slice, and a
-divided run reproduces the undivided one bit for bit in the tracked beam and in
-the luminosity series (a per-turn sum folded on the fixed chunk grid in chunk
-order); its scalar diagnostics -- the moments table first -- agree to the
+beam and hands each rank its own contiguous, chunk-aligned slice. A divided
+TRACKING task reproduces the undivided one bit for bit in the tracked beam and
+in the luminosity series (a per-turn sum folded on the fixed chunk grid in
+chunk order); a strong-strong task is bitwise at one rank and, across rank
+counts, in the parity class of `design/multi_process_policy.md`'s
+consistency table in its collides, its tracked beams and its luminosity
+series (the suite pins rtol 1e-12; measured 3.4e-15 in the luminosity and
+1.1e-16 in the coordinates at two ranks against the single process,
+2026-10-16 neighbour audit). A divided run's scalar diagnostics -- the moments table first -- agree to the
 accumulation difference between one serial sum and P rank-ordered partial sums,
 1.7e-14 at two ranks and 8.7e-14 at four, of order eps times the particle count
 (`design/multi_process_policy.md`, "The CPU, MPI and CUDA consistency

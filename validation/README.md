@@ -454,7 +454,11 @@ overrides after it (every key with its default is in the file header):
    shape against 2048 synthetic Voss-McCartney streams, chi-square at
    99.9 %); the pairwise independence of the eight active slots (`|rho| <=
    3 se` at lag 0, se from Bartlett's formula for pink, `1/sqrt(N)` for
-   white); the strength offset equal on both planes to 4 ulp; harmonic 3
+   white); the strength rule applied as the relative factor of 2026-10-15,
+   `strengthX == S (1 + d)` and `strengthY === 0.0` bitwise on every turn
+   and the factor recovered from the realised strengths within 4 ulp of the
+   rule's value (the additive-era item "equal on both planes" is the frozen
+   2026-10-14 record's); harmonic 3
    and the base element untouched bitwise; the `scale` factor exact to
    1e-12; the table realised bitwise from its record, and its digest, name
    and length in the artifact provenance of a short CPU `TrackingTask` run.

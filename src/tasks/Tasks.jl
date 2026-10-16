@@ -204,7 +204,13 @@ function TrackingTask(elements;
         "luminosity_tracking must be one of $(_LUMINOSITY_TRACKING_ROUTES); " *
         "got $(repr(luminosity_tracking))"))
     element_tuple = _element_tuple(elements)
-    seed !== nothing && @warn "TrackingTask seed keyword is deprecated; use set_global_rng!(seed=...) instead." seed
+    # Retired by the 2026-10-16 neighbour audit (lead U3-1): the keyword had
+    # warned "deprecated" and then IGNORED the value, a configuration set but
+    # not read. The counter RNG is seeded once per process; pass it there.
+    seed === nothing || throw(ArgumentError(
+        "the TrackingTask seed keyword was retired (it was ignored after a " *
+        "deprecation warning): seed the counter RNG with " *
+        "set_global_rng!(seed=$(seed)) before constructing the task"))
     _warn_duplicate_radiation_streams(element_tuple)
     _warn_duplicate_turn_modulation_streams(element_tuple)
     _warn_hidden_apertures(element_tuple)
@@ -429,8 +435,9 @@ function _warn_duplicate_turn_modulation_streams(elements::Tuple)
     length(ids) == length(unique(ids)) && return nothing
     dup = [id for id in unique(ids) if count(==(id), ids) > 1]
     @warn "multiple turn-modulation rules on different elements share an rng_id: " *
-          "their per-turn draws are identical (fully correlated noise). Give each " *
-          "element's rules their own rng_id." rng_ids = dup
+          "slots of the same index draw identical values on both elements (fully " *
+          "correlated noise; different slot indices, and spectral tables of different " *
+          "lengths, stay independent). Give each element's rules their own rng_id." rng_ids = dup
     return nothing
 end
 
@@ -705,8 +712,7 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
             _record_execution!(:tracking_turn_timing, backend_type(policy), (
                 record_turn_times=task.record_turn_times,
                 turns=nturns,
-                fast_path=isempty(task.actions) && isempty(task.observers) &&
-                          !_has_line_hooks(runtime_entries) && task.artifact === nothing,
+                fast_path=_fast_tracking_path(task, runtime_entries),
             ))
             # The turn-modulation receipt (specified by the stage-1 record,
             # docs/history/turn_modulation_stage1_2026_10_12.md section 2; the
@@ -967,13 +973,26 @@ function _reject_unsharded_tracking_features(task, runtime_entries)
         "Run one rank, use CPUThreadsExecutionPolicy, or drop them."))
 end
 
+"""
+    _fast_tracking_path(task, runtime_entries) -> Bool
+
+The one predicate that decides the fast loop: no actions, no observers, no
+per-turn line hooks (turn modulation included) and no run artifact, so the
+loop that skips the host-side `update_line` and the recorder is taken only
+where neither has anything to do. The `:tracking_turn_timing` receipt's
+`fast_path` and the branch itself both call this; before the 2026-10-16
+neighbour audit (lead U3-5) the four-clause conjunction was written out twice.
+"""
+_fast_tracking_path(task, runtime_entries) =
+    isempty(task.actions) && isempty(task.observers) &&
+    !_has_line_hooks(runtime_entries) && task.artifact === nothing
+
 function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
                                  turns::Int, first_turn::Int64, policy;
                                  turn_modulation::AbstractVector=Any[])
     # `_reject_unsharded_tracking_features` ran in `execute!`, ahead of the
     # receipts (U1-5).
-    if isempty(task.actions) && isempty(task.observers) &&
-       !_has_line_hooks(runtime_entries) && task.artifact === nothing
+    if _fast_tracking_path(task, runtime_entries)
         _execute_fast_tracking_turns!(
             rep, runtime_elems, turns, first_turn, policy,
             with_index_offset(TrackingContext(), first(_mp_current_shard(rep))),
@@ -1106,6 +1125,9 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
         # sink because it is never taken with an artifact (its predicate in
         # `_execute_tracking_task!` requires `task.artifact === nothing`).
         _tm_sink = _turn_modulation_sink(art, 1)
+        # Hoisted out of the turn loop (U1-3): the per-turn plan key consults
+        # the hooks only, never the heterogeneous entries tuple.
+        hook_entries = _line_hook_entries(runtime_entries)
         for offset in 0:(turns - 1)
             turn = first_turn + offset
             _turn_t0 = _record_turns ? time_ns() : UInt64(0)
@@ -1113,17 +1135,28 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
             run_actions!(task.actions, ctx, rep)
             task_diagnostics = requires_elementwise_tracking(task.observers, ctx) ||
                                artifact_diagnostics
-            plan_key = _active_plan_key(runtime_entries, ctx, task_diagnostics,
+            plan_key = _active_plan_key(hook_entries, ctx, task_diagnostics,
                                         task.luminosity_tracking)
-            plan = get!(task.plan_cache, plan_key) do
-                _build_tracking_plan(runtime_entries, plan_key)
+            # `get`/`setindex!` rather than `get!(cache, key) do`: the do-block
+            # closure captures the isbits entries tuple BY VALUE, a copy of the
+            # whole line every turn (U1-3).
+            plan = get(task.plan_cache, plan_key, nothing)
+            if plan === nothing
+                plan = _build_tracking_plan(runtime_entries, plan_key)
+                task.plan_cache[plan_key] = plan
             end
+            # The ledger's live-progress column, set BEFORE any channel push
+            # (the strong-strong loop's ordering, owner-observed 2026-08-19):
+            # a capacity-boundary flush of the series or of a probe's rows
+            # fires DURING this turn and must persist THIS turn. Assigned
+            # after the observers until the 2026-10-16 neighbour audit (U5-1),
+            # when nothing but the luminosity flush persisted it anyway.
+            art === nothing || (art.current_turn = Int64(turn))
             _tm_begin_turn!(_tm_sink)
             _execute_tracking_plan_turn!(rep, plan, policy, ctx; sink=_tm_sink)
             _tm_end_turn!(_tm_sink, turn)
             run_observers!(task.observers, ctx, rep)
             if art !== nothing
-                art.current_turn = Int64(turn)
                 for (i, elem) in enumerate(strong_beams)
                     lum = luminosity(elem, ctx, rep)
                     # The positive filter, per element (carried over
@@ -1345,7 +1378,15 @@ function _ensure_loss_record!(task::TrackingTask, rep)
         # with no aperture responsible" (U15-5). Counts are cumulative across
         # turns of the SAME beam, which is what stepping one turn at a time
         # needs, so the discriminator has to be the beam, not the counts.
-        fits = task.loss_owner[].value === rep &&
+        # The owner key is the beam's STORAGE, its first coordinate array,
+        # not the `Phase6DRep` itself: the rep is immutable, so a `WeakRef`
+        # to it referenced a box nothing else held and was cleared at the
+        # first GC, after which the next execute! reallocated the record
+        # (cumulative counts zeroed, the earlier losses reported unattributed
+        # with a warning) and recompiled the line, re-synthesising every
+        # spectral table under the then-current seed (2026-10-16 neighbour
+        # audit, S5-1). The arrays are what the user's beam holds.
+        fits = task.loss_owner[].value === first(coordinate_arrays(rep)) &&
                length(loss_counts(existing)) == length(specs) &&
                _loss_record_matches_rep(existing, rep) &&
                (existing.slots === nothing) == !want_slots &&
@@ -1358,7 +1399,7 @@ function _ensure_loss_record!(task::TrackingTask, rep)
     end
     record = LossRecord(names, length(rep), rep; log=want_slots)
     task.loss_record[] = record
-    task.loss_owner[] = WeakRef(rep)
+    task.loss_owner[] = WeakRef(first(coordinate_arrays(rep)))
     return record
 end
 
@@ -1664,16 +1705,32 @@ struct ActionSegment{A}
     action::A
 end
 
-function _active_plan_key(entries::Tuple, ctx, task_diagnostics::Bool,
+# The in-line hook entries of a compiled line, in line order, resolved ONCE
+# per execute! (weak-strong) or per block compilation (strong-strong). The walk
+# is over the heterogeneous entries tuple and boxes; it must not run per turn:
+# `for entry in entries` over an isbits tuple of mixed element types re-boxes
+# the WHOLE tuple at every iteration, a cost quadratic in the line length that
+# every task leaving the fast loop paid once per turn until the 2026-10-16
+# neighbour audit (lead U1-3, localised by U9: ~200 kB/turn on 40 elements of
+# 8 types, ~490 kB/turn on the two strong-strong lines of the same shape).
+_line_hook_entries(entries::Tuple) =
+    Any[entry for entry in entries if entry isa Union{LineObserverEntry,LineActionEntry}]
+
+# Per turn: only the hooks are consulted, so a hook-less line never touches
+# its entries tuple. The Tuple method is the one-shot form for callers that
+# hold no hoisted hook vector (tests; never a turn loop).
+function _active_plan_key(hooks::Vector{Any}, ctx, task_diagnostics::Bool,
                           luminosity_tracking::Symbol=:isolated)
+    isempty(hooks) && return ((), task_diagnostics, luminosity_tracking)
     active_hooks = Int[]
-    for entry in entries
-        if entry isa Union{LineObserverEntry,LineActionEntry} && _line_entry_active(entry, ctx)
-            push!(active_hooks, entry.hook_index)
-        end
+    for entry in hooks
+        _line_entry_active(entry, ctx) && push!(active_hooks, entry.hook_index)
     end
     return (Tuple(active_hooks), task_diagnostics, luminosity_tracking)
 end
+_active_plan_key(entries::Tuple, ctx, task_diagnostics::Bool,
+                 luminosity_tracking::Symbol=:isolated) =
+    _active_plan_key(_line_hook_entries(entries), ctx, task_diagnostics, luminosity_tracking)
 
 function _build_tracking_plan(entries::Tuple, plan_key)
     active_hooks, task_diagnostics, luminosity_tracking = plan_key

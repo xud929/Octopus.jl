@@ -84,8 +84,10 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   velocity-slip fix and RF Scope B.
 - [`turn_modulation.md`](design/turn_modulation.md) — turn-by-turn lattice
   modulation, crab cavity phase and amplitude noise first (decided 2026-10-12;
-  stages 1 and 2 implemented 2026-10-12, stage 3 implemented 2026-10-13,
-  records below): why the variation is element-owned per-turn state
+  stages 1 and 2 implemented 2026-10-12, stages 3 and 4 -- the RF cavity by
+  the same wrap and the neighbour audit -- 2026-10-13, the strength rule
+  made a relative factor on both planes, `S (1 + d)`, 2026-10-15 by owner
+  decision, records below): why the variation is element-owned per-turn state
   realised on the host rather than a per-particle kernel draw or a knob
   retune; the per-turn hook made a pure, type-preserving `update` with the
   fused tuple rebuilt each turn (measured 20 ns per 40 elements, zero
@@ -93,7 +95,9 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   compile-time wrapper beside `MisalignedElement` and `RefTilted`, nominal and
   realised kept apart so the contextless path stays noiseless; the rule
   interface and catalogue (white, Voss-McCartney pink, FIR, IIR, per-turn
-  table) with measured spectra; the owner's producer/consumer boundary for the
+  table; since 2026-10-16 the fourth shipped rule `SpectralNoise`, resolved
+  into a table when the line compiles, `spectral_turn_table.md`) with
+  measured spectra; the owner's producer/consumer boundary for the
   table rule; the million-turn synthesis example; the verification plan and
   staging; open questions and references.
 - [`turn_modulation_record.md`](design/turn_modulation_record.md) — recording
@@ -104,8 +108,9 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   recorder and the `record_turn_modulation` option, landed 2026-10-15,
   verified by the one-particle probe on CPU threads, CUDA and two MPI
   ranks, pushed as a710f5a with CI run 455 green, record
-  `history/turn_modulation_record_2026_10_15.md`; stage 2 not
-  implemented): a `RunArtifact` switch, off by default, writes
+  `history/turn_modulation_record_2026_10_15.md`; stage 2, the examples
+  update, carried by the same batch, the record's section 3): a
+  `RunArtifact` switch, off by default, writes
   one row per turn of the rules' offsets for the active slots beside the
   provenance, with the nominals stored per execution slot; the offsets are
   the primary datum and the realised values the derived one; no empty beam,
@@ -119,8 +124,9 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   target power spectral density shape (presets `:flat` and `:pink`, or a
   labelled function), a band in modulation tunes, an rms normalised
   analytically (exact with fixed bin amplitudes, expected with Rayleigh
-  ones), Philox phases from a mandatory seed and stream, and a
-  canonical provenance name; promotes `turn_modulation.md` section 6's
+  ones), Philox phases keyed on the rule's `rng_id` (the factory's `seed`
+  and `rng_id`; D11 retired the `stream` keyword), and a canonical
+  provenance name; promotes `turn_modulation.md` section 6's
   sketch to the library on the producer's side of D7; six open questions,
   decided by the owner 2026-10-16 (the dated lines under its section 9; Q3
   adds the keyword `amplitudes = :fixed | :rayleigh`, `:fixed` the
@@ -425,6 +431,7 @@ exists fails the suite, so these cannot rot silently.
 -->
 <!-- indexed-wholesale: history/comprehensive_audit_2026_08_05_unit_reports -->
 <!-- indexed-wholesale: history/comprehensive_audit_2026_08_05_b_unit_reports -->
+<!-- indexed-wholesale: history/audit_crab_cavity_noise_neighbours_2026_10_16_unit_reports -->
 
 Dated records of implemented work — optimization campaigns, benchmark decisions,
 and audits. The source code is the authority; these preserve the rationale.
@@ -541,6 +548,19 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   two-arm gate with the arms run one after the other; the ledger. Its
   bracketed `[...: pending]` markers are filled as the batch's agents
   report.
+- [`audit_crab_cavity_noise_neighbours_2026_10_16.md`](history/audit_crab_cavity_noise_neighbours_2026_10_16.md) —
+  the targeted neighbour audit of the crab-cavity / RF-cavity noise campaign
+  (`6995151..3126908`: the relative strength semantics, the turn-modulation
+  record, the spectral producer and their examples), run to the protocol of
+  `comprehensive_audit.md` with fourteen reading units whose verbatim reports
+  sit in [`audit_crab_cavity_noise_neighbours_2026_10_16_unit_reports/`](history/audit_crab_cavity_noise_neighbours_2026_10_16_unit_reports/INDEX.md):
+  100 leads, every one dispositioned; two high findings fixed (the
+  heterogeneous-line `update_line` allocation, the loss-record owner cleared by
+  a GC), four medium (the per-turn plan-key walk over the entries tuple on both
+  turn loops, the ledger stamped only by the luminosity flush, the
+  strong-strong artifact left open on a prepare refusal), the low items its
+  change log lists, each pin with its negative control; the rest priced into
+  `todo.md` rows.
 - [`twiss_dispersion_degeneracy_theory_2026_09_11.md`](history/twiss_dispersion_degeneracy_theory_2026_09_11.md) —
   derivation record for theory Section 13 (mode degeneracy) and the analysis
   design note: provenance of the ported working notes and the convention key,

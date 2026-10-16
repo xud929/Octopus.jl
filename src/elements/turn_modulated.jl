@@ -886,10 +886,13 @@ and `BPMObserver` do.
 `sigma` is the per-turn rms of the offset: the `K` generators are independent
 unit normals, so their sum over `sqrt(K)` has unit variance, but the sample
 rms of ONE finite run wanders with the low-frequency content -- its one-sigma
-scatter is 7.6 % at 65536 turns and 13.8 % at 16384 (`Var[rms^2] =
-(2/(K^2 N)) sum_k 2^k (2K - 1 - 2k)`, K = 16; Monte Carlo over 2048 streams
-agrees), with a heavy upper tail; the spectra script reports the measured
-value. `sigma` must be finite and non-negative; zero is a quiet rule.
+scatter by the closed form `Var[rms^2]/sigma^4 = (2/(K^2 N)) sum_k 2^k
+(2K - 1 - 2k)`, K = 16, is 7.65 % at 65536 turns and 15.3 % at 16384, and
+by Monte Carlo over the construction itself 7.30 % and 13.5 % (4096 streams,
+2026-10-16 neighbour audit): the closed form counts every generator as
+holding N / 2^k independent values, which the slow generators do not at
+N < 2^K, so it overstates the scatter of short runs -- with a heavy upper
+tail; the spectra script reports the measured value. `sigma` must be finite and non-negative; zero is a quiet rule.
 As for `WhiteNoise`, `sigma` is converted to the element's numeric type at
 realisation (a `Float32` sigma on a `Float64` cavity is promoted), while a
 `TurnTable` is refused on a type mismatch because its storage would otherwise
@@ -1397,20 +1400,35 @@ _record_turn_draws!(::Nothing, draws::Tuple) = nothing
     update_line(line::Tuple, ctx::TrackingContext, sink) -> line′
 
 `update` applied to every element of a runtime line tuple, nested tuples
-included, rebuilt with `ntuple(..., Val(N))` so the result is a stack copy of
-the same tuple type with zero allocation (`docs/design/turn_modulation.md`,
-section 7: 20 ns for 40 elements; `Base.map` over a tuple of 32 or more
-entries takes the generic path and allocated 79 kB per turn). The suite pins
-`typeof(update_line(line, ctx)) === typeof(line)` and zero allocation on a
-line longer than 32 elements, on homogeneous and on mixed rule containers
-(`_slot_draws`), on both hooks. The three-argument form is the recording hook
+included, rebuilt as an unrolled tuple of statically typed calls so the
+result is a stack copy of the same tuple type with zero allocation
+(`docs/design/turn_modulation.md`, section 7: 20 ns for 40 elements;
+`Base.map` over a tuple of 32 or more entries takes the generic path and
+allocated 79 kB per turn; the `ntuple(..., Val(N))` closure form used until
+the 2026-10-16 neighbour audit allocated 130-435 kB per turn once a line
+held about four distinct element types with two or more wrapped). The suite
+pins `typeof(update_line(line, ctx)) === typeof(line)` and zero allocation on
+a line longer than 32 elements, on homogeneous and on mixed rule containers
+(`_slot_draws`), on heterogeneous lines of four element types, on both
+hooks. The three-argument form is the recording hook
 applied to the line (`sink` as for `update`; `nothing` is the plain form);
 `ntuple` evaluates its entries in index order, which is what makes the
 recorder meet the modulated elements in line order.
 """
 @inline update_line(line::Tuple, ctx::TrackingContext) = update_line(line, ctx, nothing)
-@inline update_line(line::Tuple, ctx::TrackingContext, sink) =
-    ntuple(i -> _update_entry(line[i], ctx, sink), Val(length(line)))
+@inline update_line(line::Tuple, ctx::TrackingContext, sink) = _update_line_unrolled(line, ctx, sink)
+# Unrolled with literal indices (the `_slot_values` precedent) rather than
+# `ntuple(i -> ..., Val(N))`: the closure form relies on constant propagation
+# of `i` into `line[i]`, which Julia stops doing once the line holds about
+# four distinct element types of which two or more are wrapped, and the
+# result then infers as `NTuple{N, Union{...}}` and allocates 130-435 kB per
+# turn on a 40-element line (2026-10-16 neighbour audit, finding U1-1; the
+# suite's two-type fixture sat below the threshold). Each entry here is a
+# statically typed call, so the tuple is concrete for any mix of types.
+@inline @generated function _update_line_unrolled(line::Tuple, ctx::TrackingContext, sink)
+    entries = [:(_update_entry(line[$i], ctx, sink)) for i in 1:length(line.parameters)]
+    return :(($(entries...),))
+end
 @inline _update_entry(e::Tuple, ctx::TrackingContext, sink) = update_line(e, ctx, sink)
 @inline _update_entry(e, ctx::TrackingContext, sink) = update(e, ctx, sink)
 

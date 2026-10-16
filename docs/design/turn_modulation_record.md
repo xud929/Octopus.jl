@@ -14,8 +14,11 @@
 > and fixed the same day (the record's sections 3 and 4), committed as
 > 77c0bcc, gated in both CPU arms with CUDA active and pushed as a710f5a 2026-10-15 (CI run 455 green: znver3, 36 min, identity pins 6 of 6, CPU testsets only),
 > record
-> `../history/turn_modulation_record_2026_10_15.md`; stage 2 not
-> implemented.** This
+> `../history/turn_modulation_record_2026_10_15.md`; stage 2 of section 7,
+> the examples update (the harness toggle, the example's `output` switch,
+> the validation reading the public series), carried by the same batch,
+> the record's section 3 -- this status read "stage 2 not implemented"
+> until the 2026-10-16 neighbour audit.** This
 > note records the decisions for recording, turn by turn, the offsets the
 > turn-modulation rules produce during a run, so that a reader of the run
 > artifact can verify that `execute!` realised a new value every turn and

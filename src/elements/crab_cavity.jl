@@ -14,9 +14,11 @@ metadata. See `element_help(:thin_crab_cavity)` for the parameter schema.
 
 `phase_noise` and `strength_noise` declare turn-by-turn modulation, one entry
 per harmonic: each entry is `nothing` (inactive, the default for every
-harmonic when the keyword is omitted or `()`) or a rule, `WhiteNoise(sigma;
-rng_id)`, `PinkNoise(sigma; rng_id, octaves)` or `TurnTable(offsets; name)`,
-whose realised per-turn value is applied once per turn by the
+harmonic when the keyword is omitted or `()`) or a rule -- `WhiteNoise(sigma;
+rng_id)`, `PinkNoise(sigma; rng_id, octaves)`, `TurnTable(offsets; name)` or
+`SpectralNoise(sigma, band, spectrum; rng_id, turns)`, which resolves to a
+`TurnTable` when the line compiles (`docs/design/spectral_turn_table.md`,
+D11) -- whose realised per-turn value is applied once per turn by the
 `TurnModulated` wrap that `compile_runtime` builds around the nominal cavity
 (`docs/design/turn_modulation.md`). A `phase_noise` value is an offset in rad
 added to `phase[i]`; a `strength_noise` value `d` is a dimensionless RELATIVE
