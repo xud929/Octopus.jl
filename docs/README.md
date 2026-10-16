@@ -561,6 +561,17 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   strong-strong artifact left open on a prepare refusal), the low items its
   change log lists, each pin with its negative control; the rest priced into
   `todo.md` rows.
+- [`crab_cavity_noise_audit_fixes_2026_10_16.md`](history/crab_cavity_noise_audit_fixes_2026_10_16.md) —
+  the owner-decided fix batch of the neighbour audit's open items, run to
+  the protocol's fix phase as four units: the run artifact's sidecar lock
+  and lock-aware readers with the ledger's `rng_seed` / `rng_method` columns
+  (S5-2, S5-4); the `execute!`-time seed-drift warning for resolved spectral
+  tables and the equal-digest check over the resolved line (U3-2, U1-6 /
+  S3-2 / U3-3 / U7-2 / S5-3); one `rng_id` policy for every consumer (S1-1
+  / S1-2 / S1-5 / S1-6 / S1-7, rows 34 and 38); the Float64 floor of the
+  modulated cavities and the by-name refusal of a mismatched beam (U2-1 /
+  S2-2 / S2-3, S1-9). The decisions, what each unit reproduced and landed,
+  the gate, and the rows retired.
 - [`twiss_dispersion_degeneracy_theory_2026_09_11.md`](history/twiss_dispersion_degeneracy_theory_2026_09_11.md) —
   derivation record for theory Section 13 (mode degeneracy) and the analysis
   design note: provenance of the ported working notes and the convention key,

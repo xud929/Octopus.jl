@@ -1605,6 +1605,29 @@ claims. The same memory is why the package clears it in `__init__`: the
 without the clear every `Beam(...; rng_id = 1)` would warn against an
 example nobody built.
 
+## A runtime walk over a heterogeneous isbits tuple copies the tuple per step
+
+The compiled line is an isbits tuple whose elements have different types.
+Two innocent-looking idioms on it allocate a copy of the WHOLE tuple at every
+step: `for entry in entries` (the iterator's `getindex` with a runtime index
+boxes the element, and for a tuple of mixed isbits types the boxed value is
+the tuple itself) and `blocks[j]` with a runtime `j` on a tuple of mixed
+blocks (a copy of the block, its own entries tuple inline). The 2026-10-16
+crab-noise neighbour audit measured the general turn loop's plan key at about
+200 kB per turn on a 40-element line of eight types, quadratic in the line
+length, and the strong-strong loop at 713 kB per turn against 226 kB for a
+one-type pair; `get!(dict, key) do ... end` added a copy of the captured
+tuple per turn. The fixes are structural, not clever: resolve what the turn
+loop needs from the tuple ONCE (the hook entries, per `execute!` or per block
+compilation), index with literal positions through a `@generated` unroll
+(`_update_line_unrolled`), store per-block runtime data in a `Vector` so a
+turn reads a pointer, and probe caches with `get` / `setindex!`. The pin that
+catches a regression is the slope of `@allocated execute!` between two turn
+counts on a heterogeneous line against the same line's fast path, which
+cancels the once-per-call walks and the per-element thread overhead; a pin on
+a one-element line, or one that compares an option on against off on the same
+loop, cancels the defect with the noise.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

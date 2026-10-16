@@ -491,3 +491,11 @@ open queue". Risks the batch leaves:
   policy beyond the two seams S4 and S5 touched, the CUDA kernels' numerics
   (only the device conversion of the two cavities, through the identity
   testset), as section 1 declared.
+
+---
+
+**Added after the push (2026-10-16).** Pushed as 8ace18b (origin/main, 13:3x
+EDT, on the owner's word); CI run 459 (GitHub Actions, the CPU full lane,
+ubuntu-latest) completed green at 14:26 EDT. The owner then opened the fix
+batch for the section 8 items; its record is
+[`crab_cavity_noise_audit_fixes_2026_10_16.md`](crab_cavity_noise_audit_fixes_2026_10_16.md).
