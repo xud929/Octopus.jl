@@ -299,6 +299,28 @@ used. The resolution landed in `_resolve_turn_rule`, called from both
 cavities' `_turn_modulation_wrap`; the fewer-than-32-bins warning fires once
 per rule construction (`maxlog = 1`), not at every compile.)
 
+(2026-10-16, the crab-cavity noise neighbour audit, fix B; owner decision:
+warn, the table stays frozen. A resolved table carries the global seed it
+was synthesised under (`TurnTable.resolved_seed`, `nothing` on every other
+table; set by `_resolve_turn_rule` alone), and every `execute!` of both task
+kinds warns while `global_rng_seed()` differs from it, naming the element,
+the slot, both seeds, that the series are unchanged and the remedy -- rebuild
+the task, which compiles its line at its first `execute!`; before, a
+`set_global_rng!` between two windows left the canonical name as the only
+evidence (U3-2). And because a `SpectralNoise` has no digest before it
+resolves, the constructor's two sharing checks saw neither a rule beside its
+offline `spectral_turn_table` of the same seed, rng_id and slot nor the
+tables of one spec placed twice: once per compilation, tied to the compile
+cache fill of either task kind, the RESOLVED line is walked
+(`_warn_resolved_duplicate_tables`, src/tasks/Tasks.jl) and equal digests on
+two modulated elements warn by name, worded for two placements of one spec
+or for two distinct elements; one table on two slots of one element stays
+the silent common-mode choice of D4 (U1-6 / S3-2 / U3-3 / S5-3). The
+harness `test/examples/crab_cavity_noise.jl` synthesises its spectral tables
+over at least 256 turns so that a 2-turn smoke run, whose synthesis holds one
+Nyquist bin, no longer carries identical tables on three of four phase slots
+(U7-2).)
+
 (2026-10-16, review: per-slot independence under one `rng_id`, as the live
 rules give it: the resolution passes the rule's slot into the key (F1,
 D4), so two `SpectralNoise` sharing an explicit id on two slots of one

@@ -2638,6 +2638,11 @@ function _execute_strong_strong_task!(
     # naming the beam whose line holds the table (U4-2).
     _check_strong_strong_turn_window(_strong_strong_physics_line(blocks1), 1, first_turn, turns)
     _check_strong_strong_turn_window(_strong_strong_physics_line(blocks2), 2, first_turn, turns)
+    # A spectral table resolved at compile keeps the seed it was synthesised
+    # under; while the global seed differs, every execute! says so by name,
+    # the site naming the beam's line (as at the TrackingTask site; U3-2).
+    _warn_resolved_seed_drift(((_strong_strong_physics_line(blocks1), 1),
+                               (_strong_strong_physics_line(blocks2), 2)))
     # The turn-modulation receipt (docs/design/turn_modulation.md 5.6), as at
     # the TrackingTask site: both lines are walked, beam 1's entries first,
     # each tagged with its beam; recorded only when a line has a modulated
@@ -3163,23 +3168,36 @@ function _execute_strong_strong_segment!(rep, block::StrongStrongBlock, plan_cac
     return nothing
 end
 
+# Whether a line's compile cache entry `(blocks, knob_dependent, kepoch,
+# sepoch)` is current: knob-dependent lines recompile when the knob epoch has
+# moved; any line recompiles when a spec parameter was mutated in place (see
+# _runtime_entries in Tasks.jl). One predicate for the fill below and for the
+# once-per-pair check it runs.
+_strong_strong_cache_current(cached) =
+    cached !== nothing && (!cached[2] || cached[3] == knob_epoch()) && cached[4] == _spec_epoch()
+
 function _strong_strong_runtime_blocks(task::StrongStrongTask, which::Integer)
     cache = which == 1 ? task.runtime_entries_cache1 : task.runtime_entries_cache2
     line = which == 1 ? task.line1 : task.line2
     cached = cache[]
-    if cached !== nothing
-        blocks, knob_dependent, kepoch, sepoch = cached
-        # Knob-dependent lines recompile when the knob epoch has moved; any
-        # line recompiles when a spec parameter was mutated in place (see
-        # _runtime_entries in Tasks.jl).
-        ((!knob_dependent || kepoch == knob_epoch()) && sepoch == _spec_epoch()) &&
-            return blocks
-    end
+    _strong_strong_cache_current(cached) && return cached[1]
     kepoch = knob_epoch()
     sepoch = _spec_epoch()
     blocks = _split_strong_strong_line(line)
     cache[] = (blocks, _has_knob_parameters(line), kepoch, sepoch)
     empty!(which == 1 ? task.plan_cache1 : task.plan_cache2)
+    # The equal-digest check over the RESOLVED lines (`_warn_resolved_duplicate_tables`,
+    # src/tasks/Tasks.jl) runs once per compilation of the PAIR, spanning both
+    # lines as the constructor's check does: at the fill that leaves both caches
+    # current. When the other line's cache is empty or stale its own fill, which
+    # follows in the same execute!, is that fill.
+    other = (which == 1 ? task.runtime_entries_cache2 : task.runtime_entries_cache1)[]
+    if _strong_strong_cache_current(other)
+        blocks1 = which == 1 ? blocks : other[1]
+        blocks2 = which == 1 ? other[1] : blocks
+        _warn_resolved_duplicate_tables(((task.line1, _strong_strong_physics_line(blocks1), 1),
+                                         (task.line2, _strong_strong_physics_line(blocks2), 2)))
+    end
     return blocks
 end
 

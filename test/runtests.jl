@@ -10289,7 +10289,7 @@ end
                         (Octopus._descend_strong_beams!, 2), (Octopus._survey_rebind, 1),
                         (Octopus._requires_tracking_context, 1), (Octopus.update, 1),
                         (Octopus._check_turn_window, 1), (Octopus._turn_modulation_provenance!, 2),
-                        (Octopus._turn_modulation_columns!, 2),
+                        (Octopus._turn_modulation_columns!, 2), (Octopus._each_modulated, 2),
                         (Octopus.track_luminous, 1), (Octopus.track_particle, 2)]
     # The device conversion (design D8): `cudaconvert` recurses through the
     # fused tuple with `Adapt.adapt_structure`, so a wrapper without its own
@@ -11549,18 +11549,21 @@ end
     # The documented difference from the live rules: the table takes the seed
     # in force when the line compiles (the first execute!), and a later
     # `set_global_rng!` does not move it until a recompile -- the second
-    # window's receipt carries the same digest and the first seed's name.
+    # window's receipt carries the same digest and the first seed's name, and
+    # since 2026-10-16 (neighbour audit fix B, U3-2) that window warns that
+    # the table stays as synthesised; the first window, under the seed it
+    # compiled with, does not.
     task_s = TrackingTask((spec_c,))
     rep_s = Phase6DRep([1.0e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
     set_global_rng!(seed=99, method=:philox)
     audit_1 = ExecutionAudit()
     with_execution_audit(audit_1) do
-        execute!(task_s, rep_s; turns=2)
+        @test_logs execute!(task_s, rep_s; turns=2)
     end
     set_global_rng!(seed=100, method=:philox)
     audit_2 = ExecutionAudit()
     with_execution_audit(audit_2) do
-        execute!(task_s, rep_s; turns=2)
+        @test_logs (:warn, r"stay as synthesised") match_mode = :any execute!(task_s, rep_s; turns=2)
     end
     d1 = only(only(sc_receipt(audit_1).elements).slots)
     d2 = only(only(sc_receipt(audit_2).elements).slots)
@@ -16929,7 +16932,11 @@ end
         execute!(ts, rep_s; turns=2)
         set_global_rng!(seed=22, method=:philox)
         GC.gc(true)
-        execute!(ts, rep_s; turns=2)
+        # The table stays frozen under seed 21 (owner decision 2026-10-16,
+        # fix B): the second window now SAYS so, the seed-drift warning naming
+        # the slot and both seeds, rather than leaving the name as the only
+        # evidence (U3-2).
+        @test_logs (:warn, r"stay as synthesised") match_mode = :any execute!(ts, rep_s; turns=2)
         prov = turn_modulation_provenance(p_gc)
         @test length(prov) == 2
         @test prov[1].elements[1].slots[1].digest == prov[2].elements[1].slots[1].digest
@@ -16990,6 +16997,189 @@ end
         @test het - homo < 100_000
         # The blocks are a vector, not a tuple (read once per turn, no copy).
         @test Octopus._strong_strong_runtime_blocks(StrongStrongTask((ip, l6a), (ip, l6b)), 1) isa Vector
+        set_global_rng!(seed=0x5eed, method=:philox)
+    end
+end
+
+@testset "Turn modulation at execute!: the global-seed drift warning for resolved spectral tables and the equal-digest check over the resolved line" begin
+    # 2026-10-16 crab-cavity noise neighbour audit, fix B (findings U3-2 and
+    # U1-6 / S3-2 / U3-3 / U7-2 / S5-3). A `SpectralNoise` resolves to a
+    # `TurnTable` under the global seed in force when the line compiles and
+    # the table then stays as synthesised, while `WhiteNoise` and `PinkNoise`
+    # read the seed every turn: before the fix a `set_global_rng!` between two
+    # windows left the receipt's canonical name as the only evidence. Now
+    # every `execute!` of either task kind warns while the current seed
+    # differs from the seed a resolved table carries (`TurnTable.resolved_seed`,
+    # set by `_resolve_turn_rule` alone), naming the element, the slot, both
+    # seeds and the remedy; the table is unchanged. And the constructor's two
+    # sharing checks read the SPEC layer, where a `SpectralNoise` has no digest
+    # yet, so a rule and its offline twin (`spectral_turn_table` of the same
+    # seed, rng_id and slot) on two elements compiled to one table silently:
+    # once per compilation the RESOLVED line is walked and equal digests on
+    # two modulated elements warn by name, worded for two placements of one
+    # spec or for two distinct elements, on both task kinds.
+    drift_re = r"stay as synthesised"
+    dup_re = r"slots of the compiled line hold turn-modulation tables of the same digest"
+    placed_re = r"placements of one element spec hold turn-modulation tables of the same digest"
+    band = (1 / 64, 1 / 4)
+    sig = 1.0e-4
+    crab(; phase_noise=(), strength_noise=()) =
+        ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,),
+                              phase_noise=phase_noise, strength_noise=strength_noise)
+    disp = CrabDispersionSpec{Float64}(zeta1=0.1)
+    mkp() = Phase6DRep([1.0e-4], [0.0], [3.0e-5], [0.0], [1.0e-2], [0.0])
+    warns(f, re) = [l for l in Test.collect_test_logs(f)[1]
+                    if l.level == Base.CoreLogging.Warn && occursin(re, string(l.message))]
+    tm_receipt(audit) = only(filter(r -> r.consumer === :turn_modulation, execution_receipts(audit))).values
+    first_table(task) = Octopus._slot_rules(Octopus._physics_line(Octopus._runtime_entries(task))[1].rule)[1][2]
+    try
+        # (a) TrackingTask: two windows under one seed are silent; after a seed
+        # change every window warns, naming the element, the slot, the table's
+        # seed and the global seed; the table is the object compiled under the
+        # first seed (no recompile, same digest and name in the receipt); the
+        # live slot is not named; the seed restored, the warning stops.
+        set_global_rng!(seed=1001, method=:philox)
+        sn = SpectralNoise(sig, band, :flat; rng_id=1101, turns=256)
+        wn = WhiteNoise(sig; rng_id=1102)
+        t = TrackingTask((crab(phase_noise=(sn,), strength_noise=(wn,)), disp))
+        rep = mkp()
+        @test isempty(warns(() -> execute!(t, rep; turns=2), drift_re))
+        @test isempty(warns(() -> execute!(t, rep; turns=2), drift_re))
+        tbl = first_table(t)
+        @test tbl isa TurnTable{Float64} && occursin("seed=1001", tbl.name)
+        @test hasfield(typeof(tbl), :resolved_seed) && tbl.resolved_seed == UInt64(1001)
+        set_global_rng!(seed=2002, method=:philox)
+        audit2 = ExecutionAudit()
+        logs2 = Any[]
+        with_execution_audit(audit2) do
+            append!(logs2, warns(() -> execute!(t, rep; turns=2), drift_re))
+        end
+        @test length(logs2) == 1
+        if length(logs2) == 1
+            msg = string(logs2[1].message)
+            sites = logs2[1].kwargs[:tables]
+            @test occursin("seed is 2002", msg) && occursin("rebuild the task", msg)
+            @test length(sites) == 1 && occursin("ThinCrabCavity phase_noise[1]", sites[1]) &&
+                  occursin("seed 1001", sites[1])
+            @test !any(s -> occursin("strength_noise", s), sites)
+            @test logs2[1].kwargs[:global_seed] == UInt64(2002)
+        end
+        s2 = tm_receipt(audit2).elements[1].slots[1]
+        @test s2.digest == tbl.digest && s2.name == tbl.name && occursin("seed=1001", s2.name)
+        @test first_table(t) === tbl
+        @test length(warns(() -> execute!(t, rep; turns=2), drift_re)) == 1
+        set_global_rng!(seed=1001, method=:philox)
+        @test isempty(warns(() -> execute!(t, rep; turns=2), drift_re))
+        # (a2) The live rules are unaffected: a white-only line never warns and
+        # its recorded second window follows the new seed.
+        mktempdir() do dir
+            set_global_rng!(seed=1001, method=:philox)
+            pw = joinpath(dir, "white.h5")
+            tw = TrackingTask((crab(phase_noise=(WhiteNoise(sig; rng_id=1104),)), disp);
+                              artifact=RunArtifact(pw; append=true, record_turn_modulation=true))
+            repw = mkp()
+            execute!(tw, repw; turns=2)
+            set_global_rng!(seed=2002, method=:philox)
+            @test isempty(warns(() -> execute!(tw, repw; turns=2), drift_re))
+            rule_w = first_table(tw)
+            @test rule_w isa WhiteNoise
+            replay(seed, turns) = Float64[Octopus._turn_offset(rule_w, TrackingContext(turn=tt, seed=UInt64(seed)), 1, Float64)[1]
+                                          for tt in turns]
+            prov = turn_modulation_provenance(pw)
+            @test length(prov) == 2
+            @test prov[1].elements[1].slots[1].series == replay(1001, 0:1)
+            @test prov[2].elements[1].slots[1].series == replay(2002, 2:3)
+        end
+        # (b) StrongStrongTask: the same warning, the site naming the beam's
+        # line; silent under one seed and again once the seed is restored.
+        ip = StrongStrongCollision(:ip)
+        mkb(rng_id, charge, mc2, E0) = Beam(64, CPUThreadsExecutionPolicy(), Float64;
+            beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3),
+            cutoff=5.0, rng_id=rng_id, charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+        set_global_rng!(seed=1001, method=:philox)
+        b1, b2 = mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9)
+        cav_s2 = crab(phase_noise=(SpectralNoise(sig, band, :flat; rng_id=1105, turns=256),))
+        cav_w2 = crab(phase_noise=(WhiteNoise(sig; rng_id=1106),))
+        ss = StrongStrongTask((ip, cav_w2), (ip, DriftSpec(L=0.2), cav_s2))
+        @test isempty(warns(() -> execute!(ss, b1, b2; turns=2), drift_re))
+        set_global_rng!(seed=2002, method=:philox)
+        audit_ss = ExecutionAudit()
+        logs_ss = Any[]
+        with_execution_audit(audit_ss) do
+            append!(logs_ss, warns(() -> execute!(ss, b1, b2; turns=2), drift_re))
+        end
+        @test length(logs_ss) == 1
+        if length(logs_ss) == 1
+            sites = logs_ss[1].kwargs[:tables]
+            @test length(sites) == 1 && occursin("beam 2's line", sites[1]) &&
+                  occursin("ThinCrabCavity phase_noise[1]", sites[1]) && occursin("seed 1001", sites[1])
+        end
+        rc = tm_receipt(audit_ss)
+        @test [e.beam for e in rc.elements] == [1, 2] && occursin("seed=1001", rc.elements[2].slots[1].name)
+        set_global_rng!(seed=1001, method=:philox)
+        @test isempty(warns(() -> execute!(ss, b1, b2; turns=2), drift_re))
+        # (c) The equal-digest check over the resolved line: a `SpectralNoise`
+        # and its offline twin on two elements construct silently (the spec
+        # layer sees one id and one digest) and warn at the first `execute!`,
+        # naming both sites, the digest and the remedy; the next `execute!`
+        # of the same compiled line is silent (once per compilation).
+        set_global_rng!(seed=1001, method=:philox)
+        off = spectral_turn_table(:flat, sig, band; turns=256, seed=1001, rng_id=1107, slot=1)
+        specA = crab(phase_noise=(SpectralNoise(sig, band, :flat; rng_id=1107, turns=256),))
+        specB = crab(phase_noise=(off,))
+        t3 = @test_logs TrackingTask((specA, disp, specB))
+        rep3 = mkp()
+        logs3 = warns(() -> execute!(t3, rep3; turns=2), dup_re)
+        @test length(logs3) == 1
+        if length(logs3) == 1
+            msg = string(logs3[1].message)
+            @test occursin("modulated element 1", msg) && occursin("modulated element 2", msg)
+            @test occursin("ThinCrabCavity phase_noise[1]", msg) && occursin(repr(off.digest), msg)
+            @test occursin("rng_id", msg) && occursin("slot", msg) && !occursin(placed_re, msg)
+            @test logs3[1].kwargs[:digest] == off.digest
+        end
+        @test first_table(t3).digest == off.digest
+        @test isempty(warns(() -> execute!(t3, rep3; turns=2), dup_re))
+        # (d) Negative controls: the twin under another seed or another slot,
+        # a second `SpectralNoise` with its own id, and one table on two slots
+        # of ONE element (the deliberate common-mode choice of D4) are silent.
+        off_seed = spectral_turn_table(:flat, sig, band; turns=256, seed=1002, rng_id=1107, slot=1)
+        off_slot = spectral_turn_table(:flat, sig, band; turns=256, seed=1001, rng_id=1107, slot=2)
+        for other in (off_seed, off_slot)
+            t4 = TrackingTask((specA, disp, crab(phase_noise=(other,))))
+            @test isempty(warns(() -> execute!(t4, mkp(); turns=2), dup_re))
+        end
+        t4b = TrackingTask((specA, disp, crab(phase_noise=(SpectralNoise(sig, band, :flat; rng_id=1108, turns=256),))))
+        @test isempty(warns(() -> execute!(t4b, mkp(); turns=2), dup_re))
+        t4c = TrackingTask((ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), phase=(0.0, 0.0),
+                                                  phase_noise=(off, off)), disp))
+        @test isempty(warns(() -> execute!(t4c, mkp(); turns=2), r"same digest"))
+        # (e) One spec object placed twice is worded as a placement, for a
+        # `SpectralNoise` spec (the constructor's shared-id warning precedes
+        # it) and for a table spec (the constructor's digest warning precedes).
+        t5 = @test_logs (:warn, r"share an rng_id") match_mode = :any TrackingTask((specA, disp, specA))
+        logs5 = warns(() -> execute!(t5, mkp(); turns=2), placed_re)
+        @test length(logs5) == 1
+        if length(logs5) == 1
+            msg = string(logs5[1].message)
+            @test occursin("modulated element 1", msg) && occursin("modulated element 2", msg) && !occursin(dup_re, msg)
+            @test occursin("own rng_id", msg)
+        end
+        t5b = @test_logs (:warn, r"same digest") match_mode = :any TrackingTask((specB, disp, specB))
+        @test length(warns(() -> execute!(t5b, mkp(); turns=2), placed_re)) == 1
+        # (f) Both lines of a StrongStrongTask are one resolved line for the
+        # check: the rule in beam 1's line and its twin in beam 2's warn once,
+        # naming both lines.
+        set_global_rng!(seed=1001, method=:philox)
+        ss2 = StrongStrongTask((ip, specA), (ip, DriftSpec(L=0.2), specB))
+        logs6 = warns(() -> execute!(ss2, b1, b2; turns=1), dup_re)
+        @test length(logs6) == 1
+        if length(logs6) == 1
+            msg = string(logs6[1].message)
+            @test occursin("beam 1's line", msg) && occursin("beam 2's line", msg) && occursin(repr(off.digest), msg)
+        end
+        @test isempty(warns(() -> execute!(ss2, b1, b2; turns=1), dup_re))
+    finally
         set_global_rng!(seed=0x5eed, method=:philox)
     end
 end

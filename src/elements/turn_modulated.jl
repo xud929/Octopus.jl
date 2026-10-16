@@ -46,7 +46,10 @@ export TurnModulated, WhiteNoise, PinkNoise, TurnTable, SpectralNoise, spectral_
 #     / `_check_container_window`, the provenance slots
 #     `_turn_modulation_slots`, the recorder's columns
 #     `_turn_modulation_columns!`, the modulation-stream collector
-#     `_collect_turn_modulation_ids!`;
+#     `_collect_turn_modulation_ids!`, and the resolved-line walk
+#     `_each_modulated` behind the seed-drift collector
+#     `_resolved_seed_drift` and the equal-digest slot table
+#     `_resolved_table_slots` (their warnings sit in Tasks.jl);
 #   - `src/elements/crab_cavity.jl`: the crab cavity's rule container
 #     `CrabCavityNoise` (2N slots), its `_realize_draws` / `realize`,
 #     `_turn_modulation_wrap` for
@@ -251,11 +254,22 @@ recorded in the run's provenance receipt. Before the first turn of every
 and throws otherwise, so a run never runs out mid-window and never wraps
 (a wrapped sequence is periodic in the table length and would correlate
 turn `t` with turn `t - N` silently).
+
+The fourth field, `resolved_seed`, is provenance the constructor never sets:
+`nothing` on every table built here (a measured record, an offline
+`spectral_turn_table`); on a table that `_resolve_turn_rule` synthesised
+from a `SpectralNoise` when the line compiled, the global seed it was
+synthesised under. `execute!` reads it on both task kinds and warns while
+the current `global_rng_seed()` differs from it (the table stays as
+synthesised; `src/tasks/Tasks.jl`, `_warn_resolved_seed_drift`, 2026-10-16
+neighbour audit U3-2). Host-side only: the device conversion drops the
+wrapper to its realised element (D8), so no table reaches a kernel.
 """
 struct TurnTable{T<:AbstractFloat} <: AbstractTurnRule
     offsets::Vector{T}
     digest::UInt64
     name::String
+    resolved_seed::Union{Nothing,UInt64}
 end
 
 function TurnTable(offsets::AbstractVector{T}; name::AbstractString="") where {T<:AbstractFloat}
@@ -265,7 +279,7 @@ function TurnTable(offsets::AbstractVector{T}; name::AbstractString="") where {T
     bad === nothing || throw(ArgumentError(
         "TurnTable: every entry must be finite; entry $(bad) is $(offsets[bad])"))
     vec = collect(offsets)
-    return TurnTable{T}(vec, _fnv1a64(reinterpret(UInt8, vec)), String(name))
+    return TurnTable{T}(vec, _fnv1a64(reinterpret(UInt8, vec)), String(name), nothing)
 end
 
 """
@@ -774,9 +788,18 @@ src/tasks/Tasks.jl), so the line recompiles and the table is re-synthesised
 under the then-current seed. A `set_global_rng!` after a compile that no
 such change follows alters white and pink draws from the next turn but not
 the table until the next compile; the canonical name records the seed the
-table used, so the receipt says which. Each compile that
+table used, the table carries it as `resolved_seed`, and every `execute!`
+of either task kind warns while the current global seed differs from it,
+naming the element, the slot, both seeds and the remedy (rebuild the task;
+2026-10-16 neighbour audit, U3-2). Each compile that
 resolves the rule pays one synthesis (`O(N log N)`; tens of milliseconds at
 2^20 turns), which a knob sweep that recompiles per step pays per step.
+Because the resolution is deterministic in `(seed, rng_id, slot)`, a rule
+and an offline `spectral_turn_table` of the same three numbers on two
+elements are one table; the constructor's checks cannot see that (the rule
+has no digest before it resolves), so each task walks its compiled line once
+per compilation and warns on equal digests across modulated elements
+(`_warn_resolved_duplicate_tables`, src/tasks/Tasks.jl).
 
 ```julia
 set_global_rng!(seed = 42)
@@ -827,13 +850,18 @@ passes 1 for its phase tuple and `N + 1` for its strength tuple, the RF
 cavity resolves its two scalars with 1 and 2: the numbering of
 `_slot_rules`). Downstream of this step -- `_slot_rules`, `_realize_draws`,
 `_slot_nominals`, the window check, the provenance walks -- nothing knows
-the rule existed.
+the rule existed, except through the one field the resolved table carries
+beyond an offline one: `resolved_seed`, the global seed read here, which
+`execute!`'s seed-drift warning compares with the seed then in force
+(`_warn_resolved_seed_drift`, src/tasks/Tasks.jl; the only place a table is
+built with it).
 """
 _resolve_turn_rule(rule, slot::Integer, ::Type{T}) where {T} = rule
 function _resolve_turn_rule(rule::SpectralNoise, slot::Integer, ::Type{T}) where {T}
-    return _spectral_table("SpectralNoise", rule.label => rule.S, rule.sigma, rule.band, rule.turns,
-                           global_rng_seed(), rule.rng_id, slot, rule.f_rev, rule.amplitudes, T,
-                           nothing, false)
+    seed = global_rng_seed()
+    table = _spectral_table("SpectralNoise", rule.label => rule.S, rule.sigma, rule.band, rule.turns,
+                            seed, rule.rng_id, slot, rule.f_rev, rule.amplitudes, T, nothing, false)
+    return TurnTable{T}(table.offsets, table.digest, table.name, seed)
 end
 _resolve_turn_rules(rules::NTuple{K,Any}, first_slot::Integer, ::Type{T}) where {K,T} =
     ntuple(i -> _resolve_turn_rule(rules[i], first_slot + i - 1, T), Val(K))
@@ -1458,6 +1486,97 @@ _check_turn_window(elem::Union{MisalignedElement,RefTilted}, first_turn::Int64, 
     _check_turn_window(elem.inner, first_turn, nturns)
 _check_turn_window(elem::CompositeLine, first_turn::Int64, nturns::Int) =
     _check_turn_window(elem.ops, first_turn, nturns)
+
+"""
+    _each_modulated(f, elem)
+
+Apply `f(w::TurnModulated)` to every modulated element of a compiled line,
+in line order, descending tuples, the wrappers and `CompositeLine` exactly
+as `_check_turn_window` and `_turn_modulation_provenance!` do (the suite's
+wrapper-walk tripwire lists this walk beside them). The walk behind the two
+`execute!`-time checks over the RESOLVED line (src/tasks/Tasks.jl): the
+seed-drift collector `_resolved_seed_drift` and the slot table
+`_resolved_table_slots` of the equal-digest check, both generic over the
+container's `_slot_rules` like every other slot walk here.
+"""
+_each_modulated(f, elem) = nothing
+_each_modulated(f, elems::Tuple) = (foreach(e -> _each_modulated(f, e), elems); nothing)
+_each_modulated(f, w::TurnModulated) = (f(w); nothing)
+_each_modulated(f, elem::Union{MisalignedElement,RefTilted}) = _each_modulated(f, elem.inner)
+_each_modulated(f, elem::CompositeLine) = _each_modulated(f, elem.ops)
+
+"""
+    _resolved_seed_drift(elems, seed::UInt64) -> Vector{NamedTuple}
+
+One entry `(element, slot, seed, digest)` per table slot of a compiled line
+that `_resolve_turn_rule` synthesised from a `SpectralNoise` under a global
+seed other than `seed` (`TurnTable.resolved_seed`; tables with none, the
+offline and measured ones, and tables resolved under `seed` itself are
+skipped), in line and slot order: `element` is the nominal element's type
+name and `slot` the container's label, as the window message prints them.
+Empty when nothing drifted. `execute!` calls it with the seed in force
+(`_warn_resolved_seed_drift`).
+"""
+function _resolved_seed_drift(elems, seed::UInt64)
+    drifted = NamedTuple[]
+    _each_modulated(elems) do w
+        element = string(nameof(typeof(w.base)))
+        for (label, rule) in _slot_rules(w.rule)
+            rule isa TurnTable || continue
+            resolved = rule.resolved_seed
+            (resolved === nothing || resolved == seed) && continue
+            push!(drifted, (element = element, slot = label, seed = resolved, digest = rule.digest))
+        end
+    end
+    return drifted
+end
+
+"""
+    _resolved_table_slots(elems) -> Vector{NamedTuple}
+
+One entry `(element, slots)` per modulated element of a compiled line, in
+line order, `slots` the vector of its ACTIVE table slots as
+`(slot, digest, name)` (the live rules carry no digest and are skipped; an
+element whose active slots are all live contributes an entry with an empty
+vector, so the entry index is the modulated-element index of the provenance
+receipt). The resolved-line side of the equal-digest check
+(`_warn_resolved_duplicate_tables`, src/tasks/Tasks.jl), which pairs it
+index by index with the spec-side `_modulated_spec_owners`.
+"""
+function _resolved_table_slots(elems)
+    out = NamedTuple[]
+    _each_modulated(elems) do w
+        slots = NamedTuple[]
+        for (label, rule) in _slot_rules(w.rule)
+            rule isa TurnTable || continue
+            push!(slots, (slot = label, digest = rule.digest, name = rule.name))
+        end
+        push!(out, (element = string(nameof(typeof(w.base))), slots = slots))
+    end
+    return out
+end
+
+"""
+    _modulated_spec_owners(elements) -> Vector{Any}
+
+The spec objects of a task's line that compile to a modulated element, in
+line order: every spec the `_each_turn_rule_spec` walk visits whose
+`_turn_rule_values` holds at least one active rule -- the condition under
+which the kind's `_turn_modulation_wrap` wraps. Entry `k` is the spec behind
+modulated element `k` of `_resolved_table_slots` and of the provenance
+receipt whenever the two walks agree in length (the equal-digest check
+enforces that before it relies on it); two entries that are one object
+(`===`) are two placements of one spec. A placement with overrides
+(`LineEntry`) is visited as its merged spec, a fresh object per placement,
+so such placements read as distinct elements.
+"""
+function _modulated_spec_owners(elements)
+    owners = Any[]
+    _each_turn_rule_spec(elements) do spec
+        any(rule -> rule !== nothing, _turn_rule_values(spec)) && push!(owners, spec)
+    end
+    return owners
+end
 
 """
     _each_turn_rule_spec(f, element)

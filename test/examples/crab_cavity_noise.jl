@@ -151,8 +151,14 @@ config-that-was-never-read defect class, AGENTS.md Invariants):
                               parallel to WhiteNoise and PinkNoise (the same
                               explicit rng_id per slot, the run's seed
                               OCTOPUS_SEED) that resolves when the line
-                              compiles into a TurnTable of OCTOPUS_TURNS
-                              entries: bin amplitudes sqrt(S(f_k)) over the
+                              compiles into a TurnTable of
+                              max(OCTOPUS_TURNS, 256) entries (the floor keeps
+                              a short smoke run's tables distinct, a 2-turn
+                              synthesis holding one Nyquist bin; the run reads
+                              the first OCTOPUS_TURNS entries, and the
+                              whole-period rms pin below applies only when the
+                              run covers the table): bin amplitudes
+                              sqrt(S(f_k)) over the
                               band (fixed, or Rayleigh-scattered, below), bin
                               phases from the counter RNG keyed on (seed,
                               rng_id, slot, bin), rms sigma by the analytic
@@ -167,10 +173,11 @@ config-that-was-never-read defect class, AGENTS.md Invariants):
                               two rules compare at equal rms and band). Parsed
                               here, judged by the factory: it refuses a band
                               outside 0 < lb < ub <= 1/2 or one holding no bin
-                              at OCTOPUS_TURNS (the first bin is 1/OCTOPUS_TURNS,
-                              so a narrow band needs a long run: 3e-3,4e-3
-                              holds its first bin from 250 turns and 32 bins
-                              from 32000) and warns below 32 bins. Refused
+                              at the table length max(OCTOPUS_TURNS, 256) (the
+                              first bin is 1/length, so a narrow band needs a
+                              long run: 3e-3,4e-3 holds its first bin from 250
+                              turns, within the floor, and 32 bins from 32000)
+                              and warns below 32 bins. Refused
                               under any other rule, where it would go unread
     OCTOPUS_SPECTRAL_AMPLITUDES
                               with OCTOPUS_NOISE_RULE=spectral: fixed|rayleigh
@@ -483,10 +490,17 @@ strength_rel_rms = env_parse(Float64, "OCTOPUS_STRENGTH_REL_RMS", "1e-4")
 pink_octaves = env_parse(Int, "OCTOPUS_PINK_OCTAVES", "16")
 table_seed = env_parse(Int, "OCTOPUS_TABLE_SEED", "20261014")
 table_file = get(ENV, "OCTOPUS_TABLE_FILE", "")
-# The synthetic table is exactly as long as the run: the task refuses a
+# The synthetic white table is exactly as long as the run: the task refuses a
 # shorter one and never wraps one, so this is the smallest record that serves
-# the window.
-table_turns = turns
+# the window. The spectral tables are synthesised over at least 256 turns
+# (2026-10-16 neighbour audit, U7-2): a synthesis over the 2-turn smoke
+# default holds one bin, the Nyquist one, so every slot's table was one of
+# the two sequences +-sigma and slots across the two cavities coincided
+# (three of the four phase slots in the measurement), which the task's
+# resolved-line equal-digest check now names. A table longer than the run
+# serves it from its first entries (the window rule is
+# first_turn + turns <= length); a run of 256 turns or more is unchanged.
+table_turns = noise_rule_kind === :spectral ? max(turns, 256) : turns
 (isfinite(noise_scale) && noise_scale >= 0) || error("OCTOPUS_NOISE_SCALE=$(noise_scale) must be finite and non-negative")
 (isfinite(phase_rms) && phase_rms >= 0) || error("OCTOPUS_PHASE_RMS=$(phase_rms) must be finite and non-negative")
 (isfinite(strength_rel_rms) && strength_rel_rms >= 0) || error("OCTOPUS_STRENGTH_REL_RMS=$(strength_rel_rms) must be finite and non-negative")
