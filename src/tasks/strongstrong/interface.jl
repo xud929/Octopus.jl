@@ -2676,7 +2676,8 @@ function _execute_strong_strong_task!(
         columns = vcat(_turn_modulation_columns!(Any[], _strong_strong_physics_line(blocks1)),
                        _turn_modulation_columns!(Any[], _strong_strong_physics_line(blocks2)))
         prepare_run_artifact!(task.artifact, labels, Int(first_turn), Int(turns);
-                              turn_modulation=prov, turn_modulation_columns=columns)
+                              turn_modulation=prov, turn_modulation_columns=columns,
+                              task_kind=string(nameof(typeof(task))))
     end
     # Absolute window, matching Tasks.jl: `should_run` sees `first_turn + offset`.
     # A refusal here (a duplicate probe name, a continued group's column

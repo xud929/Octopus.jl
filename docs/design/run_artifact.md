@@ -323,6 +323,47 @@ its batch, so a retry trusts exactly the cursored prefix and the replay
 discard truncates datasets against absolute turns, as the text path does
 today. This must be designed in from the first dataset, not retrofitted.
 
+**Cross-process exclusion (decided 2026-10-16, owner; neighbour audit
+S5-2).** The artifact had none: the in-process registry (`U7-10`, the
+"second live observer" warning) sees one process, and HDF5's own file lock
+is not effective on the NFSv3 mount the runs use. Measured on 8ace18b: a
+second process opening a path another process held SUCCEEDED with either
+`append` -- `append=false` truncated the holder's open file, which then read
+back torn ("len not positive after adjustment for EOA"); `append=true`
+appended into the holder's ledger -- and two concurrent writers of one path
+both finished, one run's 400 rows silently gone. The decision is a SIDECAR
+LOCK FILE `<path>.lock`, created exclusively (`O_CREAT | O_EXCL`, so two
+processes racing for one path cannot both succeed), holding one line
+`host=<hostname> pid=<pid> since=<ISO 8601 local time> task=<task kind>`,
+taken by rank 0 in `prepare_run_artifact!` BEFORE the file opens, for a
+fresh open as for an appending one (whether to truncate or continue is
+decided under exclusion), and removed AFTER the file closes, in
+`finalize_run_artifact!` and so on every path that closes the artifact (the
+success and crash paths of both tasks, the strong-strong observer-prepare
+refusal); the prepare's own refusals, the one close that does not run
+through finalize, release it themselves, as does an open that fails. A
+second writer finding the lock is refused with an `ArgumentError` naming the
+lock path, the line it holds (who, where, since when) and the remedy: if
+that process is gone, remove the lock. There is NO automatic stale-lock
+takeover -- the holder may be alive on another host, and a pid test or an
+age test would be a guess -- so a lock left by a killed run is removed by
+hand, and the refusal says which file. READERS do not take the lock: a
+second process may read while the first writes and sees the last flushed
+state (measured: eight readers during a 3000-turn write, each a consistent
+prefix; `result/.../auditor/probe_rw_reader2.log`). The public readers are
+lock-aware instead: `TaskOutput`, `turn_modulation_provenance` and the
+`MomentOutput` HDF5 reads open through one `_ra_open`, which, when a live
+lock exists for the path, emits one `@info` per writer and process naming
+the lock's line and that the rows are valid through each group's
+`rows_valid_through_turn` cursor and the ledger's `current_turn`, and
+retries a failed open once (a flush landing) before the failure propagates
+with the lock information in it; only the open is retried, never the read
+body, so a torn group keeps its own refusal. The lock is ADVISORY and for
+Octopus writers: HDF5 itself does not honour it, a foreign `h5open` is not
+stopped by it. The in-process registry stays beside it, now reporting only
+the sequential sharing it was built for (a refused writer is not registered
+as live). Record: `../history/audit_crab_cavity_noise_neighbours_2026_10_16.md`.
+
 ### Execution diagnostics
 
 The moment files' `turn` + `elapsed_time` per fire is a style worth keeping
@@ -333,7 +374,8 @@ index, start turn, window length, CURRENT TURN and elapsed updated at every
 flush -- live progress and rate from one `h5ls`, and the run-level
 how-far-did-it-get answer after a crash; as landed the row holds
 `start_turn`, `turns`, `current_turn` and `elapsed`, no backend column --
-2026-10-16 neighbour audit),
+2026-10-16 neighbour audit -- and, since the same day's fix batch, `rng_seed`
+and `rng_method`, the paragraph below),
 appended and never overwritten, so a swap-out run's every execution keeps
 its record; rows from a replayed window are RETAINED too, distinguishable by
 execution index, because both attempts' timings are exactly what a retry
@@ -357,6 +399,29 @@ per flush, created on demand for older files) with the scalar
 `/elapsed_time` keeping its documented current-execution semantics for
 existing readers — its overhead is one tiny dataset write per flush, so it
 needs no switch.
+
+**Seed provenance (decided 2026-10-16, owner; neighbour audit S5-4).** The
+ledger row carries two more columns, appended with the row at prepare:
+`rng_seed` (`UInt64`) and `rng_method` (a string, the counter-RNG method's
+name as `rng_method_symbol` spells it -- `"philox"`, `"splitmix"` -- so a
+new method names itself here), the global stochastic seed and method in
+force when that `execute!` began, which is what every stochastic consumer
+of the window keys its draws on. Measured before: after a
+`set_global_rng!` between two windows the file's only mention of a seed was
+a spectral table's canonical name; a white or pink stream, a beam
+initialization, a radiation element left no trace of theirs. The six
+columns are ONE table in the writer (`_RA_LEDGER_COLUMNS`: creation, the
+appended row, the continue-check and the reader derive from it; the suite
+derives its column pins from it and checks that this note names each). A
+continued (`append=true`) file whose ledger lacks any column of the table
+predates the two and is refused by name -- the message says the file
+predates the columns, 2026-10-16, and offers a new path or `append=false`
+-- and left as found, never padded: a padded seed column would claim a
+provenance the earlier rows never recorded. (This supersedes the step-1
+padding of `current_turn`, whose files lack these columns too.) Reading an
+old file stays possible: `read(out, :execution)` returns `nothing` for a
+column the file lacks, the `/losses` reader's posture for its later-added
+attributes. Record: `../history/audit_crab_cavity_noise_neighbours_2026_10_16.md`.
 
 ## Migration
 

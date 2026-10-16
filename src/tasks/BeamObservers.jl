@@ -1418,7 +1418,7 @@ df = DataFrame(data, Symbol.(names))
 """
 function column_names(file::MomentOutput)
     if _is_hdf5_output(file.path)
-        return HDF5.h5open(file.path, "r") do h5
+        return _ra_open(file.path) do h5
             String.(read(_moment_h5_root(h5, file.group)["column_names"]))
         end
     end
@@ -1470,7 +1470,7 @@ end
 _moment_h5_root(h5, group::String) = isempty(group) ? h5 : h5[group]
 
 function _read_hdf5_data(path::AbstractString, group::String="")
-    return HDF5.h5open(path, "r") do h5
+    return _ra_open(path) do h5
         root = _moment_h5_root(h5, group)
         n = _read_hdf5_record_count(root)
         data = read(root["data"])
@@ -1479,7 +1479,7 @@ function _read_hdf5_data(path::AbstractString, group::String="")
 end
 
 function _read_hdf5_column(path::AbstractString, group::String, item)
-    return HDF5.h5open(path, "r") do h5
+    return _ra_open(path) do h5
         root = _moment_h5_root(h5, group)
         special = _read_hdf5_special(root, item)
         special === _NOT_HDF5_SPECIAL || return special
@@ -1512,7 +1512,7 @@ end
 function _read_hdf5_selection(path::AbstractString, group::String="";
                               orders=(), extra=(), exclude=())
     requested = _selected_moments(orders=orders, extra=extra, exclude=exclude)
-    return HDF5.h5open(path, "r") do h5
+    return _ra_open(path) do h5
         h5 = _moment_h5_root(h5, group)
         names = String.(read(h5["column_names"]))
         name_to_index = Dict(name => i for (i, name) in pairs(names))

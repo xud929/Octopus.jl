@@ -17567,6 +17567,239 @@ end
                                       p_st, p_cols, p_old))
 end
 
+@testset "Run artifact exclusion and seed provenance: the sidecar lock, lock-aware readers, the ledger's rng columns" begin
+    # 2026-10-16 crab-cavity noise neighbour audit, S5-2 and S5-4
+    # (docs/design/run_artifact.md, the two dated paragraphs). Measured on
+    # 8ace18b: HDF5's own file lock is not effective on the NFSv3 mount, so a
+    # second PROCESS opening a path another process held succeeded with
+    # either `append` -- `append=false` truncated the holder's open file,
+    # which then read back torn ("len not positive after adjustment for
+    # EOA"), and two concurrent writers of one path both finished with one
+    # run's 400 rows silently gone -- and nothing in the file recorded the
+    # global RNG seed or method (a spectral table's canonical name was its
+    # only mention of a seed). Every pin below was red on that tree.
+    mktempdir() do dir
+        set_global_rng!(seed=0x5eed, method=:philox)
+        root = pkgdir(Octopus)
+        rep = Phase6DRep([1.0e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
+        drift = (DriftSpec(L=1.0),)
+        lockof(p) = p * ".lock"
+        quiet(f) = Test.collect_test_logs(f)[2]      # the U7-10 registry warning is not under test here
+        # (a) A real TrackingTask in a CHILD process holds the path: its first
+        # turn blocks on a marker, so this process -- "another process" to the
+        # child -- attempts, reads and releases at known moments. The child
+        # is the writer whose lock line names its task kind; its own seed and
+        # method are deliberately not this process's.
+        p_held = joinpath(dir, "held.h5")
+        marker = joinpath(dir, "go")
+        holder_script = """
+            using Octopus
+            struct HoldObserver <: Octopus.AbstractBeamObserver
+                marker::String
+            end
+            function Octopus.observe!(o::HoldObserver, ctx, rep)
+                ctx.turn == 0 || return nothing
+                touch(o.marker * ".ready")
+                t0 = time()
+                while !isfile(o.marker) && time() - t0 < 240
+                    sleep(0.1)
+                end
+                return nothing
+            end
+            set_global_rng!(seed=77, method=:splitmix)
+            rep = Phase6DRep([1.0e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
+            t = TrackingTask((DriftSpec(L=1.0), ScheduledObserver(MomentObserver(; name="m", orders=1)),
+                              HoldObserver(ARGS[2])); artifact=RunArtifact(ARGS[1]; capacity=1))
+            execute!(t, rep; turns=3)
+            println("HOLDER-DONE lock_after=", isfile(ARGS[1] * ".lock"))
+            """
+        buf = IOBuffer()
+        cmd = `$(Base.julia_cmd()) --startup-file=no --project=$(root) -e $(holder_script) $(p_held) $(marker)`
+        holder = run(pipeline(cmd; stdout=buf, stderr=buf); wait=false)
+        t0 = time()
+        while !isfile(marker * ".ready") && process_running(holder) && time() - t0 < 300
+            sleep(0.2)
+        end
+        @test isfile(marker * ".ready")
+        held_line = isfile(lockof(p_held)) ? strip(read(lockof(p_held), String)) : ""
+        @test occursin("host=$(gethostname())", held_line)
+        @test occursin(r"pid=\d+", held_line) && !occursin("pid=$(getpid())", held_line)
+        @test occursin(r"since=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", held_line)
+        @test occursin("task=TrackingTask", held_line)
+        @test count('\n', read(lockof(p_held), String)) == 1          # one line
+        # A second writer from this process, with either `append`, is refused
+        # by name -- the lock path, the holder's line, the remedy -- and the
+        # holder's lock and file are untouched; the refused artifact holds
+        # neither a file nor a lock.
+        for append in (false, true)
+            art2 = RunArtifact(p_held; append=append)
+            err = try
+                execute!(TrackingTask(drift; artifact=art2), rep; turns=2)
+                "did not throw"
+            catch e
+                sprint(showerror, e)
+            end
+            @testset let append = append
+                @test occursin("holds its lock", err) && occursin(lockof(p_held), err)
+                @test occursin(held_line, err)
+                @test occursin("remove $(lockof(p_held))", err)
+                @test art2.file === nothing && art2.lock_line === nothing
+            end
+        end
+        @test isfile(lockof(p_held)) && strip(read(lockof(p_held), String)) == held_line
+        # A reader in this process while the child writes: the rows as of the
+        # last flush, the seed and method the CHILD's execute! began with, one
+        # @info naming the writer's line -- on the TaskOutput route and on the
+        # MomentOutput route, which reads the same file.
+        @testset "a reader while the writer holds the file" begin
+            logs, (ex_held, m_held) = Test.collect_test_logs() do
+                (read(TaskOutput(p_held), :execution), read(MomentOutput(p_held; name="m")))
+            end
+            @test ex_held.start_turn == [0] && ex_held.turns == [3]
+            @test ex_held.rng_seed == UInt64[77] && ex_held.rng_method == ["splitmix"]
+            @test m_held isa AbstractMatrix && size(m_held, 1) >= 1 && m_held[1, 1] == 0.0
+            infos = [l for l in logs if l.level == Base.CoreLogging.Info &&
+                     occursin("holds the run artifact's lock", string(l.message))]
+            @test !isempty(infos) && all(l -> l.kwargs[:writer] == held_line, infos)
+            @test all(l -> occursin("rows_valid_through_turn", string(l.message)), infos)
+        end
+        # Release: the child finishes, its lock leaves with its file, and the
+        # refused writer now continues the file -- the lock was the only
+        # reason -- recording this process's seed beside the child's.
+        touch(marker)
+        wait(holder)
+        text = String(take!(buf))
+        @test occursin("HOLDER-DONE lock_after=false", text)
+        @test !isfile(lockof(p_held))
+        set_global_rng!(seed=78, method=:philox)
+        quiet(() -> execute!(TrackingTask(drift; artifact=RunArtifact(p_held; append=true)), rep;
+                             turns=2, start_turn=3))
+        ex_after = read(TaskOutput(p_held), :execution)
+        @test ex_after.start_turn == [0, 3]
+        @test ex_after.rng_seed == UInt64[77, 78] && ex_after.rng_method == ["splitmix", "philox"]
+        @test !isfile(lockof(p_held))
+        # Every call site of `prepare_run_artifact!` in src/ names its task
+        # kind for the lock line, derived from the task's type.
+        srcfiles = String[]
+        for (d, _, fs) in walkdir(joinpath(root, "src")), f in fs
+            endswith(f, ".jl") && push!(srcfiles, joinpath(d, f))
+        end
+        callsites = [f for f in srcfiles if occursin(r"^\s+prepare_run_artifact!\("m, read(f, String))]
+        @test length(callsites) == 2
+        @test all(f -> occursin("task_kind=string(nameof(typeof(task)))", read(f, String)), callsites)
+        # (b) The lock leaves with the file on every closing path: the
+        # prepare's own refusal (a continued file whose luminosity groups do
+        # not match), an open that fails (a read handle this process holds),
+        # and the observer-prepare refusal after prepare (duplicate probe
+        # names) on both task kinds, which is their crash path's finalize.
+        p_mis = joinpath(dir, "mismatch.h5")
+        execute!(TrackingTask(drift; artifact=RunArtifact(p_mis)), rep; turns=1)
+        @test !isfile(lockof(p_mis))
+        Octopus.HDF5.h5open(p_mis, "r+") do f
+            Octopus.HDF5.create_group(f["luminosity"], "stranger")
+        end
+        quiet() do          # the U7-10 registry warning of sequential sharing, not under test
+            @test_throws ArgumentError execute!(TrackingTask(drift; artifact=RunArtifact(p_mis; append=true)),
+                                                rep; turns=1)
+        end
+        @test !isfile(lockof(p_mis))
+        h = Octopus.HDF5.h5open(p_mis, "r")
+        quiet() do
+            @test_throws Octopus.HDF5.API.H5Error execute!(TrackingTask(drift; artifact=RunArtifact(p_mis)),
+                                                           rep; turns=1)
+        end
+        close(h)
+        @test !isfile(lockof(p_mis))
+        p_dup = joinpath(dir, "dup_ws.h5")
+        wt = TrackingTask((drift..., ScheduledObserver(MomentObserver(; name="m", orders=1)),
+                           ScheduledObserver(MomentObserver(; name="m", orders=1)));
+                          artifact=RunArtifact(p_dup))
+        @test_throws ArgumentError execute!(wt, rep; turns=2)
+        @test wt.artifact.file === nothing && wt.artifact.lock_line === nothing
+        @test !isfile(lockof(p_dup))
+        mkb(rng_id, charge, mc2, E0) = Beam(64, CPUThreadsExecutionPolicy(), Float64;
+            beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3),
+            cutoff=5.0, rng_id=rng_id, charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+        b1, b2 = mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9)
+        ip = StrongStrongCollision(:ip)
+        p_dss = joinpath(dir, "dup_ss.h5")
+        tss = StrongStrongTask((ip, drift..., ScheduledObserver(MomentObserver(; name="m", orders=1)),
+                                ScheduledObserver(MomentObserver(; name="m", orders=1))),
+                               (ip, drift...); artifact=RunArtifact(p_dss))
+        @test_throws ArgumentError execute!(tss, b1, b2; turns=2)
+        @test tss.artifact.file === nothing && tss.artifact.lock_line === nothing
+        @test !isfile(lockof(p_dss))
+        # (c) The ledger records the global seed and method of EACH execute!:
+        # two windows on one continued file with a seed and method change in
+        # between, the values those in force as each window began, the method
+        # named from the RNG code (not copied).
+        p_seed = joinpath(dir, "seed.h5")
+        ts = TrackingTask(drift; artifact=RunArtifact(p_seed; append=true))
+        set_global_rng!(seed=21, method=:philox)
+        execute!(ts, rep; turns=2)
+        want = [(global_rng_seed(), string(global_rng_method()))]
+        set_global_rng!(seed=22, method=:splitmix)
+        execute!(ts, rep; turns=2)
+        push!(want, (global_rng_seed(), string(global_rng_method())))
+        ex_seed = read(TaskOutput(p_seed), :execution)
+        @test ex_seed.rng_seed == UInt64[21, 22]
+        @test ex_seed.rng_method == ["philox", "splitmix"]
+        @test collect(zip(ex_seed.rng_seed, ex_seed.rng_method)) == want
+        @test ex_seed.rng_method[2] == string(Octopus.rng_method_symbol(Octopus.RNG_SPLITMIX))
+        @test ex_seed.rng_seed isa Vector{UInt64} && ex_seed.rng_method isa Vector{String}
+        # The file's columns are the writer's table (one source: creation, the
+        # appended row, the continue-check and the reader), the table of
+        # contents lists them, and the design note names each one.
+        cols = [n for (n, _) in Octopus._RA_LEDGER_COLUMNS]
+        @test ("rng_seed", UInt64) in Octopus._RA_LEDGER_COLUMNS
+        @test ("rng_method", String) in Octopus._RA_LEDGER_COLUMNS
+        Octopus.HDF5.h5open(p_seed, "r") do f
+            @test sort(String.(collect(keys(f["execution"])))) == sort(cols)
+        end
+        @test Set(read(TaskOutput(p_seed))["execution"].columns) == Set(cols)
+        @test collect(propertynames(ex_seed)) == Symbol.(cols)
+        design = read(joinpath(root, "docs", "design", "run_artifact.md"), String)
+        @test all(occursin("`$(n)`", design) for n in cols)
+        # (d) A continued file whose ledger lacks the columns -- the layout
+        # every artifact had before 2026-10-16, rebuilt here through HDF5 --
+        # is refused by name, left as found and still readable (its missing
+        # columns read as `nothing`); with the two columns added it continues.
+        p_old = joinpath(dir, "old.h5")
+        Octopus.HDF5.h5open(p_old, "w") do f
+            Octopus.HDF5.attributes(f)["octopus_run_artifact"] = Int64(1)
+            Octopus.HDF5.create_group(f, "luminosity")
+            ex = Octopus.HDF5.create_group(f, "execution")
+            for (name, T) in (("start_turn", Int64), ("turns", Int64), ("current_turn", Int64),
+                              ("elapsed", Float64))               # the pre-column layout, by design
+                Octopus._ra_extendable!(ex, name, T)
+            end
+        end
+        ledger_keys(p) = Octopus.HDF5.h5open(f -> sort(String.(collect(keys(f["execution"])))), p, "r")
+        keys_before = ledger_keys(p_old)
+        err_old = try
+            execute!(TrackingTask(drift; artifact=RunArtifact(p_old; append=true)), rep; turns=1)
+            "did not throw"
+        catch e
+            sprint(showerror, e)
+        end
+        @test occursin("rng_seed", err_old) && occursin("rng_method", err_old)
+        @test occursin("predates", err_old) && occursin("2026-10-16", err_old)
+        @test occursin("append=false", err_old) && occursin(p_old, err_old)
+        @test ledger_keys(p_old) == keys_before
+        @test !isfile(lockof(p_old))
+        ex_old = read(TaskOutput(p_old), :execution)
+        @test ex_old.rng_seed === nothing && ex_old.rng_method === nothing && ex_old.start_turn == Int64[]
+        Octopus.HDF5.h5open(p_old, "r+") do f
+            Octopus._ra_extendable!(f["execution"], "rng_seed", UInt64)
+            Octopus._ra_extendable!(f["execution"], "rng_method", String)
+        end
+        set_global_rng!(seed=23, method=:philox)
+        quiet(() -> execute!(TrackingTask(drift; artifact=RunArtifact(p_old; append=true)), rep; turns=1))
+        @test read(TaskOutput(p_old), :execution).rng_seed == UInt64[23]
+        set_global_rng!(seed=0x5eed, method=:philox)
+    end
+end
+
 @testset "Turn modulation: the one-particle probe verifies the loop per harmonic" begin
     # docs/design/turn_modulation_record.md section 6.1 as the owner planned it
     # (2026-10-15): a 3-harmonic crab cavity, one harmonic at a time carrying a

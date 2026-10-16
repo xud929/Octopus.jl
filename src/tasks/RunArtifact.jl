@@ -83,11 +83,18 @@ The artifact carries every product of the run:
   cumulative record.
 - `/execution`: one row per `execute!` — `start_turn`, planned `turns`,
   `current_turn` and wall-clock `elapsed`, the last two updated at every
-  flush — appended and never overwritten, so every execution of a swap-out
-  or chunked run keeps its record. `current_turn` is the turn the execution
-  had reached at its most recent flush: live progress and rate from one
-  `h5ls` while running, and the run-level how-far-did-it-get answer after a
-  crash (the per-group cursors answer the same question per dataset).
+  flush, and since 2026-10-16 `rng_seed` and `rng_method`, the global
+  stochastic seed and the counter-RNG method's name (`"philox"`,
+  `"splitmix"`) in force when that `execute!` began, so a `set_global_rng!`
+  between two windows is on record row by row — appended and never
+  overwritten, so every execution of a swap-out or chunked run keeps its
+  record. `current_turn` is the turn the execution had reached at its most
+  recent flush: live progress and rate from one `h5ls` while running, and
+  the run-level how-far-did-it-get answer after a crash (the per-group
+  cursors answer the same question per dataset). A continued
+  (`append=true`) file whose ledger lacks any of these columns predates them
+  and is refused by name rather than padded; reading such a file stays
+  possible, its missing columns read as `nothing`.
 - `/turn_modulation/<slot>`: the turn-by-turn modulation provenance of the
   `execute!` whose `/execution` ledger row is `<slot>`, written only when
   its line had a modulated element (docs/design/turn_modulation.md, D7):
@@ -120,6 +127,24 @@ continues it across `execute!` calls and process restarts under the replay
 idempotence rule: rows at or beyond the incoming window's first turn are
 dropped per group first. A file whose luminosity groups do not match the
 task's collision labels is refused rather than silently mixed.
+
+**Cross-process exclusion** (2026-10-16): while an `execute!` holds the
+file, rank 0 also holds the sidecar lock `<path>.lock`, created exclusively
+(`O_CREAT | O_EXCL`) with one line, `host=<hostname> pid=<pid>
+since=<ISO 8601 time> task=<task kind>`, taken before the file opens, fresh
+or appending, and removed after it closes, at finalize and on every crash
+path. A second Octopus writer on the path — any process, any host, either
+`append` — is refused by name with the lock's line and the remedy: if that
+process is gone, remove the lock. Nothing takes a lock over automatically,
+because its holder may be alive on another host (the mount is NFS, where
+HDF5's own file lock is not effective); a lock left by a killed run is
+removed by hand, and the refusal says which file. The lock is ADVISORY and
+for Octopus writers: HDF5 itself does not honour it, and readers never take
+it — [`TaskOutput`](@ref), [`turn_modulation_provenance`](@ref) and
+`MomentOutput` read while a writer holds the file, see its last flushed
+state, and say so once per writer with an `@info` naming the lock's line.
+The in-process registry of live writers (the "second live observer"
+warning) stays beside it.
 
 **Crash recovery** is the per-group cursor attribute
 `rows_valid_through_turn`, written AFTER its batch of rows and flushed with
@@ -183,6 +208,10 @@ mutable struct RunArtifact <: AbstractRunArtifact
     # Probe identities bound THIS execute! (kind/name keys): the uniqueness
     # domain of the design's name-as-identity rule. Cleared at prepare.
     probe_names::Set{String}
+    # The line this writer wrote into the sidecar lock `<path>.lock` while it
+    # holds the file (`_ra_take_lock!`), `nothing` when it holds no lock: the
+    # cross-process exclusion of 2026-10-16 (neighbour audit, S5-2).
+    lock_line::Union{Nothing,String}
 end
 
 function RunArtifact(path::AbstractString; append=false, capacity=64,
@@ -205,7 +234,7 @@ function RunArtifact(path::AbstractString; append=false, capacity=64,
     return RunArtifact(String(path), Bool(append), cap, record_turn_modulation, nothing,
                        TurnModulationRecorder[],
                        Dict{String,Vector{Int64}}(), Dict{String,Vector{Float64}}(),
-                       0, UInt64(0), false, Int64(0), Set{String}())
+                       0, UInt64(0), false, Int64(0), Set{String}(), nothing)
 end
 
 """
@@ -304,6 +333,137 @@ function _ra_truncate_group!(g, keep_through::Int64)
     return nothing
 end
 
+# ---------------------------------------------------------------------------
+# The /execution ledger's columns, ONE table for the writer that creates them,
+# the writer that appends a row, the continue-check and the reader (2026-10-16
+# neighbour audit, S5-4). The row's values at prepare are, in this order: the
+# window's first turn, its planned length, `first_turn - 1` (nothing reached
+# yet), `0.0` elapsed, and the global stochastic seed and counter-RNG method in
+# force when the `execute!` began -- `rng_method` as the method's name
+# (`string(global_rng_method())`, derived from `rng_method_symbol`, so a new
+# method names itself here). Before these two columns a file recorded the
+# global seed nowhere: after a `set_global_rng!` between two windows its only
+# mention of a seed was a spectral table's canonical name.
+# ---------------------------------------------------------------------------
+const _RA_LEDGER_COLUMNS = (("start_turn", Int64), ("turns", Int64), ("current_turn", Int64),
+                            ("elapsed", Float64), ("rng_seed", UInt64), ("rng_method", String))
+
+# ---------------------------------------------------------------------------
+# Cross-process exclusion: the sidecar lock (2026-10-16 neighbour audit, S5-2).
+# HDF5's own file lock is not effective on this NFSv3 mount, and nothing else
+# stopped a second PROCESS from opening a path another process held: measured
+# with `append=false` the second writer truncated the first's open file (which
+# then read back torn: "len not positive after adjustment for EOA"), with
+# `append=true` both appended into one ledger, and two concurrent writers of
+# one path both finished with one run's 400 rows silently gone. The in-process
+# registry (`_register_observer_path!`, U7-10) sees only this process. The lock
+# is ADVISORY and for Octopus writers: HDF5 itself does not honour it, and a
+# reader never takes it (a second process may read while the first writes and
+# sees the last flushed state; the readers announce the writer instead,
+# `_ra_open`). There is NO automatic stale-lock takeover: the lock may belong
+# to a process on another host, and a decision to remove it is the user's --
+# the refusal says what it found and how to remove it.
+# ---------------------------------------------------------------------------
+
+"""The sidecar lock file of the artifact at `path`: `<path>.lock`."""
+_ra_lock_path(path::AbstractString) = String(path) * ".lock"
+
+"""
+    _ra_lock_info(path) -> Union{Nothing,String}
+
+The line a live Octopus writer wrote into the sidecar lock of the artifact at
+`path` (`host=<hostname> pid=<pid> since=<ISO 8601 local time> task=<task
+kind>`), or `nothing` when no lock file exists (the lock removed between the
+existence check and the read counts as none). A lock file that exists but holds
+no line -- its writer was interrupted between creating and writing it -- reads
+as a string saying so, so a refusal can still name the lock.
+"""
+function _ra_lock_info(path::AbstractString)
+    lock = _ra_lock_path(path)
+    isfile(lock) || return nothing
+    line = try
+        strip(read(lock, String))
+    catch err
+        err isa Union{SystemError,Base.IOError} || rethrow()
+        return nothing
+    end
+    return isempty(line) ? "its line is empty: the writer was interrupted before it wrote it" :
+           String(line)
+end
+
+"""
+    _ra_take_lock!(art, task_kind)
+
+Create the sidecar lock of `art.path` EXCLUSIVELY (`O_CREAT | O_EXCL`, so two
+processes racing for one path cannot both succeed) and write its one line --
+this host, this process id, the time and `task_kind` -- remembering the line
+in `art.lock_line` for the release. An existing lock refuses the open with an
+`ArgumentError` naming the lock path, the line it holds (who, where, since
+when) and the remedy: if that process is gone, remove the lock. Nothing is
+taken over automatically. A lock created whose line could not be written is
+removed again before the error propagates, so a failed take leaves no lock.
+"""
+function _ra_take_lock!(art::RunArtifact, task_kind::AbstractString)
+    lock = _ra_lock_path(art.path)
+    line = "host=$(gethostname()) pid=$(getpid()) since=" *
+           Libc.strftime("%Y-%m-%dT%H:%M:%S%z", time()) * " task=$(task_kind)"
+    flags = Base.Filesystem.JL_O_WRONLY | Base.Filesystem.JL_O_CREAT | Base.Filesystem.JL_O_EXCL
+    fd = try
+        Base.Filesystem.open(lock, flags, 0o644)
+    catch err
+        if err isa Base.IOError && err.code == Base.UV_EEXIST
+            held = _ra_lock_info(art.path)
+            throw(ArgumentError(
+                "RunArtifact at $(art.path): another Octopus writer holds its lock $(lock) " *
+                "($(held === nothing ? "its line could not be read: the lock was removed or " *
+                "emptied in the meantime" : held)); a second writer on one path would silently " *
+                "lose one run's output, so this execute! is refused. If that process is gone, " *
+                "remove $(lock)."))
+        end
+        rethrow()
+    end
+    written = false
+    try
+        write(fd, line * "\n")
+        written = true
+    finally
+        close(fd)
+        written || rm(lock; force=true)
+    end
+    art.lock_line = line
+    return nothing
+end
+
+"""
+    _ra_release_lock!(art)
+
+Remove the sidecar lock `art` holds (nothing when it holds none), AFTER its
+file is closed, so a writer that takes the lock next finds the file released.
+Only this writer's own lock is removed: a lock file that vanished while held,
+or that now carries another writer's line, means someone removed this one
+while the run was live and perhaps wrote the path -- said out loud with a
+warning naming the path and the lock, and a stranger's lock is left in place.
+"""
+function _ra_release_lock!(art::RunArtifact)
+    line = art.lock_line
+    line === nothing && return nothing
+    art.lock_line = nothing
+    lock = _ra_lock_path(art.path)
+    held = _ra_lock_info(art.path)
+    if held === nothing
+        @warn "the run artifact's lock file was removed while this writer held it; another " *
+              "writer may have written the path in the meantime, and the two runs' rows " *
+              "may interleave" path = art.path lock = lock
+    elseif held != line
+        @warn "the run artifact's lock file no longer carries this writer's line: it was " *
+              "removed and retaken by another writer while this run was live; that " *
+              "writer's lock is left in place" path = art.path lock = lock held = held
+    else
+        rm(lock; force=true)
+    end
+    return nothing
+end
+
 """
 Open (or create) the artifact for one `execute!`: validate or build the
 luminosity groups for `labels`, apply crash-truncation (rows beyond each
@@ -316,11 +476,22 @@ nothing when empty -- with each active slot's nominal parameters from
 required whenever `turn_modulation` is non-empty), create the `series`
 datasets and this execution's recorders when `record_turn_modulation` is on,
 register the path by artifact identity, and hold the file open.
+
+Before the file opens, fresh or continued, rank 0 takes the sidecar lock
+`<path>.lock` (`_ra_take_lock!`; `task_kind` is the task's type name, written
+into the lock line so a refused second writer learns who holds the path);
+a path another Octopus process holds is refused by name, and the lock is
+released with the file at finalize and on every path that closes it, this
+function's own refusals included. The ledger row appended here carries the
+columns of `_RA_LEDGER_COLUMNS`, the global seed and RNG method among them;
+a continued file whose ledger lacks any of them predates the columns and is
+refused by name rather than padded.
 """
 function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
                                first_turn::Int, planned_turns::Int;
                                turn_modulation::AbstractVector=Any[],
-                               turn_modulation_columns::AbstractVector=Any[])
+                               turn_modulation_columns::AbstractVector=Any[],
+                               task_kind::AbstractString="prepare_run_artifact!")
     art.file === nothing || error("RunArtifact at $(art.path) is already open; " *
                                   "one artifact serves one execute! at a time")
     # A recorder outlives nothing: whatever the previous execute! left is gone
@@ -332,12 +503,25 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
     # them would hang its peers -- but only rank 0 opens the file, so the
     # others leave `file === nothing` and every write below no-ops.
     _mp_is_root() || return nothing
+    # The lock first, for a fresh open as for a continued one: whether the
+    # file is to be truncated or appended is decided under exclusion, and a
+    # path another process holds is refused before anything touches it --
+    # before the in-process registry too, so a refused writer is not
+    # registered as a live one.
+    _ra_take_lock!(art, task_kind)
     if !art.registered
         _register_observer_path!(art, art.path)
         art.registered = true
     end
     fresh = !art.append || !isfile(art.path) || filesize(art.path) == 0
-    file = HDF5.h5open(art.path, fresh ? "w" : "r+")
+    file = try
+        HDF5.h5open(art.path, fresh ? "w" : "r+")
+    catch
+        # The open itself failed (a handle this process holds, an unwritable
+        # path): the lock goes with it, or the path would stay refused.
+        _ra_release_lock!(art)
+        rethrow()
+    end
     try
         if fresh
             _ra_set_attr!(file, "octopus_run_artifact", Int64(1))
@@ -350,10 +534,9 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
                 _ra_set_attr!(g, "rows_valid_through_turn", Int64(typemin(Int32)))
             end
             ex = HDF5.create_group(file, "execution")
-            _ra_extendable!(ex, "start_turn", Int64)
-            _ra_extendable!(ex, "turns", Int64)
-            _ra_extendable!(ex, "current_turn", Int64)
-            _ra_extendable!(ex, "elapsed", Float64)
+            for (name, T) in _RA_LEDGER_COLUMNS
+                _ra_extendable!(ex, name, T)
+            end
         else
             haskey(file, "luminosity") || throw(ArgumentError(
                 "RunArtifact(append=true): $(art.path) is not a run artifact " *
@@ -378,16 +561,23 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
             "RunArtifact(append=true): $(art.path) carries no /execution ledger, so it " *
             "is not a run artifact this writer can continue; use a new path or append=false"))
         ex = file["execution"]
-        if !haskey(ex, "current_turn")
-            # A step-1 file from before the column existed: add it, padding
-            # the earlier rows with the nothing-known sentinel.
-            d = _ra_extendable!(ex, "current_turn", Int64)
-            nprev = length(ex["start_turn"])
-            if nprev > 0
-                HDF5.set_extent_dims(d, (nprev,))
-                d[1:nprev] = fill(Int64(typemin(Int32)), nprev)
-            end
+        # Every column this writer appends must already be in a continued
+        # ledger. A file lacking any of them predates the `rng_seed` and
+        # `rng_method` columns (2026-10-16, S5-4) and is refused BY NAME, as
+        # found and unchanged, rather than padded: a padded seed column would
+        # claim a provenance the earlier rows never recorded. (This supersedes
+        # the step-1 `current_turn` padding, whose files lack these too.) A
+        # loop, not a comprehension: `ex` is assigned on both branches above,
+        # and a closure over it would box it (the suite's Core.Box sweep).
+        absent = String[]
+        for (name, _) in _RA_LEDGER_COLUMNS
+            haskey(ex, name) || push!(absent, name)
         end
+        isempty(absent) || throw(ArgumentError(
+            "RunArtifact(append=true): the /execution ledger at $(art.path) has no " *
+            "$(join(absent, ", ")) column(s): the file predates the ledger's rng_seed and " *
+            "rng_method columns (2026-10-16) and this writer does not continue it; use a " *
+            "new path or append=false"))
         n = length(ex["start_turn"])
         # The provenance slot of the row about to be appended must be free:
         # checked BEFORE the four ledger datasets are extended, so a refusal
@@ -399,13 +589,19 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
         # runs here, the column walk included: its refusals left the same
         # phantom row through the writer's later check.
         _ra_validate_turn_modulation!(file, art.path, n + 1, turn_modulation, turn_modulation_columns)
-        for (name, val) in (("start_turn", Int64(first_turn)),
-                            ("turns", Int64(planned_turns)),
-                            ("current_turn", Int64(first_turn) - 1),
-                            ("elapsed", 0.0))
+        # The row's values in the table's column order (`_RA_LEDGER_COLUMNS`):
+        # the seed and the method are those in force NOW, as this execute!
+        # begins, which is what every stochastic consumer of the window keys
+        # its draws on.
+        row = (Int64(first_turn), Int64(planned_turns), Int64(first_turn) - 1, 0.0,
+               UInt64(global_rng_seed()), string(global_rng_method()))
+        length(row) == length(_RA_LEDGER_COLUMNS) || error(
+            "the /execution ledger row has $(length(row)) values for " *
+            "$(length(_RA_LEDGER_COLUMNS)) columns")
+        for ((name, T), val) in zip(_RA_LEDGER_COLUMNS, row)
             d = ex[name]
             HDF5.set_extent_dims(d, (n + 1,))
-            d[n + 1] = val
+            d[n + 1] = convert(T, val)
         end
         art.execution_slot = n + 1
         # Keyed by the ledger row just appended, so written after it.
@@ -422,7 +618,9 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
         empty!(art.probe_names)
         HDF5.flush(file)
     catch
+        # A refusal leaves the path as it found it: file closed, lock gone.
         close(file)
+        _ra_release_lock!(art)
         rethrow()
     end
     art.file = file
@@ -824,7 +1022,15 @@ function _ra_write_losses!(art::RunArtifact, record, s_positions, summary,
     return nothing
 end
 
-"""Flush every pending group (the luminosity channels, the turn-modulation series), stamp this execution's elapsed time, close."""
+"""
+Flush every pending group (the luminosity channels, the turn-modulation
+series), stamp this execution's elapsed time, close, and release the sidecar
+lock -- after the close, so the next writer to take the lock finds the file
+released. Every path that closes the artifact runs through here: the success
+paths of both tasks, their crash paths, and the strong-strong task's
+observer-prepare refusal (U5-2); the one close that does not, the prepare's
+own refusal, releases the lock itself.
+"""
 function finalize_run_artifact!(art::RunArtifact)
     art.file === nothing && return nothing
     try
@@ -840,6 +1046,7 @@ function finalize_run_artifact!(art::RunArtifact)
         close(art.file)
         art.file = nothing
         empty!(art.turn_modulation_recorders)
+        _ra_release_lock!(art)
     end
     return nothing
 end
@@ -970,8 +1177,53 @@ end
 # column_names work as they always did).
 # ---------------------------------------------------------------------------
 
-_ra_open(path) = HDF5.h5open(String(path), "r")
-_ra_open(f::Function, path) = HDF5.h5open(f, String(path), "r")
+"""
+    _ra_open(path) -> HDF5.File
+    _ra_open(f, path)
+
+Open an artifact for READING, lock-aware (2026-10-16, S5-2). A reader never
+takes the sidecar lock: a second process may read while a writer holds the
+file and sees the last flushed state. When a live lock exists for `path`, the
+reader says so once per writer and process -- an `@info` naming the writer's
+line (host, pid, since when, task) and that the rows are valid through each
+group's `rows_valid_through_turn` cursor and the ledger's `current_turn` -- and
+an open that fails under the lock (a flush landing) is retried once before the
+failure propagates with the lock information in it. Only the open is retried
+and rewrapped, never `f`: a torn group `f` refuses keeps its own error. Every
+public reader goes through here -- `TaskOutput`, `turn_modulation_provenance`
+and the `MomentOutput` HDF5 reads -- so a standalone (pre-artifact) moment
+file, which never has a lock, reads as before.
+"""
+function _ra_open(path)
+    p = String(path)
+    held = _ra_lock_info(p)
+    if held !== nothing
+        @info "a live Octopus writer holds the run artifact's lock, so the file is being " *
+              "written: its rows are valid through each group's rows_valid_through_turn " *
+              "cursor and the ledger's current_turn, and a read may fail while a flush " *
+              "lands" path = p writer = held maxlog = 1 _id = Symbol("run_artifact_lock_", hash((p, held)))
+    end
+    try
+        return HDF5.h5open(p, "r")
+    catch
+        held === nothing && rethrow()
+        try
+            return HDF5.h5open(p, "r")
+        catch
+            error("reading the run artifact at $(p) failed twice while a live Octopus writer " *
+                  "holds its lock ($(held)): the file is being written and the open landed " *
+                  "on a flush both times; read it again, or wait for the writer to finish")
+        end
+    end
+end
+function _ra_open(f::Function, path)
+    h = _ra_open(path)
+    try
+        return f(h)
+    finally
+        close(h)
+    end
+end
 
 """
     TaskOutput(path)
@@ -1000,6 +1252,15 @@ read(out, :all)                              # every product, nested by kind
 Moment groups additionally read through the full `MomentOutput` machinery
 (`MomentOutput(path; name="IP6")` -- `read(out)`/`read(out, item)`/
 `column_names` work as they always did).
+
+Reading never takes the artifact's sidecar lock (`<path>.lock`, held by a
+live writer; see [`RunArtifact`](@ref)): a file another process is writing
+reads as of its last flush, with its rows valid through each group's
+`rows_valid_through_turn` cursor and the ledger's `current_turn`. When such a
+lock exists, every reader here says so once per writer and process -- an
+`@info` naming the lock's line (host, pid, since when, task) -- and an open
+that fails while a flush lands is retried once before the failure propagates
+with the lock information in it (2026-10-16).
 """
 struct TaskOutput
     path::String
@@ -1098,10 +1359,14 @@ function _ra_losses(g)
            summary=summary))
 end
 
-# `ex` is the /execution group, handed over by `_ra_require_group` (U5-7).
+# `ex` is the /execution group, handed over by `_ra_require_group` (U5-7). One
+# field per column of `_RA_LEDGER_COLUMNS`, in the table's order; a column the
+# file lacks -- `rng_seed` and `rng_method` on a file written before 2026-10-16
+# -- reads as `nothing`, the `/losses` reader's posture for its later-added
+# attributes (reading an old file stays possible; only continuing one refuses).
 _ra_execution(ex) =
-    (start_turn=read(ex["start_turn"]), turns=read(ex["turns"]),
-     current_turn=read(ex["current_turn"]), elapsed=read(ex["elapsed"]))
+    (; (Symbol(name) => (haskey(ex, name) ? read(ex[name]) : nothing)
+        for (name, _) in _RA_LEDGER_COLUMNS)...)
 
 """
 Refuse a `/turn_modulation/<slot>` group that already exists when `entries`
@@ -1387,9 +1652,12 @@ beside the columns (`nothing` for task-hook probes and pre-attribute files).
 `:losses` returns the per-loss rows as column vectors (pre-kill coordinates),
 the per-aperture names/counts/arc positions, and the reconciliation summary
 when the run recorded one (`nothing` otherwise). `:execution` returns the
-ledger -- one entry per `execute!`, `current_turn`/`elapsed` updated at every
-flush of every channel (luminosity, probe rows, turn-modulation series) and
-at finalize. `:turn_modulation` returns the turn-by-turn modulation provenance, one
+ledger -- one entry per `execute!`: `start_turn`, `turns`,
+`current_turn`/`elapsed` updated at every flush of every channel (luminosity,
+probe rows, turn-modulation series) and at finalize, and `rng_seed`/
+`rng_method`, the global stochastic seed and the counter-RNG method's name in
+force when that `execute!` began (`nothing` for a file written before
+2026-10-16). `:turn_modulation` returns the turn-by-turn modulation provenance, one
 entry per `execute!` that had a modulated element, the vector
 [`turn_modulation_provenance`](@ref) documents (empty when no recorded
 `execute!` had one or the file predates the group), each slot entry with its

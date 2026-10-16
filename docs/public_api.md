@@ -162,7 +162,27 @@ read(out, :all)                           # everything, nested by kind
 Moment names are canonical strings such as `m100000`; if any exponent is
 multi-digit, separator form is used, such as `m10_0_0_0_0_0`. The execution
 ledger records start turn, planned window, current turn and elapsed wall
-time per `execute!`, updated at every flush — live progress from one file.
+time per `execute!`, updated at every flush — live progress from one file —
+and, since 2026-10-16, the global stochastic seed and counter-RNG method
+name in force when each `execute!` began (`rng_seed`, `rng_method`; a
+`set_global_rng!` between two windows is on record row by row). A continued
+(`append = true`) file written before those columns existed is refused by
+name rather than padded; reading it stays possible, the missing columns
+read as `nothing`.
+
+One `execute!` holds its artifact exclusively across processes (2026-10-16):
+while it runs, the sidecar lock `<path>.lock` holds one line naming the
+host, the process id, the time and the task kind, and a second Octopus
+writer on the path — from any process or host, with either `append` — is
+refused with that line and the remedy (if that process is gone, remove the
+lock; nothing removes it automatically, since the holder may be alive on
+another host). Reading does not take the lock: `TaskOutput`,
+`turn_modulation_provenance` and `MomentOutput` read a file another process
+is writing as of its last flush, say so once per writer with an `@info`
+naming the lock's line (rows valid through each group's
+`rows_valid_through_turn` cursor and the ledger's `current_turn`), and retry
+a failed open once. The lock is advisory and for Octopus writers; HDF5
+itself does not honour it.
 
 Developer-facing numerical checks live in `validation/`. They may use internal
 helpers and should not be treated as public API examples.

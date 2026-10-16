@@ -1059,7 +1059,8 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
         # (docs/design/turn_modulation_record.md D3, D5).
         prepare_run_artifact!(art, labels, Int(first_turn), Int(turns);
                               turn_modulation=turn_modulation,
-                              turn_modulation_columns=_turn_modulation_columns!(Any[], runtime_elems))
+                              turn_modulation_columns=_turn_modulation_columns!(Any[], runtime_elems),
+                              task_kind=string(nameof(typeof(task))))
     end
     Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => art,
                            _ACTIVE_PROBE_S_MAP =>
