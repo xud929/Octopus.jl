@@ -713,7 +713,16 @@ Tests the implementation owes, each shown to fail without its feature:
 5. **Guardrails.** Table shorter than the window throws before tracking;
    non-finite entries throw at construction; a Float32 line with a Float64
    table throws; two noisy cavities with the same `rng_id` warn, as the
-   duplicate radiation stream check does today.
+   duplicate radiation stream check does today. (2026-10-16: the sharing
+   checks are three. The task constructor's two read the spec layer -- the
+   shared `rng_id` and, for `TurnTable`s, the equal digest -- and cannot see
+   a `SpectralNoise`, which has no digest before the line compiles; so once
+   per compilation each task walks its RESOLVED line and warns on equal
+   digests across modulated elements, naming both sites, worded for one spec
+   placed twice or for two distinct elements, on both task kinds. A resolved
+   spectral table also carries the global seed it was synthesised under, and
+   every `execute!` warns while the global seed has moved away from it, the
+   table staying as synthesised: `spectral_turn_table.md`, D11.)
 6. **CPU/CUDA identity.** The realised sequence and the tracked coordinates
    agree between backends to the existing near-identity tolerance, and the
    kernel's element type is the bare cavity (the section 4.3 verification).

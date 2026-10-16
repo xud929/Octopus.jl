@@ -455,7 +455,10 @@ src/elements/turn_modulated.jl), so one table on two slots of a single
 element -- a deliberate common-mode choice -- does not warn, while equal
 digests on two elements do; distinct digests are silent. The message names
 the digests and, for each table carrying one, the element kind, the slot
-number and the table's name.
+number and the table's name. A `SpectralNoise` has no digest before it
+resolves, so this check cannot see a rule beside its offline twin; the
+resolved-line check `_warn_resolved_duplicate_tables` below repeats the
+comparison on the compiled line once per compilation (2026-10-16).
 """
 function _warn_duplicate_turn_tables(elements::Tuple)
     tables = _collect_turn_tables!(NamedTuple[], elements)
@@ -467,6 +470,125 @@ function _warn_duplicate_turn_tables(elements::Tuple)
     @warn "multiple turn-modulation tables on different elements carry the same digest: " *
           "their per-turn offsets are identical (fully correlated noise). Build each " *
           "element's table with its own seed or rng_id, or hand each its own record." digests = dup tables = sites
+    return nothing
+end
+
+"""
+    _warn_resolved_seed_drift(lines)
+
+The `execute!`-time companion of the two constructor checks above, run on
+EVERY `execute!` of both task kinds after the line compiled and its window
+was checked: `lines` is a tuple of `(elems, beam)` pairs, a compiled physics
+line with `nothing` (a `TrackingTask`) or its beam number (the two lines of
+a `StrongStrongTask`). A `SpectralNoise` resolves to a `TurnTable` under the
+global seed in force when the line compiles and the table then stays as
+synthesised, while `WhiteNoise` and `PinkNoise` read the seed every turn
+(`?SpectralNoise`); before this warning a `set_global_rng!` between two
+windows left the receipt's canonical name (`seed=<s>`) as the only evidence
+(2026-10-16 neighbour audit, U3-2). One `@warn` per `execute!` while the
+current `global_rng_seed()` differs from the seed any resolved table carries
+(`TurnTable.resolved_seed`, collected by `_resolved_seed_drift` in
+src/elements/turn_modulated.jl), naming each drifted element and slot with
+its seed and digest, the global seed, that the series are unchanged, and the
+remedy: a table is re-synthesised only when its line recompiles, which a new
+task does at its first `execute!` (a knob assignment, an in-place spec change
+or, on a line with apertures, a beam of another shape or backend recompiles
+too: `_runtime_entries`). Nothing is changed by the warning; the table stays
+frozen (owner decision, 2026-10-16).
+"""
+function _warn_resolved_seed_drift(lines)
+    seed = global_rng_seed()
+    sites = String[]
+    for (elems, beam) in lines
+        for d in _resolved_seed_drift(elems, seed)
+            push!(sites, _line_site(beam) * "$(d.element) $(d.slot): synthesised under seed $(d.seed), " *
+                         "digest $(repr(d.digest))")
+        end
+    end
+    isempty(sites) && return nothing
+    @warn "the global RNG seed is $(seed) but $(length(sites)) spectral table(s) of this task's " *
+          "compiled line were resolved from SpectralNoise rules under another seed and stay as " *
+          "synthesised: a SpectralNoise reads the global seed once, when the line compiles (its " *
+          "table's canonical name records that seed), while WhiteNoise and PinkNoise read it every " *
+          "turn. The tables' series are unchanged. To re-synthesise them under the current seed " *
+          "rebuild the task (a new TrackingTask or StrongStrongTask compiles its line at its first " *
+          "execute!) or set the seed before the task's first execute!; a knob assignment or a " *
+          "spec-parameter change recompiles the line too (?SpectralNoise)." tables = sites global_seed = seed
+    return nothing
+end
+
+_line_site(::Nothing) = ""
+_line_site(beam::Integer) = "beam $(beam)'s line: "
+
+"""
+    _warn_resolved_duplicate_tables(lines)
+
+The equal-digest check over the RESOLVED line, run once per compilation from
+the compile-cache fill of both task kinds (`_runtime_entries` here; the fill
+that leaves both lines current in `_strong_strong_runtime_blocks`,
+src/tasks/strongstrong/interface.jl): `lines` is a tuple of
+`(specs, elems, beam)` triples, a task's spec line, its compiled physics line
+and `nothing` or the beam number. The constructor's two checks read the SPEC
+layer, where a `SpectralNoise` has no digest yet, so a rule and an offline
+`spectral_turn_table` of the same seed, rng_id and slot on two elements
+compiled to one table with no warning (2026-10-16 neighbour audit, U1-6 /
+S3-2 / U3-3 / S5-3). Here every table slot of every modulated element
+(`_resolved_table_slots`, resolved spectral tables included) joins one list
+across the lines, and each digest carried by two or more DISTINCT modulated
+elements warns once, naming every site (element, slot, modulated-element
+index as the provenance receipt counts it, the beam's line), the digest and
+the remedy: a distinct rng_id or slot, or a record of its own. One table on
+two slots of ONE element is the deliberate common-mode choice of D4 and
+stays silent, as at construction. The wording tells two placements of one
+spec object from two distinct elements: the spec-side owners
+(`_modulated_spec_owners`) are paired with the compiled modulated elements
+index by index when the two walks agree in length, and the message says so
+when they do not. A pair the constructor already named (two placements of
+one spec; two offline copies of one table) is named again here, as
+resolved: the compiled line is what the run applies.
+"""
+function _warn_resolved_duplicate_tables(lines)
+    sites = NamedTuple[]
+    for (specs, elems, beam) in lines
+        modulated = _resolved_table_slots(elems)
+        owners = _modulated_spec_owners(specs)
+        aligned = length(owners) == length(modulated)
+        for (k, m) in enumerate(modulated), s in m.slots
+            push!(sites, (beam = beam, index = k, element = m.element, slot = s.slot, digest = s.digest,
+                          name = s.name, owner = aligned ? owners[k] : nothing, aligned = aligned,
+                          counts = (length(owners), length(modulated))))
+        end
+    end
+    for digest in unique(s.digest for s in sites)
+        group = [s for s in sites if s.digest == digest]
+        length(unique((s.beam, s.index) for s in group)) >= 2 || continue
+        labels = ["$(s.element) $(s.slot) (modulated element $(s.index)" *
+                  (s.beam === nothing ? ")" : " of beam $(s.beam)'s line)") for s in group]
+        placed = all(s.aligned for s in group) && all(s.owner === group[1].owner for s in group)
+        if placed
+            @warn "$(length(group)) placements of one element spec hold turn-modulation tables of the " *
+                  "same digest $(repr(digest)): $(join(labels, ", ")). A spec's rules resolve to the same " *
+                  "table at every placement, so the placements apply identical per-turn offsets (fully " *
+                  "correlated noise). Place a second spec with its own rng_id, or hand it its own record, " *
+                  "instead of the same object twice." digest = digest slots = labels
+        else
+            note = if !all(s.aligned for s in group)
+                counts = first(s.counts for s in group if !s.aligned)
+                " Whether two of them are placements of one spec could not be told: the spec walk " *
+                "counted $(counts[1]) modulated spec(s) against $(counts[2]) compiled modulated element(s)."
+            elseif length(unique(objectid(s.owner) for s in group)) < length(group)
+                " Some of them are placements of one spec."
+            else
+                ""
+            end
+            @warn "$(length(group)) slots of the compiled line hold turn-modulation tables of the same " *
+                  "digest $(repr(digest)): $(join(labels, ", ")). Their per-turn offsets are identical, so " *
+                  "the slots apply fully correlated noise. A SpectralNoise resolves when the line compiles " *
+                  "to the spectral_turn_table of (global seed, rng_id, slot), so a rule and an offline " *
+                  "table built from the same three numbers are one table. Give each element its own " *
+                  "rng_id or slot, or hand each its own record." * note digest = digest slots = labels
+        end
+    end
     return nothing
 end
 
@@ -679,6 +801,10 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
     # A turn table that cannot serve this window throws HERE, before any turn
     # runs and before the stored turn advances (src/elements/turn_modulated.jl).
     _check_turn_window(runtime_elems, first_turn, nturns)
+    # A spectral table resolved at compile keeps the seed it was synthesised
+    # under; while the global seed differs, every execute! says so by name
+    # (`TurnTable.resolved_seed`; 2026-10-16 neighbour audit, U3-2).
+    _warn_resolved_seed_drift(((runtime_elems, nothing),))
     policy = _resolve_execution_policy(task.policy, rep)
     # Activated ONCE per call. Activation is what opens the communicator and
     # records the receipt naming it, so a second activation would record a
@@ -1353,6 +1479,10 @@ function _runtime_entries(task::TrackingTask, rep=nothing)
     task.runtime_entries_cache[] =
         (entries, _has_knob_parameters(task.elements), kepoch, sepoch, record)
     empty!(task.plan_cache)
+    # Once per compilation, over the RESOLVED line: equal table digests across
+    # modulated elements (a SpectralNoise beside its offline twin, one spec
+    # placed twice), which the constructor's spec-layer checks cannot see.
+    _warn_resolved_duplicate_tables(((task.elements, _physics_line(entries), nothing),))
     return entries
 end
 

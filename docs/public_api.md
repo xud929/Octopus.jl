@@ -269,10 +269,17 @@ limit of many bins), with `:rayleigh` `sigma` is the EXPECTED rms of a
 stationary Gaussian process whose periodogram scatters exponentially around
 the target. The rule takes the global seed in force when the line compiles
 (the first `execute!`, or a recompile after a knob assignment), unlike the
-live rules, which read it every turn; the name records the seed used. The
-offline table claims no stream, so `rng_id = 0` is refused there and the task
-constructor's equal-digest warning is its only sharing check (two tables of
-one `(seed, rng_id, slot)` over one band are the same noise):
+live rules, which read it every turn; the name records the seed used, and
+every `execute!` of either task kind warns, naming the element, the slot and
+both seeds, while the global seed differs from the one a resolved table
+carries (the table stays as synthesised; rebuild the task to re-synthesise
+it under the current seed; 2026-10-16). The offline table claims no stream,
+so `rng_id = 0` is refused there; its sharing checks are the task
+constructor's equal-digest warning (two tables of one `(seed, rng_id, slot)`
+over one band are the same noise) and, once per compilation of the line, the
+equal-digest check over the RESOLVED line, which also names a `SpectralNoise`
+beside its offline twin and one spec placed twice, on both task kinds
+(2026-10-16):
 
 ```julia
 set_global_rng!(seed = 42); rule = SpectralNoise(1.0e-5, (1.0e-4, 1.0e-2), :pink; rng_id = 7, turns = 2^20)
