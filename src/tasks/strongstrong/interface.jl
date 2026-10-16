@@ -2598,6 +2598,26 @@ function _check_strong_strong_turn_window(elems::Tuple, beam::Int, first_turn::I
     return nothing
 end
 
+"""
+    _check_strong_strong_beam_eltype(elems::Tuple, beam::Int, rep)
+
+The `_check_beam_eltype` walk (src/tasks/Tasks.jl) over one beam's physics
+line against THAT beam's element type, its refusal re-thrown with the beam in
+front exactly as `_check_strong_strong_turn_window` does: the same kind may
+sit in both lines and the two beams may differ in type, so the message says
+which line to fix. The strong-strong twin of the `_runtime_entries` check
+(fix D, 2026-10-16); runs before any turn, after the window checks.
+"""
+function _check_strong_strong_beam_eltype(elems::Tuple, beam::Int, rep)
+    try
+        _check_beam_eltype(elems, eltype(first(coordinate_arrays(rep))))
+    catch err
+        err isa ArgumentError || rethrow()
+        throw(ArgumentError("in beam $(beam)'s line: " * err.msg))
+    end
+    return nothing
+end
+
 function _execute_strong_strong_task!(
         task, beam1, beam2, turns::Int, first_turn::Int64, policy)
     _warn_inactive_diagnostics(task.diagnostics, backend_type(policy))
@@ -2638,6 +2658,12 @@ function _execute_strong_strong_task!(
     # naming the beam whose line holds the table (U4-2).
     _check_strong_strong_turn_window(_strong_strong_physics_line(blocks1), 1, first_turn, turns)
     _check_strong_strong_turn_window(_strong_strong_physics_line(blocks2), 2, first_turn, turns)
+    # A beam whose element type differs from a declaring element's (the two
+    # modulated cavities, the radiation element) is refused HERE by name, per
+    # line, as the TrackingTask twin refuses in `_runtime_entries` (fix D,
+    # 2026-10-16).
+    _check_strong_strong_beam_eltype(_strong_strong_physics_line(blocks1), 1, beam1.rep)
+    _check_strong_strong_beam_eltype(_strong_strong_physics_line(blocks2), 2, beam2.rep)
     # The turn-modulation receipt (docs/design/turn_modulation.md 5.6), as at
     # the TrackingTask site: both lines are walked, beam 1's entries first,
     # each tagged with its beam; recorded only when a line has a modulated

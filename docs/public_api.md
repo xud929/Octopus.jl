@@ -396,6 +396,16 @@ Use Julia help:
 ?with_turn
 ```
 
+Precision: `Beam(n, policy, Float32)` is a `Float32` beam, and elements compile
+in the type their parameters promote to over a `Float64` floor, so a `Float64`
+element on a `Float32` beam promotes the arithmetic and narrows on store (the
+standing behaviour; `current_runtime.md`, "Current Backends"). The two
+modulated cavities and the radiation element refuse a beam whose element type
+differs from theirs when the task compiles the line, by name and with the
+remedy (`?ThinCrabCavitySpec`, `?ThinRFCavitySpec`, `?LumpedRadSpec`): a
+`Float32` beam goes through `ThinCrabCavitySpec{N,Float32}` and
+`LumpedRadSpec{Float32}`; the RF cavity has no `Float32` form.
+
 ## Particle Loss
 
 A non-finite coordinate means a **bug** by default, and every solver chokepoint

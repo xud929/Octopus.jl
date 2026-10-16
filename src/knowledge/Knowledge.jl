@@ -557,6 +557,7 @@ Validation checklist:
 - use `friendly_constructor`, not `friendly`;
 - use `DataType[]` for contracts until real validation implementations exist;
 - declare `TwissDispersionAnalysis` on every kind whose `tracking_methods` contain `Symplectic6DMap` and not `NonSymplectic6DMap` (the suite's set tripwires derive that set and fail on a kind that departs from it); use `PlaceholderAnalysis` only for kinds that have no analysis;
+- decide the numeric-type rule and keep it in one place: an untyped friendly constructor promotes its named numeric parameters over a `Float64` floor (`_linear_map_eltype`, or `numeric_type(spec)` at compile) and never narrows; a `Spec{T}` form stores and compiles `T`. If the kind's kernel cannot promote with the beam -- a branch on a runtime flag that returns the beam's type on one side and the element's on the other does not compile as device IR -- declare `_required_beam_eltype` (`src/track/Track.jl`) so a mismatched beam is refused at compile by name; the suite derives the declaring set from that method table;
 - run `validate_element_metadata()`;
 - run `element_help(MyElementSpec)` and `element_help(:my_element)`;
 - smoke-test execution through `TrackingTask`.

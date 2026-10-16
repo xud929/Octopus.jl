@@ -60,6 +60,48 @@ tracking kernels and are produced from structured element specs by
 abstract type AbstractTrackOp end
 
 """
+    _required_beam_eltype(op) -> Union{Nothing,Type}
+
+The coordinate element type a runtime element requires of the beam it tracks,
+or `nothing` (the generic answer) for an element that promotes with the beam.
+
+The standing behaviour of a plain element is promotion: a `Float64` element
+tracking a `Float32` beam computes in `Float64` and the store narrows the
+result, on the CPU for every registered kind and on CUDA for the kinds whose
+kernels return one tuple type (measured over all 31 kinds on 2026-10-16, fix D
+of the crab-cavity noise neighbour audit: 31 of 31 run on the CPU, 19 on
+CUDA; the thick-magnet family, both strong beams, the accelerating cavity,
+the RF cavity and the radiation element fail at device compile with an
+`InvalidIRError`, because a kernel branch on a runtime flag -- `_has_survey`,
+`iszero(strength)`, `is_excitation` -- returns a tuple of the beam's type on
+one side and of the element's on the other).
+
+A kind that declares its own `T` here is refused a mismatched beam BY NAME
+when a task compiles its line (`_check_beam_eltype`, `src/tasks/Tasks.jl`,
+and the strong-strong twin), in either direction, on both backends, with the
+remedy from `_beam_eltype_remedy`. The owner's policy (2026-10-16, fix D) puts
+the two modulated cavities and the radiation element behind it: `ThinRFCavity`
+and `LumpedRad` because their device kernels do not compile and their CPU
+kernels narrow silently, `ThinCrabCavity` so that the two modulated kinds
+agree on what a `Float32` line is (its own kernel promotes on both backends).
+Every other kind keeps the promoting behaviour; the suite derives the
+declaring set from this function's method table and pins the CPU behaviour of
+the rest.
+"""
+_required_beam_eltype(op) = nothing
+
+"""
+    _beam_eltype_remedy(op, B) -> String
+
+The remedy `_check_beam_eltype` names for a beam of element type `B` refused
+by `op`; a declaring kind owns a method naming its typed constructor where
+it has one. The generic text names the two moves every mismatch has.
+"""
+_beam_eltype_remedy(op, ::Type{B}) where {B} =
+    "build the element in the beam's type, $(B), or the beam in the element's " *
+    "($(_required_beam_eltype(op))), Beam(n, policy, $(_required_beam_eltype(op)))"
+
+"""
     track_particle(tracking_method, op, x, px, y, py, z, pz)
 
 Per-particle tracking primitive. Implementations dispatch on the tracking

@@ -4,6 +4,7 @@ export ThinCrabCavitySpec, ThinCrabCavity
     ThinCrabCavitySpec{N}(frequency; strengthX=(), strengthY=(), phase=(),
                           phase_noise=(), strength_noise=(),
                           tracking_method=Symplectic6DMap(), kwargs...)
+    ThinCrabCavitySpec{N,T}(frequency; kwargs...)
     ThinCrabCavitySpec(; frequency, N, kwargs...)
 
 Friendly constructor for `ElementSpec{:thin_crab_cavity}`: a zero-length
@@ -11,6 +12,23 @@ two-dimensional crab cavity with `N` harmonics, each carrying a horizontal
 strength, a vertical strength, and a phase. `frequency` is in Hz and must be
 finite and nonzero. Extra keyword arguments are stored as descriptive spec
 metadata. See `element_help(:thin_crab_cavity)` for the parameter schema.
+
+Numeric type: without the explicit `T`, the element type is the promotion of
+`frequency`, `strengthX`, `strengthY` and `phase` over a `Float64` FLOOR
+(`_linear_map_eltype`, the rule of the linear maps and `Linear6DSpec`), so
+integers and `Float32` land on `Float64`, a dual or complex parameter widens
+the cavity to its type, and nothing is narrowed -- until 2026-10-16 the type
+followed `frequency` alone, so a `Float32` frequency narrowed `Float64`
+strengths and phases silently and a complex strength was refused (fix D of
+the crab-cavity noise neighbour audit). Narrowing stays behind the explicit
+`ThinCrabCavitySpec{N,Float32}` form, which stores and compiles `Float32`: the
+one Float32 crab cavity, where a `Float64` `TurnTable` is refused rather than
+promoted (the RF twin has no typed form and compiles in `Float64` for every
+real parameter precision). A beam whose element type differs from the
+cavity's is refused BY NAME when a task compiles the line
+(`_required_beam_eltype`, `src/track/Track.jl`): track a `Float32` beam
+through `ThinCrabCavitySpec{N,Float32}` and a `Float64` beam through the
+untyped form.
 
 `phase_noise` and `strength_noise` declare turn-by-turn modulation, one entry
 per harmonic: each entry is `nothing` (inactive, the default for every
@@ -40,7 +58,7 @@ This docstring sits on the abstract type because a docstring on the
 `Core.Type`, where `?ThinCrabCavitySpec` cannot show it (2026-10-13
 neighbour audit, U6-1; the suite's docstring sweep guards the shape).
 """
-abstract type ThinCrabCavitySpec{N} end
+abstract type ThinCrabCavitySpec{N,T} end
 
 # Keyword form: reflection builds every kind by keyword alone (the N harmonic
 # count arrives as an ordinary keyword there), and a spec rebuilt from
@@ -49,15 +67,32 @@ ThinCrabCavitySpec(; frequency, N, kwargs...) =
     ThinCrabCavitySpec{Int(N)}(frequency; kwargs...)
 
 # Documented on the abstract type above (U6-1): no docstring here on purpose.
+# The UNTYPED form: `T` is the promotion of the named numeric parameters over a
+# Float64 floor (`_linear_map_eltype`, src/elements/linear_maps.jl; the
+# U9-6 rule of the linear maps), never `typeof(float(frequency))` alone, which
+# narrowed Float64 strengths to a Float32 frequency (fix D, 2026-10-16). The
+# typed method below stores it.
 function (::Type{ThinCrabCavitySpec{N}})(frequency::Real;
                                          strengthX=(),
                                          strengthY=(),
                                          phase=(),
-                                         phase_noise=(),
-                                         strength_noise=(),
-                                         tracking_method=Symplectic6DMap(),
                                          kwargs...) where {N}
-    T = typeof(float(frequency))
+    T = _linear_map_eltype(frequency, strengthX, strengthY, phase)
+    return ThinCrabCavitySpec{N,T}(frequency; strengthX=strengthX, strengthY=strengthY,
+                                   phase=phase, kwargs...)
+end
+
+# The TYPED form (no docstring here either, U6-1): `T` as given, so
+# `ThinCrabCavitySpec{N,Float32}` is the deliberate Float32 cavity, as
+# `LumpedRadSpec{Float32}` and `XYCouplingSpec{Float32}` are for their kinds.
+function (::Type{ThinCrabCavitySpec{N,T}})(frequency::Real;
+                                           strengthX=(),
+                                           strengthY=(),
+                                           phase=(),
+                                           phase_noise=(),
+                                           strength_noise=(),
+                                           tracking_method=Symplectic6DMap(),
+                                           kwargs...) where {N,T}
     _validate_crab_frequency(T(frequency))
     return ElementSpec{:thin_crab_cavity}(
         _spec_params(;
@@ -82,7 +117,10 @@ end
 
 Runtime thin 2D crab cavity with `N` harmonics: `N` is a type parameter,
 and the harmonic data are stored in fixed-size tuples for CPU/GPU tracking.
-`frequency` must be finite and nonzero.
+`frequency` must be finite and nonzero. `T` is the promotion of the arguments
+over a `Float64` floor in this direct form and the promotion of the stored
+parameters' float types when compiled from a spec (`ThinCrabCavitySpec`), so
+nothing is narrowed on either route.
 
 The map applies the kick
 
@@ -118,7 +156,7 @@ function ThinCrabCavity{N}(frequency::Real;
                            strengthX=(),
                            strengthY=(),
                            phase=()) where {N}
-    T = typeof(float(frequency))
+    T = _linear_map_eltype(frequency, strengthX, strengthY, phase)
     _validate_crab_frequency(T(frequency))
     kcc = T(2) * T(pi) * T(frequency) / T(CLIGHT)
     return ThinCrabCavity{N,Symplectic6DMap,T}(
@@ -133,16 +171,48 @@ end
 function ThinCrabCavity(spec::ElementSpec{:thin_crab_cavity}, method::AbstractTrackingMethod=tracking_method(spec))
     N = param(spec, :N)
     frequency = param(spec, :frequency)
-    T = typeof(float(frequency))
+    strengthX = param(spec, :strengthX)
+    strengthY = param(spec, :strengthY)
+    phase = param(spec, :phase)
+    T = _crab_numeric_type(frequency, strengthX, strengthY, phase)
     _validate_crab_frequency(T(frequency))
     return ThinCrabCavity{N,typeof(method),T}(
         method,
         T(2) * T(pi) * T(frequency) / T(CLIGHT),
-        _harmonic_tuple(Val(N), param(spec, :strengthX), T),
-        _harmonic_tuple(Val(N), param(spec, :strengthY), T),
-        _harmonic_tuple(Val(N), param(spec, :phase), T),
+        _harmonic_tuple(Val(N), strengthX, T),
+        _harmonic_tuple(Val(N), strengthY, T),
+        _harmonic_tuple(Val(N), phase, T),
     )
 end
+
+# The compiled type is the promotion of the STORED parameters' float types with
+# no floor -- `_float_params`' rule for the linear maps -- so the untyped
+# friendly form (stored Float64 by its floor) compiles to Float64, the explicit
+# `ThinCrabCavitySpec{N,Float32}` to Float32, and a raw
+# `ElementSpec{:thin_crab_cavity}` mixing a Float32 frequency with Float64
+# strengths to Float64: nothing is narrowed on any route. Until 2026-10-16 this
+# was `typeof(float(frequency))`, which narrowed the strengths and phases of a
+# Float32-frequency spec and refused a complex or dual strength with an
+# `InexactError` (neighbour audit leads U2-1 and S2-3; fix D).
+function _crab_numeric_type(frequency, tuples...)
+    T = typeof(float(frequency))
+    for values in tuples, v in values
+        T = promote_type(T, typeof(float(v)))
+    end
+    return T
+end
+
+# A mismatched beam is refused at compile by name (`_required_beam_eltype`,
+# src/track/Track.jl; the check in src/tasks/Tasks.jl). This kernel has no
+# branch on a runtime flag, so it promotes with the beam on BOTH backends
+# (measured 2026-10-16: a Float64 cavity on a Float32 beam runs on the CPU and
+# on CUDA, narrowing on store); the refusal here is the owner's consistency
+# decision for the two modulated kinds, and `ThinCrabCavitySpec{N,Float32}` is
+# the one way to track a Float32 beam through a crab cavity.
+_required_beam_eltype(::ThinCrabCavity{N,M,T}) where {N,M,T} = T
+_beam_eltype_remedy(::ThinCrabCavity{N,M,T}, ::Type{B}) where {N,M,T,B} =
+    "build the cavity in the beam's type, ThinCrabCavitySpec{$(N),$(B)}(frequency; ...), " *
+    "or the beam in $(T) (Beam(n, policy, $(T)))"
 
 function _validate_crab_frequency(frequency)
     isfinite(frequency) && !iszero(frequency) || throw(ArgumentError(
@@ -237,7 +307,7 @@ _is_turn_rule(entry) = entry === nothing || entry isa AbstractTurnRule
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        N=ParamMeta(required=true, meaning="maximum harmonic count encoded by ThinCrabCavitySpec{N}"),
+        N=ParamMeta(required=true, meaning="maximum harmonic count encoded by ThinCrabCavitySpec{N} (and by the explicitly typed ThinCrabCavitySpec{N,T})"),
         frequency=ParamMeta(required=true, unit="Hz", meaning="RF frequency"),
         strengthX=ParamMeta(default=(), meaning="horizontal kick strength tuple of length N"),
         strengthY=ParamMeta(default=(), meaning="vertical kick strength tuple of length N"),
@@ -248,7 +318,7 @@ _is_turn_rule(entry) = entry === nothing || entry isa AbstractTurnRule
         _PLACEMENT_PARAMS...,
     )
     example = ThinCrabCavitySpec{2}(1.0e8; strengthX=(1.0, 0.5), strengthY=(0.25, 0.125), phase=(0.0, 0.1))
-    construction_help = "Friendly constructor: ThinCrabCavitySpec{N}(frequency; strengthX, strengthY, phase, phase_noise, strength_noise, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:thin_crab_cavity}(; N=N, frequency=frequency, strengthX=strengthX, strengthY=strengthY, phase=phase, phase_noise=phase_noise, strength_noise=strength_noise, tracking_method=tracking_method, kwargs...). Harmonic tuples must have length N; omitted tuples are filled with zeros. Turn-by-turn modulation: phase_noise and strength_noise are per-harmonic tuples of length N whose entries are nothing (inactive, the default when the keyword is omitted or ()) or a rule, WhiteNoise(sigma; rng_id), PinkNoise(sigma; rng_id, octaves), TurnTable(offsets; name) or SpectralNoise(sigma, band, spectrum; rng_id, turns), which resolves to a TurnTable when the line compiles; the rule's realised per-turn value is applied once per turn by the TurnModulated wrap that compile_runtime builds, never by the kernel: an offset in rad added to the phase for phase_noise; for strength_noise a dimensionless relative factor d scaling both planes of its harmonic, strengthX[i] (1 + d) and strengthY[i] (1 + d) -- one voltage driver per cavity, so a WhiteNoise sigma is the relative rms itself and a TurnTable holds relative factors (relative, 2026-10-15). The whole keyword must be a tuple or vector of N entries or (): a bare nothing (the RF cavity's scalar spelling of inactive) is refused at construction and at compile, not read as all-inactive; a PinkNoise on a cavity with more than 32 harmonics is refused at compile (the pink stride of the counter-RNG keying). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: ThinCrabCavitySpec{N}(frequency; strengthX, strengthY, phase, phase_noise, strength_noise, tracking_method=Symplectic6DMap(), kwargs...), or ThinCrabCavitySpec{N,T}(frequency; ...) with an explicit element type T. Equivalent flexible form: ElementSpec{:thin_crab_cavity}(; N=N, frequency=frequency, strengthX=strengthX, strengthY=strengthY, phase=phase, phase_noise=phase_noise, strength_noise=strength_noise, tracking_method=tracking_method, kwargs...). Harmonic tuples must have length N; omitted tuples are filled with zeros. Numeric type: without T the element type is the promotion of frequency, strengthX, strengthY and phase over a Float64 floor (integers and Float32 land on Float64, a dual or complex parameter widens the cavity, nothing is narrowed); the compiled runtime promotes the stored parameters' types, so ThinCrabCavitySpec{N,Float32} is the deliberate Float32 cavity and the only one; a beam whose element type differs from the cavity's is refused by name when a task compiles the line (build the cavity in the beam's type or the beam in the cavity's). Turn-by-turn modulation: phase_noise and strength_noise are per-harmonic tuples of length N whose entries are nothing (inactive, the default when the keyword is omitted or ()) or a rule, WhiteNoise(sigma; rng_id), PinkNoise(sigma; rng_id, octaves), TurnTable(offsets; name) or SpectralNoise(sigma, band, spectrum; rng_id, turns), which resolves to a TurnTable when the line compiles; the rule's realised per-turn value is applied once per turn by the TurnModulated wrap that compile_runtime builds, never by the kernel: an offset in rad added to the phase for phase_noise; for strength_noise a dimensionless relative factor d scaling both planes of its harmonic, strengthX[i] (1 + d) and strengthY[i] (1 + d) -- one voltage driver per cavity, so a WhiteNoise sigma is the relative rms itself and a TurnTable holds relative factors (relative, 2026-10-15). The whole keyword must be a tuple or vector of N entries or (): a bare nothing (the RF cavity's scalar spelling of inactive) is refused at construction and at compile, not read as all-inactive; a PinkNoise on a cavity with more than 32 harmonics is refused at compile (the pink stride of the counter-RNG keying). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end
 
 @inline function _cavity_get(cavity, row::Integer, harmonic::Integer)
