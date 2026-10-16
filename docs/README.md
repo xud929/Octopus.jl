@@ -111,6 +111,15 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   the primary datum and the realised values the derived one; no empty beam,
   no switch on the audit, no new reader name, no asynchronous writer; the
   one-particle probe with three comparisons is the verification.
+- [`spectral_turn_table.md`](design/spectral_turn_table.md) — a spectral
+  producer for `TurnTable` (designed 2026-10-15 in owner discussion, not
+  implemented): one function that synthesises a per-turn table from a
+  target power spectral density shape (presets `:flat` and `:pink`, or a
+  labelled function), a band in modulation tunes, an rms normalised
+  analytically, Philox phases from a mandatory seed and stream, and a
+  canonical provenance name; promotes `turn_modulation.md` section 6's
+  sketch to the library on the producer's side of D7; six open questions
+  for the owner.
 
 ## Development guides (`guides/`)
 
