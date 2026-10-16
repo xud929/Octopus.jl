@@ -17478,6 +17478,8 @@ end
     finally
         set_global_rng!(seed=0x5eed, method=:philox)
     end
+end
+
 @testset "One rng_id policy: zero assigns a fresh stream everywhere, ids are UInt64, the registry warns on an explicit claim of an auto-assigned id and on cross-class sharing" begin
     # The 2026-10-16 crab-noise neighbour audit, seam S1 (leads S1-1, S1-2,
     # S1-5, S1-6, S1-7) and the todo rows 34 and 38, under the owner's policy
