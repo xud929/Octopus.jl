@@ -9,9 +9,11 @@ turn and its amplitude jitter modulates the crabbing tilt; against the strong
 beam's beam-beam force both drive transverse emittance growth and cost
 luminosity. This example is the production-shaped precedent for declaring that
 noise with the turn-modulation rules (`WhiteNoise`, `PinkNoise`, `TurnTable`;
-docs/design/turn_modulation.md) and for reading back what the run recorded.
-It supports three verification questions, each answered by the companion
-scripts named at the end of this header:
+docs/design/turn_modulation.md; and `SpectralNoise`, a target spectrum over a
+chosen band resolved into a `TurnTable` when the line compiles;
+docs/design/spectral_turn_table.md) and for reading back what the run
+recorded. It supports three verification questions, each answered by the
+companion scripts named at the end of this header:
 
 1. Does the rule generate the specified noise? The run's `/turn_modulation`
    provenance names every active slot with its kind and stream (or table
@@ -21,14 +23,16 @@ scripts named at the end of this header:
    their realised rms against the requested rms per slot, read from the
    record rather than by replaying the rule. The spectrum is measured by
    validation/turn_modulation_spectra.jl (the shipped rules) and
-   validation/crab_cavity_noise_response.jl part `noise`.
+   validation/crab_cavity_noise_response.jl part `noise` (the shipped rules
+   and, item `spectral`, a spectral table's periodogram against its target).
 2. What is the beam-beam response? The weak beam's rms emittances and the
    luminosity are in the artifact per turn; the response to the noise is
    their growth against the noise-free run, with and without the beam-beam
    kick (the harness toggles both).
-3. How do the rules compare? White, pink and a tabulated record of the same
-   rms are declared through one `crab_noise.rule` switch, so the comparison
-   changes one line and the output names collide nowhere.
+3. How do the rules compare? White, pink, a tabulated record and a spectral
+   table (a target spectrum over a chosen band) of the same rms are declared
+   through one `crab_noise.rule` switch, so the comparison changes one line
+   and the output names collide nowhere.
 
 STRUCTURE (the weak-strong example's pattern, one block added):
 
@@ -43,13 +47,19 @@ STRUCTURE (the weak-strong example's pattern, one block added):
 
 INPUTS. `input.crab_noise`:
 
-    rule             :white | :pink | :table | :none
+    rule             :white | :pink | :table | :spectral | :none
     phase_rms        rms of the RF phase offset per active harmonic, rad
     strength_rel_rms relative rms of the kick strength per active harmonic
     scale            multiplies both rms values (amplitude sweeps)
     pink_octaves     the pink rule's octave count (read by :pink only)
-    table_turns      length of the synthetic record (read by :table only)
+    table_turns      length of the synthetic or spectral table (:table, :spectral)
     table_seed       seed of the synthetic record's generator (:table only)
+    spectrum         target spectrum of the spectral rule, :flat, :pink or
+                     "label" => S (read by :spectral only)
+    band             (lb, ub) of the spectral rule in cycles per turn
+                     (read by :spectral only)
+    amplitudes       :fixed | :rayleigh, the spectral rule's bin amplitudes
+                     (read by :spectral only)
 
 For each harmonic i with a nonzero weight, `phase_noise[i]` is the rule with
 sigma = phase_rms * scale (rad, added to the phase) and `strength_noise[i]`
@@ -66,8 +76,36 @@ rms (rad on a phase slot, relative factors on a strength slot) to
 `Random.Xoshiro` substream per slot derived from `table_seed`; a MEASURED LLRF
 record (phase in rad, strength as relative factors, one entry per turn) would
 be passed the same way, and the task refuses a table shorter than the run.
+`:spectral` declares each slot's noise by its spectrum instead:
+`SpectralNoise(sigma, band, spectrum; rng_id, turns = table_turns,
+amplitudes)` (docs/design/spectral_turn_table.md), a spec-level rule exactly
+parallel to `WhiteNoise` and `PinkNoise` -- the same explicit `rng_id` per
+slot, the run's global seed (`set_global_rng!`) as its seed, no `table_seed`
+-- that resolves when the line compiles into a `TurnTable` of `turns` entries
+synthesised by the library's factory `spectral_turn_table` (the same function
+serves offline tables, with an explicit `seed`): `spectrum` a preset
+(`:flat`, `:pink`) or a `"label" => S` pair, `S(f) >= 0` the one-sided power
+spectral density SHAPE whose square root is the bin amplitude (`f -> 1/f` as
+an amplitude would be brown, 1/f^2, not pink); `band = (lb, ub)` in cycles
+per turn with `0 < lb < ub <= 1/2` (the DC bin is never in it); the rms over
+the band `sigma` by an analytic normalisation (no sample statistic); the bin
+phases from the counter RNG keyed on `(seed, rng_id, slot, bin)`, the slot
+index included so that one `rng_id` per cavity would still give independent
+tables per slot, as for the white and pink rules; and `amplitudes`
+either `:fixed` (this file's default: every bin at its target amplitude, so
+the rms over one period of the table and the periodogram per bin are exact up
+to rounding) or `:rayleigh` (a stationary Gaussian process: the bin
+amplitudes are Rayleigh-distributed about the target, `sigma` is the EXPECTED
+rms and the bin powers scatter exponentially about the target spectrum,
+matching it statistically). The resolved table is named canonically,
+`spectral(<label>; sigma=.., band=.., turns=.., seed=.., rng_id=.., slot=..,
+amplitudes=..)`, so the provenance carries the physics that made it beside
+its digest, and it is a
+`TurnTable` like any other: the same window check, digest and recorder apply,
+and the task refuses one shorter than the run.
 `:none` leaves every entry inactive, which is the weak-strong example's case.
-`case_name` derives from the rule and the scale (`crab_noise_white_x1`), so
+`case_name` derives from the rule and the scale (`crab_noise_white_x1`; a
+spectral case adds its spectrum's label, `crab_noise_spectral_pink_x1`), so
 sweeps never collide on output paths.
 
 OUTPUTS. ONE run artifact under `result/<seed>/<case_name>.h5`
@@ -91,8 +129,12 @@ element and slot, one table of the recorded series per element and active
 slot (label, rule kind, nominal, series length, realised rms against the
 requested rms and their ratio: for a white rule 1 within the sampling band
 +-1/sqrt(2 turns), one sigma; for a pink rule printed without a pin, since
-the band-limited sum's finite-run rms wanders with its slow generators), the
-luminosity mean and the weak beam's first and last recorded rms emittances.
+the band-limited sum's finite-run rms wanders with its slow generators; for
+a spectral table with fixed amplitudes 1 exactly up to rounding when the run
+covers the table's whole period, `turns = table_turns`, the normalisation
+being analytic, and without a pin over a partial period or with Rayleigh
+amplitudes, where `sigma` is the expected rms), the luminosity mean and the
+weak beam's first and last recorded rms emittances.
 Only the receipt, the provenance and the series are authoritative at the
 suite-sized default of 2 turns (the series' rms then sits anywhere in a wide
 band, and the printout says how wide); the emittance growth is a measurement
@@ -180,7 +222,8 @@ input = (
     ),
 
     crab_noise = (
-        # :white | :pink | :table | :none -- the one switch of the comparison.
+        # :white | :pink | :table | :spectral | :none -- the one switch of the
+        # comparison.
         rule = :white,
         # Owner specification: RF phase noise rms 10 urad and relative
         # amplitude noise rms 1e-4, per active harmonic, each cavity with
@@ -191,12 +234,40 @@ input = (
         # Read by :pink only: the Voss-McCartney octave count (`?PinkNoise`);
         # inert under the other rules.
         pink_octaves = 16,
-        # Read by :table only, inert otherwise: the synthetic record's length
-        # (must cover the run's turns -- the task refuses a shorter table and
-        # never wraps one) and the seed of its generator, a `Random.Xoshiro`
-        # independent of the tracker's counter RNG.
+        # `table_turns`, read by :table and :spectral, inert otherwise: the
+        # table's length (must cover the run's turns -- the task refuses a
+        # shorter table and never wraps one). `table_seed`, read by :table
+        # only: the seed of the synthetic record's generator, a
+        # `Random.Xoshiro` independent of the tracker's counter RNG. The
+        # spectral rule has no seed of its own: like the white and pink rules
+        # it keys on the run's global seed (`set_global_rng!` below) and the
+        # slot's explicit `rng_id`.
         table_turns = 1_048_576,
         table_seed = 20261014,
+        # Read by :spectral only, inert otherwise: the target spectrum, the
+        # band and the amplitudes of `SpectralNoise`
+        # (docs/design/spectral_turn_table.md).
+        # `spectrum` is a preset, :flat or :pink, or a `"label" => S` pair
+        # with S(f) >= 0 the one-sided power spectral density SHAPE -- its
+        # square root is the bin amplitude, so `f -> 1/f` handed as an
+        # amplitude would be a 1/f^2 brown spectrum, not pink; only the shape
+        # matters, so the unit of f inside S is irrelevant. `band = (lb, ub)`
+        # is in cycles per turn, 0 < lb < ub <= 1/2, the DC bin never in it.
+        # The default is the pink preset over the 16-octave band the :pink
+        # rule covers (f_rev/2^16 to f_rev/2), so the two rules compare at
+        # equal rms and equal band: this one with the exact 1/f spectrum, the
+        # shipped one with the Voss-McCartney ripple
+        # (docs/design/turn_modulation.md, section 5.5). `amplitudes` picks
+        # the bin amplitudes: :fixed reproduces the target spectrum exactly
+        # (every bin at its target amplitude; the rms over the table's period
+        # and the periodogram per bin exact up to rounding) and is the owner's
+        # construction; :rayleigh draws Rayleigh-distributed amplitudes, the
+        # stationary Gaussian process whose EXPECTED rms is sigma and whose
+        # bin powers scatter exponentially about the target (Q3 of the design
+        # note, decided 2026-10-16).
+        spectrum = :pink,
+        band = (1.0 / 2^16, 0.5),
+        amplitudes = :fixed,
     ),
 
     strong_beam = (
@@ -372,8 +443,8 @@ cc_strength_x = cckick .* input.crab_cavity.harmonic_weights
 # slot -- the per-slot ids are for the record, not for independence.
 # ---------------------------------------------------------------------------
 cn = input.crab_noise
-cn.rule in (:white, :pink, :table, :none) || error(
-    "input.crab_noise.rule = $(repr(cn.rule)) is not one of :white, :pink, :table, :none")
+cn.rule in (:white, :pink, :table, :spectral, :none) || error(
+    "input.crab_noise.rule = $(repr(cn.rule)) is not one of :white, :pink, :table, :spectral, :none")
 N_harmonics = length(input.crab_cavity.harmonic_weights)
 # The rms values that RUN: the configured ones times `scale`, or 0 under
 # :none, where no slot carries a rule (the harness reports the same quantity).
@@ -382,11 +453,25 @@ strength_sigma_rel = cn.rule === :none ? 0.0 : cn.strength_rel_rms * cn.scale
 # One master generator seeded by `table_seed` hands each table its own
 # substream seed, in slot order (tccb phases, tccb strengths, tcca phases,
 # tcca strengths), so the record is reproducible and the slots independent.
-# Built for :table only: no other rule reads the seed.
+# Built for :table only: no other rule reads the generator.
 table_master = cn.rule === :table ? Random.Xoshiro(cn.table_seed) : nothing
 function noise_rule(sigma, rng_id, label)
     cn.rule === :white && return WhiteNoise(sigma; rng_id = rng_id)
     cn.rule === :pink && return PinkNoise(sigma; rng_id = rng_id, octaves = cn.pink_octaves)
+    # The spectral rule, parallel to the two above: the same explicit
+    # `rng_id`, the run's global seed; it resolves when the line compiles into
+    # a Float64 `TurnTable` of `table_turns` entries synthesised from the
+    # target spectrum over the band, rms `sigma` by the analytic
+    # normalisation (no sample statistic), the bin phases keyed on (seed,
+    # rng_id, slot, bin). The resolved table's canonical name,
+    # `spectral(<label>; sigma=.., band=.., turns=.., seed=.., rng_id=..,
+    # slot=.., amplitudes=..)`,
+    # goes into the provenance beside its digest, so the record carries the
+    # physics that made it (D7 of the design note); `label` names the
+    # synthetic white table and is not used here.
+    cn.rule === :spectral && return SpectralNoise(sigma, cn.band, cn.spectrum;
+                                                  rng_id = rng_id, turns = cn.table_turns,
+                                                  amplitudes = cn.amplitudes)
     # Synthetic Gaussian white record of rms `sigma`, Float64 like the line
     # (a table of another element type is refused at compile, not promoted).
     offsets = sigma .* randn(Random.Xoshiro(rand(table_master, UInt64)), cn.table_turns)
@@ -422,15 +507,23 @@ tccb_noise = crab_noise_rules("tccb", 10)
 tcca_noise = crab_noise_rules("tcca", 20)
 
 # The case name derives from the rule and the scale, so a sweep over either
-# never collides on the artifact path.
+# never collides on the artifact path; a spectral case adds its spectrum's
+# label (`crab_noise_spectral_pink_x1`), so the presets never collide either
+# (a band sweep is the validation's later campaign and names its own cases).
 scale_tag(s) = isinteger(s) ? string(Int(s)) : string(s)
-case_name = "crab_noise_$(cn.rule)_x$(scale_tag(cn.scale))"
+spectrum_label(sp) = sp isa Symbol ? string(sp) : String(first(sp))
+case_name = "crab_noise_$(cn.rule)" *
+            (cn.rule === :spectral ? "_" * replace(spectrum_label(cn.spectrum), r"[^A-Za-z0-9_]" => "_") : "") *
+            "_x$(scale_tag(cn.scale))"
 # The values that ran, not the configured ones: under :none both are 0.
 println("crab_noise: rule = ", cn.rule, ", effective phase_rms = ", phase_sigma,
         " rad, effective strength_rel_rms = ", strength_sigma_rel,
         " (scale ", cn.scale, ")",
         cn.rule === :pink ? ", pink_octaves = $(cn.pink_octaves)" : "",
         cn.rule === :table ? ", table_turns = $(cn.table_turns), table_seed = $(cn.table_seed)" : "",
+        cn.rule === :spectral ? ", spectrum = $(spectrum_label(cn.spectrum)), band = $(cn.band) cycles/turn, " *
+                                "amplitudes = $(cn.amplitudes), table_turns = $(cn.table_turns) " *
+                                "(the bin phases keyed on the run's seed $(input.seed) and the slots' rng_ids, as the white and pink rules are)" : "",
         cn.rule === :none ? " -- every slot inactive, the configured rms values unused; " *
                             "the weak-strong example's case" : "")
 
@@ -691,18 +784,44 @@ else
     # finite run's rms wanders with the slow generators far beyond 1/sqrt(2T)
     # (one sigma 7.65 % at 2^16 turns, `?PinkNoise`); the verdict belongs to
     # validation/crab_cavity_noise_response.jl part `noise`, taken over 2^20
-    # turns against the construction's own Monte Carlo band.
+    # turns against the construction's own Monte Carlo band. For a spectral
+    # table the normalisation is analytic (D5 of
+    # docs/design/spectral_turn_table.md): over the table's WHOLE period the
+    # bins are orthogonal and the rms equals sigma exactly up to rounding, so
+    # a run of `table_turns` turns expects a ratio of 1 to about 1e-12; over
+    # a partial period (this file's default, 2 turns of a 2^20 table) the
+    # window's rms is not the period's, and the ratio is printed without a
+    # pin -- as it is for Rayleigh amplitudes, where sigma is the EXPECTED rms
+    # and one realisation's rms scatters about it. The verdict on the
+    # spectrum itself (the periodogram of the recorded series against the
+    # target) is the validation's item `spectral`.
     if input.output.record_turn_modulation
         one_sigma = 1 / sqrt(2 * turns)
         fmt(x) = string(round(x; sigdigits = 6))
         nominal_text(nom) = nom === nothing ? "n/a" :
             join(("$(name)=$(fmt(getfield(nom, name)))" for name in propertynames(nom)), " ")
-        band_text(kind) = kind === :pink ? "no pin (band-limited sum)" :
-                                           "1 +- $(fmt(one_sigma)) (1 sigma)"
+        # A spectral table reads back as kind :table (it IS one), so the rule
+        # switch decides its row, and the series length says whether the run
+        # covered the table's whole period.
+        band_text(kind, n) = kind === :pink ? "no pin (band-limited sum)" :
+            cn.rule === :spectral ?
+                (cn.amplitudes !== :fixed ? "no pin (Rayleigh amplitudes: sigma is the expected rms)" :
+                 n == cn.table_turns ? "1 exactly up to rounding (analytic normalisation over the whole period)" :
+                                       "no pin (partial period: $(n) of $(cn.table_turns) table turns)") :
+                "1 +- $(fmt(one_sigma)) (1 sigma)"
         println("turn_modulation series: recorded offsets read from the artifact, realised rms against the requested rms")
-        println("  white and table rows: ratio = 1 within +-", fmt(one_sigma),
-                " (one sigma, 1/sqrt(2 turns) at ", turns, " turns); pink rows: no pin, ",
-                "the band-limited sum's finite-run rms wanders with its slow generators")
+        if cn.rule === :spectral && cn.amplitudes !== :fixed
+            println("  spectral table rows (", cn.amplitudes, " amplitudes): no pin; sigma is the EXPECTED rms of the ",
+                    "stationary Gaussian process and one realisation's rms scatters about it")
+        elseif cn.rule === :spectral
+            println("  spectral table rows (fixed amplitudes): ratio = 1 exactly up to rounding when the run covers the table's whole period ",
+                    "(turns == table_turns; here ", turns, " of ", cn.table_turns, " turns), ",
+                    turns == cn.table_turns ? "which it does" : "else no pin: a window of a periodic sequence has not the period's rms")
+        else
+            println("  white and table rows: ratio = 1 within +-", fmt(one_sigma),
+                    " (one sigma, 1/sqrt(2 turns) at ", turns, " turns); pink rows: no pin, ",
+                    "the band-limited sum's finite-run rms wanders with its slow generators")
+        end
         println("  ", rpad("element slot", 26), rpad("kind", 7), rpad("nominal", 50),
                 lpad("length", 7), lpad("realised rms", 14), lpad("requested rms", 14),
                 lpad("ratio", 9), "  expected")
@@ -718,7 +837,7 @@ else
             println("  ", rpad("$(cavity_name(k)) $(s.slot)", 26), rpad(string(s.kind), 7),
                     rpad(nominal_text(s.nominal), 50), lpad(string(length(s.series)), 7),
                     lpad(fmt(realised), 14), lpad(fmt(requested), 14),
-                    lpad(fmt(realised / requested), 9), "  ", band_text(s.kind))
+                    lpad(fmt(realised / requested), 9), "  ", band_text(s.kind, length(s.series)))
         end
         n_rows == 0 && println("  (no modulated element in the line: nothing recorded; crab_noise.rule = ", cn.rule, ")")
     end

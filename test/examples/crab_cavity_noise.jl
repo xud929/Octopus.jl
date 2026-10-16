@@ -5,8 +5,9 @@ case with turn-by-turn RF phase and amplitude noise on the two proton crab
 cavities `tccb` and `tcca`, each on independent streams. The clean,
 production-shaped example meant as a user guideline (no environment variables)
 is examples/crab_cavity_noise.jl; this file exposes the run size, the device,
-the noise rule and its amplitudes, the chromaticity, a file-fed table and two
-A/B toggles (beam-beam kick, radiation) through OCTOPUS_* variables, and ends
+the noise rule and its amplitudes, a spectral table's preset and band, the
+chromaticity, a file-fed table and two A/B toggles (beam-beam kick,
+radiation) through OCTOPUS_* variables, and ends
 with ONE machine-readable line for validation/crab_cavity_noise_response.jl
 to parse.
 
@@ -76,7 +77,7 @@ config-that-was-never-read defect class, AGENTS.md Invariants):
                               0's result directory holds exactly one file).
                               Refused without OCTOPUS_RECORD_TURN_TIMES=1, and
                               refused when set but empty
-    OCTOPUS_NOISE_RULE        white|pink|table|none (white)
+    OCTOPUS_NOISE_RULE        white|pink|table|spectral|none (white)
     OCTOPUS_NOISE_SCALE       multiplies both rms values (1.0); amplitude sweeps
     OCTOPUS_PHASE_RMS         rms of the RF phase offset per active harmonic,
                               rad (10e-6). ZERO MEANS NO RULE on the phase:
@@ -103,7 +104,9 @@ config-that-was-never-read defect class, AGENTS.md Invariants):
                               (20261014), a Random.Xoshiro independent of the
                               tracker's counter RNG; read by the table rule
                               without OCTOPUS_TABLE_FILE only, inert otherwise
-                              (refused together with the file). The synthetic
+                              (refused together with the file; the spectral
+                              rule keys on OCTOPUS_SEED and the slot's rng_id
+                              like the white and pink rules). The synthetic
                               record is Gaussian white of the stated rms with
                               exactly OCTOPUS_TURNS entries (the task refuses
                               a table shorter than the run and never wraps
@@ -141,6 +144,47 @@ config-that-was-never-read defect class, AGENTS.md Invariants):
                               added to a phase, scaling a strength) fed back
                               through the table rule track bit for bit; a
                               measured LLRF record is passed the same way
+    OCTOPUS_SPECTRUM          with OCTOPUS_NOISE_RULE=spectral: the target
+                              spectrum's preset, flat|pink (pink), of the
+                              `SpectralNoise` rule each slot carries
+                              (docs/design/spectral_turn_table.md) -- a rule
+                              parallel to WhiteNoise and PinkNoise (the same
+                              explicit rng_id per slot, the run's seed
+                              OCTOPUS_SEED) that resolves when the line
+                              compiles into a TurnTable of OCTOPUS_TURNS
+                              entries: bin amplitudes sqrt(S(f_k)) over the
+                              band (fixed, or Rayleigh-scattered, below), bin
+                              phases from the counter RNG keyed on (seed,
+                              rng_id, slot, bin), rms sigma by the analytic
+                              normalisation, and the library factory's
+                              canonical name in the provenance. Presets only
+                              here; a custom `"label" => S` spectrum is the
+                              example's and the library's. Refused under any
+                              other rule, where it would go unread
+    OCTOPUS_BAND              with OCTOPUS_NOISE_RULE=spectral: <lb>,<ub>, the
+                              band in cycles per turn (the example's default,
+                              1/2^16,0.5: the pink rule's 16 octaves, so the
+                              two rules compare at equal rms and band). Parsed
+                              here, judged by the factory: it refuses a band
+                              outside 0 < lb < ub <= 1/2 or one holding no bin
+                              at OCTOPUS_TURNS (the first bin is 1/OCTOPUS_TURNS,
+                              so a narrow band needs a long run: 3e-3,4e-3
+                              holds its first bin from 250 turns and 32 bins
+                              from 32000) and warns below 32 bins. Refused
+                              under any other rule, where it would go unread
+    OCTOPUS_SPECTRAL_AMPLITUDES
+                              with OCTOPUS_NOISE_RULE=spectral: fixed|rayleigh
+                              (fixed), the factory's `amplitudes`. fixed puts
+                              every bin at its target amplitude, so the rms
+                              over the table's period and the periodogram per
+                              bin are exact up to rounding; rayleigh draws
+                              Rayleigh-distributed amplitudes about the
+                              target, the stationary Gaussian process whose
+                              EXPECTED rms is sigma and whose bin powers
+                              scatter exponentially about the target spectrum
+                              (Q3 of the design note, decided 2026-10-16).
+                              Refused under any other rule, where it would go
+                              unread
     OCTOPUS_KBB_SCALE         multiplies the beam-beam strength kbb (1.0);
                               0.0 switches the kick off while the luminosity
                               bookkeeping (klum) stays, so the noise-only
@@ -192,7 +236,24 @@ config-that-was-never-read defect class, AGENTS.md Invariants):
                               that to stay at 5 sigma -- at the suite's 2
                               turns a bare 10 % pin would fail 85 % of the
                               time on correct code); and every table series
-                              equals its record's first T entries bitwise. A
+                              equals its record's first T entries bitwise -- a
+                              spectral slot's too, its record being the table
+                              the library's factory builds under the run's
+                              seed, the slot's rng_id and the slot index
+                              (what the rule must have resolved to), with the
+                              provenance carrying that table's canonical name
+                              (seed and rng_id asserted by name), and
+                              with fixed amplitudes its rms equals sigma
+                              within 1e-9 relative, the normalisation being
+                              analytic over the table's whole period, which
+                              the run covers since the table is exactly T
+                              long (a partial period would be printed without
+                              a pin and say so); with rayleigh amplitudes the
+                              ratio is printed with the band 1 +- 1/(2 sqrt(K)),
+                              K the band's bin count -- the one-sigma of a
+                              FLAT band's rms about the expected sigma (a
+                              sloped band concentrates its weight in fewer
+                              bins and wanders more) -- and no pin. A
                               pink series' rms is printed with its ratio and
                               no pin: the band-limited sum's finite-run rms
                               wanders with its slow generators (one sigma
@@ -208,8 +269,9 @@ is a defect rather than a typo: OCTOPUS_MP (the dead spelling the frozen
 docs/history/production_benchmark_2026_09_06.md names; refused on presence,
 as the weak-strong harness does; the switch is OCTOPUS_USE_MPI), OCTOPUS_RANKS
 without OCTOPUS_USE_MPI=1, OCTOPUS_TURN_TIMING_PATH without
-OCTOPUS_RECORD_TURN_TIMES=1 or set but empty, and OCTOPUS_USE_GPU=1 together
-with OCTOPUS_USE_MPI=1.
+OCTOPUS_RECORD_TURN_TIMES=1 or set but empty, OCTOPUS_SPECTRUM, OCTOPUS_BAND
+or OCTOPUS_SPECTRAL_AMPLITUDES without OCTOPUS_NOISE_RULE=spectral, and
+OCTOPUS_USE_GPU=1 together with OCTOPUS_USE_MPI=1.
 
 OCTOPUS_USE_MPI=1 needs an environment where BOTH Octopus and MPI resolve as
 PACKAGES. MultiProcessExecutionPolicy reaches a communicator only through the
@@ -244,6 +306,8 @@ Examples:
     OCTOPUS_NOISE_RULE=none OCTOPUS_RADIATION=0 julia --project=. --threads=4 test/examples/crab_cavity_noise.jl
     OCTOPUS_STRENGTH_REL_RMS=0 OCTOPUS_KBB_SCALE=0 OCTOPUS_CHROMATICITY=0,0 OCTOPUS_RADIATION=0 OCTOPUS_CASE_NAME=C1 OCTOPUS_TURNS=100000 OCTOPUS_USE_GPU=1 julia --project=. test/examples/crab_cavity_noise.jl
     OCTOPUS_NOISE_RULE=table OCTOPUS_TABLE_FILE=result/w1_offsets.tsv OCTOPUS_STRENGTH_REL_RMS=0 OCTOPUS_CASE_NAME=T1 julia --project=. test/examples/crab_cavity_noise.jl
+    OCTOPUS_NOISE_RULE=spectral OCTOPUS_SPECTRUM=flat OCTOPUS_BAND=3e-3,4e-3 OCTOPUS_TURNS=65536 OCTOPUS_N_MACRO=1024 julia --project=. test/examples/crab_cavity_noise.jl
+    OCTOPUS_NOISE_RULE=spectral OCTOPUS_SPECTRUM=pink OCTOPUS_SPECTRAL_AMPLITUDES=rayleigh OCTOPUS_TURNS=65536 julia --project=. test/examples/crab_cavity_noise.jl
     OCTOPUS_USE_MPI=1 OCTOPUS_RANKS=2 OCTOPUS_CPU_THREADS=4 OCTOPUS_TURNS=200 OCTOPUS_N_MACRO=20000 OCTOPUS_RECORD_TURN_TIMES=1 OCTOPUS_TURN_TIMING_PATH=result/timing_2ranks.tsv mpiexec -n 2 julia --project=. --threads=4 test/examples/crab_cavity_noise.jl
 
 CUDA checks:
@@ -266,7 +330,7 @@ before tcca, because the record itself names only the element type), one
 ratio and the band or bitwise verdict applied), and ends with the one line
 the validation driver parses (rank 0's under MPI):
 
-    CRAB-NOISE rule=<r> scale=<s> phase_rms=<rad> strength_rel_rms=<rel> chrom=<xi_x>,<xi_y> table_file=<path|none> turns=<T> n_macro=<N> kbb_scale=<k> radiation=<0|1> seed=<seed> artifact=<path> eps_x_first=<..> eps_x_last=<..> eps_y_first=<..> eps_y_last=<..> lumi_mean=<..> wall_s=<..> ms_per_turn=<..> ranks=<P> threads=<n|NA> steady_ms_per_turn=<ms|NA> record=<true|false> [rms_<cavity>_<parameter>_<i>=<rms> ...]
+    CRAB-NOISE rule=<r> scale=<s> phase_rms=<rad> strength_rel_rms=<rel> chrom=<xi_x>,<xi_y> table_file=<path|none> turns=<T> n_macro=<N> kbb_scale=<k> radiation=<0|1> seed=<seed> artifact=<path> eps_x_first=<..> eps_x_last=<..> eps_y_first=<..> eps_y_last=<..> lumi_mean=<..> wall_s=<..> ms_per_turn=<..> ranks=<P> threads=<n|NA> steady_ms_per_turn=<ms|NA> record=<true|false> [rms_<cavity>_<parameter>_<i>=<rms> ...] spectrum=<flat|pink|none> band=<lb>,<ub>|none amplitudes=<fixed|rayleigh|none>
 
 where the fields through steady_ms_per_turn are the line as it was before
 the recording landed (2026-10-15), so a parser of `key=value` tokens
@@ -275,7 +339,10 @@ crab_cavity_noise_backends.jl) reads the same fields; record is
 OCTOPUS_RECORD_TURN_MODULATION as read, and with it on one `rms_<label>`
 field per recorded slot follows, in slot order, the label the
 OCTOPUS_TABLE_FILE columns use (`tccb_phase_noise_1`, ...; absent with the
-switch off or under rule none). phase_rms and strength_rel_rms are the EFFECTIVE values that ran:
+switch off or under rule none); spectrum, band and amplitudes close the line
+(added after every earlier field, 2026-10-16): under rule spectral the
+preset, the band in cycles per turn and the amplitudes as read, none under
+every other rule. phase_rms and strength_rel_rms are the EFFECTIVE values that ran:
 OCTOPUS_*_RMS times OCTOPUS_NOISE_SCALE when the parameter carries rules, 0
 when it carries none (rms 0, or rule none); strength_rel_rms is the strength
 rule's sigma itself, the relative rms of S (1 + d); with a file table they
@@ -399,8 +466,8 @@ n_macro >= 1 || error("OCTOPUS_N_MACRO=$(n_macro) must be at least 1")
 
 # The noise configuration.
 rule_text = lowercase(strip(get(ENV, "OCTOPUS_NOISE_RULE", "white")))
-rule_text in ("white", "pink", "table", "none") || error(
-    "OCTOPUS_NOISE_RULE=$(repr(rule_text)) is not one of white, pink, table, none")
+rule_text in ("white", "pink", "table", "spectral", "none") || error(
+    "OCTOPUS_NOISE_RULE=$(repr(rule_text)) is not one of white, pink, table, spectral, none")
 noise_rule_kind = Symbol(rule_text)
 noise_scale = env_parse(Float64, "OCTOPUS_NOISE_SCALE", "1.0")
 phase_rms = env_parse(Float64, "OCTOPUS_PHASE_RMS", "10e-6")
@@ -427,6 +494,46 @@ if !isempty(table_file)
         "OCTOPUS_TABLE_SEED with OCTOPUS_TABLE_FILE: the file replaces the synthetic " *
         "record, so the seed would go unread")
     isfile(table_file) || error("OCTOPUS_TABLE_FILE=$(repr(table_file)) is not a file")
+end
+# The spectral rule's target spectrum and band (OCTOPUS_SPECTRUM,
+# OCTOPUS_BAND; the header): presets only here, and refused under any other
+# rule, where a value nothing reads would be the config-that-was-never-read
+# defect class rather than a typo.
+if noise_rule_kind !== :spectral
+    for key in ("OCTOPUS_SPECTRUM", "OCTOPUS_BAND", "OCTOPUS_SPECTRAL_AMPLITUDES")
+        haskey(ENV, key) && error(
+            "$(key)=$(repr(ENV[key])) is read only with OCTOPUS_NOISE_RULE=spectral; got " *
+            "OCTOPUS_NOISE_RULE=$(rule_text), under which it would go unread")
+    end
+end
+spectrum_text = lowercase(strip(get(ENV, "OCTOPUS_SPECTRUM", "pink")))
+spectrum_text in ("flat", "pink") || error(
+    "OCTOPUS_SPECTRUM=$(repr(spectrum_text)) is not one of flat, pink (the presets; a custom " *
+    "\"label\" => S spectrum is the example's and the library's, not this harness's)")
+spectrum = Symbol(spectrum_text)
+amplitudes_text = lowercase(strip(get(ENV, "OCTOPUS_SPECTRAL_AMPLITUDES", "fixed")))
+amplitudes_text in ("fixed", "rayleigh") || error(
+    "OCTOPUS_SPECTRAL_AMPLITUDES=$(repr(amplitudes_text)) is not one of fixed, rayleigh")
+spectral_amplitudes = Symbol(amplitudes_text)
+# OCTOPUS_BAND, <lb>,<ub> in cycles per turn; the example's default band when
+# unset (the :pink rule's 16 octaves, f_rev/2^16 to f_rev/2). Parsed here,
+# judged by the factory, whose refusals name the band, the turns and the
+# first bin: a band outside 0 < lb < ub <= 1/2, or one with no bin at
+# OCTOPUS_TURNS; fewer than 32 bins is a warning, not a refusal.
+band = if haskey(ENV, "OCTOPUS_BAND")
+    band_env = ENV["OCTOPUS_BAND"]
+    band_parts = split(band_env, ',')
+    length(band_parts) == 2 || error(
+        "OCTOPUS_BAND=$(repr(band_env)) must be two comma-separated numbers <lb>,<ub> in cycles per turn")
+    band_values = map(band_parts) do part
+        v = tryparse(Float64, strip(part))
+        v === nothing && error("OCTOPUS_BAND=$(repr(band_env)): $(repr(String(part))) is not a Float64")
+        v
+    end
+    all(isfinite, band_values) || error("OCTOPUS_BAND=$(repr(band_env)) must be finite")
+    (band_values[1], band_values[2])
+else
+    (1.0 / 2^16, 0.5)
 end
 # Rms 0 means NO rule on that parameter (every slot `nothing`), not a
 # zero-sigma rule; rule none means no rule on either. These are the EFFECTIVE
@@ -546,6 +653,11 @@ input = (
         table_turns = table_turns,
         table_seed = table_seed,
         table_file = table_file,
+        # OCTOPUS_SPECTRUM, OCTOPUS_BAND and OCTOPUS_SPECTRAL_AMPLITUDES; read
+        # by the spectral rule only.
+        spectrum = spectrum,
+        band = band,
+        amplitudes = spectral_amplitudes,
     ),
 
     strong_beam = (
@@ -733,22 +845,53 @@ end
 table_master = (cn.rule === :table && isempty(cn.table_file)) ? Random.Xoshiro(cn.table_seed) : nothing
 table_slot_rms = Tuple{String,Float64}[]
 # Every table rule's record, keyed by the file-column label
-# `<cavity>_<parameter>_<i>` whatever its source (synthetic or file): the
-# bitwise reference the recorded series is checked against on rank 0.
+# `<cavity>_<parameter>_<i>` whatever its source (synthetic, file or
+# spectral): the bitwise reference the recorded series is checked against on
+# rank 0. For the spectral rule the record is the table the library's
+# factory builds under the SAME keying the rule resolves with -- the run's
+# global seed (`global_rng_seed()`, set from OCTOPUS_SEED above), the slot's
+# rng_id and the slot index -- and `spectral_names` holds that table's
+# canonical name, which the provenance must carry.
 table_offsets = Dict{String,Vector{Float64}}()
+spectral_names = Dict{String,String}()
+spectral_ids = Dict{String,Int}()
 function noise_rule(parameter::String, cavity::String, i::Int, sigma, rng_id)
     cn.rule === :white && return WhiteNoise(sigma; rng_id = rng_id)
     cn.rule === :pink && return PinkNoise(sigma; rng_id = rng_id, octaves = cn.pink_octaves)
-    if isempty(cn.table_file)
+    if cn.rule === :spectral
+        # The spectral rule, parallel to the two above (the same explicit
+        # rng_id, the run's global seed); it resolves when the line compiles
+        # into a TurnTable of OCTOPUS_TURNS entries synthesised from the
+        # preset over the band, rms sigma by the analytic normalisation, named
+        # canonically (`spectral(<preset>; sigma=.., band=.., turns=..,
+        # seed=.., rng_id=.., slot=..)`). The record below is the factory's own
+        # output under that keying: what the compiled rule must have resolved
+        # to, bit for bit, name included. The keying includes the SLOT the
+        # rule sits in (phase harmonic i -> i, strength harmonic i -> N + i),
+        # so one rng_id per cavity would still give independent tables per
+        # slot, as it does for the white and pink rules.
+        slot = parameter == "phase_noise" ? i : N_harmonics + i
+        reference = spectral_turn_table(cn.spectrum, sigma, cn.band;
+                                        turns = cn.table_turns, seed = global_rng_seed(),
+                                        rng_id = rng_id, slot = slot, amplitudes = cn.amplitudes)
+        offsets = reference.offsets
+        label = "$(cavity)_$(parameter)_$(i) = $(reference.name)"
+        spectral_names["$(cavity)_$(parameter)_$(i)"] = reference.name
+        spectral_ids["$(cavity)_$(parameter)_$(i)"] = rng_id
+        table = SpectralNoise(sigma, cn.band, cn.spectrum;
+                              rng_id = rng_id, turns = cn.table_turns, amplitudes = cn.amplitudes)
+    elseif isempty(cn.table_file)
         offsets = sigma .* randn(Random.Xoshiro(rand(table_master, UInt64)), cn.table_turns)
         label = "$(cavity)_$(parameter)[$(i)]_synthetic_white"
+        table = TurnTable(offsets; name = label)
     else
         label = "$(cavity)_$(parameter)_$(i)"
         offsets = file_tables[label]
+        table = TurnTable(offsets; name = label)
     end
     push!(table_slot_rms, (label, sqrt(sum(abs2, @view offsets[1:turns]) / turns)))
     table_offsets["$(cavity)_$(parameter)_$(i)"] = offsets
-    return TurnTable(offsets; name = label)
+    return table
 end
 function crab_noise_rules(cavity::String, id_base::Int)
     phase = phase_on ? ntuple(N_harmonics) do i
@@ -771,6 +914,9 @@ println("crab_noise: rule = ", cn.rule,
         cn.rule === :pink ? ", pink_octaves = $(cn.pink_octaves)" : "",
         cn.rule === :table && isempty(cn.table_file) ? ", synthetic table_turns = $(cn.table_turns), table_seed = $(cn.table_seed)" : "",
         cn.rule === :table && !isempty(cn.table_file) ? ", offsets from table_file" : "",
+        cn.rule === :spectral ? ", spectrum = $(cn.spectrum), band = $(cn.band[1]),$(cn.band[2]) cycles/turn, " *
+                                "amplitudes = $(cn.amplitudes), table_turns = $(cn.table_turns) " *
+                                "(the bin phases keyed on the run's seed $(global_rng_seed()) and the slots' rng_ids, as the white and pink rules are)" : "",
         (phase_on || strength_on) ? "" : " -- every slot inactive")
 for (label, rms) in table_slot_rms
     println("table slot ", label, ": sample rms over the run's ", turns, " turns = ", rms)
@@ -1136,9 +1282,76 @@ else
                                   "entries; first difference at entry $(first_bad): recorded $(s.series[first_bad]), " *
                                   "record $(record[first_bad])")
                         end
-                        println("series ", label, ": table, ", n, " entries == the record's first ", turns,
-                                " entries bitwise, rms = ", rms)
+                        if cn.rule === :spectral
+                            # The provenance must carry the canonical name of the
+                            # table the rule resolved to, which is the factory's
+                            # under the run's seed and this slot's rng_id: the
+                            # record's name, built above from the same keying. The
+                            # two keys are asserted by name first, so a mismatch
+                            # says WHICH key the rule resolved with differently.
+                            expected_name = spectral_names[label]
+                            occursin("seed=$(global_rng_seed())", s.name) || error(
+                                "$(label) (spectral): the provenance name $(repr(s.name)) does not carry " *
+                                "seed=$(global_rng_seed()), the run's global seed the rule must have resolved with")
+                            occursin("rng_id=$(spectral_ids[label])", s.name) || error(
+                                "$(label) (spectral): the provenance name $(repr(s.name)) does not carry " *
+                                "rng_id=$(spectral_ids[label]), this slot's explicit stream id")
+                            s.name == expected_name || error(
+                                "$(label) (spectral): the provenance names the resolved table $(repr(s.name)); " *
+                                "the factory under the run's seed $(global_rng_seed()) and this slot's rng_id names " *
+                                "it $(repr(expected_name)) -- the rule did not resolve with the run's keying")
+                        end
+                        if cn.rule === :spectral && cn.amplitudes === :rayleigh
+                            # Rayleigh amplitudes: sigma is the EXPECTED rms of the
+                            # stationary Gaussian process, and one realisation's
+                            # rms^2/sigma^2 is a weighted mean of K exponential
+                            # variables (one per band bin, mean 1, variance 1), so
+                            # for a FLAT band its one-sigma is 1/sqrt(K) and the rms's
+                            # 1/(2 sqrt(K)); a sloped band (the pink preset) puts its
+                            # weight in fewer bins and wanders more. Printed with
+                            # that band and no pin; the statistics are the
+                            # validation's item `spectral`.
+                            ratio = rms / sigma
+                            K = count(k -> cn.band[1] <= k / cn.table_turns <= cn.band[2], 1:(cn.table_turns ÷ 2))
+                            println("series ", label, ": spectral table (rayleigh amplitudes), ", n,
+                                    " entries == the table bitwise, rms = ", rms, ", sigma = ", sigma,
+                                    ", ratio = ", ratio, " (no pin: sigma is the expected rms; one sigma 1/(2 sqrt(K)) = ",
+                                    K == 0 ? "n/a" : string(1 / (2 * sqrt(K))), " for a flat band of K = ", K, " bins)")
+                        elseif cn.rule === :spectral
+                            # Fixed amplitudes: the spectral table's rms is ANALYTIC
+                            # over its whole period (D5 of
+                            # docs/design/spectral_turn_table.md): the band bins are
+                            # orthogonal over the table's N entries, so the rms of
+                            # all N equals sigma up to rounding -- pinned at 1e-9
+                            # relative here (the validation's item `spectral` pins
+                            # the same identity at 1e-12), and only when the recorded
+                            # series IS the whole period, which it is whenever the
+                            # table is exactly OCTOPUS_TURNS long; a partial period
+                            # has no such identity and is printed without a pin.
+                            ratio = rms / sigma
+                            if n == cn.table_turns
+                                abs(ratio - 1) <= 1e-9 || error(
+                                    "$(label) (spectral table): the recorded series has rms $(rms) against sigma " *
+                                    "$(sigma), ratio $(ratio), outside 1 +- 1e-9 although the run covers the " *
+                                    "table's whole period ($(n) of $(cn.table_turns) entries): the analytic " *
+                                    "normalisation did not hold")
+                                println("series ", label, ": spectral table, ", n, " entries == the table bitwise, rms = ",
+                                        rms, ", sigma = ", sigma, ", ratio = ", ratio,
+                                        " (within 1 +- 1e-9: analytic normalisation over the whole period)")
+                            else
+                                println("series ", label, ": spectral table, ", n, " entries == the table's first ", turns,
+                                        " entries bitwise, rms = ", rms, ", sigma = ", sigma, ", ratio = ", ratio,
+                                        " (no pin: a partial period, ", n, " of ", cn.table_turns,
+                                        " table entries, has not the period's rms)")
+                            end
+                        else
+                            println("series ", label, ": table, ", n, " entries == the record's first ", turns,
+                                    " entries bitwise, rms = ", rms)
+                        end
                     else
+                        cn.rule === :spectral && error(
+                            "$(label): the spectral rule resolves into a table at compile, so its provenance " *
+                            "entry should read kind :table; it reads kind $(repr(s.kind))")
                         println("series ", label, ": ", s.kind, ", ", n, " entries, rms = ", rms, ", sigma = ", sigma,
                                 ", ratio = ", rms / sigma, " (no pin: band-limited sum, the finite-run rms wanders)")
                     end
@@ -1186,6 +1399,11 @@ else
         # Appended AFTER the pre-2026-10-15 fields, so a parser of the fields
         # above reads them unchanged (the header's note on the line).
         " record=", record_turn_modulation,
-        isempty(series_fields) ? "" : " " * join(series_fields, " "))
+        isempty(series_fields) ? "" : " " * join(series_fields, " "),
+        # The spectral rule's preset, band and amplitudes (2026-10-16), after
+        # every earlier field for the same reason; none under the other rules.
+        " spectrum=", cn.rule === :spectral ? string(cn.spectrum) : "none",
+        " band=", cn.rule === :spectral ? "$(cn.band[1]),$(cn.band[2])" : "none",
+        " amplitudes=", cn.rule === :spectral ? string(cn.amplitudes) : "none")
     println(summary)
 end

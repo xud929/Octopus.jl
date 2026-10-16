@@ -210,10 +210,54 @@ parameters as scalars, one rule or `nothing` each
 ?WhiteNoise
 ?PinkNoise
 ?TurnTable
+?SpectralNoise
+?spectral_turn_table
 ?update
 ?update_line
 ?realize
 ?turn_modulation_provenance
+```
+
+Noise of a chosen spectrum (design `docs/design/spectral_turn_table.md`,
+owner decisions 2026-10-15 and 2026-10-16): the fourth rule, `SpectralNoise(sigma,
+band, spectrum; rng_id = 0, turns, amplitudes = :fixed, f_rev = nothing)`, is
+the spec-level form -- `rng_id` claimed at construction as for `WhiteNoise`,
+`turns` mandatory -- and resolves when the line COMPILES into the `TurnTable`
+that `spectral_turn_table(spectrum, sigma, band; turns, seed, rng_id,
+slot = 0, amplitudes = :fixed, f_rev = nothing, T = Float64, name = nothing)`,
+its offline form, returns for `seed = global_rng_seed()`, the rule's `rng_id`
+and the entry's slot: at run time it IS a table (D7, the window check, the
+recorder and the provenance unchanged, kind `table`, the canonical name
+`spectral(<label>; sigma=.., band=.., turns=.., seed=.., rng_id=.., slot=.., amplitudes=..)`
+beside the digest). `spectrum` is a preset (`:flat`, `:pink`) or `"<label>" =>
+S` with `S(f) >= 0` the one-sided POWER SPECTRAL DENSITY shape; the bin
+amplitude is `sqrt(S(f_k))`, so `f -> 1/f` is pink, while `1/f` handed as an
+amplitude -- the custom PSD `f -> 1/f^2` -- is brown, one unit per octave
+steeper (the classic trap; the suite pins it). `band = (lb, ub)` is in cycles
+per turn with `0 < lb < ub <= 1/2` (hertz with `f_rev`; the DC bin is never
+in the band); the phases are the counter RNG keyed on `(seed, rng_id, slot,
+bin)`, `slot` the table's slot on its element -- `0` for an offline table;
+for a rule the slot it realises on (crab cavity: phase harmonic `i` is slot
+`i`, strength harmonic `i` slot `N + i`; RF cavity: phase 1, strength 2) --
+so one `rng_id` on several slots of one cavity gives independent tables, as
+it gives the live rules independent draws per entry, while two cavities
+sharing an explicit id resolve to identical tables slot for slot and the task
+constructor's shared-id warning fires (to regenerate a resolved table
+offline, pass the slot its name records); with `amplitudes = :fixed` the rms over the table's period is `sigma` and the
+periodogram the target EXACTLY (fixed bin amplitudes, Gaussian only in the
+limit of many bins), with `:rayleigh` `sigma` is the EXPECTED rms of a
+stationary Gaussian process whose periodogram scatters exponentially around
+the target. The rule takes the global seed in force when the line compiles
+(the first `execute!`, or a recompile after a knob assignment), unlike the
+live rules, which read it every turn; the name records the seed used. The
+offline table claims no stream, so `rng_id = 0` is refused there and the task
+constructor's equal-digest warning is its only sharing check (two tables of
+one `(seed, rng_id, slot)` over one band are the same noise):
+
+```julia
+set_global_rng!(seed = 42); rule = SpectralNoise(1.0e-5, (1.0e-4, 1.0e-2), :pink; rng_id = 7, turns = 2^20)
+cavity = ThinCrabCavitySpec{1}(394.0e6; strengthX = (2.0e-3,), phase = (0.0,), phase_noise = (rule,))   # phase_noise[1] is slot 1
+table = spectral_turn_table(:pink, 1.0e-5, (1.0e-4, 1.0e-2); turns = 2^20, seed = 42, rng_id = 7, slot = 1)   # the same table, offline
 ```
 
 Offset semantics (owner decision 2026-10-15, stage 0 of
@@ -238,7 +282,8 @@ every turn; the rules are realised only by a task's `execute!`, which calls
 
 The production-shaped precedent is `examples/crab_cavity_noise.jl`: the EIC
 weak-strong crab crossing with RF phase and amplitude noise on both proton
-crab cavities, white, pink or a tabulated record through one switch, each
+crab cavities, white, pink, a tabulated record or a spectral rule
+(`SpectralNoise`) through one switch, each
 cavity on independent streams (harness `test/examples/crab_cavity_noise.jl`,
 study `validation/crab_cavity_noise_response.jl`); the physics it measures
 is derived in `docs/theory/crab_cavity_noise_response.md`. The example also
@@ -255,7 +300,16 @@ run whose series are short, whose white rms leaves
 `max(10 %, 5/sqrt(2 turns))` of its sigma or whose table series differ
 from the record, and appends `record=` and `rms_*` fields to its
 `CRAB-NOISE` line (record
-`docs/history/turn_modulation_record_2026_10_15.md`, section 3). To read the
+`docs/history/turn_modulation_record_2026_10_15.md`, section 3). Under
+`OCTOPUS_NOISE_RULE=spectral` the harness reads three more toggles,
+`OCTOPUS_SPECTRUM` (`flat` or `pink`), `OCTOPUS_BAND` (`<lb>,<ub>` in cycles
+per turn) and `OCTOPUS_SPECTRAL_AMPLITUDES` (`fixed` or `rayleigh`), refused
+under any other rule; it builds a `SpectralNoise` per slot, checks every
+recorded series bitwise against the factory's table for the run's global
+seed, the slot's `rng_id` and its slot, and appends the trailing fields
+`spectrum= band= amplitudes=` to the `CRAB-NOISE` line (`none` under the
+other rules; record `docs/history/spectral_turn_table_2026_10_16.md`,
+section 3). To read the
 `:turn_modulation` execution receipt, the run's own statement of which
 elements and slots it realised and over which window, wrap the `execute!`
 call in `with_execution_audit` and filter `execution_receipts` -- outside an

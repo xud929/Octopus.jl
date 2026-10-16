@@ -240,13 +240,13 @@ _is_turn_rule(entry) = entry === nothing || entry isa AbstractTurnRule
         strengthX=ParamMeta(default=(), meaning="horizontal kick strength tuple of length N"),
         strengthY=ParamMeta(default=(), meaning="vertical kick strength tuple of length N"),
         phase=ParamMeta(unit="rad", default=(), meaning="phase tuple of length N"),
-        phase_noise=ParamMeta(unit="rad", default=(), meaning="per-harmonic turn-by-turn additive phase modulation, tuple of length N: each entry nothing (inactive) or a rule (WhiteNoise, PinkNoise, TurnTable) realised once per turn on the host by the TurnModulated wrap at compile_runtime, never read by the kernel; see src/elements/turn_modulated.jl"),
-        strength_noise=ParamMeta(default=(), meaning="per-harmonic turn-by-turn RELATIVE strength modulation, dimensionless, tuple of length N: each entry nothing or a rule whose realised per-turn value d scales BOTH planes' strengths of its harmonic, strengthX[i] (1 + d) and strengthY[i] (1 + d) -- one voltage driver per cavity (relative, 2026-10-15); a WhiteNoise sigma is the relative rms itself and a TurnTable holds relative factors"),
+        phase_noise=ParamMeta(unit="rad", default=(), meaning="per-harmonic turn-by-turn additive phase modulation, tuple of length N: each entry nothing (inactive) or a rule (WhiteNoise, PinkNoise, TurnTable, SpectralNoise -- the last resolving to a TurnTable at compile_runtime) realised once per turn on the host by the TurnModulated wrap at compile_runtime, never read by the kernel; see src/elements/turn_modulated.jl"),
+        strength_noise=ParamMeta(default=(), meaning="per-harmonic turn-by-turn RELATIVE strength modulation, dimensionless, tuple of length N: each entry nothing or a rule whose realised per-turn value d scales BOTH planes' strengths of its harmonic, strengthX[i] (1 + d) and strengthY[i] (1 + d) -- one voltage driver per cavity (relative, 2026-10-15); a WhiteNoise or PinkNoise sigma is the relative rms itself, a TurnTable holds relative factors and a SpectralNoise resolves at compile to such a table"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = ThinCrabCavitySpec{2}(1.0e8; strengthX=(1.0, 0.5), strengthY=(0.25, 0.125), phase=(0.0, 0.1))
-    construction_help = "Friendly constructor: ThinCrabCavitySpec{N}(frequency; strengthX, strengthY, phase, phase_noise, strength_noise, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:thin_crab_cavity}(; N=N, frequency=frequency, strengthX=strengthX, strengthY=strengthY, phase=phase, phase_noise=phase_noise, strength_noise=strength_noise, tracking_method=tracking_method, kwargs...). Harmonic tuples must have length N; omitted tuples are filled with zeros. Turn-by-turn modulation: phase_noise and strength_noise are per-harmonic tuples of length N whose entries are nothing (inactive, the default when the keyword is omitted or ()) or a rule, WhiteNoise(sigma; rng_id), PinkNoise(sigma; rng_id, octaves) or TurnTable(offsets; name); the rule's realised per-turn value is applied once per turn by the TurnModulated wrap that compile_runtime builds, never by the kernel: an offset in rad added to the phase for phase_noise; for strength_noise a dimensionless relative factor d scaling both planes of its harmonic, strengthX[i] (1 + d) and strengthY[i] (1 + d) -- one voltage driver per cavity, so a WhiteNoise sigma is the relative rms itself and a TurnTable holds relative factors (relative, 2026-10-15). The whole keyword must be a tuple or vector of N entries or (): a bare nothing (the RF cavity's scalar spelling of inactive) is refused at construction and at compile, not read as all-inactive; a PinkNoise on a cavity with more than 32 harmonics is refused at compile (the pink stride of the counter-RNG keying). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: ThinCrabCavitySpec{N}(frequency; strengthX, strengthY, phase, phase_noise, strength_noise, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:thin_crab_cavity}(; N=N, frequency=frequency, strengthX=strengthX, strengthY=strengthY, phase=phase, phase_noise=phase_noise, strength_noise=strength_noise, tracking_method=tracking_method, kwargs...). Harmonic tuples must have length N; omitted tuples are filled with zeros. Turn-by-turn modulation: phase_noise and strength_noise are per-harmonic tuples of length N whose entries are nothing (inactive, the default when the keyword is omitted or ()) or a rule, WhiteNoise(sigma; rng_id), PinkNoise(sigma; rng_id, octaves), TurnTable(offsets; name) or SpectralNoise(sigma, band, spectrum; rng_id, turns), which resolves to a TurnTable when the line compiles; the rule's realised per-turn value is applied once per turn by the TurnModulated wrap that compile_runtime builds, never by the kernel: an offset in rad added to the phase for phase_noise; for strength_noise a dimensionless relative factor d scaling both planes of its harmonic, strengthX[i] (1 + d) and strengthY[i] (1 + d) -- one voltage driver per cavity, so a WhiteNoise sigma is the relative rms itself and a TurnTable holds relative factors (relative, 2026-10-15). The whole keyword must be a tuple or vector of N entries or (): a bare nothing (the RF cavity's scalar spelling of inactive) is refused at construction and at compile, not read as all-inactive; a PinkNoise on a cavity with more than 32 harmonics is refused at compile (the pink stride of the counter-RNG keying). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end
 
 @inline function _cavity_get(cavity, row::Integer, harmonic::Integer)
@@ -290,13 +290,16 @@ end
 The rule container `TurnModulated` carries for a `ThinCrabCavity{N}`: one
 entry per harmonic for the phase (`phase_noise`, an offset in rad) and one per
 harmonic for the strength (`strength_noise`, a dimensionless relative factor),
-each `nothing` (inactive) or a rule (`WhiteNoise`, `PinkNoise`, `TurnTable`).
+each `nothing` (inactive) or a rule (`WhiteNoise`, `PinkNoise`, `TurnTable`; a
+`SpectralNoise` has resolved to a `TurnTable` by the time the container is built).
 One realised strength factor `d` per harmonic scales BOTH planes' strengths,
 `strengthX[i] (1 + d)` and `strengthY[i] (1 + d)`, which is what one cavity
 voltage does (relative, 2026-10-15; before, one absolute offset was added to
 both planes). Slot numbering handed to `_turn_offset`: harmonic `i`
 of the phase is slot `i`, of the strength slot `N + i`, so one `rng_id` shared
-by every entry of one cavity still draws independently per entry.
+by every entry of one cavity still draws independently per entry (a
+`SpectralNoise` resolves under the same slot, so its tables are independent
+per entry too).
 """
 struct CrabCavityNoise{P<:Tuple,S<:Tuple}
     phase::P
@@ -356,7 +359,14 @@ end
 The crab cavity's method of the compile-time wrap: `inner` itself when every
 `phase_noise` and `strength_noise` entry is `nothing`, otherwise
 `TurnModulated(inner, CrabCavityNoise(phase_rules, strength_rules))`. Both
-parameters pass through `_rule_tuple` here as well, so a raw spec is checked.
+parameters pass through `_rule_tuple` here as well, so a raw spec is checked,
+and then through `_resolve_turn_rules`, which turns every `SpectralNoise` into
+the `TurnTable{T}` it synthesises under the global seed in force, its claimed
+`rng_id` and the entry's slot -- phase harmonic `i` is slot `i`, strength
+harmonic `i` slot `N + i`, the numbering of `_slot_rules` and of `realize`, so
+one `rng_id` on several entries gives independent tables as it gives the live
+rules independent draws (review F1, 2026-10-16) -- and the container never
+holds the spec-level rule.
 A rule bound to a numeric type (`_rule_numeric_type`, a `TurnTable{T′}`) other
 than the cavity's `T` is refused with an `ArgumentError` rather than promoted.
 `inner` is the NOMINAL cavity: a knob-driven `phase` has already resolved
@@ -364,8 +374,15 @@ into it, and the rule's realised value is applied at run time on top of it
 (added to the phase, scaling the strengths as `S (1 + d)`).
 """
 function _turn_modulation_wrap(spec::ElementSpec{:thin_crab_cavity}, inner::ThinCrabCavity{N,M,T}) where {N,M,T}
-    phase_rules = _rule_tuple(Val(N), getparam(spec, :phase_noise, ()), :phase_noise)
-    strength_rules = _rule_tuple(Val(N), getparam(spec, :strength_noise, ()), :strength_noise)
+    # Resolution (src/elements/turn_modulated.jl, `_resolve_turn_rule`): a
+    # `SpectralNoise` entry becomes its `TurnTable{T}` here, under the global
+    # seed in force, the rule's claimed rng_id and the entry's slot (phase
+    # harmonic i is slot i, strength harmonic i slot N + i); every other
+    # entry passes.
+    phase_rules = _resolve_turn_rules(
+        _rule_tuple(Val(N), getparam(spec, :phase_noise, ()), :phase_noise), 1, T)
+    strength_rules = _resolve_turn_rules(
+        _rule_tuple(Val(N), getparam(spec, :strength_noise, ()), :strength_noise), N + 1, T)
     if all(r -> r === nothing, phase_rules) && all(r -> r === nothing, strength_rules)
         return inner
     end

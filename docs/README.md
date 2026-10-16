@@ -112,14 +112,22 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   no switch on the audit, no new reader name, no asynchronous writer; the
   one-particle probe with three comparisons is the verification.
 - [`spectral_turn_table.md`](design/spectral_turn_table.md) — a spectral
-  producer for `TurnTable` (designed 2026-10-15 in owner discussion, not
-  implemented): one function that synthesises a per-turn table from a
+  producer for `TurnTable` (designed 2026-10-15 in owner discussion; stage 1
+  in progress 2026-10-16, record
+  `history/spectral_turn_table_2026_10_16.md`): one function that
+  synthesises a per-turn table from a
   target power spectral density shape (presets `:flat` and `:pink`, or a
   labelled function), a band in modulation tunes, an rms normalised
-  analytically, Philox phases from a mandatory seed and stream, and a
+  analytically (exact with fixed bin amplitudes, expected with Rayleigh
+  ones), Philox phases from a mandatory seed and stream, and a
   canonical provenance name; promotes `turn_modulation.md` section 6's
-  sketch to the library on the producer's side of D7; six open questions
-  for the owner.
+  sketch to the library on the producer's side of D7; six open questions,
+  decided by the owner 2026-10-16 (the dated lines under its section 9; Q3
+  adds the keyword `amplitudes = :fixed | :rayleigh`, `:fixed` the
+  default); D11 (owner decision 2026-10-16) makes the entry point in a line
+  a spec-level rule, `SpectralNoise`, with the interface of `WhiteNoise`
+  and `PinkNoise`, resolved into a `TurnTable` when the line compiles
+  through the function, which stays for offline tables.
 
 ## Development guides (`guides/`)
 
@@ -513,6 +521,26 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   phase, randomised initial coordinates with the seed logged, the three
   comparisons under CPU threads, CUDA and the MPI policy with two ranks) and
   its numbers; the examples update; the gate; the ledger.
+- [`spectral_turn_table_2026_10_16.md`](history/spectral_turn_table_2026_10_16.md) —
+  stage 1 of `design/spectral_turn_table.md`, the spectral producer for
+  `TurnTable` (in progress 2026-10-16): the exported factory
+  `spectral_turn_table` and the spec-level rule `SpectralNoise` resolved
+  through it when the line compiles (D11), synthesising a per-turn table
+  from a power spectral density shape over a band of modulation tunes, with
+  Philox phases from the seed and the rule's `rng_id`, fixed or Rayleigh
+  bin amplitudes (the keyword `amplitudes`, the owner's Q3 decision of
+  2026-10-16) and an rms normalised analytically; the equal-digest warning
+  at the task constructor; the testsets holding the design's verification
+  checks (exact rms and periodogram, the Rayleigh statistics, the pink
+  slope, equality with the owner's generator, reproducibility and
+  independence, the refusals by name, the provenance name, the producer and
+  the consumer together through the recorder, the tie between the rule and
+  the factory, the CUDA arm); the examples update (the
+  `:spectral` rule value in the example and the harness, the catalogue
+  entry, the validation's `spectral` item); the review and its fixes; the
+  two-arm gate with the arms run one after the other; the ledger. Its
+  bracketed `[...: pending]` markers are filled as the batch's agents
+  report.
 - [`twiss_dispersion_degeneracy_theory_2026_09_11.md`](history/twiss_dispersion_degeneracy_theory_2026_09_11.md) —
   derivation record for theory Section 13 (mode degeneracy) and the analysis
   design note: provenance of the ported working notes and the convention key,

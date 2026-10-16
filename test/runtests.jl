@@ -10404,12 +10404,17 @@ end
     # test's SINGLE declared list, pinned against the derived set in both
     # directions, so a fourth rule fails here by name.
     # (the table holds two turns so part (k) below can realise it at turns 0
-    # and 1; nothing in (i) reads its length)
+    # and 1; nothing in (i) reads its length; the spectral rule's 64-turn
+    # table covers them and its 32 bins sit at the few-bins warning's edge,
+    # silent -- 2026-10-16, the fourth rule: it resolves to a TurnTable at
+    # compile, so its own `_turn_offset` refuses by name and (k) compares the
+    # draw against the slot's COMPILED rule)
     rule_instances = Dict{Any,Any}(WhiteNoise => WhiteNoise(1.0; rng_id=1),
                                    PinkNoise => PinkNoise(1.0; rng_id=1),
-                                   TurnTable => TurnTable([0.0, 0.0]))
+                                   TurnTable => TurnTable([0.0, 0.0]),
+                                   SpectralNoise => SpectralNoise(1.0, (1 / 64, 0.5), :flat; rng_id=1, turns=64))
     derived_rules = Set(Any[Octopus._concrete_octopus_subtypes(Octopus.AbstractTurnRule)...])
-    @test derived_rules == Set(Any[WhiteNoise, PinkNoise, TurnTable])
+    @test derived_rules == Set(Any[WhiteNoise, PinkNoise, TurnTable, SpectralNoise])
     @test Set(Any[keys(rule_instances)...]) == derived_rules
     owns_rule_method(f, pos, R) = any(methods(f)) do m
         P = Base.unwrap_unionall(m.sig).parameters
@@ -10450,9 +10455,10 @@ end
     # by the same wrap). The set of modulated kinds is DERIVED from the methods
     # of `_turn_modulation_wrap` whose spec parameter is narrower than Any and
     # pinned in both directions against the two known kinds. Every member must
-    # declare the `:turn_modulation` keyword and both rule parameters (the
-    # `phase_noise` meaning naming every rule of the derived catalogue, with the
-    # rad unit; the `strength_noise` meaning naming the rule shape), mention
+    # declare the `:turn_modulation` keyword and both rule parameters (both
+    # meanings naming every rule of the derived catalogue, the `phase_noise`
+    # one with the rad unit; review F4, 2026-10-16: the strength meanings
+    # were unchecked and the crab's had lost PinkNoise), mention
     # both in `construction_help`, hold both exemption rows of the
     # effectiveness contract (`DEFAULT_INACTIVE_ELEMENT_PARAMS`), own a specific
     # `_turn_rule_values` method, and compile its registered example with a
@@ -10484,6 +10490,10 @@ end
                       occursin(string(nameof(R)), schema_k.phase_noise.meaning)
             end
             @test haskey(schema_k, :strength_noise) && occursin("rule", schema_k.strength_noise.meaning)
+            for R in derived_rules
+                @test haskey(schema_k, :strength_noise) &&
+                      occursin(string(nameof(R)), schema_k.strength_noise.meaning)
+            end
             help_k = construction_help(K)
             @test occursin("phase_noise", help_k) && occursin("strength_noise", help_k)
             # ...and names every rule of the derived catalogue: the per-rule
@@ -10589,7 +10599,13 @@ end
                     @test length(r3) == 3 && r3[1] === realised && r3[2] === successor
                     draws_k = r3[3]
                     @test draws_k isa Tuple && length(draws_k) == length(Octopus._slot_rules(wk.rule))
-                    @test draws_k[1] === Octopus._turn_offset(rule_k, ctx_k, 1, typeof(draws_k[1]))[1]
+                    # The first slot's rule AS COMPILED: a live rule or a table is the
+                    # instance itself; a `SpectralNoise` has resolved to the `TurnTable`
+                    # the slot now holds (2026-10-16), the spec-level rule never
+                    # realising a turn (its own `_turn_offset` refuses by name).
+                    slot1_k = first(Octopus._slot_rules(wk.rule))[2]
+                    @test R === SpectralNoise ? slot1_k isa TurnTable : slot1_k === rule_k
+                    @test draws_k[1] === Octopus._turn_offset(slot1_k, ctx_k, 1, typeof(draws_k[1]))[1]
                     noms_k = Octopus._slot_nominals(wk.rule, wk.base)
                     @test noms_k isa Tuple && length(noms_k) == length(Octopus._slot_rules(wk.rule))
                     @test all(n -> n isa NamedTuple && haskey(n, :phase), noms_k)
@@ -10719,6 +10735,844 @@ end
     @test Octopus._check_slot_table(table(65, WhiteNoise(1.0; rng_id=7), 65)) === nothing
     @test Octopus._check_slot_table(table(64, PinkNoise(1.0; rng_id=7), 64)) === nothing
     @test Octopus._check_slot_table(()) === nothing
+end
+
+@testset "Spectral turn table: exact spectrum, rms, phases and refusals" begin
+    # docs/design/spectral_turn_table.md (owner's go-ahead 2026-10-15, stage 1
+    # 2026-10-16): the producer side of the table rule's D7 boundary --
+    # `spectral_turn_table`, the offline synthesis, and `SpectralNoise`, the
+    # spec-level rule that resolves into that table at compile -- through the
+    # note's section 6 checks 1 to 5 plus the `amplitudes = :rayleigh` keyword
+    # of the owner's Q3 decision (2026-10-16). Every tolerance is stated at its
+    # pin; the statistical ones are derived in the comments below from the
+    # construction, not fitted. The RED EVIDENCE is the negative controls --
+    # the pink table against the flat periodogram, the flat table against the
+    # pink slope, the D2 amplitude trap (`1/f` handed as an amplitude) against
+    # the slope, the Rayleigh table against the exact periodogram, a two-bin
+    # table against Gaussian kurtosis -- each asserted to FAIL the pin it
+    # mirrors by a stated margin; on the main checkout the function is absent,
+    # so running this block there errors rather than informs.
+    #
+    # Rayleigh tolerances (owner corrections 2026-10-16, from a 200-draw
+    # simulation): the per-bin ratio periodogram/(c^2 S) of a Rayleigh table is
+    # Exp(1), so its band mean is 1 with sd 1/sqrt(K) -> pinned within
+    # 5/sqrt(K); its sample variance is 1 with sd sqrt(8/K) -> within
+    # 5 sqrt(8/K); the realised rms scatters by 1/(2 sqrt(K_eff)) of sigma
+    # with K_eff = (sum w_k)^2 / sum w_k^2 over the band weights w_k = 2 a_k^2
+    # (Nyquist 1 a_k^2), K for a flat band and about 294 of 32765 bins for the
+    # pink band (its power sits in the lowest bins) -> within 5/(2 sqrt(K_eff));
+    # the time-series excess kurtosis of a wide FLAT Rayleigh table has sd
+    # about 0.015 -> within 0.15 of 0 (a ten-sigma band), while the pink one
+    # has sd about 0.066 and is printed, not pinned. The sample correlation of
+    # two tables of one spectrum with independent phases is a weighted mean of
+    # cos(dphi_k): sd 1/sqrt(2 K_eff) for fixed amplitudes (the note's
+    # 4/sqrt(N) is this bound for a full-band flat table, K_eff = N/2) and
+    # about 1/sqrt(K_eff) for Rayleigh ones (E rho^4 = 2).
+    sp_N = 2^16
+    sp_sigma = 1.0e-5
+    sp_seed, sp_id = 2026, 11
+    sp_rfft = Octopus.FFTW.rfft
+    sp_bins(lb, ub, N) = [k for k in 1:N÷2 if lb <= k / N <= ub]
+    sp_weights(S, ks, N) = [((iseven(N) && k == N ÷ 2) ? 1.0 : 2.0) * S(k / N) for k in ks]
+    # The D5 scale, re-derived from the note -- sigma N / sqrt(2 sum_interior a^2 + a_Nyquist^2) -- never read from the code.
+    sp_scale(S, ks, N, sigma) = sigma * N / sqrt(sum(sp_weights(S, ks, N)))
+    sp_keff(S, ks, N) = (w = sp_weights(S, ks, N); sum(w)^2 / sum(abs2, w))
+    sp_rms(x) = (m = sum(x) / length(x); sqrt(sum(abs2, x .- m) / length(x)))
+    sp_periodogram(x) = abs2.(sp_rfft(x))          # bin k at index k + 1
+    sp_corr(a, b) = (ma = sum(a) / length(a); mb = sum(b) / length(b);
+                     sum((a .- ma) .* (b .- mb)) / sqrt(sum(abs2, a .- ma) * sum(abs2, b .- mb)))
+    sp_kurt(v) = (m = sum(v) / length(v); d = v .- m;
+                  (sum(d .^ 4) / length(v)) / (sum(d .^ 2) / length(v))^2 - 3)
+    sp_err(f) = try f(); nothing catch e; e end
+    sp_msg(err) = err === nothing ? "" : err isa ArgumentError ? err.msg : sprint(showerror, err)   # the message itself, without the type prefix
+    sp_shapes = (flat = f -> 1.0, pink = f -> 1.0 / f)   # the note's D2 shapes, the expectation the presets must meet
+
+    # (a) The preset table is the one source: the note's two shapes, the two
+    # docstrings derived from it (`?spectral_turn_table`, `?SpectralNoise`
+    # render and name every preset and the D2 trap), the unknown-preset
+    # refusal listing it.
+    @test Tuple(keys(Octopus._SPECTRAL_PRESETS)) == (:flat, :pink)
+    for (k, p) in pairs(Octopus._SPECTRAL_PRESETS), f in (1.0e-4, 0.25, 0.5)
+        @test p.S(f) == sp_shapes[k](f)
+        @test occursin(p.label, string(k))
+    end
+    for nm in (:spectral_turn_table, :SpectralNoise)
+        d = string(Base.Docs.doc(Base.Docs.Binding(Octopus, nm)))
+        @testset let documented = nm
+            @test !occursin("No documentation found", d)
+            @test all(occursin(":" * String(k), d) for k in keys(Octopus._SPECTRAL_PRESETS))
+            @test occursin("brown", d) && occursin("sqrt", d)
+        end
+    end
+    @test :spectral_turn_table in names(Octopus) && :SpectralNoise in names(Octopus)
+
+    # Check 1 on one table: the population rms equals sigma within 1e-12
+    # relative, the periodogram over c^2 equals S(f_k) within 1e-10 relative on
+    # every band bin, every bin outside the band is below 1e-12 of the band
+    # peak, the DC bin too and the mean is zero to rounding (measured 1.6e-17
+    # of sigma; pinned at 1e-12).
+    function sp_check1(x, S, lb, ub, N, sigma; label)
+        ks = sp_bins(lb, ub, N)
+        c = sp_scale(S, ks, N, sigma)
+        P = sp_periodogram(x)
+        inband = falses(N ÷ 2 + 1)
+        for k in ks
+            inband[k + 1] = true
+        end
+        rel = maximum(abs(P[k + 1] / c^2 - S(k / N)) / S(k / N) for k in ks)
+        peak = maximum(P[k + 1] for k in ks)
+        outside = maximum(P[.!inband]) / peak
+        @testset let table = label, bins = length(ks), rms_rel = sp_rms(x) / sigma - 1,
+                     periodogram_rel = rel, outside_over_peak = outside, dc_over_peak = P[1] / peak,
+                     mean_over_sigma = (sum(x) / N) / sigma
+            @test length(x) == N
+            @test abs(rms_rel) <= 1.0e-12
+            @test periodogram_rel <= 1.0e-10
+            @test outside_over_peak <= 1.0e-12
+            @test dc_over_peak <= 1.0e-12
+            @test abs(mean_over_sigma) <= 1.0e-12
+        end
+        return (c = c, ks = ks, P = P, rel = rel, inband = inband)
+    end
+
+    # (b) Check 1: `:flat` over (1e-3, 1e-2) and `:pink` over (2^-14, 1/2) at
+    # N = 2^16 (590 and 32765 bins; the pink band ends on the Nyquist bin,
+    # which counts once), plus the small Nyquist case N = 64 over (1/64, 1/2):
+    # exactly 32 bins, so no few-bins warning, and the Nyquist weight 1 is
+    # what makes its rms exact (weight 2 there would miss sigma by 0.8 %).
+    cases = (("flat", :flat, sp_shapes.flat, 1.0e-3, 1.0e-2), ("pink", :pink, sp_shapes.pink, 2.0^-14, 0.5))
+    tables = Dict{String,Any}()
+    for (label, preset, S, lb, ub) in cases
+        t = spectral_turn_table(preset, sp_sigma, (lb, ub); turns=sp_N, seed=sp_seed, rng_id=sp_id)
+        @test t isa TurnTable{Float64}
+        tables[label] = (t, sp_check1(t.offsets, S, lb, ub, sp_N, sp_sigma; label=label))
+    end
+    for (label, preset, S) in (("flat N=64 Nyquist", :flat, sp_shapes.flat), ("pink N=64 Nyquist", :pink, sp_shapes.pink))
+        t64 = @test_logs spectral_turn_table(preset, sp_sigma, (1 / 64, 0.5); turns=64, seed=sp_seed, rng_id=sp_id)
+        r64 = sp_check1(t64.offsets, S, 1 / 64, 0.5, 64, sp_sigma; label=label)
+        @test length(r64.ks) == 32 && r64.ks[end] == 32
+        @test abs(imag(sp_rfft(t64.offsets)[33])) <= 1.0e-12 * abs(sp_rfft(t64.offsets)[33])   # the Nyquist entry is real
+    end
+    # the Nyquist bin sign follows the phase: + when cos(phi) >= 0
+    t_nyq = @test_logs spectral_turn_table(:flat, 1.0, (1 / 64, 0.5); turns=64, seed=sp_seed, rng_id=sp_id)
+    phi_nyq = 2pi * Octopus.octopus_uniform01(UInt64(sp_seed), Octopus.RNG_PHILOX, 0, UInt64(sp_id), 32, 1, Float64)
+    @test sign(real(sp_rfft(t_nyq.offsets)[33])) == (cos(phi_nyq) >= 0 ? 1.0 : -1.0)
+
+    # (c) Check 2, the slope: power per octave band (bins 2^j .. 2^(j+1) - 1)
+    # over the twelve FULL octaves of (2^-14, 1/2) at N = 2^16, j = 2..13
+    # (the top octave [2^14, 2^15] ends on the band's closed Nyquist edge and
+    # is excluded); least-squares slope of log2(power) per octave within 0.02
+    # of 0 for the pink table (measured -0.0083). The factory has no ripple:
+    # the per-bin periodogram is exactly c^2 N/k (check 1), so the octave sums
+    # are exactly c^2 N H(2^j, 2^(j+1) - 1), and the only departure from flat
+    # is the discrete harmonic sum (the lowest octave's sum_{k=4}^{7} 1/k is
+    # 1.096 ln 2, a step of log2 -0.066 to the next, halving per octave); the
+    # measured slope equals that expectation to 1e-9. Negative controls: the
+    # `:flat` table's slope is +1 exactly (2^j bins at equal power) and the D2
+    # trap -- `1/f` as an AMPLITUDE, i.e. the custom PSD `f -> 1/f^2` -- gives
+    # -1.017, one unit per octave steeper; both fail the pink pin by 50 times
+    # its tolerance.
+    sp_octave(P, j) = sum(P[k + 1] for k in 2^j:2^(j + 1) - 1)
+    function sp_slope(y)
+        x = collect(0.0:length(y) - 1)
+        xm, ym = sum(x) / length(x), sum(y) / length(y)
+        return sum((x .- xm) .* (y .- ym)) / sum(abs2, x .- xm)
+    end
+    y_pink = [log2(sp_octave(tables["pink"][2].P, j)) for j in 2:13]
+    y_expected = [log2(sum(1 / k for k in 2^j:2^(j + 1) - 1)) for j in 2:13]
+    slope_pink = sp_slope(y_pink)
+    @testset let slope = slope_pink, expected = sp_slope(y_expected), steps = round.(diff(y_pink); digits=4)
+        @test abs(slope) <= 0.02
+        @test abs(slope - expected) <= 1.0e-9
+        @test maximum(abs.(y_pink .- y_expected .- (sum(y_pink) - sum(y_expected)) / 12)) <= 1.0e-9
+    end
+    t_flat_wide = spectral_turn_table(:flat, sp_sigma, (2.0^-14, 0.5); turns=sp_N, seed=sp_seed, rng_id=sp_id)
+    slope_flat = sp_slope([log2(sp_octave(sp_periodogram(t_flat_wide.offsets), j)) for j in 2:13])
+    t_brown = spectral_turn_table("brown" => f -> 1 / f^2, sp_sigma, (2.0^-14, 0.5); turns=sp_N, seed=sp_seed, rng_id=sp_id)
+    slope_brown = sp_slope([log2(sp_octave(sp_periodogram(t_brown.offsets), j)) for j in 2:13])
+    @testset let negative_control = "slopes", flat = slope_flat, brown = slope_brown
+        @test abs(slope_flat - 1.0) <= 1.0e-9
+        @test abs(slope_flat) > 0.02 * 50
+        @test abs(slope_brown + 1.0) <= 0.05
+        @test abs(slope_brown) > 0.02 * 50
+    end
+    @test t_brown.name == "spectral(brown; sigma=1.0e-5, band=6.103515625e-5..0.5, turns=65536, seed=2026, rng_id=11, slot=0, amplitudes=fixed)"
+
+    # (d) Negative control for check 1: the pink table against the FLAT
+    # comparison (its band bins span a factor 8192 in power) misses by more
+    # than 0.5 relative where the pin is 1e-10, and the flat table against the
+    # pink shape likewise.
+    let rp = tables["pink"][2], rf = tables["flat"][2]
+        c_flat = sp_scale(sp_shapes.flat, rp.ks, sp_N, sp_sigma)
+        @test maximum(abs(rp.P[k + 1] / c_flat^2 - 1.0) for k in rp.ks) > 0.5
+        c_pink = sp_scale(sp_shapes.pink, rf.ks, sp_N, sp_sigma)
+        @test maximum(abs(rf.P[k + 1] / c_pink^2 - sp_shapes.pink(k / sp_N)) / sp_shapes.pink(k / sp_N) for k in rf.ks) > 0.5
+    end
+
+    # (e) Check 3: the owner's generator (the note's section 1), written here
+    # with `rand()` replaced by the injected Philox phase of the same bin and
+    # `std` in population form, equals the `:flat` table over the same band to
+    # 1e-12 relative; its closed band selects exactly the factory's bins. This
+    # also pins the phase keying bit for bit: the factory's phases ARE
+    # 2 pi octopus_uniform01(seed, RNG_PHILOX, 0, rng_id, k, 1).
+    function sp_owner_noise(f0, bw, N, fs, sigma, phase)
+        f = Octopus.FFTW.rfftfreq(N, fs)
+        index = findall((f .>= f0 - bw / 2) .& (f .<= f0 + bw / 2))
+        A = zeros(Complex{Float64}, length(f))
+        A[index] .= [exp(1im * 2pi * phase(i - 1)) for i in index]   # bin k = i - 1
+        ret = Octopus.FFTW.irfft(A, N)
+        mu = sum(ret) / N
+        ret .*= sigma / sqrt(sum(abs2, ret .- mu) / N)
+        return ret, index .- 1
+    end
+    sp_phase(k) = Octopus.octopus_uniform01(UInt64(sp_seed), Octopus.RNG_PHILOX, 0, UInt64(sp_id), k, 1, Float64)
+    owner, owner_bins = sp_owner_noise(5.5e-3, 9.0e-3, sp_N, 1.0, sp_sigma, sp_phase)
+    x_flat = tables["flat"][1].offsets
+    @test owner_bins == tables["flat"][2].ks
+    @test maximum(abs.(owner .- x_flat)) <= 1.0e-12 * maximum(abs.(x_flat))
+    # ... and a table with the phases shifted by one bin is NOT the owner's
+    # (the comparison can fail): the same generator keyed on k + 1.
+    shifted, _ = sp_owner_noise(5.5e-3, 9.0e-3, sp_N, 1.0, sp_sigma, k -> sp_phase(k + 1))
+    @test maximum(abs.(shifted .- x_flat)) > 0.1 * maximum(abs.(x_flat))
+
+    # (f) Check 4: reproducibility and independence. Equal arguments give equal
+    # digests, offsets and the canonical name (D7; pinned as text, never a
+    # digest value, D9); rng_id + 1 and seed + 1 give different digests and a
+    # sample correlation within the derived bound; the note's 4/sqrt(N) is
+    # pinned on the table it describes, the full-band flat one; a band given in
+    # hertz with f_rev = 2^16 (an exact scaling) reproduces the tune table bit
+    # for bit with the tunes in the name; `T = Float32` converts at the end.
+    t_pink = tables["pink"][1]
+    t_again = spectral_turn_table(:pink, sp_sigma, (2.0^-14, 0.5); turns=sp_N, seed=sp_seed, rng_id=sp_id)
+    @test t_again.digest == t_pink.digest && t_again.offsets == t_pink.offsets && t_again.name == t_pink.name
+    @test t_pink.name == "spectral(pink; sigma=1.0e-5, band=6.103515625e-5..0.5, turns=65536, seed=2026, rng_id=11, slot=0, amplitudes=fixed)"
+    @test tables["flat"][1].name == "spectral(flat; sigma=1.0e-5, band=0.001..0.01, turns=65536, seed=2026, rng_id=11, slot=0, amplitudes=fixed)"
+    @test spectral_turn_table(:flat, sp_sigma, (1.0e-3, 1.0e-2); turns=sp_N, seed=sp_seed, rng_id=sp_id, name="mine").name == "mine"
+    t_next = spectral_turn_table(:pink, sp_sigma, (2.0^-14, 0.5); turns=sp_N, seed=sp_seed, rng_id=sp_id + 1)
+    t_seed = spectral_turn_table(:pink, sp_sigma, (2.0^-14, 0.5); turns=sp_N, seed=sp_seed + 1, rng_id=sp_id)
+    keff_pink = sp_keff(sp_shapes.pink, tables["pink"][2].ks, sp_N)
+    @testset let K = length(tables["pink"][2].ks), K_eff = keff_pink, corr_next = sp_corr(t_pink.offsets, t_next.offsets),
+                 corr_seed = sp_corr(t_pink.offsets, t_seed.offsets), bound = 4 / sqrt(2 * keff_pink)
+        @test t_next.digest != t_pink.digest && t_seed.digest != t_pink.digest && t_next.digest != t_seed.digest
+        @test abs(corr_next) <= bound       # measured -0.084 against 0.165 (K_eff 294 of 32765 bins)
+        @test abs(corr_seed) <= bound
+        @test abs(K_eff - 294.4) < 1.0
+    end
+    full = spectral_turn_table(:flat, sp_sigma, (1 / sp_N, 0.5); turns=sp_N, seed=sp_seed, rng_id=sp_id)
+    full_next = spectral_turn_table(:flat, sp_sigma, (1 / sp_N, 0.5); turns=sp_N, seed=sp_seed, rng_id=sp_id + 1)
+    @test length(sp_bins(1 / sp_N, 0.5, sp_N)) == sp_N ÷ 2
+    @test abs(sp_corr(full.offsets, full_next.offsets)) <= 4 / sqrt(sp_N)   # the note's bound: K_eff = N/2 here
+    t_hz = spectral_turn_table(:pink, sp_sigma, (2.0^-14 * 65536.0, 0.5 * 65536.0); turns=sp_N, seed=sp_seed, rng_id=sp_id, f_rev=65536.0)
+    @test t_hz.offsets == t_pink.offsets && t_hz.name == t_pink.name
+    t_hz_real = spectral_turn_table(:pink, sp_sigma, (100.0, 39100.0); turns=sp_N, seed=sp_seed, rng_id=sp_id, f_rev=78.2e3)
+    sp_check1(t_hz_real.offsets, sp_shapes.pink, 100.0 / 78.2e3, 39100.0 / 78.2e3, sp_N, sp_sigma; label="pink in hertz, f_rev 78.2 kHz")
+    @test occursin("band=$(repr(100.0 / 78.2e3))..$(repr(39100.0 / 78.2e3))", t_hz_real.name)
+    t_32 = spectral_turn_table(:pink, sp_sigma, (2.0^-14, 0.5); turns=sp_N, seed=sp_seed, rng_id=sp_id, T=Float32)
+    @test t_32 isa TurnTable{Float32} && t_32.offsets == Float32.(t_pink.offsets)
+    @test spectral_turn_table(:flat, 0, (1 / 32, 0.5); turns=1024, seed=1, rng_id=1).offsets == zeros(1024)   # sigma 0: a quiet table
+    # The `slot` keyword (review F1, 2026-10-16): the table's slot enters the
+    # bin keying as the counter RNG's turn field. `slot = 0` is the default
+    # and the offline table, bitwise the default's (its phases are the ones
+    # (e) pinned, turn field 0); slot 1 under the same (seed, rng_id) is
+    # another table, named `slot=1`, with the sample correlation of two
+    # independent tables of one spectrum (the bound above), its phases the
+    # documented draws with 1 in the turn field; slots 1 and 2 differ from
+    # each other likewise; the Rayleigh moduli follow the slot as the phases
+    # do. `_resolve_turn_rule` passes a rule's slot (the consumer testset).
+    t_slot0 = spectral_turn_table(:pink, sp_sigma, (2.0^-14, 0.5); turns=sp_N, seed=sp_seed, rng_id=sp_id, slot=0)
+    t_slot1 = spectral_turn_table(:pink, sp_sigma, (2.0^-14, 0.5); turns=sp_N, seed=sp_seed, rng_id=sp_id, slot=1)
+    t_slot2 = spectral_turn_table(:pink, sp_sigma, (2.0^-14, 0.5); turns=sp_N, seed=sp_seed, rng_id=sp_id, slot=2)
+    @test t_slot0.offsets == t_pink.offsets && t_slot0.digest == t_pink.digest && t_slot0.name == t_pink.name
+    @test occursin("rng_id=11, slot=0, amplitudes=fixed", t_pink.name)
+    @test t_slot1.name == replace(t_pink.name, "slot=0" => "slot=1") && t_slot2.name == replace(t_pink.name, "slot=0" => "slot=2")
+    @testset let K_eff = keff_pink, corr_01 = sp_corr(t_pink.offsets, t_slot1.offsets),
+                 corr_12 = sp_corr(t_slot1.offsets, t_slot2.offsets), bound = 4 / sqrt(2 * keff_pink)
+        @test t_slot1.digest != t_pink.digest && t_slot2.digest != t_pink.digest && t_slot2.digest != t_slot1.digest
+        @test abs(corr_01) <= bound
+        @test abs(corr_12) <= bound
+    end
+    ks_slot = tables["pink"][2].ks
+    X_slot1 = sp_rfft(t_slot1.offsets)
+    phase_slot1 = [cis(2pi * Octopus.octopus_uniform01(UInt64(sp_seed), Octopus.RNG_PHILOX, 1, UInt64(sp_id), k, 1, Float64)) for k in ks_slot]
+    @test maximum(abs(X_slot1[k + 1] / abs(X_slot1[k + 1]) - phase_slot1[j]) for (j, k) in enumerate(ks_slot) if k != sp_N ÷ 2) <= 1.0e-9
+    @test maximum(abs(X_slot1[k + 1] / abs(X_slot1[k + 1]) - sp_rfft(t_pink.offsets)[k + 1] / abs(sp_rfft(t_pink.offsets)[k + 1]))
+                  for k in ks_slot if k != sp_N ÷ 2) > 1.0          # the slot-0 phases are NOT slot 1's (the comparison can fail)
+    t_slot1_r = spectral_turn_table(:pink, sp_sigma, (2.0^-14, 0.5); turns=sp_N, seed=sp_seed, rng_id=sp_id, slot=1, amplitudes=:rayleigh)
+    rho_slot1 = [sqrt(sum(abs2, Octopus.octopus_normal_pair(UInt64(sp_seed), Octopus.RNG_PHILOX, 1, UInt64(sp_id), k, 2, Float64)) / 2) for k in ks_slot]
+    q_slot1 = [sp_rfft(t_slot1_r.offsets)[k + 1] / X_slot1[k + 1] for k in ks_slot]
+    @test maximum(abs(imag(z)) / abs(z) for z in q_slot1) <= 1.0e-10
+    @test maximum(abs.(real.(q_slot1) .- rho_slot1) ./ rho_slot1) <= 1.0e-10
+    @test t_slot1_r.name == replace(t_slot1.name, "amplitudes=fixed" => "amplitudes=rayleigh")
+
+    # (g) `amplitudes = :rayleigh` (owner Q3, 2026-10-16): the same phases bin
+    # for bin, the same scale c, Rayleigh moduli rho_k = |z_k| from the
+    # documented pair-2 draws, a stationary Gaussian process matching the
+    # target in expectation. The keyword's EFFECT is pinned by what the fixed
+    # table cannot do: the per-bin ratio periodogram/(c^2 S) has unit variance
+    # (the fixed table's is 0 to 1e-20), so the Rayleigh table FAILS check 1's
+    # exact-periodogram pin by more than 5e9 times its tolerance; dividing the
+    # moduli out recovers the fixed table's spectrum bin for bin.
+    rayleigh = Dict{String,Any}()
+    for (label, preset, S, lb, ub) in cases
+        tf, rf = tables[label]
+        tr = spectral_turn_table(preset, sp_sigma, (lb, ub); turns=sp_N, seed=sp_seed, rng_id=sp_id, amplitudes=:rayleigh)
+        rayleigh[label] = tr
+        ks, c = rf.ks, rf.c
+        K = length(ks)
+        keff = sp_keff(S, ks, sp_N)
+        Pr = sp_periodogram(tr.offsets)
+        ratio = [Pr[k + 1] / (c^2 * S(k / sp_N)) for k in ks]
+        mean_ratio = sum(ratio) / K
+        var_ratio = sum(abs2, ratio .- mean_ratio) / K
+        peak = maximum(Pr[k + 1] for k in ks)
+        Xf = sp_rfft(tf.offsets)
+        Xr = sp_rfft(tr.offsets)
+        q = [Xr[k + 1] / Xf[k + 1] for k in ks]
+        rho = [sqrt(sum(abs2, Octopus.octopus_normal_pair(UInt64(sp_seed), Octopus.RNG_PHILOX, 0, UInt64(sp_id), k, 2, Float64)) / 2)
+               for k in ks]
+        @testset let table = label * " rayleigh", K = K, K_eff = keff, mean_ratio = mean_ratio, var_ratio = var_ratio,
+                     rms_rel = sp_rms(tr.offsets) / sp_sigma - 1, outside_over_peak = maximum(Pr[.!rf.inband]) / peak,
+                     dc_over_peak = Pr[1] / peak, max_ratio_dev = maximum(abs.(ratio .- 1)),
+                     fixed_var_ratio = sum(abs2, [rf.P[k + 1] / (c^2 * S(k / sp_N)) for k in ks] .- 1) / K
+            @test tr isa TurnTable{Float64} && length(tr.offsets) == sp_N
+            @test tr.name == replace(tf.name, "amplitudes=fixed" => "amplitudes=rayleigh")
+            @test tr.digest != tf.digest
+            @test abs(mean_ratio - 1) <= 5 / sqrt(K)
+            @test abs(var_ratio - 1) <= 5 * sqrt(8 / K)
+            @test abs(rms_rel) <= 5 / (2 * sqrt(keff))
+            @test outside_over_peak <= 1.0e-12
+            @test dc_over_peak <= 1.0e-12
+            # the keyword acts: the exact-periodogram pin (1e-10) is missed by a factor above 5e9
+            @test max_ratio_dev > 0.5
+            @test fixed_var_ratio <= 1.0e-20
+            # the phases are the fixed table's bin for bin, the moduli the documented draws
+            @test maximum(abs(imag(z)) / abs(z) for z in q) <= 1.0e-10
+            @test maximum(abs.(real.(q) .- rho) ./ rho) <= 1.0e-10
+            @test abs(sum(abs2, rho) / K - 1) <= 5 / sqrt(K)         # E rho^2 = 1
+        end
+        # reproducibility and independence, as for the fixed table
+        @test spectral_turn_table(preset, sp_sigma, (lb, ub); turns=sp_N, seed=sp_seed, rng_id=sp_id, amplitudes=:rayleigh).digest == tr.digest
+        tr_next = spectral_turn_table(preset, sp_sigma, (lb, ub); turns=sp_N, seed=sp_seed, rng_id=sp_id + 1, amplitudes=:rayleigh)
+        @testset let table = label * " rayleigh", corr_next = sp_corr(tr.offsets, tr_next.offsets), bound = 4 / sqrt(keff)
+            @test tr_next.digest != tr.digest
+            @test abs(corr_next) <= bound      # measured 0.037 (flat, bound 0.165) and -0.036 (pink, bound 0.233)
+        end
+    end
+    # Kurtosis. On the wide flat band (2^-14, 1/2) the Rayleigh table's excess
+    # kurtosis is within 0.15 of 0 (measured 0.030; sd about 0.015). The FIXED
+    # wide table is near 0 as well (measured 0.022 flat, 0.046 pink): with
+    # thousands of bins the time series of either mode is near-Gaussian, so the
+    # time kurtosis is NOT what separates the modes (the periodogram spread
+    # above is). What it does show is that a fixed table on few bins is a
+    # waveform: TWO bins give exactly -0.75 (-1.5 sum a^4 / (sum a^2)^2 for two
+    # equal sinusoids, independent of the phases; eight consecutive bins
+    # resonate through k1 + k2 = k3 + k4 and scatter by 0.6 across phase
+    # draws, so the pin is on two). The pink Rayleigh value is printed.
+    tr_flat_wide = spectral_turn_table(:flat, sp_sigma, (2.0^-14, 0.5); turns=sp_N, seed=sp_seed, rng_id=sp_id, amplitudes=:rayleigh)
+    t_two = @test_logs (:warn, r"only 2 bin") match_mode = :any spectral_turn_table(
+        :flat, sp_sigma, ((1000 - 0.5) / sp_N, (1001 + 0.5) / sp_N); turns=sp_N, seed=sp_seed, rng_id=sp_id)
+    @testset let kurt_rayleigh_flat_wide = sp_kurt(tr_flat_wide.offsets), kurt_fixed_flat_wide = sp_kurt(t_flat_wide.offsets),
+                 kurt_rayleigh_pink_wide_printed = sp_kurt(rayleigh["pink"].offsets), kurt_fixed_two_bins = sp_kurt(t_two.offsets)
+        println("spectral kurtosis: rayleigh flat wide ", kurt_rayleigh_flat_wide, "  fixed flat wide ", kurt_fixed_flat_wide,
+                "  rayleigh pink wide (printed, not pinned) ", kurt_rayleigh_pink_wide_printed,
+                "  fixed two bins ", kurt_fixed_two_bins)
+        @test abs(kurt_rayleigh_flat_wide) <= 0.15
+        @test abs(kurt_fixed_flat_wide) <= 0.15
+        @test length(sp_bins((1000 - 0.5) / sp_N, (1001 + 0.5) / sp_N, sp_N)) == 2
+        @test kurt_fixed_two_bins < -0.5
+        @test abs(kurt_fixed_two_bins + 0.75) <= 1.0e-6
+    end
+
+    # (h) The equal-digest warning at the task constructor (D4, owner Q6): two
+    # elements carrying tables of equal digest warn, naming the digest, the
+    # element kind, the slot and the table's name; distinct digests are
+    # silent; one table on two slots of ONE cavity is silent; the strong-strong
+    # constructor checks both lines through the same call; the collector
+    # reports each element's distinct digests once.
+    sp_cav(tab) = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,), phase_noise=(tab,))
+    @test_logs (:warn, r"same digest") match_mode = :any TrackingTask((sp_cav(t_pink), DriftSpec(L=1.0), sp_cav(t_again)))
+    @test_logs TrackingTask((sp_cav(t_pink), DriftSpec(L=1.0), sp_cav(t_next)))
+    @test_logs TrackingTask((ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), phase=(0.0, 0.0),
+                                                   phase_noise=(t_pink, t_pink)),))
+    @test_logs TrackingTask((ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), phase=(0.0, 0.0),
+                                                   phase_noise=(t_pink, nothing), strength_noise=(nothing, t_pink)),))
+    sp_ip = StrongStrongCollision(:ip)
+    @test_logs (:warn, r"same digest") match_mode = :any StrongStrongTask((sp_ip, sp_cav(t_pink)), (sp_ip, sp_cav(t_again)))
+    @test_logs StrongStrongTask((sp_ip, sp_cav(t_pink)), (sp_ip, sp_cav(t_next)))
+    # a crab cavity and an RF cavity sharing one record warn too (the digest is the table's, not the kind's)
+    sp_rf(; kw...) = ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV, kw...)
+    @test_logs (:warn, r"same digest") match_mode = :any TrackingTask((sp_cav(t_pink), sp_rf(phase_noise=t_pink)))
+    logs_dup, _ = Test.collect_test_logs(() -> TrackingTask((sp_cav(t_pink), DriftSpec(L=1.0), sp_cav(t_again))))
+    @test length(logs_dup) == 1
+    if length(logs_dup) == 1
+        kw = Dict(logs_dup[1].kwargs)
+        @test kw[:digests] == [t_pink.digest]
+        @test length(kw[:tables]) == 2 && all(occursin("thin_crab_cavity slot 1", s) && occursin(t_pink.name, s) for s in kw[:tables])
+    end
+    collected = Octopus._collect_turn_tables!(NamedTuple[], (sp_cav(t_pink), DriftSpec(L=1.0), sp_cav(t_next),
+                                                             ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), phase=(0.0, 0.0),
+                                                                                   phase_noise=(t_pink, t_pink))))
+    @test [e.digest for e in collected] == [t_pink.digest, t_next.digest, t_pink.digest]
+    @test [e.slot for e in collected] == [1, 1, 1] && all(e.element === :thin_crab_cavity for e in collected)
+
+    # (i) Check 5, the refusals of D6 by message, each carrying its numbers, on
+    # the factory; the few-bins warning with its count and band (32 bins is
+    # silent, 31 warns); `rng_id = 0` refused on the factory by name.
+    sp_ok(; kw...) = spectral_turn_table(:flat, sp_sigma, (0.1, 0.5); turns=64, seed=1, rng_id=1, kw...)
+    refusals = [
+        ("turns < 2", () -> spectral_turn_table(:flat, sp_sigma, (0.1, 0.2); turns=1, seed=1, rng_id=1), ["turns", "got 1"]),
+        ("turns not an integer", () -> spectral_turn_table(:flat, sp_sigma, (0.1, 0.5); turns=64.0, seed=1, rng_id=1), ["turns", "64.0"]),
+        ("no bin", () -> spectral_turn_table(:flat, sp_sigma, (1.0e-3, 2.0e-3); turns=64, seed=1, rng_id=1), ["0.001", "0.002", "64", "0.015625"]),
+        ("lb = 0", () -> spectral_turn_table(:flat, sp_sigma, (0.0, 0.2); turns=64, seed=1, rng_id=1), ["lower edge", "lb = 0.0"]),
+        ("lb < 0", () -> spectral_turn_table(:flat, sp_sigma, (-0.1, 0.2); turns=64, seed=1, rng_id=1), ["lower edge", "-0.1"]),
+        ("lb = ub", () -> spectral_turn_table(:flat, sp_sigma, (0.2, 0.2); turns=64, seed=1, rng_id=1), ["lb = 0.2", "ub = 0.2"]),
+        ("lb > ub", () -> spectral_turn_table(:flat, sp_sigma, (0.3, 0.2); turns=64, seed=1, rng_id=1), ["lb = 0.3", "ub = 0.2"]),
+        ("ub > 1/2", () -> spectral_turn_table(:flat, sp_sigma, (0.1, 0.6); turns=64, seed=1, rng_id=1), ["Nyquist", "ub = 0.6"]),
+        ("band shape", () -> spectral_turn_table(:flat, sp_sigma, (0.1,); turns=64, seed=1, rng_id=1), ["band", "(0.1,)"]),
+        ("S < 0", () -> spectral_turn_table("neg" => f -> -1.0, sp_sigma, (0.1, 0.5); turns=64, seed=1, rng_id=1), ["bin k = 7", "0.109375", "-1.0"]),
+        ("S NaN", () -> spectral_turn_table("nan" => f -> NaN, sp_sigma, (0.1, 0.5); turns=64, seed=1, rng_id=1), ["bin k = 7", "NaN"]),
+        ("S Inf", () -> spectral_turn_table("inf" => f -> Inf, sp_sigma, (0.1, 0.5); turns=64, seed=1, rng_id=1), ["bin k = 7", "Inf"]),
+        ("S NaN in hertz", () -> spectral_turn_table("nan" => f -> NaN, sp_sigma, (0.1 * 78.2e3, 0.5 * 78.2e3); turns=64, seed=1, rng_id=1, f_rev=78.2e3), ["bin k = 7", "Hz"]),
+        ("S vanishes", () -> spectral_turn_table("zero" => f -> 0.0, sp_sigma, (0.1, 0.5); turns=64, seed=1, rng_id=1), ["vanishes", "0.1..0.5"]),
+        ("sigma < 0", () -> spectral_turn_table(:flat, -sp_sigma, (0.1, 0.5); turns=64, seed=1, rng_id=1), ["sigma", "non-negative", "-1.0e-5"]),
+        ("sigma NaN", () -> spectral_turn_table(:flat, NaN, (0.1, 0.5); turns=64, seed=1, rng_id=1), ["sigma", "finite", "NaN"]),
+        ("sigma Inf", () -> spectral_turn_table(:flat, Inf, (0.1, 0.5); turns=64, seed=1, rng_id=1), ["sigma", "finite", "Inf"]),
+        ("empty label", () -> spectral_turn_table("" => f -> 1.0, sp_sigma, (0.1, 0.5); turns=64, seed=1, rng_id=1), ["label"]),
+        ("blank label", () -> spectral_turn_table("  " => f -> 1.0, sp_sigma, (0.1, 0.5); turns=64, seed=1, rng_id=1), ["label"]),
+        ("unknown preset", () -> spectral_turn_table(:brown, sp_sigma, (0.1, 0.5); turns=64, seed=1, rng_id=1), [":brown", Octopus._spectral_preset_names()]),
+        ("spectrum type", () -> spectral_turn_table(1.0, sp_sigma, (0.1, 0.5); turns=64, seed=1, rng_id=1), ["spectrum", "1.0", Octopus._spectral_preset_names()]),
+        ("amplitudes", () -> sp_ok(amplitudes=:gaussian), [":gaussian", ":fixed", ":rayleigh"]),
+        ("amplitudes not a symbol", () -> sp_ok(amplitudes="fixed"), ["\"fixed\"", ":fixed", ":rayleigh"]),
+        ("T not a float", () -> sp_ok(T=Int), ["AbstractFloat", "Int64"]),
+        ("T not a type", () -> sp_ok(T=1.0), ["AbstractFloat", "1.0"]),
+        ("seed < 0", () -> spectral_turn_table(:flat, sp_sigma, (0.1, 0.5); turns=64, seed=-1, rng_id=1), ["seed", "-1"]),
+        ("seed not an integer", () -> spectral_turn_table(:flat, sp_sigma, (0.1, 0.5); turns=64, seed=1.5, rng_id=1), ["seed", "1.5"]),
+        ("rng_id < 0", () -> spectral_turn_table(:flat, sp_sigma, (0.1, 0.5); turns=64, seed=1, rng_id=-1), ["rng_id", "-1"]),
+        ("rng_id = 0", () -> spectral_turn_table(:flat, sp_sigma, (0.1, 0.5); turns=64, seed=1, rng_id=0), ["rng_id", "positive", "claims no stream", "SpectralNoise"]),
+        ("f_rev = 0", () -> sp_ok(f_rev=0.0), ["f_rev", "positive", "0.0"]),
+        ("f_rev < 0", () -> sp_ok(f_rev=-1.0), ["f_rev", "-1.0"]),
+        ("f_rev NaN", () -> sp_ok(f_rev=NaN), ["f_rev", "NaN"]),
+        ("slot < 0", () -> sp_ok(slot=-1), ["slot", "non-negative", "-1"]),
+        ("slot not an integer", () -> sp_ok(slot=1.0), ["slot", "1.0"]),
+        ("S not callable", () -> spectral_turn_table("const" => 1.0, sp_sigma, (0.1, 0.5); turns=64, seed=1, rng_id=1), ["callable", "1.0"]),
+        ("S of two arguments", () -> spectral_turn_table("pair" => (f, g) -> 1.0, sp_sigma, (0.1, 0.5); turns=64, seed=1, rng_id=1), ["callable"]),
+    ]
+    for (label, f, needles) in refusals
+        err = Test.collect_test_logs(() -> sp_err(f))[2]
+        msg = sp_msg(err)
+        @testset let refusal = label, message = msg
+            @test err isa ArgumentError
+            @test startswith(msg, "spectral_turn_table: ")
+            for needle in needles
+                @test occursin(needle, msg)
+            end
+        end
+    end
+    @test_logs (:warn, r"only 10 bin") match_mode = :any spectral_turn_table(:flat, sp_sigma, (0.1, 0.11); turns=1024, seed=1, rng_id=1)
+    logs_few, t_few = Test.collect_test_logs(() -> spectral_turn_table(:flat, sp_sigma, (0.1, 0.11); turns=1024, seed=1, rng_id=1))
+    @test length(logs_few) == 1 && length(t_few.offsets) == 1024
+    if length(logs_few) == 1
+        kw_few = Dict(logs_few[1].kwargs)
+        @test kw_few[:bins] == 10 && kw_few[:band] == (0.1, 0.11) && kw_few[:turns] == 1024
+        @test occursin("0.1..0.11", logs_few[1].message) && occursin("1024 turns", logs_few[1].message)
+        @test !haskey(kw_few, :maxlog) && !haskey(kw_few, :_id)
+    end
+    # Review F2 (2026-10-16): the warning carried `maxlog = 1` under an id
+    # keyed on (K, N, lb, ub), so a second few-bin rule of another sigma or
+    # spectrum later in the process warned nothing (the TestLogger honours
+    # maxlog per id as the ConsoleLogger does; one logger spans the sequence
+    # below). Now every construction warns -- three of one band and different
+    # sigma or spectrum -- and the compile-time resolution of a rule warns
+    # nothing, the rule having warned when it was built.
+    logs_f2, _ = Test.collect_test_logs() do
+        SpectralNoise(sp_sigma, (0.1, 0.11), :flat; turns=1024)
+        SpectralNoise(2 * sp_sigma, (0.1, 0.11), :pink; turns=1024)
+        spectral_turn_table(:flat, 3 * sp_sigma, (0.1, 0.11); turns=1024, seed=1, rng_id=1)
+    end
+    @testset let few_bin_constructions = 3, warnings = length(logs_f2)
+        @test warnings == 3
+        @test all(l -> l.level == Base.CoreLogging.Warn && occursin("only 10 bin", l.message), logs_f2)
+        @test [l.message[1:findfirst(':', l.message)] for l in logs_f2] == ["SpectralNoise:", "SpectralNoise:", "spectral_turn_table:"]
+    end
+    logs_f2b, _ = Test.collect_test_logs() do
+        rr_f2 = SpectralNoise(sp_sigma, (0.1, 0.11), :flat; turns=1024)
+        sp_f2 = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,), phase_noise=(rr_f2,))
+        compile_runtime(sp_f2)
+        compile_runtime(sp_f2)
+    end
+    @testset let construction_then_two_compiles = true, warnings = length(logs_f2b)
+        @test warnings == 1
+    end
+    @test_logs spectral_turn_table(:flat, sp_sigma, (1 / 64, 0.5); turns=64, seed=1, rng_id=1)
+    @test_logs (:warn, r"only 31 bin") match_mode = :any spectral_turn_table(:flat, sp_sigma, (2 / 64, 0.5); turns=64, seed=1, rng_id=1)
+    @test_logs (:warn, r"only 2 bin") match_mode = :any spectral_turn_table(:pink, sp_sigma, (1 / 1024, 2 / 1024); turns=1024, seed=1, rng_id=1)
+    # the DC bin is never evaluated: `:pink` over a band starting at the first bin diverges at zero and is accepted
+    @test length(spectral_turn_table(:pink, sp_sigma, (1 / 1024, 0.5); turns=1024, seed=1, rng_id=1).offsets) == 1024
+
+    # (j) `SpectralNoise`, the spec-level rule (owner decision 2026-10-16): the
+    # same refusals by name at CONSTRUCTION (prefixed `SpectralNoise:`), the
+    # same few-bins warning, `rng_id` through `_rule_stream_id` (0 assigns a
+    # fresh stream, an explicit id is claimed so the counter never reissues
+    # it), a refused rule claiming no stream; its fields carry the band in
+    # tunes, the label, the shape, `turns`, `amplitudes` and `f_rev`.
+    rule_refusals = [
+        ("turns < 2", () -> SpectralNoise(sp_sigma, (0.1, 0.5), :flat; rng_id=1, turns=1), ["turns", "got 1"]),
+        ("no bin", () -> SpectralNoise(sp_sigma, (1.0e-3, 2.0e-3), :flat; rng_id=1, turns=64), ["0.001", "0.002", "64", "0.015625"]),
+        ("lb = 0", () -> SpectralNoise(sp_sigma, (0.0, 0.2), :flat; rng_id=1, turns=64), ["lower edge", "lb = 0.0"]),
+        ("lb > ub", () -> SpectralNoise(sp_sigma, (0.3, 0.2), :flat; rng_id=1, turns=64), ["lb = 0.3", "ub = 0.2"]),
+        ("ub > 1/2", () -> SpectralNoise(sp_sigma, (0.1, 0.6), :flat; rng_id=1, turns=64), ["Nyquist", "ub = 0.6"]),
+        ("S < 0", () -> SpectralNoise(sp_sigma, (0.1, 0.5), "neg" => f -> -1.0; rng_id=1, turns=64), ["bin k = 7", "-1.0"]),
+        ("S vanishes", () -> SpectralNoise(sp_sigma, (0.1, 0.5), "zero" => f -> 0.0; rng_id=1, turns=64), ["vanishes"]),
+        ("sigma < 0", () -> SpectralNoise(-sp_sigma, (0.1, 0.5), :flat; rng_id=1, turns=64), ["sigma", "non-negative"]),
+        ("sigma NaN", () -> SpectralNoise(NaN, (0.1, 0.5), :flat; rng_id=1, turns=64), ["sigma", "finite"]),
+        ("empty label", () -> SpectralNoise(sp_sigma, (0.1, 0.5), "" => f -> 1.0; rng_id=1, turns=64), ["label"]),
+        ("unknown preset", () -> SpectralNoise(sp_sigma, (0.1, 0.5), :brown; rng_id=1, turns=64), [":brown", Octopus._spectral_preset_names()]),
+        ("amplitudes", () -> SpectralNoise(sp_sigma, (0.1, 0.5), :flat; rng_id=1, turns=64, amplitudes=:gaussian), [":gaussian", ":fixed", ":rayleigh"]),
+        ("f_rev = 0", () -> SpectralNoise(sp_sigma, (0.1, 0.5), :flat; rng_id=1, turns=64, f_rev=0.0), ["f_rev", "0.0"]),
+    ]
+    counter_before = Octopus.next_rng_id!()
+    for (label, f, needles) in rule_refusals
+        err = Test.collect_test_logs(() -> sp_err(f))[2]
+        msg = sp_msg(err)
+        @testset let refusal = label, message = msg
+            @test err isa ArgumentError
+            @test startswith(msg, "SpectralNoise: ")
+            for needle in needles
+                @test occursin(needle, msg)
+            end
+        end
+    end
+    @test Octopus.next_rng_id!() == counter_before + 1                 # no refused rule claimed a stream
+    err_id = sp_err(() -> SpectralNoise(sp_sigma, (1 / 64, 0.5), :flat; rng_id=-1, turns=64))
+    @test err_id isa ArgumentError && occursin("rng_id", sp_msg(err_id)) && occursin("-1", sp_msg(err_id))
+    @test_throws UndefKeywordError SpectralNoise(sp_sigma, (1 / 64, 0.5), :flat; rng_id=1)   # turns is mandatory
+    @test_logs (:warn, r"only 10 bin") match_mode = :any SpectralNoise(sp_sigma, (0.1, 0.11), :flat; rng_id=1, turns=1024)
+    r_auto1 = SpectralNoise(sp_sigma, (1 / 64, 0.5), :flat; turns=64)
+    r_auto2 = SpectralNoise(sp_sigma, (1 / 64, 0.5), :flat; turns=64)
+    @test r_auto1.rng_id != r_auto2.rng_id && r_auto1.rng_id > 0 && r_auto2.rng_id == r_auto1.rng_id + 1
+    r_explicit = SpectralNoise(sp_sigma, (1 / 64, 0.5), :pink; rng_id=r_auto2.rng_id + 1000, turns=64, amplitudes=:rayleigh)
+    @test r_explicit.rng_id == r_auto2.rng_id + 1000
+    @test Octopus.next_rng_id!() > r_explicit.rng_id                    # the explicit id was claimed
+    @test r_explicit isa SpectralNoise && r_explicit isa Octopus.AbstractTurnRule
+    @test (r_explicit.sigma, r_explicit.lb, r_explicit.ub, r_explicit.label, r_explicit.turns, r_explicit.amplitudes, r_explicit.f_rev) ==
+          (sp_sigma, 1 / 64, 0.5, "pink", 64, :rayleigh, nothing)
+    @test r_explicit.S(0.25) == 4.0 && r_explicit.band == (1 / 64, 0.5)
+    r_hz = SpectralNoise(sp_sigma, (100.0, 39100.0), :pink; rng_id=1, turns=sp_N, f_rev=78.2e3)
+    @test (r_hz.lb, r_hz.ub, r_hz.f_rev, r_hz.band) == (100.0 / 78.2e3, 39100.0 / 78.2e3, 78.2e3, (100.0, 39100.0))
+    r_custom = SpectralNoise(sp_sigma, (1 / 64, 0.5), "measured LLRF" => f -> 1 + f; rng_id=1, turns=64)
+    @test r_custom.label == "measured LLRF" && r_custom.S(1.0) == 2.0
+    # the spec-level rule never realises a turn by itself: its `_turn_offset`
+    # refuses by name (a compiled line holds the resolved table instead; the
+    # consumer testset pins that)
+    err_off = sp_err(() -> Octopus._turn_offset(r_auto1, TrackingContext(turn=0, seed=1), 1, Float64))
+    @test err_off isa ArgumentError && occursin("resolves to a TurnTable", sp_msg(err_off))
+    @test Octopus._rule_kind(r_auto1) === :spectral
+end
+
+@testset "Spectral turn table: the producer through the consumer and the recorder" begin
+    # docs/design/spectral_turn_table.md section 6, checks 6 and 7, and the
+    # owner's 2026-10-16 decision that `SpectralNoise` resolves to the table at
+    # compile: a run with a spectral table on one slot writes the canonical
+    # name and the digest into the `:turn_modulation` receipt and the
+    # artifact's slot group (read back through `turn_modulation_provenance`);
+    # a one-particle `TrackingTask` with `record_turn_modulation = true` over
+    # N = 4096 turns records the table bitwise and the recorded series passes
+    # check 1, on CPU threads and on CUDA; the same through `SpectralNoise`,
+    # whose recorded series equals the offline table built with the global
+    # seed and the rule's rng_id, bit for bit. The one-particle probe testset
+    # itself needs no change: a table is a table (the design states it).
+    sc_rfft = Octopus.FFTW.rfft
+    sc_bins(lb, ub, N) = [k for k in 1:N÷2 if lb <= k / N <= ub]
+    sc_scale(S, ks, N, sigma) = sigma * N / sqrt(sum(((iseven(N) && k == N ÷ 2) ? 1.0 : 2.0) * S(k / N) for k in ks))
+    sc_rms(x) = (m = sum(x) / length(x); sqrt(sum(abs2, x .- m) / length(x)))
+    # check 1 of the producer testset, on a recorded series
+    function sc_check1(x, S, lb, ub, N, sigma; label)
+        ks = sc_bins(lb, ub, N)
+        c = sc_scale(S, ks, N, sigma)
+        P = abs2.(sc_rfft(x))
+        inband = falses(N ÷ 2 + 1)
+        for k in ks
+            inband[k + 1] = true
+        end
+        peak = maximum(P[k + 1] for k in ks)
+        @testset let series = label, bins = length(ks), rms_rel = sc_rms(x) / sigma - 1,
+                     periodogram_rel = maximum(abs(P[k + 1] / c^2 - S(k / N)) / S(k / N) for k in ks),
+                     outside_over_peak = maximum(P[.!inband]) / peak, dc_over_peak = P[1] / peak
+            @test length(x) == N
+            @test abs(rms_rel) <= 1.0e-12
+            @test periodogram_rel <= 1.0e-10
+            @test outside_over_peak <= 1.0e-12
+            @test dc_over_peak <= 1.0e-12
+        end
+    end
+    sc_pink(f) = 1.0 / f
+    sc_crab(rule) = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,), phase_noise=(rule,))
+    sc_receipt(audit) = only(filter(r -> r.consumer === :turn_modulation, execution_receipts(audit))).values
+    # One execute! of a one-particle beam under the given policy, the artifact
+    # recording; returns the slot read back, the element entry, the receipt
+    # and the particle's px.
+    function sc_one_particle(spec, policy, path; turns, seed)
+        set_global_rng!(seed=seed, method=:philox)
+        beam = Beam(1, policy, Float64;
+            beta=(0.8, 0.072, 90.9), alpha=(0.0, 0.0, 0.0), emit=(1.0e-40, 1.0e-40, 1.0e-40), cutoff=5.0, rng_id=1,
+            charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=1.0e11,
+            zeta=(0.0, 0.0, 0.0, 0.0), eta=(0.0, 0.0, 0.0, 0.0), R=(0.0, 0.0, 0.0, 0.0),
+            initial_offset=(1.0e-4, 0.0, 0.0, 0.0, 1.0e-2, 0.0))
+        task = TrackingTask((spec,); policy=policy,
+                            artifact=RunArtifact(path; capacity=256, record_turn_modulation=true))
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do
+            execute!(task, beam; turns=turns)
+        end
+        el = only(only(turn_modulation_provenance(path)).elements)
+        return (slot = only(el.slots), element = el, receipt = sc_receipt(audit),
+                px = Float64(Array(coordinate_arrays(beam.rep)[2])[1]), task = task)
+    end
+
+    # (a) Check 6: provenance. The receipt and the artifact carry the
+    # canonical name and the digest of the offline table; the reader and the
+    # TaskOutput route agree; the slot group's `name` attribute is the text.
+    N6 = 256
+    tab6 = spectral_turn_table(:flat, 1.0e-3, (1 / 16, 1 / 4); turns=N6, seed=7, rng_id=3)   # 49 bins
+    @test tab6.name == "spectral(flat; sigma=0.001, band=0.0625..0.25, turns=256, seed=7, rng_id=3, slot=0, amplitudes=fixed)"
+    p6 = tempname() * ".h5"
+    set_global_rng!(seed=0x5eed, method=:philox)
+    audit6 = ExecutionAudit()
+    with_execution_audit(audit6) do
+        execute!(TrackingTask((sc_crab(tab6),); artifact=RunArtifact(p6)),
+                 Phase6DRep([1.0e-4], [0.0], [0.0], [0.0], [0.0], [0.0]); turns=8)
+    end
+    rcpt6 = sc_receipt(audit6)
+    slot6 = only(only(rcpt6.elements).slots)
+    @test slot6.slot == "phase_noise[1]" && slot6.kind === :table && slot6.rng_id == 0
+    @test slot6.name == tab6.name && slot6.digest == tab6.digest && slot6.length == N6
+    @test rcpt6.first_turn == 0 && rcpt6.turns == 8
+    prov6 = turn_modulation_provenance(p6)
+    pslot6 = only(only(only(prov6).elements).slots)
+    @test pslot6.kind === :table && pslot6.name == tab6.name && pslot6.digest == tab6.digest && pslot6.length == N6
+    @test occursin("slot=0", pslot6.name)                              # an offline table keeps its slot-0 name on the element
+    @test pslot6.series === nothing                                   # not recorded: provenance only
+    @test read(TaskOutput(p6), :turn_modulation) == prov6
+    Octopus.HDF5.h5open(p6, "r") do f
+        g = f["turn_modulation"]["1"]["1"]["phase_noise[1]"]
+        @test read(Octopus.HDF5.attributes(g)["name"]) == tab6.name
+        @test read(Octopus.HDF5.attributes(g)["kind"]) == "table"
+    end
+
+    # (b) Check 7: the producer and the consumer together, through the
+    # recorder. An offline `:pink` table of N = 4096 over (1/256, 1/2) (2033
+    # bins, the Nyquist bin included) on one phase slot; the recorded series IS
+    # the table bit for bit and passes check 1; the particle was kicked; a run
+    # one turn longer than the table is refused by the consumer's window check
+    # naming the table (the factory's `turns` is covered by it, not by a check
+    # of its own).
+    N7 = 4096
+    sigma7 = 1.0e-5
+    tab7 = spectral_turn_table(:pink, sigma7, (1 / 256, 1 / 2); turns=N7, seed=11, rng_id=5)
+    @test length(sc_bins(1 / 256, 1 / 2, N7)) == 2033
+    p7 = tempname() * ".h5"
+    r7 = sc_one_particle(sc_crab(tab7), CPUThreadsExecutionPolicy(), p7; turns=N7, seed=0x5eed)
+    @test r7.slot.series isa Vector{Float64} && length(r7.slot.series) == N7
+    @test all(r7.slot.series .=== tab7.offsets)
+    @test r7.slot.kind === :table && r7.slot.name == tab7.name && r7.slot.digest == tab7.digest
+    @test r7.element.first_turn == 0 && r7.element.turns == N7
+    @test r7.receipt.first_turn == 0 && r7.receipt.turns == N7
+    @test only(only(r7.receipt.elements).slots).digest == tab7.digest
+    @test r7.px != 0.0
+    sc_check1(r7.slot.series, sc_pink, 1 / 256, 1 / 2, N7, sigma7; label="cpu recorded :pink table")
+    err_window = try
+        execute!(TrackingTask((sc_crab(tab7),)), Phase6DRep([1.0e-4], [0.0], [0.0], [0.0], [0.0], [0.0]); turns=N7 + 1)
+        nothing
+    catch e
+        e
+    end
+    @test err_window isa ArgumentError && occursin("never wraps", sprint(showerror, err_window)) &&
+          occursin(tab7.name, sprint(showerror, err_window))
+    if CUDA_TESTS_ACTIVE
+        p7c = tempname() * ".h5"
+        r7c = sc_one_particle(sc_crab(tab7), CUDAExecutionPolicy(), p7c; turns=N7, seed=0x5eed)
+        @test all(r7c.slot.series .=== tab7.offsets)          # host-side draws: the CUDA run records the same table bit for bit
+        @test r7c.slot.name == tab7.name && r7c.slot.digest == tab7.digest
+        @test r7c.px != 0.0
+        sc_check1(r7c.slot.series, sc_pink, 1 / 256, 1 / 2, N7, sigma7; label="cuda recorded :pink table")
+        rm(p7c; force=true)
+    else
+        @test_skip "CUDA device not available -- the spectral table's CUDA recorder arm skipped"
+    end
+
+    # (c) `SpectralNoise` resolves at compile (owner, 2026-10-16). A compiled
+    # line holds no `SpectralNoise` -- the slot holds the `TurnTable{T}` --
+    # on the crab cavity, on the RF cavity, and through a task's runtime
+    # entries; `compile_runtime` twice under one global seed gives equal
+    # digests; another global seed gives another digest and the name says
+    # which seed; two rules with `rng_id = 0` auto-assign distinct ids and
+    # resolve to distinct tables; the digest equals the offline table's for
+    # the same (seed, rng_id, slot). (The rng-id counter is not reset here: an
+    # absolute reset let later auto-assigned ids collide with explicit ones
+    # order-dependently, review F3 2026-10-16; every id assertion is relative.)
+    rule_c = SpectralNoise(sigma7, (1 / 256, 1 / 2), :pink; rng_id=7, turns=N7)
+    spec_c = sc_crab(rule_c)
+    @test rule_c in Octopus._turn_rule_values(spec_c)                 # the spec keeps the rule
+    set_global_rng!(seed=99, method=:philox)
+    w1 = compile_runtime(spec_c)
+    w2 = compile_runtime(spec_c)
+    @test w1 isa TurnModulated && !any(p -> p[2] isa SpectralNoise, Octopus._slot_rules(w1.rule))
+    slot_rule = first(Octopus._slot_rules(w1.rule))[2]
+    @test slot_rule isa TurnTable{Float64} && length(slot_rule.offsets) == N7
+    # the tie: phase_noise[1] is slot 1, so the table is the factory's at
+    # `slot = 1` (review F1, 2026-10-16), not the offline slot-0 table of the
+    # same (seed, rng_id)
+    ref99 = spectral_turn_table(:pink, sigma7, (1 / 256, 1 / 2); turns=N7, seed=99, rng_id=7, slot=1)
+    ref99_offline = spectral_turn_table(:pink, sigma7, (1 / 256, 1 / 2); turns=N7, seed=99, rng_id=7)
+    @test slot_rule.digest == ref99.digest && slot_rule.offsets == ref99.offsets && slot_rule.name == ref99.name
+    @test slot_rule.digest != ref99_offline.digest && occursin("slot=0", ref99_offline.name)
+    @test occursin("seed=99", slot_rule.name) && occursin("rng_id=7", slot_rule.name) && occursin("slot=1", slot_rule.name)
+    @test first(Octopus._slot_rules(w2.rule))[2].digest == slot_rule.digest
+    set_global_rng!(seed=100, method=:philox)
+    w3 = compile_runtime(spec_c)
+    slot_rule3 = first(Octopus._slot_rules(w3.rule))[2]
+    @test slot_rule3.digest != slot_rule.digest && occursin("seed=100", slot_rule3.name)
+    @test slot_rule3.digest == spectral_turn_table(:pink, sigma7, (1 / 256, 1 / 2); turns=N7, seed=100, rng_id=7, slot=1).digest
+    # the second tie, on a STRENGTH slot: the RF cavity's strength is slot 2,
+    # under the seed in force (100)
+    rf_c = ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV,
+                            strength_noise=SpectralNoise(1.0e-4, (1 / 64, 0.5), :flat; rng_id=8, turns=64))
+    wrf = compile_runtime(rf_c)
+    @test wrf isa TurnModulated && [typeof(p[2]).name.name for p in Octopus._slot_rules(wrf.rule)] == [:Nothing, :TurnTable]
+    @test !any(p -> p[2] isa SpectralNoise, Octopus._slot_rules(wrf.rule))
+    @test Octopus._turn_modulation_slots(wrf.rule)[1].kind === :table
+    @test occursin("spectral(flat;", Octopus._turn_modulation_slots(wrf.rule)[1].name)
+    rf_slot2 = Octopus._slot_rules(wrf.rule)[2][2]
+    ref_rf = spectral_turn_table(:flat, 1.0e-4, (1 / 64, 0.5); turns=64, seed=100, rng_id=8, slot=2)
+    @test rf_slot2.offsets == ref_rf.offsets && rf_slot2.digest == ref_rf.digest && rf_slot2.name == ref_rf.name
+    @test occursin("seed=100, rng_id=8, slot=2, amplitudes=fixed", rf_slot2.name)
+    @test rf_slot2.digest != spectral_turn_table(:flat, 1.0e-4, (1 / 64, 0.5); turns=64, seed=100, rng_id=8, slot=1).digest
+    r0a = SpectralNoise(sigma7, (1 / 256, 1 / 2), :pink; turns=N7)
+    r0b = SpectralNoise(sigma7, (1 / 256, 1 / 2), :pink; turns=N7)
+    @test r0a.rng_id != r0b.rng_id
+    ta = first(Octopus._slot_rules(compile_runtime(sc_crab(r0a)).rule))[2]
+    tb = first(Octopus._slot_rules(compile_runtime(sc_crab(r0b)).rule))[2]
+    @test ta.digest != tb.digest && occursin("rng_id=$(r0a.rng_id)", ta.name) && occursin("rng_id=$(r0b.rng_id)", tb.name)
+    # the line's own element type: the mixed container's other slots are
+    # untouched, and `rule_c` on phase_noise[2] resolves at slot 2 -- the
+    # factory's slot-2 table under the seed in force (100), not the slot-1
+    # table it gave on phase_noise[1]
+    spec_mixed = ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), phase=(0.0, 0.0),
+                                       phase_noise=(WhiteNoise(1.0e-2; rng_id=31), rule_c),
+                                       strength_noise=(nothing, TurnTable(fill(1.0e-4, N7); name="flat_rel")))
+    wm = compile_runtime(spec_mixed)
+    kinds_m = [typeof(p[2]).name.name for p in Octopus._slot_rules(wm.rule)]
+    @test kinds_m == [:WhiteNoise, :TurnTable, :Nothing, :TurnTable]
+    @test first(Octopus._slot_rules(wm.rule))[2] === WhiteNoise(1.0e-2; rng_id=31) || Octopus._slot_rules(wm.rule)[1][2].rng_id == 31
+    mixed_slot2 = Octopus._slot_rules(wm.rule)[2][2]
+    @test mixed_slot2.digest == spectral_turn_table(:pink, sigma7, (1 / 256, 1 / 2); turns=N7, seed=100, rng_id=7, slot=2).digest
+    @test mixed_slot2.digest != slot_rule3.digest && occursin("slot=2", mixed_slot2.name)
+
+    # (d) The tie through a task: a one-particle run with the rule under
+    # `set_global_rng!(seed = s)` records the series of
+    # `spectral_turn_table(...; seed = s, rng_id = 7)` bit for bit, the
+    # provenance reads kind `:table` with the canonical name, and the runtime
+    # line holds no `SpectralNoise`; on CPU and, gated, on CUDA.
+    for (backend, policy, active) in (("cpu", CPUThreadsExecutionPolicy(), true),
+                                      ("cuda", CUDA_TESTS_ACTIVE ? CUDAExecutionPolicy() : nothing, CUDA_TESTS_ACTIVE))
+        if !active
+            @test_skip "CUDA device not available -- the SpectralNoise tie's CUDA arm skipped"
+            continue
+        end
+        pt = tempname() * ".h5"
+        rt = sc_one_particle(spec_c, policy, pt; turns=N7, seed=99)
+        @testset let backend = backend
+            @test rt.slot.kind === :table
+            @test rt.slot.name == ref99.name && rt.slot.digest == ref99.digest
+            @test occursin("rng_id=7, slot=1, amplitudes=fixed", rt.slot.name)   # the provenance carries the slot
+            @test all(rt.slot.series .=== ref99.offsets)
+            @test rt.px != 0.0
+            @test only(only(rt.receipt.elements).slots).name == ref99.name
+            line_rt = Octopus._physics_line(Octopus._runtime_entries(rt.task))
+            @test count(e -> e isa TurnModulated, line_rt) == 1
+            @test !any(e -> e isa TurnModulated && any(q -> q[2] isa SpectralNoise, Octopus._slot_rules(e.rule)), line_rt)
+        end
+        sc_check1(rt.slot.series, sc_pink, 1 / 256, 1 / 2, N7, sigma7; label=backend * " recorded SpectralNoise")
+        rm(pt; force=true)
+    end
+    # The documented difference from the live rules: the table takes the seed
+    # in force when the line compiles (the first execute!), and a later
+    # `set_global_rng!` does not move it until a recompile -- the second
+    # window's receipt carries the same digest and the first seed's name.
+    task_s = TrackingTask((spec_c,))
+    rep_s = Phase6DRep([1.0e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
+    set_global_rng!(seed=99, method=:philox)
+    audit_1 = ExecutionAudit()
+    with_execution_audit(audit_1) do
+        execute!(task_s, rep_s; turns=2)
+    end
+    set_global_rng!(seed=100, method=:philox)
+    audit_2 = ExecutionAudit()
+    with_execution_audit(audit_2) do
+        execute!(task_s, rep_s; turns=2)
+    end
+    d1 = only(only(sc_receipt(audit_1).elements).slots)
+    d2 = only(only(sc_receipt(audit_2).elements).slots)
+    @test d1.digest == ref99.digest && d2.digest == d1.digest && d2.name == d1.name && occursin("seed=99", d2.name)
+    @test sc_receipt(audit_2).first_turn == 2
+
+    # (e) Two `SpectralNoise` rules with one explicit rng_id on two cavities
+    # resolve to identical tables under one seed: the shared-stream warning
+    # fires at task construction (the live rules' registry semantics);
+    # distinct ids are silent; the equal-digest warning covers the offline
+    # tables of (a) and (b) built with one (seed, rng_id).
+    @test_logs (:warn, r"share an rng_id") match_mode = :any TrackingTask(
+        (sc_crab(SpectralNoise(sigma7, (1 / 64, 0.5), :flat; rng_id=41, turns=64)), DriftSpec(L=1.0),
+         sc_crab(SpectralNoise(sigma7, (1 / 64, 0.5), :flat; rng_id=41, turns=64))))
+    @test_logs TrackingTask(
+        (sc_crab(SpectralNoise(sigma7, (1 / 64, 0.5), :flat; rng_id=42, turns=64)), DriftSpec(L=1.0),
+         sc_crab(SpectralNoise(sigma7, (1 / 64, 0.5), :flat; rng_id=43, turns=64))))
+    same_tab = spectral_turn_table(:flat, sigma7, (1 / 64, 0.5); turns=64, seed=5, rng_id=44)
+    @test_logs (:warn, r"same digest") match_mode = :any TrackingTask((sc_crab(same_tab), DriftSpec(L=1.0), sc_crab(same_tab)))
+
+    # (f) Review F1 (2026-10-16), the regression: one explicit rng_id on two
+    # slots of ONE element resolves to two INDEPENDENT tables, as the live
+    # rules promise ("one rng_id on every entry of one cavity still gives
+    # independent draws per entry"), because the resolution keys the table on
+    # its slot. Before the fix the synthesis keyed on (seed, rng_id, bin)
+    # alone and the two slots were one table -- digests equal, correlation
+    # 1.0 -- with no warning, the task constructor being rightly silent for
+    # one id within one cavity (red on the pre-fix tree, the reviewer's P1
+    # and P1b). Two phase slots of a crab cavity, a phase and a strength slot
+    # of a one-harmonic crab cavity (slots 1 and N + 1 = 2) and the RF
+    # cavity's two slots; the correlation bound is the producer testset's,
+    # 4/sqrt(2 K_eff) for fixed amplitudes (0.147 here, K_eff = 372.6).
+    N_f1 = 4096
+    ks_f1 = sc_bins(1 / 256, 1 / 2, N_f1)
+    w_f1 = [((iseven(N_f1) && k == N_f1 ÷ 2) ? 1.0 : 2.0) * sc_pink(k / N_f1) for k in ks_f1]
+    bound_f1 = 4 / sqrt(2 * sum(w_f1)^2 / sum(abs2, w_f1))
+    sc_corr(a, b) = (ma = sum(a) / length(a); mb = sum(b) / length(b);
+                     sum((a .- ma) .* (b .- mb)) / sqrt(sum(abs2, a .- ma) * sum(abs2, b .- mb)))
+    set_global_rng!(seed=2026, method=:philox)
+    spec_f1 = ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), phase=(0.0, 0.0),
+                                    phase_noise=(SpectralNoise(sigma7, (1 / 256, 1 / 2), :pink; rng_id=501, turns=N_f1),
+                                                 SpectralNoise(sigma7, (1 / 256, 1 / 2), :pink; rng_id=501, turns=N_f1)))
+    @test_logs TrackingTask((spec_f1,))                                # one id within one cavity: no shared stream
+    spec_f1b = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,),
+                                     phase_noise=(SpectralNoise(1.0e-4, (1 / 256, 1 / 2), :pink; rng_id=502, turns=N_f1),),
+                                     strength_noise=(SpectralNoise(1.0e-4, (1 / 256, 1 / 2), :pink; rng_id=502, turns=N_f1),))
+    rf_f1 = ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV,
+                             phase_noise=SpectralNoise(sigma7, (1 / 256, 1 / 2), :pink; rng_id=503, turns=N_f1),
+                             strength_noise=SpectralNoise(1.0e-4, (1 / 256, 1 / 2), :pink; rng_id=503, turns=N_f1))
+    for (label, spec_pair) in (("crab phase_noise[1] vs phase_noise[2], one id", spec_f1),
+                               ("crab phase_noise[1] vs strength_noise[1], one id", spec_f1b),
+                               ("rf phase_noise vs strength_noise, one id", rf_f1))
+        slots_pair = Octopus._slot_rules(compile_runtime(spec_pair).rule)
+        t1, t2 = slots_pair[1][2], slots_pair[2][2]
+        @testset let case = label, corr = sc_corr(t1.offsets, t2.offsets), bound = bound_f1
+            @test t1 isa TurnTable && t2 isa TurnTable
+            @test t1.digest != t2.digest
+            @test abs(corr) <= bound
+            @test occursin("slot=1,", t1.name) && occursin("slot=2,", t2.name)
+        end
+    end
+    set_global_rng!(seed=0x5eed, method=:philox)
+    foreach(x -> rm(x; force=true), (p6, p7))
 end
 
 @testset "Turn modulation: white and pink spectra" begin

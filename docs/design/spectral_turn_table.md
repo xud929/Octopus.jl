@@ -1,9 +1,15 @@
 # A spectral producer for `TurnTable`: per-turn tables from a target spectrum
 
-> **Status: designed 2026-10-15 in owner discussion, not implemented. The
-> decisions of section 3 are proposals the discussion converged on; the
-> owner confirms them through the open questions of section 9 before stage
-> 1 starts.** Parent note `turn_modulation.md` (the rule interface, D7, and
+> **Status: designed 2026-10-15 in owner discussion; the open questions of
+> section 9 decided by the owner 2026-10-16 (the dated line under each
+> question: Q2, Q4, Q5 and Q6 as proposed, Q3 with both amplitude models
+> behind the keyword `amplitudes = :fixed | :rayleigh`, `:fixed` the
+> default, carried by the dated remarks under D5 and D7 and in section 4,
+> Q1 as proposed and extended the same day by D11: the entry point in a
+> line is the spec-level rule `SpectralNoise`, resolved into a `TurnTable`
+> when the line compiles, the named function kept for offline tables);
+> stage 1 in progress 2026-10-16 (record
+> `../history/spectral_turn_table_2026_10_16.md`).** Parent note `turn_modulation.md` (the rule interface, D7, and
 > its section 6, the producer sketch this note promotes into the library);
 > the recorder of `turn_modulation_record.md` is what makes the verification
 > of section 6 a one-liner.
@@ -113,6 +119,32 @@ warns when two cavities share an `rng_id`, warns when two `TurnTable`s on
 different cavities carry equal digests (a cheap comparison it does not make
 today).
 
+(2026-10-16, D11: the factory's second keyword is `rng_id`, not `stream`,
+refused at 0 and not claimed in the registry, the equal-digest warning
+being its sharing check, so the keying reads `(seed, RNG_PHILOX, 0, rng_id,
+k, 1)`; the rule `SpectralNoise` claims its `rng_id` at construction as
+`WhiteNoise` and `PinkNoise` do, 0 auto-assigning a fresh id, and takes
+`seed = global_rng_seed()` when the line compiles, so inside a line the
+author writes no seed and the task constructor's sharing warning is the
+protection, as for the live rules.)
+
+(2026-10-16, review F1, fixed the same day: the key gains the SLOT in its
+turn field, `octopus_uniform01(seed, RNG_PHILOX, slot, rng_id, k, 1)` and the
+pair `(seed, RNG_PHILOX, slot, rng_id, k, 2)`, the factory's keyword `slot`
+(default 0, offline tables unchanged) and the resolution passing each
+rule's slot (crab cavity phase `i -> i`, strength `i -> N + i`; RF cavity 1
+and 2), the canonical name gaining `slot=<s>`. Without it two
+`SpectralNoise` sharing one explicit `rng_id` on two slots of ONE element
+resolved to identical tables with no warning, where the live rules promise
+independent draws per slot under one id. Offline slot 0 keeps the
+documented coincidence with a `Beam`'s turn-0 cells; slot >= 1 does not,
+and under one shared id shares turn-`slot` cells with radiation particle
+`k` and BPM occurrence `k` as the older classes already do among themselves.
+Landed as `_spectral_slot`, `_spectral_name`, `_spectral_synthesis` and
+`_resolve_turn_rule(rule, slot, T)` in `src/elements/turn_modulated.jl` with
+the call sites in both cavities; offline tables bitwise unchanged against
+six pre-fix tables.)
+
 **D5. Fixed bin amplitudes and an analytic normalisation to `sigma`.** With
 `a_k = sqrt(S(f_k))` the sequence is
 
@@ -133,6 +165,41 @@ Gaussian only in the limit of many bins; Rayleigh-distributed amplitudes
 process that matches the target statistically. The default is fixed, the
 owner's construction; question Q3 asks whether Rayleigh is offered.
 
+(2026-10-16, the owner's answer to Q3: both, through the keyword
+`amplitudes = :fixed | :rayleigh`, `:fixed` the default. `:fixed` is the
+construction above, the owner's: the rms over the period and the
+periodogram per bin exact to rounding. `:rayleigh` multiplies each bin's
+unit phasor by a standard complex normal `z_k` from the counter RNG, keyed
+as the phase is, so that the fixed table is the Rayleigh table with `|z_k|`
+forced to 1; the scale `c` is the same, set from the expected power, so
+`sigma` is the EXPECTED rms and the bin powers are exponentially
+distributed around the target: a stationary Gaussian process matching the
+target statistically. The two meanings of `sigma`: the exact rms under
+`:fixed`; the expected rms under `:rayleigh`, the realised rms scattering
+with relative standard deviation `1 / (2 sqrt(K_eff))`, where `K_eff =
+(Σ_k w_k)² / Σ_k w_k²` over the band weights `w_k = 2 a_k²` (Nyquist weight
+one) equals `K` for `:flat` and is smaller for a sloped preset (294 of the
+32765 bins for `:pink` over `(2^-14, 1/2)` at `N = 2^16`), while the band
+mean of the periodogram over the target has relative standard deviation
+`1 / sqrt(K)` for either preset. The canonical name of D7 records the
+choice.)
+
+(2026-10-16, after landing: the Rayleigh moduli are `rho_k = |z_k|`, `z_k =
+(n_1 + i n_2) / sqrt(2)` with `(n_1, n_2) = octopus_normal_pair(seed,
+RNG_PHILOX, 0, rng_id, k, 2)`, the Box-Muller pair 2 of the phase's cell,
+components 3-4 and NOT 2-3: component 2 is the second output of the pair
+built from the phase's own uniform and would tie the modulus to the phase.
+The phase and the scale `c` are the fixed table's, so the fixed table is
+the Rayleigh table with every `rho_k` forced to 1. Measured at landing,
+kurtosis does not separate the two amplitude modes on a wide band, both
+near 0; the periodogram spread does, which is what the suite's falsifier
+pins.)
+
+(2026-10-16, review nit: under `:rayleigh` the Nyquist bin, made real with
+the sign of `cos(phi)`, carries a Rayleigh modulus rather than the
+half-normal one a real Gaussian bin would have; its expected power is
+unaffected.)
+
 **D6. `turns` is mandatory and the refusals are loud.** The table covers
 `turns = N` entries, periodic in `N` with no power below `1/N`, and must be
 at least as long as the run (the consumer refuses otherwise; this is not
@@ -144,17 +211,31 @@ rules' `_check_rule_sigma`); a custom spectrum without a label. Warned,
 not refused: fewer than 32 bins in the band, because a handful of
 sinusoids is a deterministic waveform rather than noise.
 
+(2026-10-16, after landing and review: two refusals the list above lacks,
+a spectrum that vanishes on every bin with `sigma > 0` (the implementer's
+addition, "pass sigma = 0 for a quiet table or a spectrum with power in
+the band") and a non-callable custom `S` (review nit, refused by name through `applicable`; `_spectral_slot`
+likewise refuses a negative or non-integer `slot`); the
+few-bins warning is raised once per rule construction through a warn flag,
+not a content-keyed `maxlog` (review F2: that keying silenced later rules
+with another `sigma` or spectrum), and the resolution at compile never
+warns.)
+
 **D7. The provenance name is canonical.** Unless the caller passes `name`,
 the table is named
 
 ```
-spectral(<label>; sigma=<sigma>, band=<lb>..<ub>, turns=<N>, seed=<seed>, stream=<stream>)
+spectral(<label>; sigma=<sigma>, band=<lb>..<ub>, turns=<N>, seed=<seed>, rng_id=<rng_id>, amplitudes=<fixed|rayleigh>)
 ```
 
 with the floats in shortest round-trip form and `<label>` the preset
 symbol or the custom label verbatim, so the receipt and the artifact
 carry the physics that made the table beside its digest. The digest stays
-what it is today, FNV-1a over the bytes of what actually ran.
+what it is today, FNV-1a over the bytes of what actually ran. (2026-10-16:
+the name gains `, amplitudes=<fixed|rayleigh>`, the owner's Q3 decision,
+D5; and with D11 the field `stream=` reads `rng_id=`, the rule's table
+carrying the global seed in force at compile and its claimed id, so the
+receipt shows how to regenerate the table offline with the factory.)
 
 **D8. Element type by keyword, `Float64` default.** `T = Float32` produces
 a `Float32` table for a `Float32` line (the consumer refuses a mismatch);
@@ -168,6 +249,11 @@ machine and FFTW; the digest follows the bytes. Consequently no test pins
 a digest value across the two gate arms; tests pin the statistics (D5) and
 the same-process regeneration.
 
+(2026-10-16, review nit: on heterogeneous MPI ranks each rank synthesises
+the rule's table at its own compile with its own FFTW, so the tables may
+differ in the last bits across ranks; the digest in the provenance is the
+writing rank's.)
+
 **D10. The stateless band rule stays deferred.** A per-turn evaluation of
 the same sum (`K` cosines per turn, no table) would remove the memory,
 8 bytes per turn per slot replicated on every MPI rank, 64 MB per rank for
@@ -175,24 +261,91 @@ eight slots at a million turns, 640 MB at ten million. That is the trigger
 for building it; until a study runs that long on many ranks, the table is
 the right tool and this function is how it is made.
 
+**D11 (owner decision 2026-10-16, after the section 9 answers). The entry
+point in a line is a spec-level rule, not only a factory.**
+`SpectralNoise(sigma, band, spectrum; rng_id=0, turns, amplitudes=:fixed,
+f_rev=nothing) <: AbstractTurnRule`, the interface of `WhiteNoise` and
+`PinkNoise`: `rng_id` claimed at construction, 0 auto-assigns a fresh id,
+the task constructor's sharing warning applies. It is resolved into a
+`TurnTable{T}` when the line compiles, in the cavity's `compile_runtime`
+where the element type is known, with `seed = global_rng_seed()` and the
+claimed `rng_id`, so at run time it is a table: D7, the recorder, the
+one-particle probe and the provenance (kind `table`; the canonical name
+carrying `seed=` and `rng_id=`) are untouched. The one stated difference
+from the live rules: the table takes the global seed in force when the
+line compiles. The standalone `spectral_turn_table(spectrum, sigma, band;
+turns, seed, rng_id, ...)` stays for offline tables and is the forward
+call the rule's resolution makes (one synthesis body); its second keyword
+is `rng_id`, not `stream`, refused at 0 and not claimed in the registry,
+the equal-digest warning being its sharing check. Reason, the owner's:
+white and pink carry no seed because the seed is global; a rule that reads
+the same seed keeps one interface across the four rule kinds, and an
+explicit seed is needed only outside a line.
+
+(2026-10-16, after landing: "when the line compiles" is the task's first
+`execute!`, a direct `compile_runtime(spec)`, and every recompile -- a knob
+assignment or a spec mutation bumps the epoch -- and not task construction;
+each compile that resolves the rule re-synthesises the table (the
+implementer measured 0.058 s at 2^20 turns with `:fixed`, 0.081 s with
+`:rayleigh`), which a knob sweep that recompiles per step pays per step; a
+`set_global_rng!` after the first `execute!` that triggers no recompile
+leaves the table in place while `WhiteNoise` and `PinkNoise` follow the new
+seed from the next turn, the canonical name recording the seed the table
+used. The resolution landed in `_resolve_turn_rule`, called from both
+cavities' `_turn_modulation_wrap`; the fewer-than-32-bins warning fires once
+per rule construction (`maxlog = 1`), not at every compile.)
+
+(2026-10-16, review: per-slot independence under one `rng_id`, as the live
+rules give it: the resolution passes the rule's slot into the key (F1,
+D4), so two `SpectralNoise` sharing an explicit id on two slots of one
+cavity resolve to distinct tables, pinned by regressions (distinct digests,
+correlation below `4/sqrt(2 K_eff)` in magnitude: at most 0.147 at `K_eff`
+372.6 in the landed test) and by the tie test passing the slot. A third recompile trigger (F5): the loss record's
+identity, so a re-run on a beam of another shape or backend recompiles and
+re-synthesises under the then-current seed, the receipt's name showing the
+seed. The `maxlog = 1` of the sentence above is superseded (F2): the rule
+warns at construction through a warn flag and the resolution never.)
+
 ## 4. The function
 
+(2026-10-16, D11: the rule first, the factory second; one synthesis body.)
+
 ```julia
-spectral_turn_table(spectrum, sigma, band; turns, seed, stream,
-                    f_rev=nothing, T=Float64, name=nothing) -> TurnTable{T}
+SpectralNoise(sigma, band, spectrum; rng_id=0, turns, amplitudes=:fixed,
+              f_rev=nothing) <: AbstractTurnRule           # in a line (D11)
+spectral_turn_table(spectrum, sigma, band; turns, seed, rng_id, slot=0,
+                    f_rev=nothing, amplitudes=:fixed, T=Float64,
+                    name=nothing) -> TurnTable{T}         # offline; the rule's forward call
 ```
 
 - `spectrum`: `:flat`, `:pink`, or `"<label>" => S`, with `S(f)` the PSD
   shape evaluated at the band's frequencies (D2).
 - `sigma`: the rms over the band, in the slot's unit: radians on a phase
-  slot, the dimensionless relative factor on a strength slot.
+  slot, the dimensionless relative factor on a strength slot (the exact
+  rms under `amplitudes = :fixed`, the expected rms under `:rayleigh`, D5).
 - `band`: `(lb, ub)` in cycles per turn, or in hertz when `f_rev` is given
   (D3).
-- `turns`, `seed`, `stream`: mandatory (D4, D6).
+- `turns`: mandatory on both (D6). `seed`: the factory's, mandatory (D4);
+  the rule takes `global_rng_seed()` when the line compiles (D11).
+  `rng_id`: on the rule as on `WhiteNoise` and `PinkNoise`, 0 (the default)
+  auto-assigning a fresh id and an explicit id claimed; on the factory
+  mandatory, refused at 0 and not claimed (D11; this keyword was `stream`
+  before D11). `slot` (2026-10-16, review F1): on the factory the table's
+  slot in the key's turn field, 0 (the default) for an offline table; the
+  rule passes its own slot at resolution and has no such keyword.
+- `amplitudes`: `:fixed` (default) or `:rayleigh` (2026-10-16, the owner's
+  Q3 decision; the dated remark under D5): the owner's exact construction,
+  or a stationary Gaussian process with `sigma` the expected rms, each
+  bin's unit phasor times a standard complex normal from the counter RNG at
+  the same scale `c`; recorded in the name (D7). No other default changes.
 
 Algorithm: bins `k` in the band; `a_k = sqrt(S(k/N))` (or of `k f_rev/N`);
-`φ_k` from Philox (D4); `X_k = c a_k cis(φ_k)`, the Nyquist entry made real;
-zeros elsewhere; `irfft(X, N)`; convert to `T`; `TurnTable(x; name)`. Cost
+`φ_k` from Philox (D4); `X_k = c a_k cis(φ_k)` (times `z_k` under
+`amplitudes = :rayleigh`), the Nyquist entry made real;
+zeros elsewhere; `irfft(X, N)`; convert to `T`; `TurnTable(x; name)`. The
+rule's resolution in the cavity's `compile_runtime` calls the factory with
+the claimed id and the global seed and hands the table to the wrap, so the
+runtime element holds a `TurnTable{T}` and no `SpectralNoise` (D11). Cost
 `O(N log N)`: 0.62 s and 8.4 MB at 2^20 turns on the section 6 machine,
 dominated by the transform; a sweep of thirty band centres is twenty
 seconds of synthesis against hours of tracking.
@@ -211,7 +364,11 @@ presets as a small table (symbol, label, `S`) that the docstring and the
 help output derive from, not a hand-copied list; exported; `?spectral_turn_table`
 carries D2 and D5 in full. It is host-side construction code: not
 CUDA-reachable, no closure that the `Core.Box` sweep could see, no
-per-turn cost.
+per-turn cost. (2026-10-16, D11: the rule type `SpectralNoise` lives
+beside `WhiteNoise` and `PinkNoise` in the same file and is exported; its
+resolution into a table sits where the cavity's `compile_runtime` builds
+the `TurnModulated` wrap, the element type being known there; the compiled
+line and the device see only the table.)
 
 ## 6. Verification plan
 
@@ -232,7 +389,8 @@ Each check is a test the suite runs; the numbers go into the record.
    once its `std` is the population form; this ties the new function to
    the method already used.
 4. **Reproducibility and independence.** Two calls with equal arguments in
-   one process give equal digests; `stream + 1` gives a different digest
+   one process give equal digests; `rng_id + 1` (2026-10-16; `stream + 1`
+   before D11) gives a different digest
    and a sample correlation below `4/sqrt(N)`; the task constructor warns
    on two cavities carrying tables of equal digest and stays silent
    otherwise (D4).
@@ -249,6 +407,36 @@ Each check is a test the suite runs; the numbers go into the record.
 8. **Backends.** Check 7 on CPU threads and CUDA; the two-rank MPI arm of
    the harness with `rule = :spectral` (section 7), the arms of the gate run
    one after the other (the 2026-10-15 lesson in the stage 1 record).
+9. **Rayleigh statistics** (2026-10-16, the owner's Q3 decision; the
+   tolerances as sent to the implementer, derived in the stage 1 record's
+   section 2.1 note). `amplitudes = :rayleigh` for `:flat` and `:pink` at
+   `N = 2^16`: the band mean of the periodogram over `c² S(f_k)` within
+   `5/sqrt(K)` of 1 (each bin's ratio is `|z_k|²`, exponential with unit
+   mean and unit variance); the rms within `5/(2 sqrt(K_eff))` of `sigma`
+   relative, `K_eff = (Σ_k w_k)² / Σ_k w_k²` over `w_k = 2 a_k²` (`K` for
+   `:flat`, 294 of the 32765 bins for `:pink` over `(2^-14, 1/2)`, so the
+   pin is five sigma for both presets where `5/(2 sqrt(K))` would be half a
+   sigma for `:pink`); every bin outside the band below 1e-12 of the band's
+   peak; the kurtosis falsifier: a two-bin fixed band of adjacent bins,
+   whose in-sample excess kurtosis is exactly -0.75 and phase-independent
+   (adjacent bins have no fourth-order resonance; a pair `(k, 3k)` would),
+   asserted below -0.5, against a wide `:flat` Rayleigh band within ±0.15
+   of 0 (in-sample standard deviation about 0.015 at `2^16` turns), the
+   `:pink` value printed without a pin (its in-sample scatter is about
+   0.066, extremes ±0.124 in 20 draws).
+10. **The tie between the rule and the factory** (2026-10-16, D11). A
+    one-particle `TrackingTask` with `record_turn_modulation = true` on a
+    line carrying `SpectralNoise(sigma, band, spectrum; rng_id = r, turns =
+    N)` under `set_global_rng!(seed = s)`: the recorded series equals the
+    table of `spectral_turn_table(spectrum, sigma, band; turns = N, seed =
+    s, rng_id = r)` bitwise in the same process, and the `:turn_modulation`
+    receipt and the artifact carry kind `table` and the canonical name with
+    `seed=s` and `rng_id=r`; the compiled line holds no `SpectralNoise`
+    (every rule of the runtime element is a `TurnTable{T}` of the line's
+    `T`); two `SpectralNoise` with `rng_id = 0` on one line auto-assign
+    distinct ids and tables of distinct digests, and an explicit id shared
+    by two cavities fires the task constructor's sharing warning as it does
+    for `WhiteNoise`.
 
 ## 7. Documentation and examples
 
@@ -262,6 +450,11 @@ Each check is a test the suite runs; the numbers go into the record.
   `randn` white tables as the measured precedent (section 2). Toggles
   `OCTOPUS_SPECTRUM`, `OCTOPUS_BAND`. The printed rms table of the example
   reads the realised rms from the record as it does for the other rules.
+  (2026-10-16, D11: the `:spectral` branch builds `SpectralNoise` exactly as
+  the white and pink branches build their rules, with the per-slot `rng_id`
+  those branches assign; `table_seed` is unused for it, the seed being the
+  global one in force when the line compiles; the harness's third toggle
+  is `OCTOPUS_SPECTRAL_AMPLITUDES`.)
 - `validation/crab_cavity_noise_response.jl`: the `noise` part gains the
   spectral case of check 7; a band sweep across a sideband is a later
   campaign with its own record and is not part of this note.
@@ -276,22 +469,50 @@ sequentially. Nothing stateful, nothing on the device, no new receipt.
 
 ## 9. Open questions for the owner
 
+The owner answered these on 2026-10-16 (the dated line under each
+question): Q1, Q2, Q4, Q5 and Q6 as proposed, Q3 with both amplitude models
+behind a keyword. Stage 1 implements the answers; its record is
+`../history/spectral_turn_table_2026_10_16.md`.
+
 - **Q1. Entry point.** The named function `spectral_turn_table` (proposal),
   or also a constructor method `TurnTable(spectrum, sigma, band; ...)`
   as first proposed in discussion, or only the constructor.
+  Decided by the owner 2026-10-16: the named function, no constructor
+  method; and, later the same day (D11), the spec-level rule
+  `SpectralNoise` with the interface of `WhiteNoise` and `PinkNoise`,
+  resolved into a `TurnTable` when the line compiles through the named
+  function, which stays for offline tables.
 - **Q2. Band units.** Tunes by default with `f_rev` for hertz (proposal),
   or hertz by default with `f_rev` mandatory.
+  Decided by the owner 2026-10-16: tunes by default, `f_rev` for a band
+  given in hertz.
 - **Q3. Amplitudes.** Fixed amplitudes only, the owner's construction and
   the exact-spectrum property (proposal), or a `gaussian = true` keyword
   for Rayleigh amplitudes as well.
+  Decided by the owner 2026-10-16, departing from the proposal: a keyword
+  `amplitudes = :fixed | :rayleigh`, `:fixed` the default, both offered.
+  Fixed: the owner's construction, exact rms and exact periodogram (D5 as
+  written). Rayleigh: each bin's unit phasor times a standard complex
+  normal from the counter RNG, keyed as the phase is, so the fixed table is
+  the Rayleigh table with `|z_k|` forced to 1; the same scale `c` from the
+  expected power, so `sigma` is the expected rms and the bin powers are
+  exponentially distributed around the target: a stationary Gaussian
+  process matching the target statistically. The dated remarks under D5
+  and D7 and the signature of section 4 carry it.
 - **Q4. Presets.** `:flat` and `:pink` (proposal); whether `:brown` (1/f²)
   or a white floor plus 1/f combination is worth a preset, or stays a
   labelled custom function.
+  Decided by the owner 2026-10-16: the presets `:flat` and `:pink` only;
+  anything else is a labelled custom function.
 - **Q5. Example integration.** A new `:spectral` rule value beside `:table`
   (proposal), or replacing the `:table` value's `randn` tables by the
   `:flat` preset over the full band.
+  Decided by the owner 2026-10-16: a new `:spectral` rule value beside
+  `:table`; the `:table` value keeps its `randn` white tables.
 - **Q6. The equal-digest warning** at the task constructor (proposal), or
   silence, leaving independence to the author.
+  Decided by the owner 2026-10-16: the equal-digest warning at the task
+  constructor.
 
 ## 10. References
 

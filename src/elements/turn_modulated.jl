@@ -1,4 +1,4 @@
-export TurnModulated, WhiteNoise, PinkNoise, TurnTable, update, update_line, realize
+export TurnModulated, WhiteNoise, PinkNoise, TurnTable, SpectralNoise, spectral_turn_table, update, update_line, realize
 
 # ---------------------------------------------------------------------------
 # Turn-by-turn modulation: a parameter that takes a different value on every
@@ -31,7 +31,9 @@ export TurnModulated, WhiteNoise, PinkNoise, TurnTable, update, update_line, rea
 # the name is what makes this wrapper a sibling to those walks for free.
 #
 # Where the pieces live:
-#   - this file: the rules (`WhiteNoise`, `PinkNoise`, `TurnTable`), the scalar rule
+#   - this file: the rules (`WhiteNoise`, `PinkNoise`, `TurnTable`; the spec-level
+#     `SpectralNoise`, resolved to a `TurnTable` at compile by `_resolve_turn_rule`,
+#     and its offline form `spectral_turn_table`), the scalar rule
 #     interface `_turn_offset`, the element-level `realize` and the one
 #     evaluation behind it, `_realize_draws` (the realised element, the
 #     successors AND the draws, so the run artifact's recorder shares the
@@ -82,7 +84,7 @@ export TurnModulated, WhiteNoise, PinkNoise, TurnTable, update, update_line, rea
     AbstractTurnRule
 
 The root of every per-slot turn-modulation rule (`WhiteNoise`, `PinkNoise`,
-`TurnTable`). A concrete rule defines `_turn_offset` (its value on one turn,
+`TurnTable`, `SpectralNoise`). A concrete rule defines `_turn_offset` (its value on one turn,
 which the element's `realize` adds to a phase or scales a strength by as
 `S (1 + d)`) and `_rule_kind` (its provenance kind label). The rule catalogue is
 DERIVED from the concrete subtypes of this root (`_turn_rule_names`, the crab
@@ -119,6 +121,28 @@ abstract type AbstractTurnRule end
 #     `_RULE_COMPONENT_BASE + slot + _PINK_COMPONENT_STRIDE * (k + 1)` (pink
 #     generator k), `slot` being the element's parameter slot (`1:2N` on a
 #     crab cavity, 1-2 on an RF cavity).
+#   - the spectral tables (`spectral_turn_table`, host-side, under its own
+#     `seed` and `rng_id` arguments; `SpectralNoise` under the global seed at
+#     compile and its claimed `rng_id`): the TURN field carries the table's
+#     SLOT -- 0 for an offline table, the rule's slot (`1:2N` on a crab
+#     cavity, 1-2 on an RF cavity, the numbering of `_slot_rules`) when
+#     `_resolve_turn_rule` synthesises it (review F1, 2026-10-16: keyed on
+#     `(seed, rng_id, bin)` alone, two rules sharing one explicit id on two
+#     slots of ONE element were one table, silently) -- particle slot = the
+#     frequency bin k (>= 1), component 1 for the bin's phase and the
+#     Box-Muller pair 2 (components 3-4) for a Rayleigh modulus. Disjoint
+#     from the rules above on every slot (particle index k >= 1 against the
+#     rules' 0; components 1 and 3-4 against the band `>=
+#     _RULE_COMPONENT_BASE`), so a table and a rule never share a cell
+#     whatever their ids. Offline slot 0 keeps the documented coincidence
+#     with a Beam's turn-0 initial-distribution cells for particle k under
+#     the same seed and rng_id (an offline table's (seed, rng_id) must not
+#     repeat the task seed with a beam's rng_id; design D4, the keying of the
+#     section 6 sketch of docs/design/turn_modulation.md); a resolved table
+#     (slot >= 1) never touches turn 0 and cannot meet them, while under one
+#     shared id it shares turn `slot`'s cells with radiation particle k and
+#     the BPM's occurrence k, as the three older classes already share among
+#     themselves.
 # Without the base (review finding S1, 2026-10-12) a white rule on slot 1 or 2
 # and a noisy BPM's occurrence 0 sharing an `rng_id` drew the SAME normal.
 const _RULE_COMPONENT_BASE = 1024
@@ -259,6 +283,561 @@ function _fnv1a64(bytes::AbstractVector{UInt8})
     return h
 end
 
+# ---------------------------------------------------------------------------
+# The spectral producer (`docs/design/spectral_turn_table.md`, D1-D10; owner's
+# go-ahead 2026-10-15, stage 1 2026-10-16): one synthesis body behind two
+# entries. `spectral_turn_table` builds a `TurnTable` offline from a target
+# spectrum under a `(seed, rng_id)` the caller writes down; `SpectralNoise` is
+# the spec-level rule that resolves into that table when the line compiles
+# (`_resolve_turn_rule`, called by both cavities' `_turn_modulation_wrap`),
+# under the global seed in force and a claimed `rng_id`, so at run time it IS
+# a table: D7, the recorder, the probe, the provenance writer and readers are
+# untouched. Host-side construction code only: not CUDA-reachable, no per-turn
+# cost, no new runtime rule.
+# ---------------------------------------------------------------------------
+
+# The preset spectra: one table the docstrings' lists, `?spectral_turn_table`,
+# `?SpectralNoise` and the unknown-preset refusal all derive from (never a
+# hand-copied list). Each entry is the PSD SHAPE `S(f)` (D2), evaluated at the
+# band's bins only, never at f = 0 (D3).
+_spectral_flat(f) = 1.0
+_spectral_pink(f) = 1.0 / f
+const _SPECTRAL_PRESETS = (
+    flat = (label = "flat", formula = "S(f) = 1, white over the band", S = _spectral_flat),
+    pink = (label = "pink", formula = "S(f) = 1/f, equal power per octave", S = _spectral_pink),
+)
+_spectral_preset_lines() =
+    join(("  - `:$(k)` -- $(p.formula)" for (k, p) in pairs(_SPECTRAL_PRESETS)), "\n")
+_spectral_preset_names() = join((repr(k) for k in keys(_SPECTRAL_PRESETS)), ", ")
+const _SPECTRAL_AMPLITUDES = (:fixed, :rayleigh)
+
+# The spectrum argument resolved to `(label, S)`: a preset symbol from the
+# table above, or a `"<label>" => S` pair with a non-empty label (the label is
+# what the canonical name records, D7, so an empty one is refused, D6). `who`
+# prefixes every refusal with the entry that raised it.
+function _spectral_shape(who::String, spectrum::Symbol)
+    haskey(_SPECTRAL_PRESETS, spectrum) || throw(ArgumentError(
+        "$(who): unknown preset $(repr(spectrum)); the presets are " *
+        _spectral_preset_names() * ", or pass a custom \"<label>\" => S pair with S the " *
+        "one-sided power spectral density shape"))
+    preset = _SPECTRAL_PRESETS[spectrum]
+    return preset.label, preset.S
+end
+function _spectral_shape(who::String, spectrum::Pair{<:AbstractString,<:Any})
+    label = String(first(spectrum))
+    isempty(strip(label)) && throw(ArgumentError(
+        "$(who): a custom spectrum needs a non-empty label (it names the spectrum in the " *
+        "table's canonical name and the run's provenance); got \"\" => S"))
+    return label, last(spectrum)
+end
+_spectral_shape(who::String, spectrum) = throw(ArgumentError(
+    "$(who): spectrum must be a preset Symbol (" * _spectral_preset_names() *
+    ") or a \"<label>\" => S pair with S the one-sided power spectral density shape; got " *
+    repr(spectrum)))
+
+# The band `(lb, ub)` validated and converted to cycles per turn: with `f_rev`
+# the edges are in hertz and are divided by it. Returns `(lb, ub, scale)` with
+# `scale` the factor that turns a bin's tune into the argument `S` sees (1 in
+# tunes, `f_rev` in hertz). Every refusal carries the numbers (D6).
+function _spectral_band(who::String, band, f_rev)
+    (band isa Tuple && length(band) == 2 && band[1] isa Real && band[2] isa Real) ||
+        throw(ArgumentError(
+            "$(who): band must be a pair (lb, ub) of modulation tunes in cycles per turn " *
+            "(or in hertz when f_rev is given); got $(repr(band))"))
+    lo, hi = Float64(band[1]), Float64(band[2])
+    (isfinite(lo) && isfinite(hi)) || throw(ArgumentError(
+        "$(who): the band edges must be finite; got (lb, ub) = ($(lo), $(hi))"))
+    if f_rev === nothing
+        scale = 1.0
+    else
+        (f_rev isa Real && isfinite(f_rev) && f_rev > 0) || throw(ArgumentError(
+            "$(who): f_rev must be a positive finite revolution frequency in hertz (it " *
+            "converts a band given in hertz to cycles per turn); got $(repr(f_rev))"))
+        scale = Float64(f_rev)
+    end
+    lb, ub = lo / scale, hi / scale
+    hz = f_rev === nothing ? "" : " (the band $(lo)..$(hi) Hz at f_rev = $(scale) Hz)"
+    lb > 0 || throw(ArgumentError(
+        "$(who): the band's lower edge must be positive (the DC bin is never in the " *
+        "band); got lb = $(lb) cycles per turn$(hz)"))
+    lb < ub || throw(ArgumentError(
+        "$(who): the band's lower edge must lie below its upper edge; got lb = $(lb), " *
+        "ub = $(ub) cycles per turn$(hz)"))
+    ub <= 0.5 || throw(ArgumentError(
+        "$(who): the band's upper edge must not exceed the Nyquist tune 1/2; got " *
+        "ub = $(ub) cycles per turn$(hz)"))
+    return lb, ub, scale
+end
+
+# `seed` and `rng_id` as the counter RNG takes them: non-negative integers, a
+# refusal naming the keyword rather than an `InexactError` from `UInt64`.
+function _spectral_key(who::String, value, keyword::Symbol)
+    (value isa Integer && value >= 0) || throw(ArgumentError(
+        "$(who): $(keyword) must be a non-negative integer (the bin phases are a function " *
+        "of (seed, rng_id, slot, bin) and nothing else); got $(repr(value))"))
+    return UInt64(value)
+end
+
+# The table's slot, the counter RNG's turn field in its keying: 0 for an
+# offline table, the rule's slot when `_resolve_turn_rule` synthesises it (the
+# key layout above `_RULE_COMPONENT_BASE`; review F1, 2026-10-16).
+function _spectral_slot(who::String, slot)
+    (slot isa Integer && slot >= 0) || throw(ArgumentError(
+        "$(who): slot must be a non-negative integer (0 for an offline table; a rule " *
+        "resolved at compile passes its slot, which enters the bin keying beside seed and " *
+        "rng_id); got $(repr(slot))"))
+    return Int(slot)
+end
+
+# The canonical name (D7): the physics that made the table, beside its digest
+# in the receipt and the artifact. Floats in shortest round-trip form, the
+# band in cycles per turn whatever unit the caller used.
+_spectral_name(label, sigma::Float64, lb::Float64, ub::Float64, N::Int, seed::UInt64,
+               rng_id::UInt64, slot::Int, amplitudes::Symbol) =
+    "spectral($(label); sigma=$(repr(sigma)), band=$(repr(lb))..$(repr(ub)), turns=$(N), " *
+    "seed=$(string(seed)), rng_id=$(string(rng_id)), slot=$(slot), amplitudes=$(string(amplitudes)))"
+
+# The frequency `S` sees for bin `k` of an `N`-turn table: the tune `k / N`, or
+# `k f_rev / N` in hertz when the band was given in hertz (`scale = f_rev`).
+# One expression for the plan's validation and the synthesis's amplitude, so
+# the two cannot drift.
+_spectral_bin_frequency(k::Int, N::Int, scale::Float64) = scale == 1.0 ? k / N : k * scale / N
+
+"""
+    _spectral_plan(who, spectrum, sigma, band, turns, f_rev, amplitudes, warn::Bool) -> NamedTuple
+
+Everything the synthesis needs that does not depend on the keys: the resolved
+`(label, S)`, `sigma` as a `Float64`, `N`, the band in cycles per turn and the
+scale `S`'s argument carries, the band bins as a `UnitRange` (the `k` with
+`lb <= k/N <= ub` are consecutive), whether the last bin is Nyquist and the
+scale `c` of D5. The bin amplitudes `a_k = sqrt(S(f_k))` are validated and
+summed here and recomputed bin by bin in the synthesis; no vector per bin is
+kept (review nit, 2026-10-16: the bin and amplitude vectors were two of the
+synthesis's transients). Every refusal of D6 lives here, so the factory and
+the `SpectralNoise` constructor validate identically (`who` names the entry
+in the messages). The fewer-than-32-bins warning is printed when `warn` is
+set -- `true` from the factory and the rule's constructor, `false` from
+`_resolve_turn_rule`, whose rule warned at construction -- and carries no
+`maxlog`: a content-keyed `maxlog` silenced every later few-bin rule of
+another `sigma` or spectrum in the same process (review F2, 2026-10-16),
+while the compile path, which a knob sweep runs per step, never warns.
+"""
+function _spectral_plan(who::String, spectrum, sigma, band, turns, f_rev, amplitudes, warn::Bool)
+    label, S = _spectral_shape(who, spectrum)
+    (amplitudes isa Symbol && amplitudes in _SPECTRAL_AMPLITUDES) || throw(ArgumentError(
+        "$(who): amplitudes must be :fixed (every bin at its target amplitude: exact rms " *
+        "and exact periodogram) or :rayleigh (Rayleigh-distributed bin amplitudes: a " *
+        "stationary Gaussian process matching the target in expectation); got " *
+        repr(amplitudes)))
+    (turns isa Integer && turns >= 2) || throw(ArgumentError(
+        "$(who): turns must be an integer of at least 2 (the table's period, to be made " *
+        "at least as long as the run); got $(repr(turns))"))
+    N = Int(turns)
+    sigma isa Real || throw(ArgumentError(
+        "$(who): sigma must be a real rms in the slot's unit; got $(repr(sigma))"))
+    s = Float64(sigma)
+    _check_rule_sigma(who, s)
+    lb, ub, scale = _spectral_band(who, band, f_rev)
+    half = N ÷ 2
+    # The band bins are the k with lb <= k/N <= ub; k/N is monotonic in k, so
+    # they are consecutive and a UnitRange holds them without a vector.
+    inband(k) = lb <= k / N <= ub
+    kmin = findfirst(inband, 1:half)
+    kmin === nothing && throw(ArgumentError(
+        "$(who): no bin lies in the band lb = $(lb)..ub = $(ub) cycles per turn at " *
+        "turns = $(N): the bins are k/N for k = 1, 2, ..., the first being 1/N = $(1 / N); " *
+        "widen the band or lengthen the table"))
+    kmax = findlast(inband, 1:half)
+    bins = kmin:kmax
+    K = length(bins)
+    applicable(S, _spectral_bin_frequency(kmin, N, scale)) || throw(ArgumentError(
+        "$(who): the custom spectrum's S must be callable on one frequency, S(f) with f a " *
+        "Float64 (the one-sided power spectral density shape, evaluated on the band's bins); " *
+        "got $(repr(S)), which is not"))
+    if warn && K < 32
+        @warn("$(who): only $(K) bin(s) lie in the band $(lb)..$(ub) cycles per turn at " *
+              "$(N) turns; fewer than 32 sinusoids is a deterministic waveform rather than " *
+              "noise (widen the band or lengthen the table)",
+              bins = K, band = (lb, ub), turns = N)
+    end
+    nyquist = iseven(N) && kmax == half
+    weight = 0.0
+    for k in bins
+        f = _spectral_bin_frequency(k, N, scale)
+        v = S(f)
+        (v isa Real && isfinite(v) && v >= 0) || throw(ArgumentError(
+            "$(who): S(f) must be finite and non-negative on every bin of the band; bin " *
+            "k = $(k) (f = $(f)$(scale == 1.0 ? " cycles per turn" : " Hz")) gave $(repr(v))"))
+        amplitude = sqrt(Float64(v))
+        weight += (nyquist && k == kmax ? 1.0 : 2.0) * amplitude^2
+    end
+    (weight > 0.0 || s == 0.0) || throw(ArgumentError(
+        "$(who): S(f) vanishes on every bin of the band $(lb)..$(ub), so no table of rms " *
+        "sigma = $(s) exists; pass sigma = 0 for a quiet table or a spectrum with power in " *
+        "the band"))
+    c = weight > 0.0 ? s * N / sqrt(weight) : 0.0
+    return (label = label, S = S, sigma = s, N = N, lb = lb, ub = ub, scale = scale,
+            bins = bins, nyquist = nyquist, c = c)
+end
+
+"""
+    _spectral_synthesis(plan, seed::UInt64, rng_id::UInt64, slot::Int, amplitudes, ::Type{T}, name) -> TurnTable{T}
+
+The one synthesis body (design D4, D5; the Rayleigh variant of the owner's Q3
+decision; the slot in the key, review F1 2026-10-16): bin `k` of the plan
+carries `c a_k rho_k cis(phi_k)` with `a_k = sqrt(S(f_k))` recomputed from
+the plan's spectrum, `phi_k = 2 pi octopus_uniform01(seed, RNG_PHILOX, slot,
+rng_id, k, 1)` and `rho_k = 1` (`:fixed`) or `|z_k|`, `z_k = (n_1 + i n_2) /
+sqrt(2)` from `octopus_normal_pair(seed, RNG_PHILOX, slot, rng_id, k, 2)`
+(`:rayleigh`); the Nyquist entry real with the sign of `cos(phi)`; zeros
+elsewhere; `irfft`; conversion to `T`; the canonical name unless `name` is
+given. At `slot = 0` the table is bitwise the one this body produced before
+the slot entered the key. Transient memory: the complex spectrum (`8 N`
+bytes), the transform's output and the table's own copy, with no vector per
+bin -- measured at 2^20 turns: 24.0 MiB allocated for an 8.0 MiB table,
+3.0 times its bytes, against 37.3 MiB (4.7 times) when a pushed bin vector
+and an amplitude vector were kept, in 0.063 s against 0.070 s (`:rayleigh`
+0.082 s; review nit, 2026-10-16).
+"""
+function _spectral_synthesis(plan, seed::UInt64, rng_id::UInt64, slot::Int, amplitudes::Symbol,
+                             ::Type{T}, name) where {T<:AbstractFloat}
+    N, bins, c, S, scale = plan.N, plan.bins, plan.c, plan.S, plan.scale
+    half = N ÷ 2
+    kmax = last(bins)
+    rayleigh = amplitudes === :rayleigh
+    X = zeros(ComplexF64, half + 1)
+    for k in bins
+        amplitude = sqrt(Float64(S(_spectral_bin_frequency(k, N, scale))))
+        phi = 2pi * octopus_uniform01(seed, RNG_PHILOX, slot, rng_id, k, 1, Float64)
+        rho = 1.0
+        if rayleigh
+            n1, n2 = octopus_normal_pair(seed, RNG_PHILOX, slot, rng_id, k, 2, Float64)
+            rho = sqrt((n1 * n1 + n2 * n2) / 2)
+        end
+        magnitude = c * amplitude * rho
+        if plan.nyquist && k == kmax
+            X[k + 1] = complex(cos(phi) >= 0 ? magnitude : -magnitude)
+        else
+            X[k + 1] = magnitude * cis(phi)
+        end
+    end
+    x = irfft(X, N)
+    table = T === Float64 ? x : T.(x)
+    tag = name === nothing ?
+          _spectral_name(plan.label, plan.sigma, plan.lb, plan.ub, N, seed, rng_id, slot, amplitudes) :
+          String(name)
+    return TurnTable(table; name=tag)
+end
+
+"""
+    spectral_turn_table(spectrum, sigma, band; turns, seed, rng_id, slot=0,
+                        f_rev=nothing, amplitudes=:fixed, T=Float64, name=nothing) -> TurnTable{T}
+
+Synthesise a [`TurnTable`](@ref) of `turns` per-turn values whose one-sided
+power spectrum has the shape `spectrum` over the modulation band `band` and
+whose rms is `sigma`, by frequency-domain shaping (Timmer and König; design
+note `docs/design/spectral_turn_table.md`, decisions D1-D10). The OFFLINE
+form of [`SpectralNoise`](@ref): the same synthesis under a `(seed, rng_id)`
+the caller writes down, for a table built outside a line (a sweep script, a
+file, a table shared on purpose). A producer on the producer's side of the
+table rule's D7 boundary: the result is an ordinary `TurnTable` -- digest,
+window check, recorder and provenance apply to it as to any table -- and
+nothing in the runtime changes.
+
+Arguments:
+
+- `spectrum`: a preset symbol, or `"<label>" => S` with `S(f) >= 0` the
+  ONE-SIDED POWER SPECTRAL DENSITY SHAPE of the noise. Only the shape matters
+  (the level is `sigma`'s), so the unit of `f` inside `S` is irrelevant:
+  `1/f` in hertz and `1/f` in cycles per turn give the same table. The
+  presets, one table this list and the unknown-preset refusal derive from:
+$(_spectral_preset_lines())
+- `sigma`: the rms of the table over one period, in the slot's own unit:
+  radians on a phase slot, the dimensionless relative factor on a strength
+  slot. Finite and non-negative; `0` gives a quiet table. With
+  `amplitudes = :fixed` it is the rms EXACTLY (to rounding); with
+  `amplitudes = :rayleigh` it is the EXPECTED rms, the realised rms of one
+  table scattering by about `1 / (2 sqrt(K_eff))` of it around that value
+  (`K_eff = (sum w_k)^2 / sum w_k^2` over the band weights `w_k = 2 a_k^2`,
+  the Nyquist weight `a_k^2`: the number of bins for a flat band, far fewer
+  for a 1/f band whose power sits in its lowest bins).
+- `band`: `(lb, ub)` in cycles per turn (modulation tunes), `0 < lb < ub <=
+  1/2`. With `f_rev`, the revolution frequency in hertz, the band AND the
+  argument of `S` are in hertz, `f_k = k f_rev / turns`; the canonical name
+  records the band in cycles per turn either way.
+- `turns`: the table length `N`, at least 2, and at least as long as the run
+  (the consumer refuses a window it cannot cover; that check is the table
+  rule's, not this function's). The table is periodic in `N` and holds no
+  power below `1/N`.
+- `seed`, `rng_id`: the keys of the bin phases (below), both mandatory, both
+  non-negative integers, `rng_id` positive. NOT claimed in the stream
+  registry (`claim_rng_id!`): an offline table is data, so `rng_id = 0`, the
+  live rules' auto-assign, is refused by name, and the only sharing check an
+  offline table gets is the task constructor's equal-digest warning -- two
+  tables built with the same `(seed, rng_id)` over the same bins are the same
+  noise. `SpectralNoise` on the element claims its stream like `WhiteNoise`.
+- `slot`: the table's slot on its element, entering the bin keying beside
+  `seed` and `rng_id` as the counter RNG's turn field; `0` (the default) for
+  an offline table. `_resolve_turn_rule` synthesises a `SpectralNoise` with
+  the rule's slot -- a crab cavity's phase harmonic `i` is slot `i` and its
+  strength harmonic `i` slot `N + i`, an RF cavity's phase 1 and strength 2,
+  the numbering of `_slot_rules` -- so one `rng_id` on several slots of one
+  cavity gives INDEPENDENT tables, as it gives the live rules independent
+  draws per entry, while two cavities sharing an explicit id resolve to
+  identical tables slot for slot (the task constructor's shared-id warning).
+  To regenerate a resolved table offline, pass the slot its canonical name
+  records. (Review F1, 2026-10-16: keyed on `(seed, rng_id, bin)` alone, two
+  rules sharing one id on two slots of ONE element were one table, silently.)
+- `f_rev`: see `band`. `amplitudes`: `:fixed` (default) or `:rayleigh`,
+  below. `T`: the table's element type (`Float32` for a `Float32` line; the
+  synthesis runs in `Float64` and converts at the end). `name`: replaces the
+  canonical name.
+
+The amplitude is the SQUARE ROOT of the spectrum. Bin `k` of the band carries
+`a_k = sqrt(S(f_k))`, so `"pink" => f -> 1/f` is pink (power `1/f`, equal
+power per octave) because the function is read as a power density. This is
+the classic trap: `1/f` handed as an AMPLITUDE -- which is what writing
+`f -> 1/f^2` here would mean -- is a `1/f^2` (brown) spectrum, one unit
+steeper per octave; the suite pins the slope of that mistake as a negative
+control. The bins are the `k` with `lb <= k/N <= ub`, so `k >= 1` always and
+a spectrum that diverges at zero is never evaluated there; `S` must be finite
+and non-negative on every bin. The Nyquist bin (`k = N/2`, present when
+`ub = 1/2` and `N` is even) is real, as `irfft` requires, and counts once in
+the normalisation where interior bins count twice.
+
+Phases: bin `k` carries `phi_k = 2 pi octopus_uniform01(seed, RNG_PHILOX,
+slot, rng_id, k, 1)`, the Octopus counter RNG with the table's `slot` in the
+turn field, stream `rng_id`, particle index `k`, component 1 -- a function of
+`(seed, rng_id, slot, k)` alone, identical on every machine and Julia
+version, independent of the task's own seed (this function runs outside the
+task and cannot see it). At `slot = 0` the cells are those a `Beam`'s initial
+distribution draws for particle `k`'s first coordinate under the same seed
+and `rng_id` (the key layout above `_RULE_COMPONENT_BASE`), so do not reuse
+the task seed with a beam's `rng_id` as an offline table's `(seed, rng_id)`;
+a resolved table (`slot >= 1`) never touches turn 0, and no table shares a
+cell with a live rule on any slot (particle index `k >= 1` against the
+rules' 0, components 1 and 3-4 against their band).
+
+Normalisation (D5), `amplitudes = :fixed`: the table is
+
+    x_n = (2c/N) sum_k a_k cos(2 pi k n / N + phi_k)      (+ (c/N) a_{N/2} (-1)^n at Nyquist)
+
+and over one full period the bins are orthogonal, so the population variance
+is EXACTLY `(c^2 / N^2) (2 sum_interior a_k^2 + a_Nyquist^2)`. The scale is
+therefore the constant `c = sigma N / sqrt(2 sum_interior a_k^2 + a_Nyquist^2)`
+-- no sample statistic: the rms over a period equals `sigma` to rounding and
+the periodogram `|X_k|^2` of the table equals `c^2 S(f_k)` on every band bin
+to rounding, zero elsewhere. The owner's `sigma / std(ret)` normalisation is
+this constant up to the Bessel factor `sqrt(N / (N - 1))`. Fixed amplitudes
+reproduce the target spectrum exactly and give a sequence that is Gaussian
+only in the limit of many bins (a handful of sinusoids is a deterministic
+waveform, which is why fewer than 32 bins in the band warns).
+
+`amplitudes = :rayleigh`: each bin's amplitude is multiplied by
+`rho_k = |z_k|` with `z_k = (n_1 + i n_2) / sqrt(2)` a standard complex
+normal, `n_1, n_2` the counter RNG's `octopus_normal_pair(seed, RNG_PHILOX,
+0, rng_id, k, 2)` (components 3 and 4 of the same cell as the phase -- pair
+2, NOT components 2 and 3, because component 2 is the second output of the
+Box-Muller pair built from the phase's own uniform and would tie the
+amplitude to the phase). The phase of every bin is the same as in the fixed
+table, the scale `c` is the same constant (`E rho_k^2 = 1`), and the fixed
+table is the Rayleigh table with every `rho_k` forced to 1. The result is a
+stationary Gaussian process whose periodogram per bin is exponentially
+distributed around `c^2 S(f_k)` and whose rms is `sigma` in expectation: the
+target spectrum is matched statistically, not exactly. At the Nyquist bin,
+whose entry is real, the modulus is the same Rayleigh `rho_k` with the sign
+of `cos(phi_k)` rather than the half-normal modulus a real Gaussian bin
+would have; its expected power is unaffected, which is all the normalisation
+uses.
+
+Canonical name (D7), unless `name` is given:
+
+    spectral(<label>; sigma=<sigma>, band=<lb>..<ub>, turns=<N>, seed=<seed>, rng_id=<rng_id>, slot=<slot>, amplitudes=<fixed|rayleigh>)
+
+with the floats in shortest round-trip form, the band in cycles per turn,
+`slot=0` on an offline table and `<label>` the preset symbol or the custom
+label verbatim, so the provenance receipt and the run artifact carry the
+physics that made the table beside its digest (FNV-1a over the bytes of what
+actually ran) and the arguments that regenerate it.
+
+Refused with an `ArgumentError` that carries the numbers (D6): `turns < 2`;
+a band with no bin (the message states `lb`, `ub`, `N` and the first bin
+`1/N`); `lb <= 0`, `lb >= ub`, `ub > 1/2`; a negative, infinite or NaN
+`S(f_k)` on any bin (the bin and its frequency named); a spectrum that
+vanishes on every bin with `sigma > 0`; non-finite or negative `sigma`; a
+custom spectrum with an empty label or whose `S` is not callable on a
+frequency; an unknown preset; `amplitudes` other than `:fixed` or
+`:rayleigh`; a `T` that is not an `AbstractFloat`; a negative or non-integer
+`seed`, `rng_id`, `slot` or `turns`; `rng_id = 0`; a non-positive `f_rev`.
+Warned, not refused: fewer than 32 bins in the band (the count and the band
+in the message), once per table built here or per rule constructed, never
+again when a rule's table is synthesised at compile.
+
+Reproducibility (D9): the phases and the Rayleigh moduli are bitwise
+reproducible everywhere. The inverse transform is FFTW's, whose last bits
+depend on the plan FFTW chooses for the machine and build, so the same
+arguments give the same table to rounding across machines and bitwise only
+on the same machine and FFTW; the digest follows the bytes. No test pins a
+digest value; the suite pins the statistics above and same-process
+regeneration.
+
+Cost `O(N log N)`, dominated by the transform (section 4 of the design note
+quotes 0.62 s and 8.4 MB at 2^20 turns on its machine; the stage 1 record
+carries this machine's numbers); a sweep of band centres is seconds of
+synthesis against hours of tracking.
+
+```julia
+table = spectral_turn_table(:pink, 1.0e-5, (1.0e-4, 1.0e-2); turns = 2^20, seed = 42, rng_id = 1)
+cavity = ThinCrabCavitySpec{1}(394.0e6; strengthX = (2.0e-3,), phase = (0.0,), phase_noise = (table,))
+```
+"""
+function spectral_turn_table(spectrum, sigma, band; turns, seed, rng_id, slot=0, f_rev=nothing,
+                             amplitudes=:fixed, T=Float64, name=nothing)
+    return _spectral_table("spectral_turn_table", spectrum, sigma, band, turns, seed, rng_id, slot,
+                           f_rev, amplitudes, T, name, true)
+end
+
+# The one body behind the factory and `_resolve_turn_rule` (its forward call,
+# design D11): the factory's own refusals (`T`, the keys, `rng_id = 0`, the
+# slot), then the plan and the synthesis; `who` prefixes the messages and
+# `warn` switches the few-bins warning (`_spectral_plan`): on for the factory
+# and the rule's constructor, off for the resolution of a rule that warned
+# when it was built (review F2, 2026-10-16).
+function _spectral_table(who::String, spectrum, sigma, band, turns, seed, rng_id, slot, f_rev,
+                         amplitudes, T, name, warn::Bool)
+    (T isa Type && T <: AbstractFloat) || throw(ArgumentError(
+        "$(who): T must be an AbstractFloat type (the table's element type, " *
+        "equal to the line's); got $(repr(T))"))
+    plan = _spectral_plan(who, spectrum, sigma, band, turns, f_rev, amplitudes, warn)
+    seed_key = _spectral_key(who, seed, :seed)
+    rng_key = _spectral_key(who, rng_id, :rng_id)
+    rng_key == 0 && throw(ArgumentError(
+        "$(who): rng_id must be a positive integer naming the table's stream; " *
+        "0, the live rules' auto-assign, is refused here because an offline table is data " *
+        "and claims no stream (put SpectralNoise on the element for an assigned stream); got 0"))
+    slot_key = _spectral_slot(who, slot)
+    return _spectral_synthesis(plan, seed_key, rng_key, slot_key, amplitudes, T, name)
+end
+
+"""
+    SpectralNoise(sigma, band, spectrum; rng_id=0, turns, amplitudes=:fixed, f_rev=nothing)
+
+The spec-level turn-modulation rule for noise of a chosen spectrum: a
+per-turn table of `turns` values whose one-sided power spectrum has the
+shape `spectrum` over the modulation band `band` and whose rms is `sigma`
+(in the slot's unit: radians on a phase slot, the dimensionless relative
+factor on a strength slot), synthesised when the line COMPILES. In
+`compile_runtime` (`_turn_modulation_wrap` of the crab cavity and of the RF
+cavity, through `_resolve_turn_rule`) every `SpectralNoise` in a rule tuple
+becomes the `TurnTable{T}` that [`spectral_turn_table`](@ref) returns for
+`seed = global_rng_seed()`, the rule's claimed `rng_id` and the entry's SLOT
+(a crab cavity's phase harmonic `i` is slot `i` and its strength harmonic
+`i` slot `N + i`; an RF cavity's phase is 1 and its strength 2), with the
+line's element type `T`; the other rules pass through unchanged. At run time it
+therefore IS a table: the table rule's D7 semantics, the window check
+(`first_turn + turns <= length`), the recorder, the one-particle probe and
+the provenance all apply unchanged, the receipt and the artifact record the
+kind `:table` with the canonical name
+`spectral(<label>; sigma=.., band=.., turns=.., seed=.., rng_id=.., slot=.., amplitudes=..)`
+beside the digest, and a compiled line never holds a `SpectralNoise` (the
+suite pins it). `spectrum` is a preset or `"<label>" => S` with `S(f) >= 0`
+the one-sided POWER SPECTRAL DENSITY shape and the bin amplitude
+`sqrt(S(f_k))`: `f -> 1/f` is pink, while `1/f` handed as an amplitude --
+the PSD `f -> 1/f^2` -- would be brown, one unit per octave steeper (D2).
+The arguments, the normalisation (exact rms and periodogram with `:fixed`,
+`sigma` the EXPECTED rms with `:rayleigh`), the phase keying, the refusals
+and the fewer-than-32-bins warning are those of `spectral_turn_table`,
+applied at CONSTRUCTION here (a refused rule claims no stream, as
+`WhiteNoise` and `PinkNoise`); the presets:
+$(_spectral_preset_lines())
+
+Stream semantics are the live rules' (`_rule_stream_id`): `rng_id = 0`, the
+default, assigns a fresh stream (`next_rng_id!`), an explicit id is claimed
+(`claim_rng_id!`) so the auto-assign counter never reissues it. The slot
+enters the table's keying as it enters a `WhiteNoise` draw, so one `rng_id`
+on several slots of ONE cavity gives independent tables, exactly as it gives
+the live rules independent draws per entry (review F1, 2026-10-16: before,
+such rules resolved to one table with no warning). Two rules with equal
+explicit ids on two ELEMENTS, under one global seed, resolve to identical
+tables slot for slot: the task constructor's shared-`rng_id` warning fires
+for them as for two `WhiteNoise` rules (the equal-digest warning covers
+tables built offline).
+
+The one difference from the live rules: a `WhiteNoise` or `PinkNoise` reads
+the global seed on every turn through the `TrackingContext`, while this
+rule's table takes the global seed in force WHEN THE LINE COMPILES -- the
+first `execute!` of a task, a direct `compile_runtime(spec)`, and again at
+any recompile: a knob assignment or a spec mutation bumps the epoch, and a
+re-run of the task on a beam of another shape or backend changes the loss
+record its runtime entries are keyed on (`_runtime_entries`,
+src/tasks/Tasks.jl), so the line recompiles and the table is re-synthesised
+under the then-current seed. A `set_global_rng!` after a compile that no
+such change follows alters white and pink draws from the next turn but not
+the table until the next compile; the canonical name records the seed the
+table used, so the receipt says which. Each compile that
+resolves the rule pays one synthesis (`O(N log N)`; tens of milliseconds at
+2^20 turns), which a knob sweep that recompiles per step pays per step.
+
+```julia
+set_global_rng!(seed = 42)
+rule = SpectralNoise(1.0e-5, (1.0e-4, 1.0e-2), :pink; rng_id = 7, turns = 2^20)
+cavity = ThinCrabCavitySpec{1}(394.0e6; strengthX = (2.0e-3,), phase = (0.0,), phase_noise = (rule,))
+```
+"""
+struct SpectralNoise{F} <: AbstractTurnRule
+    sigma::Float64
+    band::Tuple{Float64,Float64}    # as given: hertz when `f_rev` is set, else cycles per turn
+    lb::Float64                     # the band in cycles per turn
+    ub::Float64
+    label::String
+    S::F                            # the PSD shape; a type parameter that never reaches the runtime
+    turns::Int
+    amplitudes::Symbol
+    f_rev::Union{Nothing,Float64}
+    rng_id::UInt64
+end
+function SpectralNoise(sigma, band, spectrum; rng_id=0, turns, amplitudes=:fixed, f_rev=nothing)
+    # A malformed rng_id is refused first, by `_rule_stream_id`'s own message, so
+    # that no plan is built (and no few-bins warning printed) for a rule that is
+    # refused anyway; the stream is CLAIMED last, after every other refusal, as
+    # for `WhiteNoise` and `PinkNoise`.
+    (rng_id isa Integer && rng_id >= 0) || _rule_stream_id(rng_id)
+    plan = _spectral_plan("SpectralNoise", spectrum, sigma, band, turns, f_rev, amplitudes, true)
+    return SpectralNoise{typeof(plan.S)}(plan.sigma, (Float64(band[1]), Float64(band[2])),
+                                         plan.lb, plan.ub, plan.label, plan.S, plan.N, amplitudes,
+                                         f_rev === nothing ? nothing : Float64(f_rev),
+                                         _rule_stream_id(rng_id))
+end
+
+"""
+    _resolve_turn_rule(rule, slot::Integer, ::Type{T}) -> rule or TurnTable{T}
+    _resolve_turn_rules(rules::Tuple, first_slot::Integer, ::Type{T}) -> Tuple
+
+The compile-time resolution step of both cavities' `_turn_modulation_wrap`,
+run on the coerced rule tuple before the container is built: a
+`SpectralNoise` becomes the `TurnTable{T}` of `spectral_turn_table` under
+`global_rng_seed()`, the rule's claimed `rng_id` and the entry's `slot` --
+the number `realize` hands `_turn_offset` for that entry, so the table is
+keyed per slot as a live rule's draws are (review F1, 2026-10-16) -- through
+the one synthesis body (`_spectral_table`, which does not repeat the
+few-bins warning the rule printed at construction, review F2); `nothing`,
+the live rules and a table pass through unchanged. `_resolve_turn_rules`
+numbers a tuple's entries `first_slot, first_slot + 1, ...` (the crab cavity
+passes 1 for its phase tuple and `N + 1` for its strength tuple, the RF
+cavity resolves its two scalars with 1 and 2: the numbering of
+`_slot_rules`). Downstream of this step -- `_slot_rules`, `_realize_draws`,
+`_slot_nominals`, the window check, the provenance walks -- nothing knows
+the rule existed.
+"""
+_resolve_turn_rule(rule, slot::Integer, ::Type{T}) where {T} = rule
+function _resolve_turn_rule(rule::SpectralNoise, slot::Integer, ::Type{T}) where {T}
+    return _spectral_table("SpectralNoise", rule.label => rule.S, rule.sigma, rule.band, rule.turns,
+                           global_rng_seed(), rule.rng_id, slot, rule.f_rev, rule.amplitudes, T,
+                           nothing, false)
+end
+_resolve_turn_rules(rules::NTuple{K,Any}, first_slot::Integer, ::Type{T}) where {K,T} =
+    ntuple(i -> _resolve_turn_rule(rules[i], first_slot + i - 1, T), Val(K))
+
 # The octave guard of `PinkNoise`, shared by both constructors and run before
 # the stream id is assigned, like `_check_rule_sigma`.
 _check_pink_octaves(octaves::Int) =
@@ -337,22 +916,25 @@ end
     _rule_kind(rule) -> Symbol
 
 The provenance kind label of a rule, the `kind` field of the slot entry that
-`_turn_modulation_provenance!` documents: `:white`, `:pink` or `:table`.
+`_turn_modulation_provenance!` documents: `:white`, `:pink` or `:table`
+(`:spectral` labels the spec-level `SpectralNoise`, which a compiled line never
+holds -- `_resolve_turn_rule` -- so no receipt carries it).
 Deliberately no fallback, as for `realize`: a rule without a label is a
 `MethodError` when the receipt is built, not an unlabelled slot.
 """
 _rule_kind(::WhiteNoise) = :white
 _rule_kind(::PinkNoise) = :pink
 _rule_kind(::TurnTable) = :table
+_rule_kind(::SpectralNoise) = :spectral
 
 """
     _turn_rule_names() -> String
 
-The rule catalogue as prose, `"PinkNoise, TurnTable, WhiteNoise"`: the concrete
-subtypes of `AbstractTurnRule` sorted by name, DERIVED from the type tree for
+The rule catalogue as prose: the names of the concrete subtypes of
+`AbstractTurnRule`, sorted and joined by `", "`, DERIVED from the type tree for
 the crab cavity's `_rule_tuple` and the RF cavity's `_rule_scalar` messages and
 pinned by the suite's catalogue tripwire (AGENTS.md: never hand-copy a case
-list). `_concrete_octopus_subtypes`
+list; this docstring quotes no literal for the same reason). `_concrete_octopus_subtypes`
 lives in `src/tasks/strongstrong/interface.jl`, included after this file; the
 call is made only inside an error path or a test at run time, so the late
 binding is harmless (the precedent is `_alternative_method_names` in
@@ -381,6 +963,15 @@ inactive rule: value zero, no draw, no state.
 """
 @inline _turn_offset(::Nothing, ctx::TrackingContext, slot::Integer, ::Type{T}) where {T} =
     (zero(T), nothing)
+
+# A `SpectralNoise` never realises a turn: `_resolve_turn_rule` turns it into a
+# `TurnTable{T}` when the line compiles, so reaching this method means a rule
+# container was built around the unresolved spec-level rule (the suite pins
+# that a compiled line holds none). Static message: a rule's `_turn_offset` is
+# host-side, but every rule method keeps the kernel-safe form.
+@inline _turn_offset(::SpectralNoise, ctx::TrackingContext, slot::Integer, ::Type{T}) where {T} =
+    throw(ArgumentError("SpectralNoise resolves to a TurnTable when the line compiles " *
+                        "(_resolve_turn_rule in _turn_modulation_wrap); it never realises a turn itself"))
 
 @inline function _turn_offset(rule::WhiteNoise, ctx::TrackingContext, slot::Integer,
                               ::Type{T}) where {T}
@@ -851,42 +1442,79 @@ _check_turn_window(elem::CompositeLine, first_turn::Int64, nturns::Int) =
     _check_turn_window(elem.ops, first_turn, nturns)
 
 """
+    _each_turn_rule_spec(f, element)
+
+Apply `f` to every element spec a line holds: tuples, vectors, a `LineEntry`
+(the spec the placement COMPILES, `_effective_spec` in src/tasks/Tasks.jl,
+overrides merged, so a rule given only through a placement override is seen,
+U1-2), an `ElementSpec{:line}` descended into its entries, as
+`_collect_radiation_ids!` walks. The ONE walk behind
+`_collect_turn_modulation_ids!` and `_collect_turn_tables!`, so a container
+one collector sees the other sees too (the two-walker lesson of the aperture
+collectors, audit part 7, T3).
+"""
+_each_turn_rule_spec(f, element) = nothing
+_each_turn_rule_spec(f, elements::Tuple) =
+    (foreach(e -> _each_turn_rule_spec(f, e), elements); nothing)
+_each_turn_rule_spec(f, elements::AbstractVector) =
+    (foreach(e -> _each_turn_rule_spec(f, e), elements); nothing)
+_each_turn_rule_spec(f, entry::LineEntry) = _each_turn_rule_spec(f, _effective_spec(entry))
+_each_turn_rule_spec(f, element::ElementSpec{:line}) =
+    (foreach(e -> _each_turn_rule_spec(f, e), line_entries(element)); nothing)
+_each_turn_rule_spec(f, spec::ElementSpec) = (f(spec); nothing)
+
+"""
     _collect_turn_modulation_ids!(ids::Vector{UInt64}, element) -> ids
 
 Collect the `rng_id` of every stochastic turn-modulation rule declared on the
-SPECS of a line (tuples, vectors, `LineEntry`, `ElementSpec{:line}` descended
-as `_collect_radiation_ids!` does), one entry per distinct id per element, so
-`_warn_duplicate_turn_modulation_streams` can warn when two elements share a
-stream. ONE generic method on `ElementSpec` reads the rule objects through the
-kind's `_turn_rule_values` and pushes each DISTINCT `rng_id` among them (every
-rule carrying an `rng_id` field; `WhiteNoise` and `PinkNoise` today) once: one
-id shared by every slot of one element contributes one entry (the slots keep
-the draws independent) and does not warn; the same id on two elements
-contributes two and does. Kinds that declare rule parameters add a
+SPECS of a line (the walk of `_each_turn_rule_spec`), one entry per distinct
+id per element, so `_warn_duplicate_turn_modulation_streams` can warn when two
+elements share a stream. Each spec's rule objects are read through the kind's
+`_turn_rule_values`, and each DISTINCT `rng_id` among them (every rule
+carrying an `rng_id` field; `WhiteNoise` and `PinkNoise` today) is pushed
+once: one id shared by every slot of one element contributes one entry (the
+slots keep the draws independent) and does not warn; the same id on two
+elements contributes two and does. Kinds that declare rule parameters add a
 `_turn_rule_values` method, not a collector method.
 """
-_collect_turn_modulation_ids!(ids::Vector{UInt64}, element) = ids
-_collect_turn_modulation_ids!(ids::Vector{UInt64}, elements::Tuple) =
-    (foreach(e -> _collect_turn_modulation_ids!(ids, e), elements); ids)
-_collect_turn_modulation_ids!(ids::Vector{UInt64}, elements::AbstractVector) =
-    (foreach(e -> _collect_turn_modulation_ids!(ids, e), elements); ids)
-# The spec the placement COMPILES -- overrides merged, `_effective_spec` in
-# src/tasks/Tasks.jl -- as every `LineEntry` collector reads it, so a rule
-# given only through a placement override is seen (U1-2).
-_collect_turn_modulation_ids!(ids::Vector{UInt64}, entry::LineEntry) =
-    _collect_turn_modulation_ids!(ids, _effective_spec(entry))
-function _collect_turn_modulation_ids!(ids::Vector{UInt64}, element::ElementSpec{:line})
-    foreach(e -> _collect_turn_modulation_ids!(ids, e), line_entries(element))
+function _collect_turn_modulation_ids!(ids::Vector{UInt64}, element)
+    _each_turn_rule_spec(element) do spec
+        seen = UInt64[]
+        for rule in _turn_rule_values(spec)
+            hasfield(typeof(rule), :rng_id) || continue
+            rule.rng_id in seen || push!(seen, rule.rng_id)
+        end
+        append!(ids, seen)
+    end
     return ids
 end
-function _collect_turn_modulation_ids!(ids::Vector{UInt64}, spec::ElementSpec)
-    seen = UInt64[]
-    for rule in _turn_rule_values(spec)
-        hasfield(typeof(rule), :rng_id) || continue
-        rule.rng_id in seen || push!(seen, rule.rng_id)
+
+"""
+    _collect_turn_tables!(tables::Vector, element) -> tables
+
+The table sibling of `_collect_turn_modulation_ids!`, over the same walk: one
+entry `(digest, element, slot, name)` per DISTINCT table digest per element
+(every rule carrying a `digest` field; `TurnTable` today), `element` the
+spec's kind symbol and `slot` the position in the kind's `_turn_rule_values`
+(the container's slot number: `1:2N` on a crab cavity, 1-2 on an RF cavity),
+so `_warn_duplicate_turn_tables` (src/tasks/Tasks.jl) can warn when two
+elements carry tables of equal digest -- identical per-turn offsets -- while
+one table on two slots of a single element contributes one entry and does not
+warn (design `docs/design/spectral_turn_table.md`, D4).
+"""
+function _collect_turn_tables!(tables::Vector, element)
+    _each_turn_rule_spec(element) do spec
+        kind = name(typeof(spec))
+        seen = UInt64[]
+        for (slot, rule) in enumerate(_turn_rule_values(spec))
+            hasfield(typeof(rule), :digest) || continue
+            rule.digest in seen && continue
+            push!(seen, rule.digest)
+            push!(tables, (digest = rule.digest, element = kind, slot = slot,
+                           name = String(rule.name)))
+        end
     end
-    append!(ids, seen)
-    return ids
+    return tables
 end
 
 """

@@ -423,8 +423,9 @@ with the keying pinned bitwise beside it.
 noise on both proton crab cavities (`tccb` before the IP, `tcca` after it)
 at the owner's production point -- phase rms 10 urad and relative amplitude
 rms 1e-4 per active harmonic (1 and 2), each cavity on independent streams,
-the strength rule's absolute sigma `1e-4 |strengthX[i]|` added to both
-planes (the shipped semantics). Reference model:
+the strength rule's relative sigma `1e-4` scaling both planes of the
+harmonic as `S (1 + d)` (the shipped semantics since 2026-10-15, record
+`docs/history/crab_cavity_noise_relative_strength_2026_10_15.md`). Reference model:
 `docs/theory/crab_cavity_noise_response.md` (section 6 the predicted rates,
 section 7 the plan this script executes, section 8 the interpretations it
 adopts); the rules' own contracts are `docs/design/turn_modulation.md`,
@@ -432,8 +433,9 @@ sections 5.1, 5.2, 5.5 and 5.6. The script answers the example's three
 questions in six parts, selected by the first argument, with `key=value`
 overrides after it (every key with its default is in the file header):
 
-1. Do the rules generate the specified noise? Part `noise` (CPU, about a
-   minute after the load): the sequences a run would apply, produced the way
+1. Do the rules generate the specified noise? Part `noise` (CPU, about two
+   and a half minutes after the load, the three spectral cases included):
+   the sequences a run would apply, produced the way
    a run produces them -- a `ThinCrabCavitySpec{3}` with the example's
    strengths compiled into a `TurnModulated` and realised by the pure
    `Octopus.update` hook on every absolute turn, seed 123456789, the
@@ -456,6 +458,34 @@ overrides after it (every key with its default is in the file header):
    and the base element untouched bitwise; the `scale` factor exact to
    1e-12; the table realised bitwise from its record, and its digest, name
    and length in the artifact provenance of a short CPU `TrackingTask` run.
+   Two items added since. `recorded` (2026-10-15, the recorder of
+   `docs/design/turn_modulation_record.md`): per rule a CPU `TrackingTask`
+   of the two cavities alone tracks the 65536 turns with the artifact's
+   `record_turn_modulation = true`, and every active slot's recorded
+   `series`, read back through `turn_modulation_provenance(path)`, equals
+   the hook's replay bitwise for white, pink and table (and, for the table
+   rule, the record's first 65536 entries as well), the artifacts
+   `noise_recorded_<rule>.h5`. `spectral` (2026-10-16; the producer and the
+   consumer together, `docs/design/spectral_turn_table.md` section 6 check
+   7): three cases, the `:flat` preset over the narrow band (3e-3, 4e-3)
+   cycles per turn and the `:pink` preset over (2^-14, 1/2) with fixed bin
+   amplitudes, and `:flat` over the narrow band with Rayleigh amplitudes;
+   per case the eight slots carry `SpectralNoise` rules on the example's
+   stream ids through the same CPU task with the record on, and per slot the
+   recorded series equals the library factory's own table for the global
+   seed, the rule's `rng_id` and its slot (phase harmonic i is slot i,
+   strength harmonic i slot 3 + i) bitwise, the provenance carrying kind
+   `:table`, the digest, the canonical name and the length; the periodogram
+   of the recorded series over the analytic `c^2 S(f_k)` equals the preset's
+   shape within 1e-10 relative on every band bin with fixed amplitudes
+   (every out-of-band bin, DC included, below 1e-12 of the band peak and
+   the rms within 1e-12 of sigma), and with Rayleigh amplitudes the band
+   mean lies within `5/sqrt(K)` of 1, the rms within `5/(2 sqrt(K))` of
+   sigma, the sample variance of the K ratios is at least 0.1 (fixed
+   amplitudes give exactly 0, the anti-vacuity of the statistical pins) and
+   the out-of-band bins are as before; below K = 8 bins the Rayleigh
+   statistics are a counted FAIL naming the bin count; the artifacts
+   `noise_recorded_spectral_<preset>_<amplitudes>.h5`.
 2. What is the beam-beam response? Parts `pilot` and `sweep` (GPU), which
    run the harness `test/examples/crab_cavity_noise.jl` as a subprocess per
    case and parse its final `CRAB-NOISE` line after checking that the
@@ -508,7 +538,8 @@ julia --project=. validation/crab_cavity_noise_response.jl control tsv=result/cr
 
 Outputs under `out=` (default `result/crab_noise/` under the project root,
 git-ignored, never evidence): `noise_summary.tsv`, `noise_correlations.tsv`,
-`noise_pink_bands.tsv` and `noise_table_provenance.h5` from `noise`;
+`noise_pink_bands.tsv`, `noise_table_provenance.h5`, `noise_recorded_<rule>.h5`
+and `noise_recorded_spectral_<preset>_<amplitudes>.h5` from `noise`;
 `W1_realised_offsets*.tsv` from `tablefile`; `pilot.tsv`, `sweep_<tag>.tsv`
 and `control_<case>_centroid.tsv`, the subprocess logs under `logs/` and the
 artifact copies under `artifacts/`. Each judging part ends with one

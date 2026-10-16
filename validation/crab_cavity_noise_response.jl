@@ -29,7 +29,8 @@ rests on is printed and written to TSV there. The theory behind parts
 (section 7 is the plan this script executes; section 6 the reference
 numbers, which enter `report` only as its overridable defaults).
 
-PART `noise` (question 1; CPU, about a minute after the Octopus load).
+PART `noise` (question 1; CPU, about two and a half minutes after the
+Octopus load, the three spectral cases included).
 Reference model: the rule contracts of the design note. `WhiteNoise(sigma)` is
 a per-turn iid normal of rms `sigma`, flat spectrum. `PinkNoise(sigma;
 octaves=16)` is the Voss-McCartney sum of 16 unit-normal generators over
@@ -181,12 +182,68 @@ Error metrics and tolerances (each printed as PASS/FAIL with its number):
                hook produces on every turn and the recorder wrote that value,
                not a re-evaluation (D5 of the record note). Cheap: a few
                seconds per rule.
+  spectral     the spectral producer and the consumer together
+               (docs/design/spectral_turn_table.md, section 6, check 7).
+               Three cases: the :flat preset over the narrow band (3e-3,
+               4e-3) cycles per turn and the :pink preset over (2^-14, 1/2),
+               both with fixed amplitudes, and :flat over the narrow band
+               with Rayleigh amplitudes. Per case the eight slots carry
+               `SpectralNoise(sigma, band, preset; rng_id, turns = N,
+               amplitudes)` with the example's stream ids (11, 12, 14, 15
+               and 21, 22, 24, 25), the rule parallel to WhiteNoise and
+               PinkNoise that resolves when the line compiles into a
+               TurnTable under the global seed 123456789 (`set_global_rng!`,
+               the keying of the white and pink rules), through the same CPU
+               `TrackingTask` of the two cavities alone (the
+               256-macroparticle beam) over the N turns from turn 0 with
+               `record_turn_modulation = true`. The record per slot is the
+               library factory's own table under that keying,
+               `spectral_turn_table(preset, sigma, band; turns = N, seed =
+               123456789, rng_id, slot, amplitudes)` with `slot` the slot
+               index the rule sits in (phase harmonic i -> i, strength
+               harmonic i -> 3 + i; the resolved table is keyed on it as
+               well, so one rng_id per cavity would still give independent
+               tables per slot): every slot's recorded series
+               equals it BITWISE, and the provenance entry carries kind
+               :table, its digest, its canonical name and length N (the
+               rule resolved to the factory's table, and the consumer and
+               the recorder applied and wrote it). The periodogram is |X_k|^2 of
+               the recorded series, X = rfft(series) unnormalised (bins k =
+               0..N/2), compared with the design's c^2 S(f_k): S the
+               preset's shape, 1 (flat) or 1/f (pink), at f_k = k/N on the
+               band bins k with lb <= k/N <= ub (k >= 1 always), and c^2 =
+               sigma^2 N^2 / (2 sum_interior S(f_k) + S(1/2) when the
+               Nyquist bin is in the band), the analytic normalisation (D5;
+               a constant factor in S cancels in |X_k|^2 / c^2, so the
+               SHAPE is what is pinned). Fixed amplitudes: |X_k|^2 / c^2
+               equals S(f_k) within 1e-10 relative on every band bin, every
+               bin outside the band (the DC bin included) is below 1e-12 of
+               the band's peak, and the rms equals sigma within 1e-12
+               relative. Rayleigh amplitudes, statistics only (the bin
+               powers are exponential about c^2 S(f_k), mean 1 and variance
+               1 per bin, and sigma is the EXPECTED rms): the band mean of
+               |X_k|^2 / (c^2 S(f_k)) within 5/sqrt(K) of 1 (K band bins,
+               five one-sigmas of a mean of K exponentials); the rms within
+               5/(2 sqrt(K)) relative of sigma (for a flat band rms^2/sigma^2
+               is the mean of K exponentials, one-sigma 1/sqrt(K), the
+               rms's half of it); the out-of-band bins below 1e-12 of the
+               peak as before; and, the anti-vacuity of the statistical
+               pins, the sample variance of the K ratios at least 0.1 (fixed
+               amplitudes give exactly 0; exponential bin powers give 1 with
+               one-sigma about sqrt(8/K)). At N = 65536 the narrow band
+               holds K = 66 bins and the pink band 32765, the Nyquist bin
+               included; below K = 8 bins (a `turns=` override under 2048)
+               the Rayleigh statistics are not evaluable and the item is a
+               counted FAIL naming the bin count. Three execute! runs of a
+               few seconds each, the periodograms milliseconds.
 Outputs: `<out>/noise_summary.tsv` (one row per rule, cavity, slot and
 check), `<out>/noise_correlations.tsv` (one row per pair),
 `<out>/noise_pink_bands.tsv` (per pink slot and band: measured, reference
 mean and sd, z), the artifacts
-`<out>/noise_table_provenance.h5` and `<out>/noise_recorded_<rule>.h5` (one
-per rule, the recorded series), and one machine-readable line
+`<out>/noise_table_provenance.h5`, `<out>/noise_recorded_<rule>.h5` (one
+per rule, the recorded series) and
+`<out>/noise_recorded_spectral_<preset>_<amplitudes>.h5` (one per spectral
+case), and one machine-readable line
 `CRAB-NOISE-RULES turns=... checks=... failed=... verdict=PASS|FAIL`; exit 1
 on any FAIL.
 
@@ -559,8 +616,13 @@ end
 chi2_quantile_wh(nu, z) = nu * (1 - 2 / (9nu) + z * sqrt(2 / (9nu)))^3
 
 # One cavity's spec at `scale` times the specification for `rule`
-# (:white, :pink, :table); `tables` holds that cavity's four records built
-# at that scale. Stream ids and table names are the example's.
+# (:white, :pink, :table, :spectral); `tables` holds that cavity's four
+# records built at that scale for :table (raw vectors), and for :spectral
+# the NamedTuple `(preset, band, amplitudes, turns)` of the `SpectralNoise`
+# rule every slot carries (the rule keys on the slot's rng_id and the global
+# seed, as the white and pink rules do, and resolves into a TurnTable when
+# the line compiles). Stream ids and the synthetic table names are the
+# example's.
 function cavity_spec(rule::Symbol, scale::Float64, cav::Symbol, tables)
     base = RNG_ID_BASE[cav]
     sig_phase = scale * SIGMA_PHASE
@@ -568,6 +630,8 @@ function cavity_spec(rule::Symbol, scale::Float64, cav::Symbol, tables)
     make(sigma, slot, k, label) =
         rule === :white ? WhiteNoise(sigma; rng_id=base + slot) :
         rule === :pink ? PinkNoise(sigma; rng_id=base + slot, octaves=PINK_OCTAVES) :
+        rule === :spectral ? SpectralNoise(sigma, tables.band, tables.preset; rng_id=base + slot,
+                                           turns=tables.turns, amplitudes=tables.amplitudes) :
         TurnTable(tables[k]; name="$(cav)_$(label)_synthetic_white")
     phase_rules = (make(sig_phase, 1, 1, "phase_noise[1]"), make(sig_phase, 2, 2, "phase_noise[2]"), nothing)
     strength_rules = (make(sig_strength[1], 4, 3, "strength_noise[1]"),
@@ -930,6 +994,137 @@ function run_noise_part()
                           (rule === :table ? ", == record $(record_ok)" : ""),
                           "bitwise over $(N) turns, 4 slots" * (rule === :table ? "; and the record's first $(N) entries" : ""))
             push!(rows, join([rule, cav, "all active slots", "recorded_series_bitwise", series_ok && record_ok, true, "exact", ok], '\t'))
+        end
+    end
+
+    # The spectral producer and the consumer together (docs/design/
+    # spectral_turn_table.md, section 6, check 7; the `spectral` item of the
+    # header). The eight slots carry `SpectralNoise` rules on the example's
+    # stream ids, resolved when the line compiles under the global seed, and
+    # the same two-cavity task tracks the N turns from turn 0 with the
+    # artifact recording. The record per slot is the library factory's own
+    # table under that keying (`spectral_turn_table` with seed = SEED and the
+    # slot's rng_id): every slot's recorded series must equal it bitwise (the
+    # rule resolved to the factory's table; the consumer applied, and the
+    # recorder wrote, its values), and the recorded series' periodogram must
+    # be the design's: with fixed amplitudes |X_k|^2 = c^2 S(f_k) on every band bin,
+    # c^2 = sigma^2 N^2 / (2 sum_interior S(f_k) + S(1/2) [the Nyquist bin,
+    # when in the band]) the analytic normalisation (D5), roundoff elsewhere,
+    # and the rms sigma; with Rayleigh amplitudes the bin powers are
+    # exponential about c^2 S(f_k) and only the statistics are pinned. The
+    # presets' shapes are evaluated here as S = 1 (flat) and S = 1/f (pink);
+    # a constant factor in S cancels in |X_k|^2 / c^2, so the SHAPE is what
+    # is pinned, not the preset's scale.
+    println()
+    rng_ids8 = [RNG_ID_BASE.tccb .+ (1, 2, 4, 5)..., RNG_ID_BASE.tcca .+ (1, 2, 4, 5)...]
+    println("spectral rules through a run artifact (SpectralNoise resolved at compile; record_turn_modulation = true, $(N) turns from turn 0, ",
+            "the two cavities alone; global seed $(SEED), rng_ids $(join(rng_ids8, ",")); the record per slot is spectral_turn_table under the same keying)")
+    spectral_cases = (
+        (preset = :flat, band = (3.0e-3, 4.0e-3), amplitudes = :fixed, S = f -> 1.0),
+        (preset = :pink, band = (2.0^-14, 0.5), amplitudes = :fixed, S = f -> 1 / f),
+        (preset = :flat, band = (3.0e-3, 4.0e-3), amplitudes = :rayleigh, S = f -> 1.0),
+    )
+    for case in spectral_cases
+        tag = "$(case.preset)_$(case.amplitudes)"
+        rule_tag = "spectral_$(tag)"
+        lb, ub = case.band
+        # The band bins as the factory defines them (D3): k with lb <= k/N <= ub, k >= 1.
+        kband = [k for k in 1:(N ÷ 2) if lb <= k / N <= ub]
+        K = length(kband)
+        nyquist_in = iseven(N) && (N ÷ 2) in kband
+        S_band = [case.S(k / N) for k in kband]
+        # The analytic normalisation: interior bins count twice, the Nyquist bin once.
+        weight_sum = 2 * sum(S_band) - (nyquist_in ? case.S(0.5) : 0.0)
+        println("  case $(tag): band $(lb)..$(ub) cycles/turn, K = $(K) bins" *
+                (K > 0 ? " (k = $(first(kband))..$(last(kband)))" : "") *
+                ", Nyquist bin in the band: $(nyquist_in), amplitudes $(case.amplitudes)")
+        # The record: the factory's table under the keying the rule resolves
+        # with (the global seed SEED, the slot's rng_id and the slot index:
+        # phase harmonic i -> i, strength harmonic i -> 3 + i on this
+        # three-harmonic cavity).
+        slots8 = [1, 2, 4, 5, 1, 2, 4, 5]
+        refs8 = [spectral_turn_table(case.preset, sigmas8[j], case.band;
+                                     turns = N, seed = SEED, rng_id = rng_ids8[j], slot = slots8[j],
+                                     amplitudes = case.amplitudes)
+                 for j in 1:8]
+        recorded_path = joinpath(OUT_DIR, "noise_recorded_spectral_$(tag).h5")
+        set_global_rng!(seed = SEED, method = :philox)
+        spectral_params = (preset = case.preset, band = case.band, amplitudes = case.amplitudes, turns = N)
+        specs_sp = (cavity_spec(:spectral, 1.0, :tccb, spectral_params),
+                    cavity_spec(:spectral, 1.0, :tcca, spectral_params))
+        task_sp = TrackingTask(specs_sp; policy = policy,
+                               artifact = RunArtifact(recorded_path; capacity = 1024, record_turn_modulation = true))
+        t_run = @elapsed execute!(task_sp, beam; turns = N)
+        prov_sp = turn_modulation_provenance(recorded_path)
+        shape_ok = length(prov_sp) == 1 && length(prov_sp[1].elements) == 2
+        ok = verdict!(shape_ok, "spectral $(tag): artifact lists one execution with two elements",
+                      "executions = $(length(prov_sp)), elements = $(isempty(prov_sp) ? 0 : length(prov_sp[1].elements)), execute! $(round(t_run; digits = 1)) s",
+                      "1 and 2")
+        push!(rows, join([rule_tag, "both", "-", "recorded_elements", isempty(prov_sp) ? 0 : length(prov_sp[1].elements), 2, "exact", ok], '\t'))
+        shape_ok || continue
+        for (c, cav) in enumerate(cavities), k in 1:4
+            j = 4 * (c - 1) + k
+            s = prov_sp[1].elements[c].slots[k]
+            tbl = refs8[j]
+            sigma = sigmas8[j]
+            label = slot_labels[k]
+            series_ok = s.slot == label && s.series !== nothing && s.series == tbl.offsets
+            prov_ok = s.kind === :table && s.digest == tbl.digest && s.name == tbl.name && s.length == N
+            ok = verdict!(series_ok && prov_ok, "$(cav) $(label) recorded series == factory table ($(tag))",
+                          "bitwise $(series_ok); provenance kind :table, digest, name, length $(N): $(prov_ok) " *
+                          "(recorded kind $(s.kind), name $(repr(s.name)); factory name $(repr(tbl.name)))",
+                          "exact, over $(N) turns; rng_id $(rng_ids8[j]), seed $(SEED)")
+            push!(rows, join([rule_tag, cav, label, "spectral_series_bitwise", series_ok && prov_ok, true, "exact", ok], '\t'))
+            series_ok || continue
+            x = s.series
+            P = abs2.(FFTW.rfft(x))                    # |X_k|^2 for k = 0..N/2, the unnormalised DFT
+            c2 = sigma^2 * N^2 / weight_sum
+            ratios = P[kband .+ 1] ./ (c2 .* S_band)   # 1 up to rounding for fixed amplitudes, Exp(1) for Rayleigh
+            peak = maximum(P[kband .+ 1])
+            outside = setdiff(0:(N ÷ 2), kband)
+            out_rel = maximum(P[outside .+ 1]) / peak
+            dc_rel = P[1] / peak
+            r = rms(x)
+            if case.amplitudes === :fixed
+                rel = maximum(abs.(ratios .- 1))
+                ok = verdict!(rel <= 1e-10, "$(cav) $(label) periodogram / c^2 == S(f_k) on the band ($(tag))",
+                              @sprintf("max relative error %.3e over %d bins", rel, K), "<= 1e-10 relative, every band bin")
+                push!(rows, join([rule_tag, cav, label, "spectral_periodogram_rel", rel, 0.0, 1e-10, ok], '\t'))
+                ok = verdict!(abs(r / sigma - 1) <= 1e-12, "$(cav) $(label) rms == sigma ($(tag))",
+                              @sprintf("rms/sigma - 1 = %+.3e (rms %.6e, sigma %.1e)", r / sigma - 1, r, sigma),
+                              "|ratio - 1| <= 1e-12: the analytic normalisation over the table's period")
+                push!(rows, join([rule_tag, cav, label, "spectral_rms_rel", r / sigma - 1, 0.0, 1e-12, ok], '\t'))
+            elseif K < 8
+                # The statistical pins below are a mean and a variance over the
+                # band's K bins; below 8 bins they say nothing (one bin has no
+                # variance), so the item is a counted FAIL naming the bin count
+                # rather than a NaN verdict or a silent skip.
+                ok = verdict!(false, "$(cav) $(label) Rayleigh statistics ($(tag))",
+                              "K = $(K) band bin(s) at N = $(N)",
+                              "not evaluable below K = 8 bins (the narrow band holds 66 at the default 65536 turns); raise turns")
+                push!(rows, join([rule_tag, cav, label, "spectral_rayleigh_not_evaluable", K, ">=8", "K >= 8", ok], '\t'))
+            else
+                m = mean(ratios)
+                v = var(ratios)
+                tol_m = 5 / sqrt(K)
+                ok = verdict!(abs(m - 1) <= tol_m, "$(cav) $(label) band mean of periodogram / (c^2 S) ($(tag))",
+                              @sprintf("%.4f over %d bins", m, K),
+                              @sprintf("|mean - 1| <= 5/sqrt(K) = %.4f: exponential bin powers, mean 1, variance 1", tol_m))
+                push!(rows, join([rule_tag, cav, label, "spectral_ratio_mean", m, 1.0, tol_m, ok], '\t'))
+                ok = verdict!(v >= 0.1, "$(cav) $(label) scatter of the bin powers present ($(tag))",
+                              @sprintf("sample variance of the %d ratios %.3f", K, v),
+                              @sprintf(">= 0.1 (anti-vacuity: fixed amplitudes give exactly 0; exponential powers 1 +- %.2f)", sqrt(8 / K)))
+                push!(rows, join([rule_tag, cav, label, "spectral_ratio_var", v, 1.0, ">=0.1", ok], '\t'))
+                tol_r = 5 / (2 * sqrt(K))
+                ok = verdict!(abs(r / sigma - 1) <= tol_r, "$(cav) $(label) rms/sigma ($(tag))",
+                              @sprintf("%.5f (rms %.6e, sigma %.1e)", r / sigma, r, sigma),
+                              @sprintf("|ratio - 1| <= 5/(2 sqrt(K)) = %.4f: sigma is the EXPECTED rms", tol_r))
+                push!(rows, join([rule_tag, cav, label, "spectral_rms_ratio", r / sigma, 1.0, tol_r, ok], '\t'))
+            end
+            ok = verdict!(out_rel <= 1e-12, "$(cav) $(label) out-of-band and DC power ($(tag))",
+                          @sprintf("max |X_k|^2 / band peak = %.3e over %d out-of-band bins, DC %.3e", out_rel, length(outside), dc_rel),
+                          "<= 1e-12 of the band's peak (the transform's roundoff; the DC bin included)")
+            push!(rows, join([rule_tag, cav, label, "spectral_out_of_band", out_rel, 0.0, 1e-12, ok], '\t'))
         end
     end
 

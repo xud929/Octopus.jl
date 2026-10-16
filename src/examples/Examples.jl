@@ -87,8 +87,10 @@ function example_catalog()
         ReferenceExample(
             "examples/crab_cavity_noise.jl",
             "The weak-strong crab-crossing case with turn-by-turn RF phase and " *
-            "amplitude noise on both proton crab cavities -- white, pink or a " *
-            "tabulated record through one switch, each cavity on independent " *
+            "amplitude noise on both proton crab cavities -- white, pink, a " *
+            "tabulated record or a spectral rule (SpectralNoise: a target " *
+            "spectrum over a chosen band, fixed or Rayleigh amplitudes, resolved " *
+            "into a table when the line compiles) through one switch, each cavity on independent " *
             "streams. The precedent for declaring turn modulation and reading " *
             "back its execution receipt, its artifact provenance and -- with the " *
             "artifact's record_turn_modulation option on, as its default run has " *
@@ -101,8 +103,8 @@ function example_catalog()
             "how do the rules compare. Its configurable development harness is " *
             "test/examples/crab_cavity_noise.jl; the numerical study is " *
             "validation/crab_cavity_noise_response.jl.",
-            Type[TrackingTask, ThinCrabCavitySpec, WhiteNoise, PinkNoise, TurnTable,
-                 TurnModulated, RunArtifact]),
+            Type[TrackingTask, ThinCrabCavitySpec, WhiteNoise, PinkNoise, SpectralNoise,
+                 TurnTable, TurnModulated, RunArtifact]),
         ReferenceExample(
             "examples/knob_control.jl",
             "One knob driving many element parameters, in two production-shaped " *

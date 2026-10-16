@@ -1566,6 +1566,24 @@ stable; `Base.map` over tuples is type-stable the same way but takes a
 container type covers the MIXED shapes, since the homogeneous one is the
 shape that cannot fail.
 
+## A new consumer of a keyed RNG must carry every dimension the existing promise spans
+
+The spectral producer (2026-10-16, `docs/history/spectral_turn_table_2026_10_16.md`,
+review F1) keyed its synthesis on the seed, the stream id and the bin, and
+left out the slot, while the live rules key on the slot too and their
+docstring promises that one `rng_id` on every entry of a cavity gives
+independent draws per entry. Two `SpectralNoise` rules sharing one explicit
+id on two slots of one cavity therefore resolved to identical tables, fully
+correlated noise on two harmonics, and nothing warned: the shared-id warning
+counts ids per element, and the equal-digest warning sees no digest before
+resolution. The implementer's tests covered two cavities sharing an id and
+missed the two-slots-of-one-cavity case the promise was actually about. The
+fix put the slot into the key's turn field and added the regression, which
+failed red on the old tree (equal digests, correlation 1.0). The rule: when
+a new consumer joins an existing keyed stream, list every dimension the
+existing consumers' guarantees span and show each one in the new key, with
+a test per dimension that the two draws differ.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

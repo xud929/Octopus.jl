@@ -418,15 +418,48 @@ element), so their noise is fully correlated. Each element contributes each of
 its distinct ids ONCE (`_collect_turn_modulation_ids!`,
 src/elements/turn_modulated.jl), so one id shared by the entries of a single
 cavity -- independent by slot -- does not warn, while the same id on two
-cavities does.
+cavities does. Runs `_warn_duplicate_turn_tables`, the table analogue, first,
+so every constructor that checks streams checks tables through the one call
+it already makes (`TrackingTask` here; `StrongStrongTask` over both lines in
+src/tasks/strongstrong/interface.jl).
 """
 function _warn_duplicate_turn_modulation_streams(elements::Tuple)
+    _warn_duplicate_turn_tables(elements)
     ids = _collect_turn_modulation_ids!(UInt64[], elements)
     length(ids) == length(unique(ids)) && return nothing
     dup = [id for id in unique(ids) if count(==(id), ids) > 1]
     @warn "multiple turn-modulation rules on different elements share an rng_id: " *
           "their per-turn draws are identical (fully correlated noise). Give each " *
           "element's rules their own rng_id." rng_ids = dup
+    return nothing
+end
+
+"""
+    _warn_duplicate_turn_tables(elements::Tuple)
+
+The table analogue of `_warn_duplicate_turn_modulation_streams`, run from it
+(design `docs/design/spectral_turn_table.md`, D4; owner's go-ahead
+2026-10-15): two ELEMENTS whose `TurnTable`s carry equal digests apply
+identical per-turn offsets, so their noise is fully correlated -- the shape
+`spectral_turn_table` produces when two slots are built with the same
+`(seed, rng_id)`, and what two copies of one measured record produce. Each
+element contributes each of its distinct digests ONCE (`_collect_turn_tables!`,
+src/elements/turn_modulated.jl), so one table on two slots of a single
+element -- a deliberate common-mode choice -- does not warn, while equal
+digests on two elements do; distinct digests are silent. The message names
+the digests and, for each table carrying one, the element kind, the slot
+number and the table's name.
+"""
+function _warn_duplicate_turn_tables(elements::Tuple)
+    tables = _collect_turn_tables!(NamedTuple[], elements)
+    digests = UInt64[t.digest for t in tables]
+    length(digests) == length(unique(digests)) && return nothing
+    dup = [d for d in unique(digests) if count(==(d), digests) > 1]
+    sites = ["$(t.element) slot $(t.slot): $(repr(t.name)) digest $(repr(t.digest))"
+             for t in tables if t.digest in dup]
+    @warn "multiple turn-modulation tables on different elements carry the same digest: " *
+          "their per-turn offsets are identical (fully correlated noise). Build each " *
+          "element's table with its own seed or rng_id, or hand each its own record." digests = dup tables = sites
     return nothing
 end
 
