@@ -1,11 +1,11 @@
 # Recording the realised turn modulation in the run artifact: stage 1, the `record_turn_modulation` option (2026-10-15)
 
-Status: stage 1 implementation landed 2026-10-15 in the worktree (not yet
-committed at the time of writing) and verified the same day by the
+Status: stage 1 implementation landed 2026-10-15 and verified the same day by the
 one-particle probe on CPU threads, CUDA and two MPI ranks (section 2.2, 376
 of 376 assertions); the examples update landed the same day (section 3)
 and a read-only review of the implementation found five items, all fixed in
-the batch (section 4); the gate (section 5) pending. Stage 1 of
+the batch (section 4); committed as 77c0bcc and gated the same day in both
+CPU arms with CUDA active (section 5), awaiting the push. Stage 1 of
 [`../design/turn_modulation_record.md`](../design/turn_modulation_record.md)
 (section 7), the design the owner decided on 2026-10-15 (its section 8),
 whose section 9 summarises where the build departs from the sketches.
@@ -17,8 +17,8 @@ This record carries what stage 1 landed (section 1), the verification plan
 as the owner stated it and its numbers (section 2), the examples update
 (section 3), the review and its fixes (section 4), the gate (section 5) and
 the ledger (section 6). The bracketed
-`[...: pending]` markers are where the implementer's, the verification
-agent's and the gate's details go; every verdict carries its number here,
+`[...: pending]` markers that stood here for the implementer's, the
+verification agent's and the gate's details have all been filled; every verdict carries its number here,
 and a `result/` path is not evidence and none is cited as one.
 
 ## 1 What landed
@@ -503,17 +503,52 @@ OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. --threads=4 \
   -e 'using Pkg; Pkg.test(julia_args=["--threads=4", "-C", "haswell"])'
 ```
 
-`[gate: pending]` -- the tree, the two arms' start and end times, rows,
-assertions and exit codes; the extracted sweeps and the fast lane before it;
-the snapshot compare; what was skipped; what was not verified (CI on the
-tree until it is pushed).
+Run 2026-10-15 on 77c0bcc, the batch's commit (`git status` clean at
+the start of the native arm and of the first AVX2 attempt; the AVX2 rerun
+started with one uncommitted file, `docs/todo.md` carrying the row on the
+race described below, markdown that no test reads and that the record
+commit carries), host acnlinj4 (Xeon Gold 6430, sapphirerapids; RTX 4500 Ada;
+julia 1.12.4), four threads, CUDA active: every CUDA-gated testset reports
+its assertions and neither green log carries a skipped, not-exercised or
+lane-skip line. Before it, on the same tree: the extracted sweeps (the
+stage 6 pin tripwire, the `Core.Box` sweep, the detached-docstring sweep,
+2 of 2 each, exit 0) and the fast lane (318 rows, 147925 assertions passed and one
+`@test_skip`, the RF testset's second-thread tripwire that both full arms
+ran, 147 of 147; 16 loud lane skips, the sixteenth the probe's two-rank
+arm; 19:12:58 to 19:32:49 EDT); the registry snapshot regenerates identical to the
+tracked file.
+
+| arm | start (EDT) | end (EDT) | rows | assertions | exit |
+|---|---|---|---|---|---|
+| native | 19:33:47 | 20:23:56 | 334 | 150148 of 150148 | 0 |
+| AVX2 parity (`OPENBLAS_CORETYPE=Haswell`, `-C haswell`), started together with the native arm | 19:33:47 | 19:58:07 | 171 before the abort | 113903 of 113903 before the abort; "Every example script runs against the current interface" 20 of 21 | 1 |
+| AVX2 parity, rerun alone | 20:24:30 | 21:14:15 | 334 | 150148 of 150148 | 0 |
+
+Against the stage 0 baseline (332 rows, 149397 assertions per arm) the
+batch adds two rows (the recorder's testset and the one-particle probe)
+and 751 assertions. The concurrent AVX2 attempt failed on one
+assertion, `leftover == String[]` of the example testset, evaluated to
+`["123456789/.nfs0000000093de6d910000aa4d"]`: both arms ran in the same
+worktree, the clean examples write under its `result/<seed>/`, and the
+AVX2 arm's cleanup unlinked the crab-noise artifact while the native arm's
+example still held it open, so NFS renamed the file in place and the
+cleanup saw a leftover. Every script of that testset had exited 0 in both
+arms, the native arm's run of the same testset passed 21 of 21 once the
+AVX2 process had exited, and the rerun of the AVX2 arm alone passed it; a
+`docs/todo.md` row records the race (two suites in one worktree) with the
+candidate fix, and the gate procedure runs the arms one after the other
+from now on. Nothing was skipped in either green arm. Not verified: CI on
+this tree (it runs after the push; CI has no GPU, so it covers the CPU
+testsets only), and the strong-strong recorder on CUDA (the recorder's
+CUDA arm covers the weak-strong task; its strong-strong arm runs on CPU,
+the design note's section 9 says so).
 
 ## 6 Ledger
 
 - `docs/todo.md`: the record-note row's state reads "stage 1 implementation
   landed and probe-verified 2026-10-15, the examples update landed and the
-  implementation reviewed and fixed the same day, the gate pending" with
-  stage 0 "landed as f7cfe6a, pushed as c070750"; the
+  implementation reviewed and fixed the same day, gated 2026-10-15 in both
+  CPU arms with CUDA active, awaiting the push" with stage 0 "landed as f7cfe6a, pushed as c070750"; the
   turn-modulation row's stage 0 clause likewise; two rows opened at landing
   (the effectiveness contract's receipt-only pins of the `RunArtifact`
   options; the two-harmonic pink-plus-table fixture's 1056 B per turn in the
@@ -535,5 +570,5 @@ tree until it is pushed).
   against the source and the runtime numbers attributed to the implementer's
   runs; the verification results of section 2.2 are the probe agent's; the
   examples results of section 3 are the examples agent's; the
-  `[gate: pending]` markers remain for the gate; the status line changes to
-  the gate's result when the push lands.
+  gate section was filled from the two arms' logs after the run (the
+  record commit); the status line changes to the push when it lands.

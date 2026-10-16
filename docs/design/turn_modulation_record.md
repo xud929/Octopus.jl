@@ -11,7 +11,8 @@
 > says where it departs from the sketches) and verified the same day by the
 > one-particle probe on CPU threads, CUDA and two MPI ranks (the record's
 > section 2.2), the examples update landed and the implementation reviewed
-> and fixed the same day (the record's sections 3 and 4), the gate pending,
+> and fixed the same day (the record's sections 3 and 4), committed as
+> 77c0bcc and gated in both CPU arms with CUDA active, awaiting the push,
 > record
 > `../history/turn_modulation_record_2026_10_15.md`; stage 2 not
 > implemented.** This
