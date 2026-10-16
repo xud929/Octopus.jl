@@ -12,7 +12,7 @@
 > one-particle probe on CPU threads, CUDA and two MPI ranks (the record's
 > section 2.2), the examples update landed and the implementation reviewed
 > and fixed the same day (the record's sections 3 and 4), committed as
-> 77c0bcc and gated in both CPU arms with CUDA active, awaiting the push,
+> 77c0bcc, gated in both CPU arms with CUDA active and pushed as a710f5a 2026-10-15 (CI run 455 green: znver3, 36 min, identity pins 6 of 6, CPU testsets only),
 > record
 > `../history/turn_modulation_record_2026_10_15.md`; stage 2 not
 > implemented.** This

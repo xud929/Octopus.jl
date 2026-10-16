@@ -101,9 +101,10 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   2026-10-15; stage 0, the relative strength semantics, landed as f7cfe6a
   and pushed as c070750, record
   `history/crab_cavity_noise_relative_strength_2026_10_15.md`; stage 1, the
-  recorder and the `record_turn_modulation` option, landed 2026-10-15 and
+  recorder and the `record_turn_modulation` option, landed 2026-10-15,
   verified by the one-particle probe on CPU threads, CUDA and two MPI
-  ranks, record `history/turn_modulation_record_2026_10_15.md`; stage 2 not
+  ranks, pushed as a710f5a with CI run 455 green, record
+  `history/turn_modulation_record_2026_10_15.md`; stage 2 not
   implemented): a `RunArtifact` switch, off by default, writes
   one row per turn of the rules' offsets for the active slots beside the
   provenance, with the nominals stored per execution slot; the offsets are

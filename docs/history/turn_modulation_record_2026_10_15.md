@@ -4,8 +4,8 @@ Status: stage 1 implementation landed 2026-10-15 and verified the same day by th
 one-particle probe on CPU threads, CUDA and two MPI ranks (section 2.2, 376
 of 376 assertions); the examples update landed the same day (section 3)
 and a read-only review of the implementation found five items, all fixed in
-the batch (section 4); committed as 77c0bcc and gated the same day in both
-CPU arms with CUDA active (section 5), awaiting the push. Stage 1 of
+the batch (section 4); committed as 77c0bcc, gated the same day in both
+CPU arms with CUDA active (section 5) and pushed as a710f5a 2026-10-15 (CI run 455 green: znver3, 36 min, identity pins 6 of 6, CPU testsets only). Stage 1 of
 [`../design/turn_modulation_record.md`](../design/turn_modulation_record.md)
 (section 7), the design the owner decided on 2026-10-15 (its section 8),
 whose section 9 summarises where the build departs from the sketches.
@@ -537,18 +537,21 @@ arms, the native arm's run of the same testset passed 21 of 21 once the
 AVX2 process had exited, and the rerun of the AVX2 arm alone passed it; a
 `docs/todo.md` row records the race (two suites in one worktree) with the
 candidate fix, and the gate procedure runs the arms one after the other
-from now on. Nothing was skipped in either green arm. Not verified: CI on
-this tree (it runs after the push; CI has no GPU, so it covers the CPU
-testsets only), and the strong-strong recorder on CUDA (the recorder's
-CUDA arm covers the weak-strong task; its strong-strong arm runs on CPU,
-the design note's section 9 says so).
+from now on. Nothing was skipped in either green arm. After the push
+(a710f5a, 2026-10-15 21:50 EDT, on the owner's word) CI run 455 on that
+tree completed green on a znver3 runner in 36 minutes with the stage 6
+identity pins 6 of 6; CI has no GPU, so it covers the CPU testsets only.
+Not verified: the strong-strong recorder on CUDA (the recorder's CUDA arm
+covers the weak-strong task; its strong-strong arm runs on CPU, the design
+note's section 9 says so).
 
 ## 6 Ledger
 
 - `docs/todo.md`: the record-note row's state reads "stage 1 implementation
   landed and probe-verified 2026-10-15, the examples update landed and the
   implementation reviewed and fixed the same day, gated 2026-10-15 in both
-  CPU arms with CUDA active, awaiting the push" with stage 0 "landed as f7cfe6a, pushed as c070750"; the
+  CPU arms with CUDA active, pushed as a710f5a, CI run 455 green" with
+  stage 0 "landed as f7cfe6a, pushed as c070750"; the
   turn-modulation row's stage 0 clause likewise; two rows opened at landing
   (the effectiveness contract's receipt-only pins of the `RunArtifact`
   options; the two-harmonic pink-plus-table fixture's 1056 B per turn in the
@@ -571,4 +574,5 @@ the design note's section 9 says so).
   runs; the verification results of section 2.2 are the probe agent's; the
   examples results of section 3 are the examples agent's; the
   gate section was filled from the two arms' logs after the run (the
-  record commit); the status line changes to the push when it lands.
+  record commit); the push and CI run 455 were added by the bookkeeping
+  commit that followed it.
