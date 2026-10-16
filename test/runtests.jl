@@ -8213,8 +8213,12 @@ end
     # independent).
     @test_logs (:warn, r"share an rng_id") match_mode = :any TrackingTask(
         (noisy(), DriftSpec(L=1.0), noisy()))
+    # The distinct id sits above the registry's counter and every literal id
+    # of the suite: the registry warns once when a class first claims an id
+    # an auto-assigned consumer or another class holds (fix group C,
+    # 2026-10-16), which a small literal in a strict silence pin would be.
     @test_logs TrackingTask((noisy(), DriftSpec(L=1.0),
-                             cavity(phase_noise=(WhiteNoise(1.0e-2; rng_id=9),))))
+                             cavity(phase_noise=(WhiteNoise(1.0e-2; rng_id=Octopus.next_rng_id!() + 1_000_000),))))
     @test_logs TrackingTask((ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), phase=(0.0, 0.0),
                                                     phase_noise=(WhiteNoise(1.0e-2; rng_id=7),
                                                                  WhiteNoise(1.0e-2; rng_id=7))),))
@@ -11579,9 +11583,10 @@ end
     @test_logs (:warn, r"share an rng_id") match_mode = :any TrackingTask(
         (sc_crab(SpectralNoise(sigma7, (1 / 64, 0.5), :flat; rng_id=41, turns=64)), DriftSpec(L=1.0),
          sc_crab(SpectralNoise(sigma7, (1 / 64, 0.5), :flat; rng_id=41, turns=64))))
+    sc_fresh = Octopus.next_rng_id!() + 1_000_000   # above the counter and every literal id (fix group C, 2026-10-16)
     @test_logs TrackingTask(
-        (sc_crab(SpectralNoise(sigma7, (1 / 64, 0.5), :flat; rng_id=42, turns=64)), DriftSpec(L=1.0),
-         sc_crab(SpectralNoise(sigma7, (1 / 64, 0.5), :flat; rng_id=43, turns=64))))
+        (sc_crab(SpectralNoise(sigma7, (1 / 64, 0.5), :flat; rng_id=sc_fresh, turns=64)), DriftSpec(L=1.0),
+         sc_crab(SpectralNoise(sigma7, (1 / 64, 0.5), :flat; rng_id=sc_fresh + 1, turns=64))))
     same_tab = spectral_turn_table(:flat, sigma7, (1 / 64, 0.5); turns=64, seed=5, rng_id=44)
     @test_logs (:warn, r"same digest") match_mode = :any TrackingTask((sc_crab(same_tab), DriftSpec(L=1.0), sc_crab(same_tab)))
 
@@ -12126,11 +12131,16 @@ end
                                         phase_noise=(WhiteNoise(1.0e-2; rng_id=id),))
     @test_logs (:warn, r"share an rng_id") match_mode = :any TrackingTask(
         (crab_id(25), DriftSpec(L=1.0), rf(phase_noise=WhiteNoise(1.0e-2; rng_id=25))))
-    @test_logs TrackingTask((crab_id(25), DriftSpec(L=1.0), rf(phase_noise=WhiteNoise(1.0e-2; rng_id=26))))
-    @test_logs TrackingTask((rf(phase_noise=WhiteNoise(1.0e-2; rng_id=27),
-                                strength_noise=PinkNoise(1.0e-7; rng_id=27)),))
-    @test Octopus._collect_turn_modulation_ids!(UInt64[], rf(phase_noise=WhiteNoise(1.0e-2; rng_id=27),
-                                                            strength_noise=PinkNoise(1.0e-7; rng_id=27))) == UInt64[27]
+    # The distinct ids sit above the registry's counter and every literal id
+    # of the suite: the registry warns once when a class first claims an id
+    # an auto-assigned consumer or another class holds (fix group C,
+    # 2026-10-16), which a small literal in a strict silence pin would be.
+    rf_fresh = Octopus.next_rng_id!() + 1_000_000
+    @test_logs TrackingTask((crab_id(25), DriftSpec(L=1.0), rf(phase_noise=WhiteNoise(1.0e-2; rng_id=rf_fresh))))
+    @test_logs TrackingTask((rf(phase_noise=WhiteNoise(1.0e-2; rng_id=rf_fresh + 1),
+                                strength_noise=PinkNoise(1.0e-7; rng_id=rf_fresh + 1)),))
+    @test Octopus._collect_turn_modulation_ids!(UInt64[], rf(phase_noise=WhiteNoise(1.0e-2; rng_id=rf_fresh + 1),
+                                                            strength_noise=PinkNoise(1.0e-7; rng_id=rf_fresh + 1))) == UInt64[rf_fresh + 1]
     @test Octopus._collect_turn_modulation_ids!(UInt64[], rf(strength_noise=TurnTable([1.0e-7]))) == UInt64[]
     @test Octopus._collect_turn_modulation_ids!(UInt64[], rf()) == UInt64[]
     @test Octopus._collect_turn_modulation_ids!(UInt64[], (crab_id(25), DriftSpec(L=1.0),
@@ -17095,12 +17105,19 @@ end
         end
         # (b) S1-3: the radiation duplicate-stream warning spans both
         # strong-strong lines, as the turn-modulation one does; distinct ids
-        # are silent. Before the fix the constructor never called it.
+        # are silent. Before the fix the constructor never called it. The ids
+        # sit above the registry's counter AND above every literal id of the
+        # suite: the registry warns once when a class first claims an id an
+        # auto-assigned consumer or another class holds (fix group C,
+        # 2026-10-16), so a small literal id in a strict silence pin meets
+        # the memory of whatever ran before, and an id merely above the
+        # counter meets a later testset's literal in a short process.
+        rad_base = Octopus.next_rng_id!() + 1_000_000
         rad(id) = LumpedRadSpec(damping_turns=(20.0, 25.0, 30.0), beta=(0.7, 0.9, 1.1),
                                 alpha=(0.2, -0.1, 0.05), sigma=(1.2e-3, 0.8e-3, 2.0e-3), rng_id=id)
         @test_logs (:warn, r"share an rng_id") match_mode = :any StrongStrongTask(
-            (ip, rad(21)), (ip, rad(21)))
-        @test_logs StrongStrongTask((ip, rad(21)), (ip, rad(22)))
+            (ip, rad(rad_base)), (ip, rad(rad_base)))
+        @test_logs StrongStrongTask((ip, rad(rad_base)), (ip, rad(rad_base + 1)))
         # (c) U5-1: the `/execution` ledger is persisted by EVERY flush -- the
         # probe rows and the turn-modulation series as well as the luminosity
         # channel -- so a weak-strong run without a strong beam reports its
@@ -17461,6 +17478,135 @@ end
     finally
         set_global_rng!(seed=0x5eed, method=:philox)
     end
+@testset "One rng_id policy: zero assigns a fresh stream everywhere, ids are UInt64, the registry warns on an explicit claim of an auto-assigned id and on cross-class sharing" begin
+    # The 2026-10-16 crab-noise neighbour audit, seam S1 (leads S1-1, S1-2,
+    # S1-5, S1-6, S1-7) and the todo rows 34 and 38, under the owner's policy
+    # of 2026-10-16: `rng_id = 0` requests a fresh stream for EVERY consumer
+    # (the BPM read it as stream 0; a raw or override-0 radiation spec drew on
+    # stream 0 at compile), ids are `UInt64` wherever a consumer stores one
+    # (the BPM narrowed to `Int`), and the registry WARNS, never refuses, when
+    # an explicit id meets an auto-assigned one or an explicit one of another
+    # consumer class; reuse of one id by one class is the reproducibility
+    # handle and stays silent, as a fresh id always is. Every pin below failed
+    # on 8ace18b. The registry is process-wide and earlier testsets hold the
+    # small literal ids, so every explicit id here sits above the counter and
+    # the owner memory is cleared first: the pins describe this block's claims.
+    set_global_rng!(seed=0x5eed, method=:philox)
+    rng_warns(f) = String[string(l.message) for l in Test.collect_test_logs(f)[1]
+                          if l.level == Base.CoreLogging.Warn]
+    refusal(f) = begin
+        err = try; f(); nothing catch e; e end
+        (err, err === nothing ? "" : sprint(showerror, err))
+    end
+    base = Octopus.next_rng_id!()
+    Octopus.reset_rng_id_counter!(base)        # the counter stays; the owners are forgotten
+    rad_kw = (damping_turns=(100.0, 100.0, 50.0), beta=(1.0, 1.0, 1.0), alpha=(0.0, 0.0, 0.0),
+              sigma=(1.0e-3, 1.0e-3, 1.0e-3))
+    # (a) S1-1: `BPMObserver(rng_id=0)` claims a fresh stream at construction,
+    # as `Beam`, `LumpedRadSpec` and the rules do, and the field is `UInt64`;
+    # the option metadata says the same.
+    bpm0 = BPMObserver("z"; x_noise=1.0e-6, rng_id=0)
+    @test bpm0.rng_id isa UInt64 && bpm0.rng_id == base + 1
+    @test BPMObserver("z"; x_noise=1.0e-6).rng_id == base + 2
+    @test fieldtype(BPMObserver, :rng_id) === UInt64
+    bmeta = observer_option_schema(BPMObserver).rng_id
+    @test bmeta.option_type === UInt64 && bmeta.default == 0
+    @test occursin("fresh stream", bmeta.meaning)
+    # (b) S1-2: a `:lumped_radiation` spec that reaches `compile_runtime`
+    # with `rng_id` 0 is refused by name -- a raw spec without the key, a raw
+    # spec with 0, a placement override 0 on a friendly spec, directly and
+    # through the task -- while a positive raw id or override is honoured.
+    rad_full = (rad_kw..., zeta=(0.0, 0.0, 0.0, 0.0), eta=(0.0, 0.0, 0.0, 0.0), R=(0.0, 0.0, 0.0, 0.0),
+                is_damping=true, is_excitation=true, tracking_method=Radiation6DMap())
+    for raw0 in (ElementSpec{:lumped_radiation}(; rad_full...),
+                 ElementSpec{:lumped_radiation}(; rad_full..., rng_id=0))
+        err, msg = refusal(() -> compile_runtime(raw0))
+        @test err isa ArgumentError
+        @test occursin("rng_id", msg) && occursin("fresh stream", msg) && occursin("construction", msg) &&
+              occursin("LumpedRadSpec", msg) && occursin("override", msg)
+    end
+    @test compile_runtime(ElementSpec{:lumped_radiation}(; rad_full..., rng_id=base + 10)).rng_id == base + 10
+    rad_line = BeamLine("R", LumpedRadSpec(; rad_kw...))
+    rad_entry = line_entries(rad_line)[1]
+    rad_entry.rng_id = 0
+    err_ov, msg_ov = refusal(() -> compile_runtime(rad_entry))
+    @test err_ov isa ArgumentError && occursin("override", msg_ov) && occursin("fresh stream", msg_ov)
+    err_task, msg_task = refusal(() -> execute!(TrackingTask(rad_line),
+        Phase6DRep([1.0e-4], [0.0], [3.0e-5], [0.0], [1.0e-2], [0.0]); turns=1))
+    @test err_task !== nothing && occursin("fresh stream", msg_task)
+    rad_entry.rng_id = base + 11
+    @test compile_runtime(rad_entry).rng_id == base + 11
+    # (c) S1-6, row 34: an explicit id chosen after a fresh consumer took it
+    # warns by name (the id, the auto-assigned holder's class, the claimant's
+    # class, the remedy); the reverse order never collides.
+    peek = Octopus.next_rng_id!()
+    Beam(8, CPUThreadsExecutionPolicy())                 # auto-assigned: peek + 1
+    auto_id = peek + 1
+    w_auto = rng_warns(() -> LumpedRadSpec(; rad_kw..., rng_id=auto_id))
+    @test length(w_auto) == 1
+    @test length(w_auto) == 1 && occursin(string(auto_id), w_auto[1]) && occursin("auto-assigned", w_auto[1]) &&
+          occursin("beam", w_auto[1]) && occursin("lumped_radiation", w_auto[1]) && occursin("rng_id = 0", w_auto[1])
+    @test isempty(rng_warns(() -> Beam(8, CPUThreadsExecutionPolicy(); rng_id=peek + 50)))
+    @test getparam(LumpedRadSpec(; rad_kw...), :rng_id) == peek + 51   # the fresh id lands above the claim
+    # (d) S1-5: a Beam and a SpectralNoise on one explicit id warn, naming
+    # both classes; row 38: radiation and a BPM on one explicit id warn.
+    id5 = peek + 100
+    @test isempty(rng_warns(() -> Beam(8, CPUThreadsExecutionPolicy(); rng_id=id5)))
+    w5 = rng_warns(() -> SpectralNoise(1.0e-3, (1 / 64, 0.5), :flat; rng_id=id5, turns=64))
+    @test length(w5) == 1 && occursin(string(id5), w5[1]) && occursin("beam", w5[1]) && occursin("turn_rule", w5[1])
+    id38 = peek + 200
+    @test isempty(rng_warns(() -> LumpedRadSpec(; rad_kw..., rng_id=id38)))
+    w38 = rng_warns(() -> BPMObserver("b"; x_noise=1.0e-6, rng_id=id38))
+    @test length(w38) == 1 && occursin(string(id38), w38[1]) && occursin("lumped_radiation", w38[1]) &&
+          occursin("bpm_observer", w38[1])
+    # The silence cases: two Beams on one explicit id; two radiation specs on
+    # one explicit id (the registry is silent, the task constructor warns as
+    # before); fresh ids of every class.
+    id_same = peek + 300
+    @test isempty(rng_warns(() -> (Beam(8, CPUThreadsExecutionPolicy(); rng_id=id_same),
+                                   Beam(8, CPUThreadsExecutionPolicy(); rng_id=id_same))))
+    rad_a, rad_b = LumpedRadSpec(; rad_kw..., rng_id=id_same + 1), nothing
+    @test isempty(rng_warns(() -> (rad_b = LumpedRadSpec(; rad_kw..., rng_id=id_same + 1))))
+    @test_logs (:warn, r"share an rng_id") match_mode = :any TrackingTask((rad_a, DriftSpec(L=1.0), rad_b))
+    @test isempty(rng_warns(() -> (WhiteNoise(1.0e-3), PinkNoise(1.0e-3), LumpedRadSpec(; rad_kw...),
+                                   BPMObserver("f"), Beam(8, CPUThreadsExecutionPolicy()))))
+    err0, msg0 = refusal(() -> Octopus.claim_rng_id!(0))
+    @test err0 isa ArgumentError && occursin("fresh stream", msg0) && occursin("next_rng_id!", msg0)
+    # (e) S1-7: ids are UInt64 end to end. `typemax(Int64)` is accepted and
+    # the next auto-assigned BPM works (it used to overflow the Int field);
+    # `typemax(UInt64)` is accepted (it used to be an InexactError), after
+    # which the exhausted counter refuses by name instead of wrapping to 0.
+    before_max = Octopus.next_rng_id!()
+    @test BPMObserver("m"; rng_id=typemax(Int64)).rng_id === UInt64(typemax(Int64))
+    @test BPMObserver("n").rng_id === UInt64(typemax(Int64)) + 1
+    @test BPMObserver("u"; rng_id=typemax(UInt64)).rng_id === typemax(UInt64)
+    err_x, msg_x = refusal(() -> Octopus.next_rng_id!())
+    @test err_x isa ArgumentError && occursin("exhausted", msg_x) && occursin("typemax(UInt64)", msg_x)
+    Octopus.reset_rng_id_counter!(before_max)
+    @test Octopus.next_rng_id!() == before_max + 1
+    # (f) The tripwire: every claim site in src/ (outside the registry file)
+    # names its consumer class, and the classes are exactly the four this
+    # block exercised by name above -- a fifth consumer fails here by name.
+    claim_sites = Tuple{String,Int,String}[]
+    for (root, _, files) in walkdir(joinpath(pkgdir(Octopus), "src")), file in files
+        endswith(file, ".jl") || continue
+        path = joinpath(root, file)
+        endswith(path, joinpath("math", "counter_rng.jl")) && continue
+        for (i, line) in enumerate(readlines(path))
+            startswith(strip(line), "#") && continue
+            code = replace(line, r"`[^`]*`" => "")        # prose in backticks is not a call
+            occursin(r"\b(next_rng_id!|claim_rng_id!)\(", code) &&
+                push!(claim_sites, (relpath(path, pkgdir(Octopus)), i, line))
+        end
+    end
+    @test length(claim_sites) >= 4
+    @testset let sites = [s[1] * ":" * string(s[2]) for s in claim_sites]
+        @test all(s -> occursin(r"consumer\s*=\s*:[a-z_]+", s[3]), claim_sites)
+    end
+    claim_classes = Set(Symbol(m.captures[1]) for s in claim_sites
+                        for m in eachmatch(r"consumer\s*=\s*:([a-z_]+)", s[3]))
+    @test claim_classes == Set([:beam, :lumped_radiation, :turn_rule, :bpm_observer])
+    set_global_rng!(seed=0x5eed, method=:philox)
 end
 
 @testset "The run artifact records the realised turn modulation" begin

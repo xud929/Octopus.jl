@@ -322,6 +322,28 @@ external RNG for convenience and ignores `rng_id` with a warning if nonzero. In
 the current CUDA implementation, Octopus counter-RNG beam initialization
 generates host values and transfers them to GPU storage.
 
+One `rng_id` policy holds for every stochastic consumer -- `Beam`,
+`LumpedRadSpec`, the turn-modulation rules (`WhiteNoise`, `PinkNoise`,
+`SpectralNoise`) and `BPMObserver` (owner decision 2026-10-16, after the
+crab-noise neighbour audit): `rng_id = 0`, the default, requests a fresh
+stream, assigned at CONSTRUCTION by `next_rng_id!`; an explicit positive id
+is recorded by `claim_rng_id!`, which raises the auto-assign counter past it
+and warns -- never refuses -- when the id is already held in this process by
+an auto-assigned consumer or by an explicit consumer of another class (the
+warning names the id, both classes and the remedy: an id above the counter,
+or 0). Explicit reuse of one id by one class is silent (the reproducibility
+handle; placements sharing a stream within one task are warned by the task
+constructor), as is every fresh id. Ids are `UInt64` wherever a consumer
+stores one, up to `typemax(UInt64)`; above an explicit `typemax(UInt64)` the
+exhausted counter refuses by name. The stream is assigned at construction and
+not at compile on purpose: a knob change recompiles the line, and a stream
+assigned at compile would move mid-run; a `:lumped_radiation` spec that still
+carries `rng_id` 0 when it reaches `compile_runtime` (a raw
+`ElementSpec{:lumped_radiation}` without the key, or a placement override
+`rng_id = 0`) is refused there by name instead of drawing on stream 0. The
+registry is process-wide: `reset_rng_id_counter!` resets the counter and
+forgets every holder.
+
 Beam optics use three-plane tuples `beta=(beta_x,beta_y,beta_z)` and
 `alpha=(alpha_x,alpha_y,alpha_z)`, consistently with `Linear6DSpec` and
 `LumpedRadSpec`. Sigma-based and emittance-based initialization apply the same

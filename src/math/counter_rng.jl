@@ -46,43 +46,182 @@ global_rng_method() = rng_method_symbol(_GLOBAL_RNG_METHOD[])
 """Return the current Octopus global RNG method as an isbits code."""
 global_rng_method_code() = _GLOBAL_RNG_METHOD[]
 
-"""Return the next automatically assigned stochastic consumer stream id."""
-function next_rng_id!()
-    # Atomic: two beams or radiation specs constructed concurrently must not
-    # draw the same stream id, which would mean identical noise (2026-08-05
-    # audit, U15-5).
-    return Threads.atomic_add!(_GLOBAL_RNG_ID_COUNTER, UInt64(1)) + UInt64(1)
+"""
+    _RNG_ID_HOLDERS
+
+The stream ids this process has issued or recorded, each with the consumer
+classes holding it: `id => [(class, explicit)]`, where `explicit` is `false`
+for an id `next_rng_id!` assigned and `true` for one `claim_rng_id!` recorded.
+The memory beside the high-water-mark counter (owner policy 2026-10-16,
+crab-noise neighbour audit S1-6, todo rows 34 and 38): the counter alone
+could not see an explicit id chosen AFTER a fresh consumer had received it,
+nor two consumer classes choosing one id. Guarded by `_RNG_ID_REGISTRY_LOCK`;
+the counter stays atomic so a fresh id never needs the lock's serialisation.
+Cleared by `__init__` (what the precompile process claimed -- the
+`@element_spec` examples -- is not this process's) and by
+`reset_rng_id_counter!`.
+"""
+const _RNG_ID_HOLDERS = Dict{UInt64,Vector{Tuple{Symbol,Bool}}}()
+const _RNG_ID_REGISTRY_LOCK = ReentrantLock()
+
+"""
+    next_rng_id!(; consumer=:unspecified) -> UInt64
+
+Return the next automatically assigned stochastic consumer stream id, recorded
+in the registry as held by `consumer` (the class label a constructor passes:
+`:beam`, `:lumped_radiation`, `:turn_rule`, `:bpm_observer`; the suite derives
+the list from the call sites). This is what every consumer's `rng_id = 0`
+resolves to, at construction: the one policy for the Beam, `LumpedRadSpec`,
+the turn-modulation rules and `BPMObserver`. Throws when the counter is
+exhausted at `typemax(UInt64)` -- reachable only through an explicit claim of
+`typemax(UInt64)`, which the registry accepts -- rather than wrapping to 0,
+the id every consumer reads as "fresh".
+"""
+function next_rng_id!(; consumer::Symbol=:unspecified)
+    id = _issue_rng_id!()
+    _record_rng_id_holder!(id, consumer, false)
+    return id
+end
+
+# Atomic: two beams or radiation specs constructed concurrently must not draw
+# the same stream id, which would mean identical noise (2026-08-05 audit,
+# U15-5). A compare-and-swap rather than an add so that the exhausted counter
+# refuses instead of issuing stream 0, then 1, 2, ... Its own function so that
+# the id the loop rebinds is never captured by the registry lock's closure
+# (the suite's Core.Box sweep).
+function _issue_rng_id!()
+    while true
+        current = _GLOBAL_RNG_ID_COUNTER[]
+        current == typemax(UInt64) && throw(ArgumentError(
+            "the automatic rng_id counter is exhausted: an explicit claim of " *
+            "typemax(UInt64) left no fresh stream above it (the counter is a " *
+            "high-water mark over every claimed id, so next_rng_id! never " *
+            "reissues one). Claim explicit ids below typemax(UInt64), or call " *
+            "reset_rng_id_counter!(value) in a session that no longer needs the " *
+            "ids above value."))
+        next = current + UInt64(1)
+        Threads.atomic_cas!(_GLOBAL_RNG_ID_COUNTER, current, next) === current && return next
+    end
+end
+
+function _record_rng_id_holder!(id::UInt64, consumer::Symbol, explicit::Bool)
+    lock(_RNG_ID_REGISTRY_LOCK) do
+        push!(get!(() -> Tuple{Symbol,Bool}[], _RNG_ID_HOLDERS, id), (consumer, explicit))
+    end
+    return nothing
 end
 
 """
-    claim_rng_id!(id) -> UInt64
+    claim_rng_id!(id; consumer=:unspecified) -> UInt64
 
-Record an **explicitly chosen** stochastic stream id and return it, advancing
-the auto-assign counter past it so `next_rng_id!` can never reissue it.
+Record an **explicitly chosen** stochastic stream id and return it as a
+`UInt64`, advancing the auto-assign counter past it so `next_rng_id!` can never
+reissue it, and warning -- never refusing -- when the id is already held in
+this process by a consumer the claim would share a stream with.
 
-Without this, an explicit id and an automatic one collide silently. Measured
-(2026-08-05_b audit, U14-2): `Beam(...; rng_id = 1)` left the counter at 0, an
-auto-assigned `LumpedRadSpec` in the same session then also received id 1, and
-the two consumers drew **the same stream** — beam initial coordinates and
-radiation excitation correlating at 0.99988. That is the worst possible
-correlation for an emittance-growth study, because the excitation is aligned
-with the distribution it is supposed to diffuse.
+Without the counter, an explicit id and an automatic one collide silently.
+Measured (2026-08-05_b audit, U14-2): `Beam(...; rng_id = 1)` left the counter
+at 0, an auto-assigned `LumpedRadSpec` in the same session then also received
+id 1, and the two consumers drew **the same stream** -- beam initial
+coordinates and radiation excitation correlating at 0.99988. That is the
+worst possible correlation for an emittance-growth study, because the
+excitation is aligned with the distribution it is supposed to diffuse.
 
-A high-water mark rather than a registry: it is atomic, order-independent, and
-costs one compare-and-swap per stochastic consumer at construction. It does not
-catch the reverse order (an explicit id chosen to match one auto-assignment has
-already issued); `_warn_duplicate_radiation_streams` covers part of that, and
-the full registry is recorded in the audit queue rather than built here.
+The counter is a high-water mark: atomic, order-independent, one
+compare-and-swap per stochastic consumer. It does not see the reverse order --
+an explicit id chosen to match an auto-assignment that has already issued
+(measured 2026-10-16, crab-noise neighbour audit S1-6: a Beam took auto id 7,
+`LumpedRadSpec(rng_id = 7)` was accepted silently and their turn-0 cells were
+equal) -- nor two consumer CLASSES choosing one id (S1-5: a `SpectralNoise`,
+a `LumpedRadSpec` and a `BPMObserver` on id 5 built with no warning, the
+spectral bin k's Rayleigh pair being radiation particle k's normals). The
+registry beside the counter (`_RNG_ID_HOLDERS`) sees both, and the policy
+(owner decision 2026-10-16) is:
+
+  * an explicit claim of an id that was AUTO-ASSIGNED earlier in this process
+    warns by name: the id, the holder's class, the claimant's class, and the
+    remedy (an id above the registry's counter, or `rng_id = 0`);
+  * an explicit claim of an id already claimed explicitly by a DIFFERENT class
+    (beam, radiation, turn-modulation rule, BPM observer) warns, naming both
+    classes;
+  * explicit reuse of one id by the SAME class is silent: it is the user's
+    reproducibility handle (the suite builds thousands of `Beam(...; rng_id =
+    1)`), and two placements of one class sharing a stream in one task are
+    caught by the task constructor's duplicate-stream warnings;
+  * `id = 0` is refused: it is the request for a fresh stream, which every
+    consumer resolves at construction through `next_rng_id!`, never a stream.
+
+Each `(id, class)` pair warns once; a warning is a shared stream, not a
+refusal, because sharing is sometimes intended. Two consumers on one stream
+draw identical normals wherever their key regions coincide (the key layout
+above `_RULE_COMPONENT_BASE` in `src/elements/turn_modulated.jl` says which
+classes do). `consumer` keeps its default so a call site that has not been
+taught its class still compiles; the suite's tripwire requires every call site
+in `src/` to pass one. A negative `id` dies in the `UInt64` conversion as
+before (todo row 40, open).
 """
-function claim_rng_id!(id::Integer)
-    id > 0 && Threads.atomic_max!(_GLOBAL_RNG_ID_COUNTER, UInt64(id))
-    return UInt64(id)
+function claim_rng_id!(id::Integer; consumer::Symbol=:unspecified)
+    uid = UInt64(id)
+    uid == 0 && throw(ArgumentError(
+        "rng_id 0 is not a stream: it is the request for a fresh stream, which every " *
+        "consumer resolves at construction with next_rng_id!(); claim_rng_id! records " *
+        "an explicitly chosen positive id (claimant: $(consumer))"))
+    Threads.atomic_max!(_GLOBAL_RNG_ID_COUNTER, uid)
+    message = _register_rng_id_claim!(uid, consumer)
+    message === nothing || @warn message rng_id = uid claimant = consumer
+    return uid
 end
 
-"""Reset the automatic stochastic consumer stream-id counter."""
+# The locked part of `claim_rng_id!`: record `(consumer, explicit)` unless the
+# same class already holds the id explicitly, and return the sharing message
+# when another holder exists (emitted outside the lock).
+function _register_rng_id_claim!(uid::UInt64, consumer::Symbol)
+    return lock(_RNG_ID_REGISTRY_LOCK) do
+        holders = get!(() -> Tuple{Symbol,Bool}[], _RNG_ID_HOLDERS, uid)
+        same_class = any(h -> h[1] === consumer && h[2], holders)
+        msg = (same_class || isempty(holders)) ? nothing :
+              _rng_id_sharing_message(uid, consumer, holders)
+        same_class || push!(holders, (consumer, true))
+        msg
+    end
+end
+
+function _rng_id_sharing_message(id::UInt64, consumer::Symbol, holders)
+    held = join(["a $(h[1]) consumer ($(h[2] ? "explicit" : "auto-assigned at construction"))"
+                 for h in holders], ", ")
+    return "rng_id $(id), claimed explicitly by a $(consumer) consumer, is already held in " *
+           "this process by $(held): two consumers on one counter-RNG stream draw identical " *
+           "normals wherever their key regions coincide (the key layout above " *
+           "_RULE_COMPONENT_BASE in src/elements/turn_modulated.jl says which classes do). " *
+           "Give the new consumer an id above the registry's counter " *
+           "($(_GLOBAL_RNG_ID_COUNTER[])), or leave rng_id = 0, which assigns a fresh stream " *
+           "at construction. (One class reusing one id is the reproducibility handle and " *
+           "stays silent; placements sharing a stream within one task are warned by the " *
+           "task constructor.)"
+end
+
+"""
+    reset_rng_id_counter!(value=0) -> UInt64
+
+Reset the automatic stochastic consumer stream-id counter to `value` and
+forget every recorded holder (`_RNG_ID_HOLDERS`): ids at or below `value` may
+be reissued, so the memory of who held them would be wrong. A test that
+claims an extreme id saves the counter (`next_rng_id!()`) first and restores
+it through this.
+"""
 function reset_rng_id_counter!(value::Integer=0)
     _GLOBAL_RNG_ID_COUNTER[] = UInt64(value)
+    _forget_rng_id_holders!()
     return _GLOBAL_RNG_ID_COUNTER[]
+end
+
+"""Empty the registry's holder memory (the counter is untouched); `__init__` and
+`reset_rng_id_counter!` call it."""
+function _forget_rng_id_holders!()
+    lock(_RNG_ID_REGISTRY_LOCK) do
+        empty!(_RNG_ID_HOLDERS)
+    end
+    return nothing
 end
 
 rng_method_code(code::UInt8) = code

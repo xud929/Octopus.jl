@@ -480,6 +480,7 @@ Use Julia help:
 ?global_rng_method
 ?global_rng_method_code
 ?next_rng_id!
+?claim_rng_id!
 ?reset_rng_id_counter!
 ?octopus_normal
 ?counter_uint64

@@ -27,7 +27,7 @@ export BPMObserver, bpm_reading, readings
 """
     BPMObserver(name; x_offset=0, y_offset=0, tilt=0, x_gain=0, y_gain=0,
                 x_readout=0, y_readout=0, x_noise=0, y_noise=0,
-                artifact=false, rng_id=nothing)
+                artifact=false, rng_id=0)
 
 A beam position monitor: reads the transverse **centroid** and reports it
 through a device error model.
@@ -50,6 +50,7 @@ Fields, and which reference code each comes from:
 | `x_gain`, `y_gain` | relative calibration error (MAD-X `MSCALX`, AT `Scale - 1`) |
 | `x_readout`, `y_readout` | additive electrical bias (MAD-X `MREX`, AT `Offset`) |
 | `x_noise`, `y_noise` | per-reading resolution, one standard deviation (AT `Reading`) |
+| `rng_id` | the noise stream, a `UInt64` counter-RNG stream id; `0` (the default) assigns a fresh one at construction, as every stochastic consumer does, and an explicit id is claimed in the process registry, which warns when an auto-assigned consumer or another consumer class already holds it |
 
 **Why both an offset and a readout bias**, when for a pure translation either
 could absorb the other: they compose differently. The offset sits inside the
@@ -95,7 +96,10 @@ mutable struct BPMObserver <: AbstractBeamObserver
     y_readout::Float64
     x_noise::Float64
     y_noise::Float64
-    rng_id::Int
+    # The noise stream, `UInt64` as the registry issues it (an `Int` field once
+    # refused `typemax(UInt64)` with an InexactError and let `typemax(Int64)`
+    # poison every later auto-assigned BPM; 2026-10-16 neighbour audit S1-7).
+    rng_id::UInt64
     turns::Vector{Int}
     x::Vector{Float64}
     y::Vector{Float64}
@@ -130,7 +134,7 @@ function BPMObserver(name::AbstractString="bpm";
                      x_noise::Real=0, y_noise::Real=0,
                      path::Union{Nothing,AbstractString}=nothing,
                      capacity=nothing,
-                     rng_id::Union{Nothing,Integer}=nothing,
+                     rng_id::Integer=0,
                      artifact::Bool=false)
     path === nothing || throw(ArgumentError(
         "the BPM TSV path output was retired (2026-08-18): construct " *
@@ -145,8 +149,14 @@ function BPMObserver(name::AbstractString="bpm";
     y_noise >= 0 || throw(ArgumentError("y_noise is a standard deviation and must be nonnegative; got $y_noise"))
     # An id drawn once at construction, not per reading: it is what makes the
     # noise stream this BPM's own, and distinct from every other stochastic
-    # consumer in the run.
-    id = rng_id === nothing ? next_rng_id!() : Int(claim_rng_id!(rng_id))
+    # consumer in the run. `rng_id = 0` requests a fresh stream, the one
+    # policy of every consumer (the BPM's sentinel was `nothing` and an
+    # explicit 0 went to `claim_rng_id!`, which skipped it: the BPM then drew
+    # on stream 0 while its own metadata promised auto-assignment; 2026-10-16
+    # neighbour audit S1-1); an explicit id is claimed, and the registry warns
+    # when another class or an auto-assigned consumer already holds it.
+    id = rng_id == 0 ? next_rng_id!(consumer=:bpm_observer) :
+                       claim_rng_id!(rng_id; consumer=:bpm_observer)
     return BPMObserver(String(name), Float64(x_offset), Float64(y_offset), Float64(tilt),
                        Float64(x_gain), Float64(y_gain),
                        Float64(x_readout), Float64(y_readout),
@@ -405,7 +415,7 @@ const _BPM_OBSERVER_OPTION_SCHEMA = (
         category=:diagnostic, consumer=:bpm_reading),
     y_noise=ConfigurationOptionMeta(Float64, 0.0, "Vertical reading resolution, one standard deviation.";
         category=:diagnostic, consumer=:bpm_reading),
-    rng_id=ConfigurationOptionMeta(Int, 0, "Noise-stream identity. Auto-assigned unique at construction; two BPMs given the same id read the same noise stream, so it is the one field deciding whether monitors share noise (audit part 7, T11).";
+    rng_id=ConfigurationOptionMeta(UInt64, UInt64(0), "Noise-stream identity, a UInt64 counter-RNG stream id. 0 (the default) assigns a fresh stream at construction, as for Beam, LumpedRadSpec and the turn-modulation rules; an explicit id is claimed in the process registry, which warns when an auto-assigned consumer or another consumer class already holds it. Two BPMs given the same id read the same noise stream, so it is the one field deciding whether monitors share noise (audit part 7, T11).";
         category=:diagnostic, consumer=:bpm_reading),
     artifact=ConfigurationOptionMeta(Bool, false, "Record readings into the task's RunArtifact as /bpm/<name> (batched by the ARTIFACT'S capacity); readings are always kept in memory.";
         category=:output, consumer=:observer_output),

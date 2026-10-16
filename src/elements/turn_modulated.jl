@@ -100,7 +100,9 @@ abstract type AbstractTurnRule end
 # rng_id, particle_slot, component, T)`, as used in this tree. What separates
 # one stochastic consumer from another is the CLAIMED `rng_id` (`next_rng_id!`
 # assigns a fresh stream, `claim_rng_id!` records an explicit one so the
-# counter never reissues it) and the method tag; the cells below are NOT
+# counter never reissues it and warns when an auto-assigned consumer or
+# another consumer class already holds it; 2026-10-16) and the method tag;
+# the cells below are NOT
 # disjoint among the three older classes on one shared id -- the Beam initial
 # distribution and radiation share their turn-0 cells (the U14-2 pair
 # `claim_rng_id!` was written for), and a BPM's occurrence o >= 1 shares
@@ -167,7 +169,12 @@ const _PINK_COMPONENT_STRIDE = 64
 The stream id a stochastic rule's keyword constructor records: `0` assigns a
 fresh stream (`next_rng_id!`); an explicit id is claimed (`claim_rng_id!`) so
 the auto-assign counter never reissues it, as `LumpedRadSpec` and
-`BPMObserver` do (`src/elements/radiation.jl`; 2026-08-05_b audit U14-2).
+`BPMObserver` do (`src/elements/radiation.jl`; 2026-08-05_b audit U14-2). The
+white, pink and spectral rules are ONE consumer class (`:turn_rule`) to the
+registry: an explicit id shared by two rules is silent there (two elements
+sharing it are warned by the task constructor), while an id held by a beam,
+a radiation element, a BPM or an auto-assigned consumer warns by name
+(2026-10-16 neighbour audit S1-5).
 Anything but a non-negative integer is an `ArgumentError` naming the keyword
 and the value, raised BEFORE any stream is claimed (a negative id once died in
 `UInt64` with an `InexactError`, a non-integer one in the keyword's type;
@@ -177,7 +184,8 @@ function _rule_stream_id(rng_id)
     (rng_id isa Integer && rng_id >= 0) || throw(ArgumentError(
         "rng_id must be a non-negative integer (0 assigns a fresh stream, an explicit " *
         "id is claimed); got $(repr(rng_id))"))
-    return rng_id == 0 ? next_rng_id!() : claim_rng_id!(rng_id)
+    return rng_id == 0 ? next_rng_id!(consumer=:turn_rule) :
+                         claim_rng_id!(rng_id; consumer=:turn_rule)
 end
 
 # The shared guard of the stochastic rules' `sigma`. The keyword constructors
