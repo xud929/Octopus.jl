@@ -825,11 +825,12 @@ One summary row in each log, "Element parameters carry their own number
 type" (29 of 29), is split by an interleaved method-overwrite warning from
 the suite's `BPMObserver` schema redefinition, its numbers standing on the
 following line; a log artefact of buffered stderr, counted from that line.
-The push: c3c6c2c and this record commit, pushed together right after this
-commit on the owner's authorisation of 2026-10-16 ("After the test pass,
-please push too"); the CI run's number, runner class, duration and stage 6
-identity pins go into the `docs/todo.md` row by the next bookkeeping
-commit, and CI covers the CPU testsets only, having no GPU. Not verified:
+The push: c3c6c2c and this record commit, pushed together as 0e3c8da at
+04:40 EDT on the owner's authorisation of 2026-10-16 ("After the test pass,
+please push too"); CI run 457 on 0e3c8da completed green on a znver3 runner
+in 35 minutes with the stage 6 identity pins 6 of 6 (written here by the
+bookkeeping commit that followed, as this paragraph announced); CI covers
+the CPU testsets only, having no GPU. Not verified:
 CI on this tree at this writing; the strong-strong recorder on CUDA
 (unchanged since the stage 1 record); the last-bit agreement of FFTW
 across heterogeneous MPI ranks (D9, not exercised: the two-rank arms ran
