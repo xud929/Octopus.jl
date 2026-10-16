@@ -174,4 +174,16 @@ catch
 end
 _HAS_FORWARDDIFF_SCRIPT_MODE && include("../ext/OctopusForwardDiffRules.jl")
 
+# The counter-RNG registry's holder memory describes THIS process. The
+# `@element_spec` examples are constructed while the package precompiles
+# (`LumpedRadSpec(...; rng_id = 1)` among them) and claim their streams in
+# the precompile process; the memory they leave is serialised with the image
+# and would otherwise arrive in every session as holders an explicit claim
+# collides with (every `Beam(...; rng_id = 1)` would warn against an example
+# nobody built). The counter itself is left as the image carries it.
+function __init__()
+    _forget_rng_id_holders!()
+    return nothing
+end
+
 end # module Octopus

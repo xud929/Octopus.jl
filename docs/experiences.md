@@ -1584,6 +1584,27 @@ a new consumer joins an existing keyed stream, list every dimension the
 existing consumers' guarantees span and show each one in the new key, with
 a test per dimension that the two draws differ.
 
+## A process-wide registry makes a strict silence pin order-dependent
+
+The counter-RNG registry remembers every stream id this process issued or
+recorded and warns once when a class first claims an id an auto-assigned
+consumer or another class already holds (fix group C of the 2026-10-16
+crab-noise neighbour audit, leads S1-1/S1-2/S1-5/S1-6/S1-7, todo rows 34
+and 38). The suite is one long process whose testsets reuse small literal
+ids across classes, so by the time a strict `@test_logs f()` pin builds
+`WhiteNoise(rng_id = 26)`, id 26 has been auto-assigned to something: the
+pin failed in the full lane and passed in a short runner process. The first
+repair, `next_rng_id!() + 20`, failed the other way round: in a short
+process the fresh id was 26, which the very next testset's literal met. An
+id that is "fresh" for a strict silence pin must sit above the counter AND
+above every literal of the suite (`next_rng_id!() + 1_000_000`), and a
+testset that pins the registry's own warnings clears the memory first
+(`reset_rng_id_counter!(next_rng_id!())`) so its pins describe its own
+claims. The same memory is why the package clears it in `__init__`: the
+`@element_spec` examples claim streams while the package precompiles, and
+without the clear every `Beam(...; rng_id = 1)` would warn against an
+example nobody built.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

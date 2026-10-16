@@ -166,7 +166,8 @@ function _standard_gaussian_rep(::Type{BTAG}, ::Type{T}, N::Integer;
 	if resolved_rng === nothing
 		counter_seed = seed === nothing ? global_rng_seed() : UInt64(seed)
 		counter_method = global_rng_method_code()
-		counter_rng_id = rng_id == 0 ? next_rng_id!() : claim_rng_id!(rng_id)
+		counter_rng_id = rng_id == 0 ? next_rng_id!(consumer=:beam) :
+		                               claim_rng_id!(rng_id; consumer=:beam)
 		coords = ntuple(i -> begin
 			_standardize!(_alloc_counter_randn(BTAG, T, Int(N), i;
 				cutoff=cutoff, seed=counter_seed, rng_method=counter_method,
@@ -561,8 +562,12 @@ two-component `alpha=(αx,αy)` is accepted temporarily and interpreted as
 `CPUThreadsBackend`, or `CUDABackend`.
 If `rng` is omitted, coordinates are generated with the Octopus global counter
 RNG using `global_rng_seed()`, `global_rng_method()`, and the beam `rng_id`.
-If `rng_id == 0`, a stream id is assigned with `next_rng_id!()`. Passing an
-explicit `rng` uses that RNG as a convenience override and ignores `rng_id`.
+If `rng_id == 0`, a stream id is assigned with `next_rng_id!()`; an explicit
+id is claimed with `claim_rng_id!`, which warns when an auto-assigned consumer
+or a consumer of another class (radiation, a turn-modulation rule, a BPM)
+already holds it in this process, and stays silent for another beam (the one
+policy of every stochastic consumer, 2026-10-16). Passing an explicit `rng`
+uses that RNG as a convenience override and ignores `rng_id`.
 """
 function Beam(N::Integer, policy::AbstractExecutionPolicy, FloatT::Type{RT}=Float64; kwargs...) where {RT<:Real}
     # Checked here as well as in the backend-tag method below, so the refusal

@@ -15,6 +15,17 @@ excitation element. `Radiation6DMap()` permits both components,
 `Damping6DMap()` permits damping only, and `Diffusion6DMap()` permits
 excitation only. `is_damping` and `is_excitation` enable or disable the
 component permitted by the selected method.
+
+`rng_id = 0` (the default) assigns the excitation's counter-RNG stream HERE,
+at construction, with `next_rng_id!`; an explicit id is claimed with
+`claim_rng_id!`, which warns when an auto-assigned consumer or another
+consumer class already holds it (one policy for every stochastic consumer,
+owner decision 2026-10-16). The assignment is deliberately not deferred to
+`compile_runtime`: a knob change recompiles the line, and a stream assigned at
+compile would move mid-run. A spec that reaches compile with `rng_id` 0 -- a
+raw `ElementSpec{:lumped_radiation}` built without the key, or a placement
+override `rng_id = 0` -- is therefore refused there by name rather than
+drawing on stream 0 (2026-10-16 neighbour audit S1-2).
 """
 LumpedRadSpec(; kwargs...) = LumpedRadSpec{Float64}(; kwargs...)
 function (::Type{LumpedRadSpec{T}})(;
@@ -31,7 +42,8 @@ function (::Type{LumpedRadSpec{T}})(;
                                     rng_id=zero(UInt64),
                                     kwargs...) where {T}
     stream_id = UInt64(rng_id)
-    stream_id = stream_id == 0 ? next_rng_id!() : claim_rng_id!(stream_id)
+    stream_id = stream_id == 0 ? next_rng_id!(consumer=:lumped_radiation) :
+                                 claim_rng_id!(stream_id; consumer=:lumped_radiation)
     return ElementSpec{:lumped_radiation}(
         _spec_params(;
             damping_turns=_fixed_tuple(damping_turns, 3, T),
@@ -117,6 +129,21 @@ function LumpedRad(spec::ElementSpec{:lumped_radiation},
         Bool(getparam(spec, :is_damping, true)),
         Bool(getparam(spec, :is_excitation, true)) && excitation_available,
     )
+    # 0 is the request for a fresh stream, which only the friendly constructor
+    # resolves (at construction, so a recompile after a knob change keeps the
+    # stream); a spec still carrying 0 here drew on stream 0 silently, the
+    # stream `BPMObserver(rng_id = 0)` also occupied (2026-10-16 neighbour
+    # audit S1-2). Refused whatever the method: every lumped_radiation spec
+    # carries its stream, excitation or not.
+    stream_id = UInt64(getparam(spec, :rng_id, 0))
+    stream_id > 0 || throw(ArgumentError(
+        "lumped_radiation: rng_id = 0 is the request for a fresh stream of the counter " *
+        "RNG, which LumpedRadSpec assigns once, at construction (so that a knob change " *
+        "and recompile keep the stream mid-run); this spec reached compile_runtime " *
+        "without one -- a raw ElementSpec{:lumped_radiation} built without rng_id, or a " *
+        "placement override rng_id = 0 replacing the constructor's id. Build it with " *
+        "LumpedRadSpec(...), or give the spec or the override a positive rng_id " *
+        "(next_rng_id! issues a fresh one)."))
     return LumpedRad(
         method,
         is_damping,
@@ -126,7 +153,7 @@ function LumpedRad(spec::ElementSpec{:lumped_radiation},
         CrabDispersion(Symplectic6DMap(), zeta_t...),
         MomentumDispersion(Symplectic6DMap(), eta_t...),
         XYCoupling(R_t..., XY_MODEA),
-        UInt64(getparam(spec, :rng_id, 0)),
+        stream_id,
     )
 end
 
@@ -319,7 +346,7 @@ end
         is_damping=ParamMeta(default=true, meaning="enable radiation damping"),
         is_excitation=ParamMeta(default=true, meaning="enable stochastic excitation when sigma and beta are valid"),
         tracking_method=ParamMeta(default=Radiation6DMap(), meaning="per-element tracking method; use Damping6DMap() for damping only or Diffusion6DMap() for diffusion only"),
-        rng_id=ParamMeta(default=0, meaning="counter-RNG stream id for stochastic excitation; 0 auto-assigns a unique id"),
+        rng_id=ParamMeta(default=0, meaning="counter-RNG stream id for stochastic excitation; 0 (the default) makes LumpedRadSpec assign a fresh stream at construction, an explicit id is claimed in the process registry (which warns on sharing with another class or an auto-assigned consumer), and a spec still carrying 0 at compile is refused by name"),
         _PLACEMENT_PARAMS...,
     )
     example = LumpedRadSpec{Float64}(damping_turns=(1000.0, 1000.0, 500.0), rng_id=1)
