@@ -4,7 +4,9 @@ Status: stage 1 implementation landed 2026-10-16 in the worktree, uncommitted
 (section 1; the implementer's testsets green through the stage runner with
 CUDA active, section 2.2); reviewed the same day, the five findings fixed
 and re-verified (section 4); the examples update landed the same day on the
-fixed tree (section 3); the gate pending (section 5). Stage 1 of
+fixed tree (section 3); committed as c3c6c2c and gated the same day in both
+CPU arms with CUDA active, the arms one after the other (section 5), pushed
+on the owner's authorisation. Stage 1 of
 [`../design/spectral_turn_table.md`](../design/spectral_turn_table.md) (its
 section 8: one batch, one session), the design the owner discussed on
 2026-10-15; the owner gave the go-ahead to implement on 2026-10-15
@@ -566,11 +568,9 @@ validation's `synthetic_tables` and `recorded` item are
   summary now reads "white, pink, a tabulated record or a spectral rule
   (SpectralNoise: a target spectrum over a chosen band, fixed or Rayleigh
   amplitudes, resolved into a table when the line compiles) through one
-  switch"; its object list, `Type[TrackingTask, ThinCrabCavitySpec,
-  WhiteNoise, PinkNoise, TurnTable, TurnModulated, RunArtifact]`, does not
-  name `SpectralNoise` beside the other rule types (an observation made
-  while filling this record, 2026-10-16, for the owner or the next
-  neighbour audit; the examples agent reports no failing check).
+  switch"; its object list names `SpectralNoise` beside the other rule
+  types (added by the coordinator before the commit, 2026-10-16, after the
+  record's first draft had noted it missing).
   `example_catalog()` is not restated in the examples agent's report;
   `validate_element_metadata()` passed in the fixer's run on the same
   tree.
@@ -799,32 +799,53 @@ OPENBLAS_CORETYPE=Haswell julia -C haswell --project=. --threads=4 \
 
 Before the gate, on the final tree: the extracted sweeps (the stage 6 pin
 tripwire, the `Core.Box` sweep, the detached-docstring sweep), the fast lane,
-and the registry snapshot regenerated against the tracked file. `[gate:
-pending: the commit gated; `git status` at the start of each arm; the host
-(CPU, GPU, Julia version); the sweeps' exit codes; the fast lane's rows,
-assertions, `@test_skip`s and loud lane skips with its start and end times;
-the snapshot compare's result]`.
+and the registry snapshot regenerated against the tracked file. Gated: c3c6c2c, the batch's commit, `git status` clean at the start of both
+arms (`dirty=0` and `dirty=0` in the logs' first lines); host
+acnlinj4 (Xeon Gold 6430, sapphirerapids; RTX 4500 Ada; julia 1.12.4). The
+extracted sweeps on the final source tree: exit 0 (the stage 6 pin
+tripwire, the `Core.Box` sweep and the detached-docstring sweep 2 of 2
+each). The fast lane on the final tree, 02:09:08 to 02:29:42 EDT: 321 rows,
+148621 assertions passed, 1 `@test_skip` (the RF testset's second-thread
+tripwire, which both full arms run), 16 loud lane skips. The registry
+snapshot regenerated identical to the tracked file (the implementer's and
+the fixer's checks).
 
 | arm | start (EDT) | end (EDT) | rows | assertions | exit |
 |---|---|---|---|---|---|
-| native | `[gate: pending: start]` | `[gate: pending: end]` | `[gate: pending: rows]` | `[gate: pending: X of X assertions]` | `[gate: pending: exit code]` |
-| AVX2 parity (`OPENBLAS_CORETYPE=Haswell`, `-C haswell`), started after the native arm ended | `[gate: pending: start]` | `[gate: pending: end]` | `[gate: pending: rows]` | `[gate: pending: X of X assertions]` | `[gate: pending: exit code]` |
+| native | 02:30:10 | 03:21:28 | 336 | 150700 of 150700 | 0 |
+| AVX2 parity (`OPENBLAS_CORETYPE=Haswell`, `-C haswell`), started after the native arm ended | 03:21:28 | 04:12:11 | 336 | 150700 of 150700 | 0 |
 
-`[gate: pending: the rows and assertions added against the baseline (two
-rows expected, the assertion delta); that every CUDA-gated testset reports
-its assertions and that neither green log carries a skipped, not-exercised
-or lane-skip line; anything skipped, by name; a red attempt, if any, with
-its tree, its failing assertion and the fix]`. `[gate: pending: the push:
-the commit, the time, on whose word; the CI run number, its runner class,
-its duration, the stage 6 identity pins, and "CPU testsets only" since CI
-has no GPU]`. Not verified: `[gate: pending: what the gate did not cover]`.
+Against the baseline of the stage 1 record batch (334 rows, 150148
+assertions per arm on 77c0bcc) this batch adds 2 rows (the two
+spectral testsets) and 552 assertions, identically in both arms.
+Every CUDA-gated testset reports its assertions and neither log carries a
+skipped, not-exercised or lane-skip line; nothing was skipped; no red
+attempt (the arms ran one after the other, as the 2026-10-15 race demands).
+One summary row in each log, "Element parameters carry their own number
+type" (29 of 29), is split by an interleaved method-overwrite warning from
+the suite's `BPMObserver` schema redefinition, its numbers standing on the
+following line; a log artefact of buffered stderr, counted from that line.
+The push: c3c6c2c and this record commit, pushed together right after this
+commit on the owner's authorisation of 2026-10-16 ("After the test pass,
+please push too"); the CI run's number, runner class, duration and stage 6
+identity pins go into the `docs/todo.md` row by the next bookkeeping
+commit, and CI covers the CPU testsets only, having no GPU. Not verified:
+CI on this tree at this writing; the strong-strong recorder on CUDA
+(unchanged since the stage 1 record); the last-bit agreement of FFTW
+across heterogeneous MPI ranks (D9, not exercised: the two-rank arms ran
+on one host); the example's `:spectral` configuration inside the suite (the
+example and harness defaults stay `:white`, so the suite's example testset
+ran them white; the spectral arms ran outside the suite, section 3, and
+the rule's own coverage is the two spectral testsets).
 
 ## 6 Ledger
 
 - `docs/todo.md`: the spectral producer row's state reads "stage 1 in
   progress 2026-10-16 (record `history/spectral_turn_table_2026_10_16.md`)"
-  at this writing, its three cells kept; `[gate: pending: the row's state
-  after the gate and the push, and any row the batch opens]`.
+  at this writing, its three cells kept; the record commit changes it to
+  "stage 1 landed as c3c6c2c, gated 2026-10-16 in both CPU arms with CUDA
+  active, the arms one after the other, and pushed"; the batch opens no
+  row.
 - `docs/README.md`: this record indexed in the history section after
   `turn_modulation_record_2026_10_15.md`; the design-note entry for
   `spectral_turn_table.md` reads "stage 1 in progress 2026-10-16" with the

@@ -113,7 +113,7 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   one-particle probe with three comparisons is the verification.
 - [`spectral_turn_table.md`](design/spectral_turn_table.md) — a spectral
   producer for `TurnTable` (designed 2026-10-15 in owner discussion; stage 1
-  in progress 2026-10-16, record
+  landed as c3c6c2c, gated and pushed 2026-10-16, record
   `history/spectral_turn_table_2026_10_16.md`): one function that
   synthesises a per-turn table from a
   target power spectral density shape (presets `:flat` and `:pink`, or a
@@ -523,7 +523,7 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   its numbers; the examples update; the gate; the ledger.
 - [`spectral_turn_table_2026_10_16.md`](history/spectral_turn_table_2026_10_16.md) —
   stage 1 of `design/spectral_turn_table.md`, the spectral producer for
-  `TurnTable` (in progress 2026-10-16): the exported factory
+  `TurnTable` (landed as c3c6c2c, gated and pushed 2026-10-16): the exported factory
   `spectral_turn_table` and the spec-level rule `SpectralNoise` resolved
   through it when the line compiles (D11), synthesising a per-turn table
   from a power spectral density shape over a band of modulation tunes, with

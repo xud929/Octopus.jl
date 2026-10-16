@@ -597,8 +597,7 @@ on their side of the D7 boundary, and it is what a future `validation/` helper
 could look like. (2026-10-15: a library version of this producer, a factory
 returning a `TurnTable` from a target spectrum with band limits, an analytic
 rms normalisation and a provenance name, is designed in
-`spectral_turn_table.md`; implementation in progress 2026-10-16 as its stage
-1, record `../history/spectral_turn_table_2026_10_16.md`.) It synthesises a per-turn table from a target one-sided
+`spectral_turn_table.md`; stage 1 landed as c3c6c2c, gated and pushed 2026-10-16, record `../history/spectral_turn_table_2026_10_16.md`.) It synthesises a per-turn table from a target one-sided
 spectrum `S(f)` in rad²/Hz by frequency-domain shaping (the method of Timmer
 and König [9] with fixed amplitudes).
 

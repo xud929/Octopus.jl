@@ -8,7 +8,8 @@
 > Q1 as proposed and extended the same day by D11: the entry point in a
 > line is the spec-level rule `SpectralNoise`, resolved into a `TurnTable`
 > when the line compiles, the named function kept for offline tables);
-> stage 1 in progress 2026-10-16 (record
+> stage 1 landed as c3c6c2c, gated 2026-10-16 in both CPU arms with CUDA
+> active and pushed (record
 > `../history/spectral_turn_table_2026_10_16.md`).** Parent note `turn_modulation.md` (the rule interface, D7, and
 > its section 6, the producer sketch this note promotes into the library);
 > the recorder of `turn_modulation_record.md` is what makes the verification
