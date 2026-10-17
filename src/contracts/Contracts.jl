@@ -397,6 +397,50 @@ function validate(contract::KnobEffectivenessContract; kwargs...)
     end
 end
 
+"""
+    _output_receipt_gaps(receipts, schemas) -> Vector{String}
+
+The output boundary's option-to-receipt pairing, DERIVED from the metadata and
+checked against recorded receipts (2026-10-16 fix batch; neighbour audit S4-1,
+S4-3, S4-10). `schemas` pairs each schema owner's type name with its schema
+(`:RunArtifact => run_artifact_option_schema()`, `:TrackingTask =>
+tracking_task_option_schema()`, `:MomentObserver =>
+observer_option_schema(MomentObserver)`, ...). The OUTPUT consumers are the
+consumers named by every option of category `:output` across `schemas`; every
+option -- of any category -- whose consumer is one of them must be carried by
+that consumer's receipts belonging to its owner: at least one such receipt
+recorded, and every one of them carrying a field named after the option. A
+receipt belongs to an owner when it carries no `observer` field (the task and
+artifact receipts) or when its `observer` field is the owner's name (the
+probes share the `:observer_output` consumer and each carries its own
+options). Each miss is one line naming the owner, the option, the consumer
+and what is missing; an empty vector is the pass. Options whose consumer is
+not an output receipt (`:bpm_reading`, the BPM's reading terms) are outside
+this check and belong to the schema-driven sweep of `docs/todo.md` row 28.
+"""
+function _output_receipt_gaps(receipts, schemas)
+    consumers = Set{Symbol}()
+    for (_, schema) in schemas, meta in schema
+        meta.category === :output && push!(consumers, meta.consumer)
+    end
+    gaps = String[]
+    for (owner, schema) in schemas
+        for (option, meta) in pairs(schema)
+            meta.consumer in consumers || continue
+            mine = [r for r in receipts if r.consumer === meta.consumer &&
+                    (!haskey(r.values, :observer) || r.values.observer === owner)]
+            if isempty(mine)
+                push!(gaps, "$(owner).$(option): no $(meta.consumer) receipt was recorded")
+            elseif !all(r -> haskey(r.values, option), mine)
+                push!(gaps, "$(owner).$(option): the $(meta.consumer) receipt carries no " *
+                            "field named $(option) (fields: " *
+                            join(string.(propertynames(first(mine).values)), ", ") * ")")
+            end
+        end
+    end
+    return gaps
+end
+
 function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
     _reject_unknown_validate_kwargs(contract, kwargs)
     metrics = Dict{Symbol,Any}()
@@ -549,6 +593,88 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
     metrics[:schedule_and_capacity_effective] = schedule_effective
     schedule_effective || return ContractResult(false,
         "observer schedule or buffer capacity did not reach its runtime consumer.";
+        metrics=metrics)
+
+    # The output boundary (2026-10-16 fix batch; neighbour audit S4-1, S4-2,
+    # S4-3, S4-10): every option whose declared consumer is an output receipt
+    # is carried by that receipt -- derived from the schemas, never a hand
+    # list -- under BOTH task kinds, and the artifact's receipt carries what
+    # the prepare RESOLVED, not the request: `append=true` on a path that does
+    # not exist resolves to `continued=false`, then `true` when the same task
+    # continues its own file; `record_turn_modulation=true` resolves to
+    # `recording=true` with a modulated element in the line and `false`
+    # without one (the strong-strong fixture). Every artifact option is away
+    # from its default, as is the task's `loss_report`.
+    output_gaps, output_resolution = mktempdir() do dir
+        cpu = CPUThreadsExecutionPolicy(threads=first(worker_sweep))
+        modulated = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,),
+                                          phase_noise=(WhiteNoise(1.0e-3),))
+        # The BPM's stream id sits above the registry's counter: the contract's
+        # later probes claim small ids explicitly (`rng_id=1`, `2` on the
+        # strong-strong base beams), and an auto-assigned BPM id in that range
+        # would draw the registry's cross-class warning in a fresh process.
+        hooks = (ScheduledObserver(MomentObserver(; name="m", orders=1)),
+                 ScheduledObserver(CoordinateSnapshotObserver(; name="s", npart=2)),
+                 ScheduledObserver(BPMObserver("b"; artifact=true, rng_id=next_rng_id!() + 1_000_000)))
+        task = TrackingTask((line..., modulated, hooks...); policy=cpu, loss_report=false,
+                            artifact=RunArtifact(joinpath(dir, "output.h5"); append=true,
+                                                 capacity=2, record_turn_modulation=true))
+        rep = _contract_rep_for_backend(base, CPUThreadsBackend)
+        audit_fresh, audit_continued = ExecutionAudit(), ExecutionAudit()
+        with_execution_audit(audit_fresh) do
+            execute!(task, rep; turns=3)
+        end
+        with_execution_audit(audit_continued) do          # the same task continues its file
+            execute!(task, rep; turns=3)
+        end
+        # Explicit kbb, as the equal-configuration probe below: the contract's
+        # bare beams carry no E0, and the collide itself must be reached.
+        ss_beam1 = Beam(16, cpu, Float64; rng_id=105)
+        ss_beam2 = Beam(16, cpu, Float64; rng_id=106)
+        ss_ip() = StrongStrongCollision(:output;
+                                        poisson_solver=GaussianPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6))
+        ss_task = StrongStrongTask((line[1], ss_ip()), (line[1], ss_ip()); policy=cpu,
+                                   artifact=RunArtifact(joinpath(dir, "output_ss.h5"); append=true,
+                                                        capacity=2, record_turn_modulation=true))
+        audit_ss = ExecutionAudit()
+        with_execution_audit(audit_ss) do
+            execute!(ss_task, ss_beam1, ss_beam2; turns=1)
+        end
+        tracking_schemas = [:RunArtifact => run_artifact_option_schema(),
+                            :TrackingTask => tracking_task_option_schema(),
+                            :MomentObserver => observer_option_schema(MomentObserver),
+                            :CoordinateSnapshotObserver => observer_option_schema(CoordinateSnapshotObserver),
+                            :BPMObserver => observer_option_schema(BPMObserver)]
+        strong_strong_schemas = [:RunArtifact => run_artifact_option_schema(),
+                                 :StrongStrongTask => strong_strong_task_option_schema()]
+        gaps = vcat(_output_receipt_gaps(execution_receipts(audit_fresh), tracking_schemas),
+                    _output_receipt_gaps(execution_receipts(audit_continued), tracking_schemas),
+                    _output_receipt_gaps(execution_receipts(audit_ss), strong_strong_schemas))
+        one(audit, consumer) = only(filter(r -> r.consumer === consumer, execution_receipts(audit))).values
+        ra_fresh, ra_continued, ra_ss = one(audit_fresh, :run_artifact_output),
+                                        one(audit_continued, :run_artifact_output),
+                                        one(audit_ss, :run_artifact_output)
+        resolution = (
+            append_resolved=ra_fresh.append === true && ra_fresh.continued === false &&
+                            ra_continued.continued === true,
+            recording_resolved=ra_fresh.record_turn_modulation === true && ra_fresh.recording === true &&
+                               ra_ss.record_turn_modulation === true && ra_ss.recording === false,
+            capacity_carried=ra_fresh.capacity == 2 && ra_ss.capacity == 2,
+            execution_rows=(ra_fresh.execution, ra_continued.execution, ra_ss.execution) == (1, 2, 1),
+            task_kinds=(ra_fresh.task, ra_ss.task) == (:TrackingTask, :StrongStrongTask),
+            tracking_output=one(audit_fresh, :tracking_output).loss_report === false &&
+                            one(audit_fresh, :tracking_output).artifact == task.artifact.path,
+            strong_strong_output=one(audit_ss, :strong_strong_output).channels == ["output"],
+        )
+        return gaps, resolution
+    end
+    metrics[:output_receipt_gaps] = output_gaps
+    metrics[:output_receipt_resolution] = output_resolution
+    isempty(output_gaps) || return ContractResult(false,
+        "output options are not carried by their declared receipts: " * join(output_gaps, "; ");
+        metrics=metrics)
+    all(values(output_resolution)) || return ContractResult(false,
+        "the output receipts do not carry what the artifact resolved: $(output_resolution)";
         metrics=metrics)
 
     report_solver = PICPoissonSolver(grid=(16, 16), deposit_method=:TSC,

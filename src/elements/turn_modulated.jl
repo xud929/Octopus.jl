@@ -953,18 +953,40 @@ end
 
 """
     _rule_kind(rule) -> Symbol
+    _rule_kind(::Type{<:AbstractTurnRule}) -> Symbol
 
 The provenance kind label of a rule, the `kind` field of the slot entry that
-`_turn_modulation_provenance!` documents: `:white`, `:pink` or `:table`
-(`:spectral` labels the spec-level `SpectralNoise`, which a compiled line never
-holds -- `_resolve_turn_rule` -- so no receipt carries it).
-Deliberately no fallback, as for `realize`: a rule without a label is a
-`MethodError` when the receipt is built, not an unlabelled slot.
+`_turn_modulation_provenance!` documents, declared ONCE per rule TYPE so the
+vocabulary can be derived without an instance (`_turn_rule_kinds()`): `:white`
+(`WhiteNoise`), `:pink` (`PinkNoise`), `:table` (`TurnTable`) and `:spectral`
+(`SpectralNoise`, the spec-level rule that `_resolve_turn_rule` turns into a
+`TurnTable` at compile, so a compiled line never holds it and no receipt or
+artifact slot carries `:spectral` today). The instance form forwards to the
+type's label. Deliberately no fallback, as for `realize`: a rule type without
+a label is a `MethodError` when the receipt is built or the vocabulary is
+derived, not an unlabelled slot. The suite's catalogue tripwire requires the
+TYPE method of every concrete rule.
 """
-_rule_kind(::WhiteNoise) = :white
-_rule_kind(::PinkNoise) = :pink
-_rule_kind(::TurnTable) = :table
-_rule_kind(::SpectralNoise) = :spectral
+_rule_kind(::Type{<:WhiteNoise}) = :white
+_rule_kind(::Type{<:PinkNoise}) = :pink
+_rule_kind(::Type{<:TurnTable}) = :table
+_rule_kind(::Type{<:SpectralNoise}) = :spectral
+_rule_kind(rule::AbstractTurnRule) = _rule_kind(typeof(rule))
+
+"""
+    _turn_rule_kinds() -> Tuple{Vararg{Symbol}}
+
+The slot `kind` vocabulary, DERIVED: the `_rule_kind` label of every concrete
+`AbstractTurnRule` subtype, sorted (`(:pink, :spectral, :table, :white)`
+today). The one source the run artifact's readers validate a slot's `kind`
+attribute against and every text that names the vocabulary (`?RunArtifact`,
+`?turn_modulation_provenance`, this file's walk docstring,
+`docs/design/run_artifact.md`) is pinned to by the suite -- before the
+2026-10-16 fix batch the three file kinds were hand-copied in four places
+with no tripwire (neighbour audit, S4-5).
+"""
+_turn_rule_kinds() =
+    Tuple(sort!(unique!(Symbol[_rule_kind(T) for T in _concrete_octopus_subtypes(AbstractTurnRule)])))
 
 """
     _turn_rule_names() -> String
@@ -1700,19 +1722,30 @@ _turn_modulation_wrap(spec, inner) = inner
 
 Collect one entry per modulated element of a compiled line, in line order, for
 the `:turn_modulation` provenance receipt that `execute!` records and for the
-run artifact's `/turn_modulation` group. The entry shape is fixed so both
-consumers can rely on it:
+run artifact's `/turn_modulation` group. This walk's entry is `(element,
+slots)`; `_turn_modulation_entries` (src/tasks/Tasks.jl) adds the task's
+`beam` to make the RECEIPT entry, and the artifact writer reads that `beam`
+-- so the shapes both consumers rely on are
 
     (element = "ThinCrabCavity",            # nameof the realised element's type
+     beam    = 1,                           # added by `_turn_modulation_entries`: 1 for a
+                                            # TrackingTask line, 1 or 2 for the strong-strong
+                                            # task's two lines
      slots   = [slot, slot, ...])           # ACTIVE slots only, in slot order
     slot = (slot = "phase_noise[1]",        # the container's slot label: parameter name and
                                             # harmonic index on a crab cavity, the bare
                                             # parameter name ("phase_noise") on an RF cavity
-            kind = :white,                  # :white, :pink or :table
+            kind = :white,                  # the rule's `_rule_kind` label, one of
+                                            # `_turn_rule_kinds()`: :white, :pink, :table
+                                            # (:spectral never reaches a compiled line)
             rng_id = UInt64,                # the white or pink rule's stream; 0 for a table
             digest = UInt64,                # the table's FNV-1a digest; 0 for white and pink
             name = String,                  # the table's name; "" for white and pink
             length = Int)                   # the table's length; 0 for white and pink
+
+and the receipt's top level is `(elements, first_turn, turns)`; the suite pins
+all three levels (2026-10-16 neighbour audit, S4-9: only the slot entry was
+pinned, and this docstring documented the pre-`beam` entry).
 
 Descends the wrappers and `CompositeLine` like `_check_turn_window`; the
 element-specific rule container contributes its slots through
@@ -1798,8 +1831,8 @@ Append the provenance entry of one ACTIVE slot, in the shape
 `_turn_modulation_provenance!` documents, built generically from the rule's
 fields: `kind` from `_rule_kind`, `rng_id` when the rule carries one (the
 stochastic rules), `digest`, `name` and `length` when it carries a table
-(`TurnTable`), zeros and `""` otherwise -- so a new rule needs a `_rule_kind`
-method and nothing here (the per-type `isa` chain this replaces was a
+(`TurnTable`), zeros and `""` otherwise -- so a new rule needs a type-level
+`_rule_kind` method and nothing here (the per-type `isa` chain this replaces was a
 hand-copied catalogue). `nothing`, the inactive slot, appends nothing. Called
 by each element's `_turn_modulation_slots` with its own slot label.
 """

@@ -303,8 +303,14 @@ function _bpm_centroid(rep)
 end
 
 function observe!(bpm::BPMObserver, ctx::TrackingContext, rep)
+    # `artifact` and `capacity` joined the receipt in the 2026-10-16 fix batch
+    # (S4-3): the `artifact` option names this receipt as its consumer and it
+    # carried neither the switch nor the batching it applies -- `capacity` is
+    # the ARTIFACT's, the one the rows below flush by, `nothing` in memory-only
+    # mode where nothing batches.
     _record_execution!(:observer_output, _observer_backend(),
-        (observer=:BPMObserver, name=Symbol(bpm.name), turn=ctx.turn))
+        (observer=:BPMObserver, name=Symbol(bpm.name), turn=ctx.turn, artifact=bpm.artifact,
+         capacity=bpm.artifact_key === nothing ? nothing : bpm.artifact_ref.capacity))
     xbar, ybar = _bpm_centroid(rep)
     rx, ry = bpm_reading(bpm, xbar, ybar, ctx)
     push!(bpm.turns, ctx.turn)

@@ -94,8 +94,19 @@ function configuration_report(task::TrackingTask, rep::Phase6DRep)
         observer=configuration_report(item.observer),
         schedule=configuration_report(item.schedule),
     ) for item in task.observers)
+    # The output entries (2026-10-16 fix batch, S4-10): the artifact entry is
+    # the strong-strong report's, built by the one helper, and `loss_report`
+    # is the task's own output option; both name the `:tracking_output`
+    # receipt their schema entries declare.
     return (policy=configuration_report(policy, rep),
             actions=action_reports, observers=observer_reports,
+            output=(_ra_artifact_entry(task.artifact, :tracking_output),
+                    ConfigurationEntry(:loss_report, task.loss_report, task.loss_report, :resolved,
+                        task.loss_report ?
+                        "the loss accounting is reconciled and reported per execute!" :
+                        "the loss reconciliation is skipped: no unattributed warning, no " *
+                        "summary in the artifact's /losses group",
+                        :tracking_output)),
             record_turn_times=task.record_turn_times,
             luminosity_tracking=task.luminosity_tracking)
 end
@@ -228,7 +239,14 @@ Public configuration options of `TrackingTask` itself, the twin of
 `strong_strong_task_option_schema()`. Checked by
 `validate_configuration_metadata()`: every key must be a field, every declared
 default must equal what the constructor builds, and every option must name a
-runtime consumer.
+runtime consumer. `artifact` and `loss_report` were accepted as public
+keywords with no schema entry, no `configuration_report` entry and no receipt
+until the 2026-10-16 fix batch (neighbour audit S4-10, the concrete instance
+of the unchecked-converse family): both name the `:tracking_output` receipt,
+recorded once per `execute!` after the artifact is prepared (or in its place
+without one) with the artifact path, the luminosity channels it opened and
+`loss_report`; the artifact's own options are carried by the
+`:run_artifact_output` receipt the prepare records (`?run_artifact_option_schema`).
 """
 tracking_task_option_schema() = (
     record_turn_times=ConfigurationOptionMeta(Bool, false,
@@ -260,6 +278,25 @@ tracking_task_option_schema() = (
         "asking for `:fused` there is refused rather than silently downgraded.";
         category=:execution, consumer=:tracking_luminosity_route,
         supported_backends=(CPUThreadsBackend,)),
+    artifact=ConfigurationOptionMeta(Union{Nothing,RunArtifact}, nothing,
+        "The run artifact (docs/design/run_artifact.md): one HDF5 file per task " *
+        "carrying the per-strong-beam luminosity channel (/luminosity/strong_beam_<i>) " *
+        "on independent turn axes, the /losses group, the per-execution ledger and " *
+        "every named probe view; a bare path is constructor sugar, the same sink " *
+        "StrongStrongTask takes. Read it back with read(TaskOutput(path), kind; ...). " *
+        "The :tracking_output receipt carries the path and the channel labels the " *
+        "artifact opened with; the artifact's own options (append, capacity, " *
+        "record_turn_modulation) are carried as resolved by the :run_artifact_output " *
+        "receipt its prepare records.";
+        category=:output, consumer=:tracking_output),
+    loss_report=ConfigurationOptionMeta(Bool, true,
+        "Reconcile the two independent loss counts once per execute! (one O(N) " *
+        "non-finite reduction, not per turn) and report the result: into the " *
+        "artifact's /losses group when one is attached, on stdout otherwise, with " *
+        "a warning whenever `unattributed != 0`. `false` skips the reduction, and " *
+        "with it the detection: no unattributed warning, no summary in the " *
+        "artifact. The per-particle loss records are unaffected.";
+        category=:diagnostics, consumer=:tracking_output),
 )
 
 """
@@ -1119,6 +1156,11 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     # `_reject_unsharded_tracking_features` ran in `execute!`, ahead of the
     # receipts (U1-5).
     if _fast_tracking_path(task, runtime_entries)
+        # The task's output receipt (S4-10): no artifact on this path (it is a
+        # term of the fast-path gate), so it records the output disabled and
+        # the loss-report switch the accounting below reads.
+        _record_execution!(:tracking_output, backend_type(policy),
+                           _ra_task_output_receipt(nothing, nothing; loss_report=task.loss_report))
         _execute_fast_tracking_turns!(
             rep, runtime_elems, turns, first_turn, policy,
             with_index_offset(TrackingContext(), first(_mp_current_shard(rep))),
@@ -1172,12 +1214,14 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
             "fused route carries luminosity through wrappers), or drop the " *
             "artifact if you do not need the luminosity channel."))
     end
+    # Per-strong-beam luminosity channel labels are positional; the element
+    # `name` will take over when runtime elements carry it. Computed once for
+    # the prepare and the output receipt below; `nothing` without an artifact.
+    labels = art === nothing ? nothing :
+             [string("strong_beam_", i) for i in eachindex(strong_beams)]
     if art !== nothing
-        # Per-strong-beam luminosity channel labels are positional; the
-        # element `name` will take over when runtime elements carry it. The
-        # artifact opens BEFORE the observers prepare, because named probes
+        # The artifact opens BEFORE the observers prepare, because named probes
         # bind to it during their prepare through the active-artifact scope.
-        labels = [string("strong_beam_", i) for i in eachindex(strong_beams)]
         # The receipt's entries are the artifact's: one walk, two consumers
         # (docs/design/turn_modulation.md D7, 5.6). The recorder's columns --
         # each modulated element's active slot indices and nominals -- come
@@ -1188,6 +1232,13 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
                               turn_modulation_columns=_turn_modulation_columns!(Any[], runtime_elems),
                               task_kind=string(nameof(typeof(task))))
     end
+    # The task's output receipt, AFTER the artifact is prepared (2026-10-16 fix
+    # batch, S4-1/S4-10): the path and the luminosity channels it opened with,
+    # and the loss-report switch; the artifact's own resolution is the
+    # `:run_artifact_output` receipt the prepare just recorded. A prepare
+    # refusal leaves no output receipt claiming a run.
+    _record_execution!(:tracking_output, backend_type(policy),
+                       _ra_task_output_receipt(art, labels; loss_report=task.loss_report))
     Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => art,
                            _ACTIVE_PROBE_S_MAP =>
                                (art === nothing ? nothing :

@@ -1844,7 +1844,11 @@ strong_strong_task_option_schema() = (
         "sugar. THE luminosity/loss/probe output since the 2026-08-18 " *
         "retirement of the standalone files (text .lum, per-observer h5, " *
         "loss log): read it back with read(TaskOutput(path), kind; ...) " *
-        "and MomentOutput(path; name=...).";
+        "and MomentOutput(path; name=...). The :strong_strong_output receipt, " *
+        "recorded once per execute! after the artifact is prepared, carries the " *
+        "path and the collision labels its luminosity channels opened with; the " *
+        "artifact's own options (append, capacity, record_turn_modulation) are " *
+        "carried as resolved by the :run_artifact_output receipt its prepare records.";
         category=:output, consumer=:strong_strong_output),
 )
 
@@ -2356,15 +2360,12 @@ function configuration_report(task::StrongStrongTask, beam1::Beam, beam2::Beam)
                      if block1.collision !== nothing)
     return (
         policy=configuration_report(public_policy, beam1.rep),
-        output=(ConfigurationEntry(:artifact, task.artifact,
-            task.artifact === nothing ? nothing : task.artifact.path,
-            task.artifact === nothing ? :inactive_dependency : :resolved,
-            task.artifact === nothing ? "run-artifact output disabled" :
-            (task.artifact.append ? "continuing" : "rewriting") *
-            " the run artifact at " * task.artifact.path *
-            (task.artifact.record_turn_modulation ?
-             ", recording the turn-modulation series" : ""),
-            :strong_strong_output),),
+        # The one artifact entry both task reports share (`_ra_artifact_entry`,
+        # src/tasks/RunArtifact.jl): `:unresolved` while `append` or
+        # `record_turn_modulation` is requested, since both are decided at
+        # prepare and reported by the `:run_artifact_output` receipt -- this
+        # entry used to call the request `:resolved` (2026-10-16, S4-2).
+        output=(_ra_artifact_entry(task.artifact, :strong_strong_output),),
         diagnostics=configuration_report(task.diagnostics; backend=backend_type(policy)),
         solvers=Tuple(configuration_report(solver; policy=public_policy,
                                            backend=backend_type(policy)) for solver in solvers),
@@ -2629,26 +2630,13 @@ function _execute_strong_strong_task!(
         cache_stats=task.diagnostics.cache_stats,
         nvtx=task.diagnostics.nvtx,
     ))
-    # BOTH task options this consumer is declared for. `luminosity_append`
-    # names `:strong_strong_output` as its consumer, and the receipt carried
-    # `luminosity_path` alone -- so the declared consumer boundary never
-    # observed the value, and `validate_configuration_metadata` only checks
-    # that a consumer is NAMED, which is exactly the gap
-    # `SolverOptionEffectivenessContract`'s docstring calls out. The task
-    # options sit outside every effectiveness contract's schema sweep, so
-    # nothing else would have caught it (2026-08-05_b audit, U5-3). The
-    # artifact's `record_turn_modulation` rides here too (review F3,
-    # 2026-10-15): its schema named the `:turn_modulation` receipt as its
-    # consumer, which the switch leaves unchanged by design (D9 of
-    # docs/design/turn_modulation_record.md), so the declared boundary
-    # carried the value nowhere. The value is the REQUEST, as `append` is;
-    # the effect is the `series` dataset the artifact reads back.
-    _record_execution!(:strong_strong_output, backend_type(policy),
-                       (artifact=task.artifact === nothing ? nothing :
-                                 task.artifact.path,
-                        append=task.artifact !== nothing && task.artifact.append,
-                        record_turn_modulation=task.artifact !== nothing &&
-                                               task.artifact.record_turn_modulation))
+    # The `:strong_strong_output` receipt is recorded below, AFTER the artifact
+    # is prepared (2026-10-16 fix batch, S4-2): recorded here it carried the
+    # artifact's `append` and `record_turn_modulation` as REQUESTED, before
+    # the prepare decided whether the file was continued or created fresh and
+    # whether the line had anything to record (Measured Lesson 11). Those two
+    # are the artifact's options and travel in the `:run_artifact_output`
+    # receipt the prepare records with what it resolved.
     blocks1 = _strong_strong_runtime_blocks(task, 1)
     blocks2 = _strong_strong_runtime_blocks(task, 2)
     _validate_strong_strong_blocks(blocks1, blocks2)
@@ -2699,8 +2687,9 @@ function _execute_strong_strong_task!(
     #
     # The artifact opens FIRST: named probes in either line bind to it
     # during their prepare through the active-artifact scope.
+    labels = task.artifact === nothing ? nothing :
+             [String(b.collision.label) for b in blocks1 if b.collision !== nothing]
     if task.artifact !== nothing
-        labels = [String(b.collision.label) for b in blocks1 if b.collision !== nothing]
         # The recorder's columns walk both lines in the order of `prov` (beam
         # 1's elements, then beam 2's), so the k-th entry describes the k-th
         # element group (docs/design/turn_modulation_record.md D5, D8).
@@ -2710,6 +2699,12 @@ function _execute_strong_strong_task!(
                               turn_modulation=prov, turn_modulation_columns=columns,
                               task_kind=string(nameof(typeof(task))))
     end
+    # The task's output receipt, the consumer `strong_strong_task_option_schema().artifact`
+    # names, AFTER the prepare: the path and the collision labels the
+    # artifact's luminosity channels opened with (2026-10-16 fix batch, S4-2;
+    # a prepare refusal leaves no output receipt claiming a run).
+    _record_execution!(:strong_strong_output, backend_type(policy),
+                       _ra_task_output_receipt(task.artifact, labels))
     # Absolute window, matching Tasks.jl: `should_run` sees `first_turn + offset`.
     # A refusal here (a duplicate probe name, a continued group's column
     # mismatch) must not leave the artifact open: the task would then refuse

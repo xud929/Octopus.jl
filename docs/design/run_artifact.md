@@ -126,11 +126,18 @@ line's turn-by-turn modulation rules were for the `execute!` whose
 `/execution` ledger row is `<slot>` (`docs/design/turn_modulation.md`, D7:
 the table rule is a pure consumer and owns its provenance in the run
 artifact). One subgroup per `execute!` that had a modulated element, with
-`element_count`; below it one subgroup per modulated element in line order
+`element_count` and the cursor `elements_valid_through` (the partial-slot
+paragraph under Crash recovery); below it one subgroup per modulated element
+in line order
 with `element`, `beam` (1 for a `TrackingTask` line; a strong-strong
 artifact records both lines, beam 1's elements then beam 2's) and
 `slot_count`; below that one subgroup per ACTIVE slot named by the slot
-label with `index`, `kind` (`white`, `pink` or `table`), the stream rule's
+label with `index`, `kind` (the rule's `_rule_kind` label, one of the
+vocabulary `_turn_rule_kinds()` derives from the rule catalogue: `white`,
+`pink`, `table`, and `spectral` for the spec-level `SpectralNoise`, which
+resolves to a table at compile and so never reaches a file; the readers
+warn by name on a kind outside the vocabulary and the suite pins every text
+naming it to the derived set -- 2026-10-16, S4-5), the stream rule's
 `rng_id`, the table's `digest` (FNV-1a 64 over its bytes), `name` and
 `length`, zeros and `""` where a field does not apply. Attributes only, no
 turn axis; written at prepare from the receipt the task records; nothing is
@@ -264,19 +271,72 @@ owns" above).
   turn for 8 columns (64 of data). Structured metadata:
   `run_artifact_option_schema()` (exported; `append`, `capacity` and
   `record_turn_modulation` as `ConfigurationOptionMeta`, category `:output`,
-  consumers `:strong_strong_output` for `append` and
-  `record_turn_modulation` -- that receipt carries both requested values
-  beside the path since the 2026-10-15 review (F3; the `:turn_modulation`
-  receipt it had named is unchanged by the switch, D9, so the declared
-  boundary carried nothing), while the weak-strong `TrackingTask` records no
-  output receipt and its evidence is the artifact file itself -- and
-  `:observer_output` for `capacity`), checked by a
+  all three naming the `:run_artifact_output` receipt, below), checked by a
   `RunArtifact` block of `validate_configuration_metadata()` (every key a
   field of the type, every declared default equal to a constructed
   artifact's, every option naming its consumer). As every public option
   (AGENTS.md Invariants), it lands with its runtime consumer, its structured
   metadata, its inactive and invalid behaviour and its effectiveness test at
   the consumer boundary.
+
+**The output receipts (decided 2026-10-16, fix batch of the crab-noise
+neighbour audit; leads S4-1, S4-2, S4-3, S4-10).** Measured on ac3fbb2:
+under a `TrackingTask` not one receipt carried `append`,
+`record_turn_modulation` or (without a `MomentObserver`) `capacity`; the
+`:strong_strong_output` receipt, the declared consumer of the first two,
+carried the REQUEST -- `append = true` on a path that did not exist while
+the file was created fresh, `record_turn_modulation = true` on a line with
+no modulated element while nothing was recorded -- and the strong-strong
+`configuration_report` called it `:resolved`; `CoordinateSnapshotObserver`
+declared `:observer_output` as the consumer of `name` and `npart` and never
+recorded one; `BPMObserver`'s receipt carried neither its `artifact` switch
+nor the capacity it batches by; `TrackingTask` accepted `artifact` and
+`loss_report` with no schema entry and no report entry. A receipt names ONE
+consumer and an option's metadata names ONE consumer, and the artifact is one
+object two task kinds carry, so the only receipt that is true under both is
+the one the artifact records at its own boundary: `prepare_run_artifact!`
+records `:run_artifact_output` once per `execute!` AFTER its last refusal
+(and, on a non-root MPI rank, at its early return), with `task` (the
+carrying task's kind), `artifact` (the path), the request under each
+option's own name and what was applied beside it -- `append` beside
+`continued` (an existing file continued, or the path created fresh),
+`capacity` (the batching every row producer and recorder uses),
+`record_turn_modulation` beside `recording` (recorders built: the switch on
+AND the line has a modulated element) -- and `execution`, the ledger row
+appended; a non-root rank, which opens no file, carries `nothing` for
+`continued` and `execution`. Each task kind records its own output receipt
+beside it, also after the prepare, so a prepare refusal leaves neither:
+`:tracking_output` (new; `artifact`, `channels` -- the luminosity channel
+labels the artifact opened with -- and `loss_report`) and
+`:strong_strong_output` (moved after the prepare; `artifact`, `channels`).
+`tracking_task_option_schema()` gained `artifact` and `loss_report`, both
+naming `:tracking_output`, and `configuration_report(::TrackingTask)` an
+`output` entry pair; the `:artifact` entry of BOTH task reports is built by
+one helper and is `:unresolved` while `append` or `record_turn_modulation`
+is requested, since a report runs before the `execute!` and both are decided
+at prepare (the reason names the receipt field that carries the answer);
+`:resolved` ("rewriting ...") when neither is. The three probes' receipts
+carry the fields their metadata names: the moment probe's `name` (new),
+`moments` and the artifact's `capacity` (`moments` had named
+`:moment_reduction`, a consumer no receipt ever recorded); the snapshot's
+`name` and `npart` beside `captured` (new receipt); the BPM's `artifact`
+and `capacity` (new fields; `nothing` in memory-only mode). The pairing is
+DERIVED, never a hand list: `_output_receipt_gaps(receipts, schemas)`
+(src/contracts/Contracts.jl) takes the consumers every `:output` option
+names across the schemas and requires, for every option naming one of them,
+a receipt of that consumer belonging to the option's owner that carries a
+field named after the option; `validate(PublicConfigurationEffectivenessContract())`
+runs it over a `TrackingTask` fixture (every artifact option away from its
+default, `loss_report=false`, a modulated element, all three probes, a
+fresh then a continued window) and a `StrongStrongTask` fixture (the two
+requests resolved inactive), and the suite's "Run artifact receipts and
+slots: ..." testset adds the negative controls, the static tripwire that
+every `:output` consumer has a `_record_execution!` site, and the pins above.
+Rejected: naming one task's receipt for a shared option (the `blocks`
+precedent is one object with two consumers of its own, not two owners) and
+renaming `:strong_strong_output` to a shared symbol (a rename across files
+other units of the batch were editing). Record:
+`../history/audit_crab_cavity_noise_neighbours_2026_10_16.md`.
 
 ### Buffer protocol — three shapes, one protocol, not one buffer type
 
@@ -322,6 +382,37 @@ group carries a **rows-valid-through-turn cursor attribute**, flushed with
 its batch, so a retry trusts exactly the cursored prefix and the replay
 discard truncates datasets against absolute turns, as the text path does
 today. This must be designed in from the first dataset, not retrofitted.
+
+**The partial provenance slot (decided 2026-10-16, owner; the stage 3-4
+audit's U5-2, restored by the crab-noise neighbour audit).** Since the
+2026-10-16 neighbour audit the provenance writer runs every refusal before
+it creates the first group, so only an HDF5 error mid-write can leave a
+`/turn_modulation/<slot>` group half-created. Decided: the reader reports,
+nothing rolls back. The slot group carries the cursor
+`elements_valid_through`, the row groups' protocol one level up: created at
+0 BEFORE the first element group and advanced to `k` only after element `k`
+is complete -- its attributes, its slot groups with their nominals and, with
+`record_turn_modulation` on, its `series` dataset, which the writer now
+creates inside the same per-element loop (`_ra_write_turn_modulation!`,
+`series = (first_turn, planned_turns)`; `_ra_build_turn_modulation_recorders!`
+builds the recorders over the datasets afterwards). A writer stopped mid-way
+leaves the cursor behind `element_count`: a PARTIAL slot, the crash artefact
+it is. The readers (`turn_modulation_provenance`, `read(out,
+:turn_modulation)`, the table of contents, `read(out, :all)`) read such a
+slot as far as the cursor -- the complete element groups, in order -- with
+one warning naming the slot and the counts, skip the at most one half-written
+group beyond it, and never error on it (a cursor beyond the count, a complete
+slot missing a group, or a count disagreeing with the groups present stay
+TORN and refused by name as before); `RunArtifact(...; append=true)` onto a
+file holding a partial slot in any execution is refused by name, as found,
+with the remedy (a new path, or removing the slot and its ledger row by
+hand). A slot written before the cursor existed carries none and reads as
+complete by construction (its writer validated before writing; its count
+must match the groups), and the append check leaves it to the readers. The
+suite builds both shapes a stopped writer leaves through HDF5 directly
+(element 2 half-written; element 2 never created). The series' own
+"cursor" is its row count, compared with its `turns` attribute (review F2).
+Record: `../history/audit_crab_cavity_noise_neighbours_2026_10_16.md`.
 
 **Cross-process exclusion (decided 2026-10-16, owner; neighbour audit
 S5-2).** The artifact had none: the in-process registry (`U7-10`, the

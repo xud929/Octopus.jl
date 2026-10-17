@@ -118,14 +118,22 @@ the option: the exported metadata query `run_artifact_option_schema()`,
 which the suite's schema-export tripwire requires ("every public
 configuration schema is exported", `test/runtests.jl`: every
 `*_option_schema` binding of the module must be exported) and which D2 did
-not foresee; no reader name was added. The option's declared consumer is
-the `:strong_strong_output` receipt, which carries `record_turn_modulation`
+not foresee; no reader name was added. The option's declared consumer was
+the `:strong_strong_output` receipt, which carried `record_turn_modulation`
 beside `append` and the artifact path since the same review (the
 `:turn_modulation` receipt stays unchanged, D9; naming it as the consumer
-had declared a boundary that carried nothing). The weak-strong
-`TrackingTask` records no output receipt at all, so its evidence of effect
-is the artifact file -- the `series` dataset present exactly when the
-option is on -- as the suite's recorder testset reads it.
+had declared a boundary that carried nothing), while the weak-strong
+`TrackingTask` recorded no output receipt at all. *Superseded 2026-10-16
+(the crab-noise neighbour audit's fix batch, S4-1/S4-2):* the declared
+consumer of all three artifact options is the `:run_artifact_output`
+receipt `prepare_run_artifact!` records once per `execute!` under both task
+kinds, carrying `record_turn_modulation` beside what it RESOLVED
+(`recording`: recorders built, the switch on AND a modulated element) and
+`append` beside `continued`; the `TrackingTask` records `:tracking_output`
+and the strong-strong receipt moved after the prepare
+(`run_artifact.md`, "The output receipts"). The evidence of effect stays the
+artifact file -- the `series` dataset present exactly when the option is on
+-- as the suite's recorder testset reads it.
 
 **D3. The offsets are recorded, not the realised values.** The offset is
 the rule's output and the primary datum: it exists before any element is
@@ -391,7 +399,31 @@ locations, the tests and the measurements.
   particles, 8 active slots, 2000 turns): +11.2 us per turn at
   `capacity = 64` (the HDF5 extend and flush every 64 turns), within noise
   at `capacity = 1024`; 68.6 bytes per turn for 8 columns, the 8 bytes per
-  slot per turn plus the chunked dataset's overhead.
+  slot per turn plus the chunked dataset's overhead. The recorder's row
+  buffers are sized at creation since 2026-10-16 (`sizehint!` to `capacity`
+  turns of the element's active columns; U9-5 of the crab-noise neighbour
+  audit measured their growth by doubling at about 580 bytes per turn
+  averaged on a 20-element line, 1568 bytes over 62 turns on the suite's
+  two-column fixture), so the recording hook is allocation-free below the
+  flush, as "a few copies into the row buffer" reads; the suite pins it.
+- **The partial slot (owner decision 2026-10-16; the stage 3-4 audit's
+  U5-2).** A writer stopped by an HDF5 error mid-prepare leaves a
+  `/turn_modulation/<slot>` group half-created; decided: the reader reports,
+  nothing rolls back. The slot group carries the cursor
+  `elements_valid_through` (0 at creation, advanced after each element group
+  is complete, its `series` dataset included -- the dataset is created
+  inside the provenance writer's per-element loop now, the recorders built
+  over it afterwards); a cursor behind `element_count` marks a PARTIAL slot,
+  which every reader reads as far as the cursor with one warning naming it
+  and which `append=true` refuses by name. `run_artifact.md`, "The partial
+  provenance slot", is the full statement.
+- **The receipts (2026-10-16, S4-1/S4-2; the remark under D2).** The
+  artifact's three options name the `:run_artifact_output` receipt the
+  prepare records with the request and the resolution (`continued`,
+  `recording`, `capacity`, `execution`), under both task kinds; the
+  `TrackingTask` records `:tracking_output` (path, channels, `loss_report`),
+  the strong-strong `:strong_strong_output` (path, channels) after the
+  prepare. The `:turn_modulation` receipt is unchanged (D9).
 
 ## 10. References
 

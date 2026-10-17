@@ -184,6 +184,29 @@ naming the lock's line (rows valid through each group's
 a failed open once. The lock is advisory and for Octopus writers; HDF5
 itself does not honour it.
 
+What a run's artifact RESOLVED is on record (2026-10-16): under
+`with_execution_audit`, `prepare_run_artifact!` records one
+`:run_artifact_output` receipt per `execute!` with `task`, `artifact` (the
+path), `append` beside `continued` (an existing file continued, or created
+fresh), `capacity`, `record_turn_modulation` beside `recording` (recorders
+built: the switch on and a modulated element in the line) and `execution`
+(the ledger row); the task records its own output receipt beside it --
+`:tracking_output` (`artifact`, `channels`, `loss_report`) or
+`:strong_strong_output` (`artifact`, `channels`) -- after the artifact is
+prepared, so a refused prepare leaves none. `tracking_task_option_schema()`
+describes `artifact` and `loss_report`; `configuration_report(task, rep)`
+carries an `output` entry pair whose artifact entry is `:unresolved` while
+`append` or `record_turn_modulation` is requested (both are decided at
+prepare) and names the receipt field that carries the answer. The probes'
+`:observer_output` receipts carry the fields their `observer_option_schema`
+names (`name`, `moments`, `npart` beside `captured`, `artifact`, the
+artifact's `capacity`). A `/turn_modulation` slot a crashed prepare left
+half-written is PARTIAL (its cursor `elements_valid_through` behind its
+`element_count`): the readers read it as far as the cursor with a warning
+naming it, never roll it back, and `append = true` onto such a file is
+refused by name; `append = true` onto an existing file that is not HDF5 is
+refused by name too.
+
 Developer-facing numerical checks live in `validation/`. They may use internal
 helpers and should not be treated as public API examples.
 For the physics/method theory behind the beam-beam solvers (longitudinal-kick

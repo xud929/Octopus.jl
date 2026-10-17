@@ -10486,7 +10486,12 @@ end
             @test occursin(string(nameof(R)), meaning_text)
             @test occursin(string(nameof(R)), catalogue)
             @test owns_rule_method(Octopus._turn_offset, 1, R)
-            @test owns_rule_method(Octopus._rule_kind, 1, R)
+            # The kind label is declared on the TYPE since 2026-10-16 (so the
+            # vocabulary `_turn_rule_kinds()` derives without an instance); the
+            # instance form is one generic forwarder, so the pin probes `Type{R}`.
+            @test owns_rule_method(Octopus._rule_kind, 1, Type{R})
+            @test Octopus._rule_kind(R) === Octopus._rule_kind(rule_instances[R])
+            @test Octopus._rule_kind(R) in Octopus._turn_rule_kinds()
             @test haskey(rule_instances, R) && Octopus._is_turn_rule(rule_instances[R])
             @test haskey(rule_instances, R) &&
                   Octopus._push_rule_slot!(Any[], rule_instances[R], "phase_noise[1]")[1].kind ===
@@ -14248,7 +14253,10 @@ end
     @test keys(strong_strong_task_option_schema()) == (:artifact,)
     # The TrackingTask twin (2026-09-07). Same shape as the line above: a new
     # public task option is invisible until it appears in the schema.
-    @test keys(tracking_task_option_schema()) == (:record_turn_times, :luminosity_tracking)
+    # `artifact` and `loss_report` joined 2026-10-16 (neighbour audit S4-10:
+    # both were public keywords with no schema entry).
+    @test keys(tracking_task_option_schema()) ==
+          (:record_turn_times, :luminosity_tracking, :artifact, :loss_report)
 end
 
 @testset "CUDA and CPU PIC cache keys cannot drift apart" begin
@@ -17678,7 +17686,9 @@ end
     @test el_off.slots[3].nominal == (phase=0.2, strengthX=1.0e-3, strengthY=5.0e-4)
     Octopus.HDF5.h5open(p_off, "r") do f
         @test group_names(f) == ["execution", "luminosity", "moments", "turn_modulation"]
-        @test attr_names(f["turn_modulation"]["1"]) == ["element_count"]
+        # The slot group's cursor `elements_valid_through` joined `element_count`
+        # 2026-10-16 (the partial-slot decision; the receipts-and-slots testset).
+        @test attr_names(f["turn_modulation"]["1"]) == ["element_count", "elements_valid_through"]
         eg = f["turn_modulation"]["1"]["1"]
         @test !haskey(eg, "series")
         @test group_names(eg) == labels
@@ -17718,7 +17728,7 @@ end
         @test group_names(eg) == sort(vcat(labels, ["series"]))
         @test sort!([String(k) for k in keys(eg) if eg[k] isa Octopus.HDF5.Group]) == labels
         @test attr_names(eg) == ["beam", "element", "slot_count"]
-        @test attr_names(f["turn_modulation"]["1"]) == ["element_count"]
+        @test attr_names(f["turn_modulation"]["1"]) == ["element_count", "elements_valid_through"]
         for label in labels
             @test attr_names(eg[label]) == sort(vcat(provenance_attrs, crab_nominals))
         end
@@ -17910,17 +17920,18 @@ end
     rc_on, orc_on = ss_run(pss_on; record_turn_modulation=true)
     rc_off, orc_off = ss_run(pss_off)
     @test rc_on == rc_off
-    # The option's declared consumer is the `:strong_strong_output` receipt,
-    # which carries the requested value beside `append` and the path (review
-    # F3, 2026-10-15: the schema had named the `:turn_modulation` receipt,
-    # which the switch leaves identical by design, so the declared boundary
-    # carried nothing of it); the weak-strong TrackingTask has no output
-    # receipt, and its evidence is the file read in (a)-(c).
-    @test propertynames(orc_on) == (:artifact, :append, :record_turn_modulation)
-    @test orc_on.record_turn_modulation === true && orc_off.record_turn_modulation === false
-    @test orc_on.artifact == pss_on && orc_off.artifact == pss_off && orc_on.append === false
-    @test run_artifact_option_schema().record_turn_modulation.consumer === :strong_strong_output
-    @test run_artifact_option_schema().append.consumer === :strong_strong_output
+    # The task's output receipt carries the path and the collision labels the
+    # artifact's luminosity channels opened with; the option's declared
+    # consumer is the `:run_artifact_output` receipt the prepare records with
+    # the request AND what it resolved (2026-10-16 fix batch, S4-2: until
+    # then this receipt carried `append` and `record_turn_modulation` as
+    # requested, before the prepare decided anything; the receipts-and-slots
+    # testset derives the option-to-receipt pairs from the schemas).
+    @test propertynames(orc_on) == (:artifact, :channels)
+    @test orc_on.artifact == pss_on && orc_off.artifact == pss_off
+    @test orc_on.channels == orc_off.channels == ["ip"]
+    @test run_artifact_option_schema().record_turn_modulation.consumer === :run_artifact_output
+    @test run_artifact_option_schema().append.consumer === :run_artifact_output
     prov_ss = turn_modulation_provenance(pss_on)
     @test length(prov_ss) == 1 && length(prov_ss[1].elements) == 2
     @test [e.beam for e in prov_ss[1].elements] == [1, 2]
@@ -18413,6 +18424,498 @@ end
         set_global_rng!(seed=23, method=:philox)
         quiet(() -> execute!(TrackingTask(drift; artifact=RunArtifact(p_old; append=true)), rep; turns=1))
         @test read(TaskOutput(p_old), :execution).rng_seed == UInt64[23]
+        set_global_rng!(seed=0x5eed, method=:philox)
+    end
+end
+
+@testset "Run artifact receipts and slots: resolved output receipts for both task kinds, derived vocabularies, the non-HDF5 append refusal, a partial slot reported by the reader" begin
+    # 2026-10-16 crab-cavity noise neighbour audit, fix unit E: S4-1, S4-2,
+    # S4-3, S4-10 (the output receipts), S4-5, S4-8, S4-9 (the artifact's
+    # vocabularies), S5-7 (append onto a non-HDF5 file), unit A's open point
+    # (a refused writer registered as live), the owner's partial-slot
+    # decision (the stage 3-4 audit's U5-2: the reader reports, no rollback)
+    # and U9-5 (the recorder's unsized buffers). Every pin below was red on
+    # ac3fbb2 (fixes/E/red_unfixed.log).
+    HDF5 = Octopus.HDF5
+    mktempdir() do dir
+        set_global_rng!(seed=0x5eed, method=:philox)
+        root = pkgdir(Octopus)
+        # Stream ids above the registry's counter, so the fixture's explicit
+        # ids (rules, beams) never collide with the ids the probes auto-assign
+        # (the registry would warn, and the suite log carries no unexplained line).
+        rid = Octopus.next_rng_id!() + 3_000_000
+        mkp(n=4) = Phase6DRep(collect(range(-1.0e-4, 1.0e-4; length=n)), zeros(n), fill(3.0e-5, n),
+                              zeros(n), fill(1.0e-2, n), zeros(n))
+        table = TurnTable(collect(0.001:0.001:0.012); name="amp")
+        crab() = ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), strengthY=(0.0, 5.0e-4),
+                                       phase=(0.1, 0.2), phase_noise=(WhiteNoise(1.0e-2; rng_id=rid + 7), nothing),
+                                       strength_noise=(nothing, table))
+        disp() = CrabDispersionSpec{Float64}(zeta1=0.1)
+        rf() = ThinRFCavitySpec(400.0e6; voltage=1.0e6, e0=275.0e9, mc2=PMASS_EV,
+                                phase_noise=WhiteNoise(1.0e-3; rng_id=rid + 9))
+        hooks() = (ScheduledObserver(MomentObserver(; name="m", orders=1)),
+                   ScheduledObserver(CoordinateSnapshotObserver(; name="snap", npart=2)),
+                   ScheduledObserver(BPMObserver("b"; artifact=true)))
+        function audited(f)
+            audit = ExecutionAudit()
+            with_execution_audit(audit) do; f(); end
+            return execution_receipts(audit)
+        end
+        one(rs, c) = only(filter(r -> r.consumer === c, rs)).values
+        quiet(f) = Test.collect_test_logs(f)[2]      # the U7-10 registry warning is not under test here
+        refusal(f) = try f(); nothing catch e; e end
+        ex_rows(p) = length(read(TaskOutput(p), :execution).start_turn)
+        srcfiles = String[]
+        for (d, _, fs) in walkdir(joinpath(root, "src")), f in fs
+            endswith(f, ".jl") && push!(srcfiles, joinpath(d, f))
+        end
+        src = join([read(f, String) for f in srcfiles], "\n")
+
+        # (a) The output boundary's metadata, DERIVED. The schema family: the
+        # artifact, every concrete task (the pair list is pinned against the
+        # AbstractTask tree, the validator's own shape) and every concrete
+        # observer (from the tree). Every artifact option names the ONE receipt
+        # the prepare records; each task's `artifact` entry names its own output
+        # receipt, `loss_report` rides with the tracking task's; every observer
+        # option of category :output names the observers' receipt; and every
+        # consumer an :output option names has a `_record_execution!` site in
+        # src/ (the F3 shape -- a declared consumer no receipt records -- fails
+        # here by name; `moment_reduction` was one until 2026-10-16).
+        art_schema = :RunArtifact => run_artifact_option_schema()
+        task_schemas = [TrackingTask => tracking_task_option_schema(),
+                        StrongStrongTask => strong_strong_task_option_schema()]
+        @test Set(first.(task_schemas)) == Set(Octopus._concrete_octopus_subtypes(Octopus.AbstractTask))
+        observers = Octopus._concrete_octopus_subtypes(Octopus.AbstractBeamObserver)
+        @test Set(observers) == Set(Any[MomentObserver, CoordinateSnapshotObserver, BPMObserver])
+        obs_schemas = [Symbol(nameof(T)) => observer_option_schema(T) for T in observers]
+        tracking_schemas = [art_schema, :TrackingTask => tracking_task_option_schema(), obs_schemas...]
+        strong_strong_schemas = [art_schema, :StrongStrongTask => strong_strong_task_option_schema()]
+        @test all(m.consumer === :run_artifact_output && m.category === :output
+                  for m in run_artifact_option_schema())
+        @test (:artifact, :loss_report) ⊆ keys(tracking_task_option_schema())
+        @test tracking_task_option_schema().artifact.consumer === :tracking_output
+        @test tracking_task_option_schema().artifact.category === :output
+        @test tracking_task_option_schema().loss_report.consumer === :tracking_output
+        @test tracking_task_option_schema().loss_report.default === true
+        @test strong_strong_task_option_schema().artifact.consumer === :strong_strong_output
+        @test all(m.consumer === :observer_output for (_, s) in obs_schemas for m in s if m.category === :output)
+        @test observer_option_schema(MomentObserver).moments.consumer === :observer_output
+        output_consumers = Set(m.consumer for (_, s) in (art_schema, (Symbol(nameof(T)) => s for (T, s) in task_schemas)...,
+                                                          obs_schemas...) for m in s if m.category === :output)
+        @test output_consumers == Set([:run_artifact_output, :tracking_output, :strong_strong_output, :observer_output])
+        for c in output_consumers
+            @test occursin("_record_execution!(:$(c)", src)
+        end
+        @test !occursin("_record_execution!(:moment_reduction", src)
+        @test validate_configuration_metadata()
+
+        # (b) The TrackingTask fixture: every artifact option away from its
+        # default and `loss_report` off (the carries-every-option rule), a
+        # modulated line, all three probes. `append=true` on a path that does
+        # not exist RESOLVES to `continued=false`; the same task's next window
+        # continues the file, `continued=true`. Not one of these keys reached
+        # a receipt under a TrackingTask before.
+        pA = joinpath(dir, "A.h5")
+        tA = TrackingTask((disp(), crab(), hooks()...); loss_report=false,
+                          artifact=RunArtifact(pA; append=true, capacity=3, record_turn_modulation=true))
+        for (k, m) in pairs(run_artifact_option_schema())
+            @test getproperty(tA.artifact, k) != m.default
+        end
+        @test tA.loss_report != tracking_task_option_schema().loss_report.default
+        rsA = audited(() -> execute!(tA, mkp(); turns=4))
+        @test isempty(Octopus._output_receipt_gaps(rsA, tracking_schemas))
+        ra = one(rsA, :run_artifact_output)
+        @test propertynames(ra) == (:task, :artifact, :append, :continued, :capacity,
+                                    :record_turn_modulation, :recording, :execution)
+        @test ra.task === :TrackingTask && ra.artifact == pA && ra.execution == 1
+        @test ra.append === true && ra.continued === false
+        @test ra.capacity == 3
+        @test ra.record_turn_modulation === true && ra.recording === true
+        to = one(rsA, :tracking_output)
+        @test propertynames(to) == (:artifact, :channels, :loss_report)
+        @test to.artifact == pA && to.channels == String[] && to.loss_report === false
+        rsA2 = audited(() -> execute!(tA, mkp(); turns=2))
+        @test isempty(Octopus._output_receipt_gaps(rsA2, tracking_schemas))
+        ra2 = one(rsA2, :run_artifact_output)
+        @test ra2.append === true && ra2.continued === true && ra2.execution == 2 && ra2.recording === true
+        @test ex_rows(pA) == 2
+        # The observers' receipts carry the fields their metadata names, the
+        # request under the option's name and what was applied beside it: the
+        # moment probe's `name`, `moments` and the ARTIFACT's capacity; the
+        # snapshot's `name` and `npart` beside `captured` (it recorded no
+        # receipt at all before); the BPM's `artifact` switch and the
+        # capacity it batches by (it carried neither).
+        obs = [r.values for r in rsA if r.consumer === :observer_output]
+        mom = [v for v in obs if v.observer === :MomentObserver]
+        snap = [v for v in obs if v.observer === :CoordinateSnapshotObserver]
+        bpm = [v for v in obs if v.observer === :BPMObserver]
+        @test length(mom) == length(snap) == length(bpm) == 4
+        @test all(v -> propertynames(v) == (:observer, :name, :turn, :capacity, :moments), mom)
+        @test all(v -> v.name === :m && v.capacity == 3 &&
+                       v.moments == length(MomentObserver(; name="m", orders=1).moments), mom)
+        @test all(v -> propertynames(v) == (:observer, :name, :turn, :npart, :captured), snap)
+        @test all(v -> v.name === :snap && v.npart == 2 && v.captured == 2, snap)
+        @test all(v -> propertynames(v) == (:observer, :name, :turn, :artifact, :capacity), bpm)
+        @test all(v -> v.name === :b && v.artifact === true && v.capacity == 3, bpm)
+        @test [v.turn for v in snap] == [0, 1, 2, 3]
+        # `npart = nothing` requests every particle: the request stays
+        # `nothing`, the count captured is the beam's.
+        pN = joinpath(dir, "N.h5")
+        rsN = audited(() -> execute!(TrackingTask((disp(), ScheduledObserver(CoordinateSnapshotObserver(; name="all")));
+                                                  artifact=RunArtifact(pN)), mkp(3); turns=1))
+        vN = one(rsN, :observer_output)
+        @test vN.npart === nothing && vN.captured == 3
+        # A memory-only BPM batches nothing: `artifact = false`, no capacity.
+        rsB = audited(() -> execute!(TrackingTask((disp(), ScheduledObserver(BPMObserver("mem")))), mkp(); turns=1))
+        vB = one(rsB, :observer_output)
+        @test vB.artifact === false && vB.capacity === nothing
+        # No artifact: the task's output receipt says so on both loops -- the
+        # fast loop (no hooks) and the general one -- with the loss-report
+        # switch, and no artifact receipt is recorded.
+        rs0 = audited(() -> execute!(TrackingTask((disp(),); loss_report=false), mkp(); turns=1))
+        @test one(rs0, :tracking_output) == (artifact=nothing, channels=nothing, loss_report=false)
+        @test one(rs0, :tracking_turn_timing).fast_path === true
+        @test !any(r -> r.consumer === :run_artifact_output, rs0)
+        rs0h = audited(() -> execute!(TrackingTask((disp(), ScheduledObserver(BPMObserver("mem2")))), mkp(); turns=1))
+        @test one(rs0h, :tracking_output) == (artifact=nothing, channels=nothing, loss_report=true)
+        @test one(rs0h, :tracking_turn_timing).fast_path === false
+        # A weak-strong line with strong beams names its channels.
+        pW = joinpath(dir, "W.h5")
+        strong() = ThinStrongBeamSpec(; kbb=1.0e-4, beta=(1.0, 1.0), sigma=(1.0e-3, 1.0e-3))
+        rsW = audited(() -> execute!(TrackingTask((disp(), strong(), strong()); artifact=RunArtifact(pW)), mkp(); turns=1))
+        @test one(rsW, :tracking_output).channels == ["strong_beam_1", "strong_beam_2"]
+        @test sort(collect(keys(read(TaskOutput(pW), :luminosity)))) == ["strong_beam_1", "strong_beam_2"]
+        # The receipts sit AFTER the prepare: a prepare refusal (a continued
+        # file whose luminosity groups do not match) leaves neither of them,
+        # and (unit A's open point) the refused writer is not registered as a
+        # live writer of the path -- the first writer's entry stands -- while
+        # its lock is gone with the file.
+        pM = joinpath(dir, "M.h5")
+        first_writer = RunArtifact(pM)
+        execute!(TrackingTask((disp(),); artifact=first_writer), mkp(); turns=1)
+        HDF5.h5open(pM, "r+") do f
+            HDF5.create_group(f["luminosity"], "stranger")
+        end
+        refused = RunArtifact(pM; append=true)
+        rsM = quiet(() -> audited(() -> @test_throws ArgumentError execute!(
+            TrackingTask((disp(),); artifact=refused), mkp(); turns=1)))
+        @test !any(r -> r.consumer in (:tracking_output, :run_artifact_output), rsM)
+        @test refused.registered === false && refused.file === nothing
+        reg = get(Octopus._OBSERVER_PATH_REGISTRY, abspath(pM), nothing)
+        @test reg !== nothing && reg.value === first_writer
+        @test !isfile(pM * ".lock")
+        # ... and a writer that succeeds IS registered, once.
+        @test tA.artifact.registered === true
+        @test Octopus._OBSERVER_PATH_REGISTRY[abspath(pA)].value === tA.artifact
+        # The configuration report has the output entries the schema names:
+        # the artifact entry `:unresolved` while `append` or
+        # `record_turn_modulation` is requested (both are decided at prepare
+        # and reported by the receipt), `:resolved` when neither is,
+        # `:inactive_dependency` without an artifact; `loss_report` resolved.
+        rep = configuration_report(tA, mkp())
+        @test haskey(rep, :output) && [e.name for e in rep.output] == [:artifact, :loss_report]
+        @test rep.output[1].status === :unresolved && rep.output[1].consumer === :tracking_output
+        @test occursin("continuing the run artifact at " * pA, rep.output[1].reason)
+        @test occursin("recording the turn-modulation series", rep.output[1].reason)
+        @test occursin("decided at prepare", rep.output[1].reason) &&
+              occursin("`continued`", rep.output[1].reason) && occursin("`recording`", rep.output[1].reason)
+        @test rep.output[2].status === :resolved && rep.output[2].requested === false &&
+              rep.output[2].consumer === :tracking_output && occursin("skipped", rep.output[2].reason)
+        rep_plain = configuration_report(TrackingTask((disp(),); artifact=RunArtifact(joinpath(dir, "X.h5"))), mkp())
+        @test rep_plain.output[1].status === :resolved && startswith(rep_plain.output[1].reason, "rewriting")
+        @test !occursin("recording", rep_plain.output[1].reason) && !occursin("decided", rep_plain.output[1].reason)
+        @test rep_plain.output[2].requested === true && occursin("reconciled", rep_plain.output[2].reason)
+        @test configuration_report(TrackingTask((disp(),)), mkp()).output[1].status === :inactive_dependency
+        rep_app = configuration_report(TrackingTask((disp(),); artifact=RunArtifact(joinpath(dir, "Y.h5"); append=true)), mkp())
+        @test rep_app.output[1].status === :unresolved && !occursin("recording", rep_app.output[1].reason) &&
+              occursin("`continued`", rep_app.output[1].reason)
+
+        # (c) The StrongStrongTask fixture: `append=true` on a fresh path and
+        # `record_turn_modulation=true` on lines with NO modulated element --
+        # both requested, both resolved inactive -- `capacity=5`; the task's
+        # own receipt carries the path and the collision labels; the second
+        # window continues; a prepare refusal leaves no output receipt (the
+        # diagnostics receipt before the preflight is the U4-3 owner item).
+        mkb(rng_id, charge, mc2, E0) = begin
+            set_global_rng!(seed=5, method=:philox)
+            Beam(64, CPUThreadsExecutionPolicy(), Float64;
+                beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+                sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
+                charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+        end
+        ip = StrongStrongCollision(:ip)
+        plain = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,))
+        pS = joinpath(dir, "S.h5")
+        tS = StrongStrongTask((ip, plain), (ip, plain);
+                              artifact=RunArtifact(pS; append=true, capacity=5, record_turn_modulation=true))
+        b1, b2 = mkb(rid + 1, -1.0, EMASS_EV, 10.0e9), mkb(rid + 2, 1.0, PMASS_EV, 275.0e9)
+        repS = configuration_report(tS, b1, b2)
+        @test only(repS.output).status === :unresolved && only(repS.output).consumer === :strong_strong_output
+        @test occursin("recording the turn-modulation series", only(repS.output).reason)
+        rsS = audited(() -> execute!(tS, b1, b2; turns=2))
+        @test isempty(Octopus._output_receipt_gaps(rsS, strong_strong_schemas))
+        raS = one(rsS, :run_artifact_output)
+        @test raS.task === :StrongStrongTask && raS.artifact == pS && raS.execution == 1
+        @test raS.append === true && raS.continued === false && raS.capacity == 5
+        @test raS.record_turn_modulation === true && raS.recording === false
+        @test one(rsS, :strong_strong_output) == (artifact=pS, channels=["ip"])
+        @test !HDF5.h5open(f -> haskey(f, "turn_modulation"), pS)
+        rsS2 = audited(() -> execute!(tS, b1, b2; turns=1))
+        @test one(rsS2, :run_artifact_output).continued === true && one(rsS2, :run_artifact_output).execution == 2
+        HDF5.h5open(pS, "r+") do f
+            HDF5.create_group(f["luminosity"], "stranger")
+        end
+        rsS3 = quiet(() -> audited(() -> @test_throws ArgumentError execute!(
+            StrongStrongTask((ip, plain), (ip, plain); artifact=RunArtifact(pS; append=true)), b1, b2; turns=1)))
+        @test !any(r -> r.consumer in (:strong_strong_output, :run_artifact_output), rsS3)
+        @test any(r -> r.consumer === :strong_strong_diagnostics, rsS3)
+        # The strong-strong receipt under a modulated line resolves `recording`.
+        pS2 = joinpath(dir, "S2.h5")
+        cav(rng_id) = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,),
+                                            phase_noise=(WhiteNoise(1.0e-2; rng_id=rng_id),))
+        rsS4 = audited(() -> execute!(StrongStrongTask((ip, cav(rid + 11)), (ip, cav(rid + 12));
+                                                       artifact=RunArtifact(pS2; record_turn_modulation=true)),
+                                      mkb(rid + 1, -1.0, EMASS_EV, 10.0e9), mkb(rid + 2, 1.0, PMASS_EV, 275.0e9); turns=1))
+        @test one(rsS4, :run_artifact_output).recording === true
+        @test one(rsS4, :run_artifact_output).continued === false && one(rsS4, :run_artifact_output).append === false
+
+        # (d) The derivation's negative controls: a receipt lacking an option's
+        # field, no receipt at all, and another observer's receipt standing in
+        # for the owner's are each a named gap.
+        fake(c, v) = ExecutionAuditReceipt(c, CPUThreadsBackend, v)
+        g1 = Octopus._output_receipt_gaps([fake(:run_artifact_output, (task=:TrackingTask, artifact="x", append=true,
+                                                                       continued=false, capacity=1, recording=false,
+                                                                       execution=1))], [art_schema])
+        @test length(g1) == 1 && occursin("RunArtifact.record_turn_modulation", g1[1]) &&
+              occursin("no field named record_turn_modulation", g1[1])
+        @test Octopus._output_receipt_gaps(ExecutionAuditReceipt[], [art_schema]) ==
+              ["RunArtifact.$(k): no run_artifact_output receipt was recorded" for k in keys(run_artifact_option_schema())]
+        g2 = Octopus._output_receipt_gaps([fake(:observer_output, (observer=:MomentObserver, name=:m, turn=0, capacity=3, moments=6))],
+                                          [:CoordinateSnapshotObserver => observer_option_schema(CoordinateSnapshotObserver)])
+        @test length(g2) == 2 && all(g -> occursin("no observer_output receipt", g), g2)
+        @test isempty(Octopus._output_receipt_gaps([fake(:observer_output, (observer=:MomentObserver, name=:m, turn=0, capacity=3, moments=6))],
+                                                   [:MomentObserver => observer_option_schema(MomentObserver)]))
+        # The BPM's reading terms name `:bpm_reading`, not an output receipt:
+        # outside this derivation by construction (todo row 28's sweep).
+        @test all(m.consumer === :bpm_reading for (k, m) in pairs(observer_option_schema(BPMObserver)) if k !== :artifact)
+
+        # (e) The vocabularies. The slot `kind` vocabulary is DERIVED from the
+        # rule catalogue's type-level `_rule_kind` (no instance needed); every
+        # text that names it names every kind and carries no hand list; the
+        # reader warns by name on a kind outside it and reads it as it stands.
+        kinds = Octopus._turn_rule_kinds()
+        @test kinds == Tuple(sort!(unique!(Symbol[Octopus._rule_kind(R) for R in
+                                                   Octopus._concrete_octopus_subtypes(Octopus.AbstractTurnRule)])))
+        @test kinds == (:pink, :spectral, :table, :white)
+        @test Octopus._rule_kind(WhiteNoise) === :white === Octopus._rule_kind(WhiteNoise(1.0))
+        @test Octopus._rule_kind(TurnTable) === :table === Octopus._rule_kind(table)
+        @test Octopus._rule_kind(SpectralNoise) === :spectral
+        @test Octopus._rule_kind(PinkNoise{Float64}) === :pink
+        texts = ["?RunArtifact" => string(@doc RunArtifact),
+                 "?turn_modulation_provenance" => string(@doc turn_modulation_provenance),
+                 "the walk's docstring" => string(@doc Octopus._turn_modulation_provenance!),
+                 "the _rule_kind docstring" => string(@doc Octopus._rule_kind),
+                 "docs/design/run_artifact.md" => read(joinpath(root, "docs", "design", "run_artifact.md"), String)]
+        for (label, text) in texts
+            @testset let names_kinds_in = label
+                for k in kinds
+                    @test occursin("`$(k)`", text) || occursin(":$(k)", text)
+                end
+                @test !occursin("white`, `pink` or `table", text)
+                @test !occursin(":white, :pink or :table", text)
+            end
+        end
+        pK = joinpath(dir, "K.h5")
+        set_global_rng!(seed=0x5eed, method=:philox)
+        execute!(TrackingTask((disp(), crab()); artifact=RunArtifact(pK)), mkp(); turns=1)
+        HDF5.h5open(pK, "r+") do f
+            sg = f["turn_modulation"]["1"]["1"]["phase_noise[1]"]
+            HDF5.delete_attribute(sg, "kind")
+            HDF5.attributes(sg)["kind"] = "fifth"
+        end
+        provK = @test_logs (:warn, r"phase_noise\[1\] carries the kind \"fifth\", which is not a rule kind this reader knows \(pink, spectral, table, white\)") turn_modulation_provenance(pK)
+        @test provK[1].elements[1].slots[1].kind === :fifth
+        # The product groups: `_RA_KINDS` and `_RA_NAMED_KINDS` derive from the
+        # one table, a run of every producer writes exactly the table's groups,
+        # the readers serve all of them, and a probe binds under no other name.
+        @test Octopus._RA_KINDS == keys(Octopus._RA_GROUPS)
+        @test Set(Octopus._RA_NAMED_KINDS) == Set(k for (k, s) in pairs(Octopus._RA_GROUPS) if s === :named)
+        @test Set(values(Octopus._RA_GROUPS)) == Set([:named, :single, :slotted])
+        pG = joinpath(dir, "G.h5")
+        set_global_rng!(seed=0x5eed, method=:philox)
+        n = 64
+        rep64 = Phase6DRep([1.0e-4 * sin(0.017i) for i in 1:n], [2.0e-5 * cos(0.013i) for i in 1:n],
+                           [8.0e-5 * sin(0.017i + 0.2) for i in 1:n], [1.5e-5 * cos(0.013i + 0.3) for i in 1:n],
+                           [1.0e-2 * sin(0.017i + 0.4) for i in 1:n], [5.0e-4 * cos(0.013i + 0.5) for i in 1:n])
+        execute!(TrackingTask((disp(), crab(), strong(), ApertureSpec(x_limit=6.0e-5, name="COLL"), hooks()...);
+                              artifact=RunArtifact(pG; capacity=2, record_turn_modulation=true)), rep64; turns=3)
+        written = HDF5.h5open(f -> Set(Symbol(String(k)) for k in keys(f)), pG)
+        @test written == Set(Octopus._RA_KINDS)
+        @test Set(propertynames(read(TaskOutput(pG), :all))) == Set(Octopus._RA_KINDS)
+        @test Set(Symbol.(keys(read(TaskOutput(pG))))) == Set(Octopus._RA_KINDS)
+        HDF5.h5open(pG, "r") do f
+            for (k, shape) in pairs(Octopus._RA_GROUPS)
+                children = [f[String(k)][c] for c in keys(f[String(k)])]
+                @testset let group = k
+                    # a named or slotted kind holds groups, a single kind datasets
+                    @test all(c -> c isa HDF5.Group, children) == (shape !== :single)
+                end
+            end
+        end
+        errK = refusal(() -> read(TaskOutput(pG), :state))
+        @test errK isa ArgumentError && occursin("unknown artifact product :state", sprint(showerror, errK))
+        artG = RunArtifact(joinpath(dir, "bind.h5"))
+        Octopus.prepare_run_artifact!(artG, String[], 0, 1)
+        errB = refusal(() -> Octopus._ra_bind_probe!(artG, "state", "x", ["turn"], 0))
+        @test errB isa ArgumentError && occursin("cannot bind under /state", sprint(showerror, errB)) &&
+              occursin("luminosity, moments, snapshot, bpm", sprint(showerror, errB))
+        Octopus.finalize_run_artifact!(artG)
+        # The `:turn_modulation` receipt's shape at all three levels, and the
+        # artifact reader's (the slot entry alone was pinned before, S4-9).
+        rc = one(rsA, :turn_modulation)
+        @test propertynames(rc) == (:elements, :first_turn, :turns)
+        @test propertynames(rc.elements[1]) == (:element, :beam, :slots)
+        @test propertynames(rc.elements[1].slots[1]) == (:slot, :kind, :rng_id, :digest, :name, :length)
+        @test rc.first_turn == 0 && rc.turns == 4 && rc.elements[1].beam == 1
+        provA = turn_modulation_provenance(pA)
+        @test propertynames(provA[1]) == (:execution, :elements, :state)
+        @test propertynames(provA[1].elements[1]) == (:element, :beam, :first_turn, :turns, :slots)
+        @test propertynames(provA[1].elements[1].slots[1]) == (:slot, :kind, :rng_id, :digest, :name, :length, :nominal, :series)
+        @test [e.execution for e in provA] == [1, 2]
+        # the walk's docstring documents the receipt entry WITH `beam`
+        @test occursin("beam    = 1", string(@doc Octopus._turn_modulation_provenance!))
+        @test occursin("(elements, first_turn, turns)", string(@doc Octopus._turn_modulation_provenance!))
+
+        # (f) `append=true` onto an existing file that is not HDF5: refused by
+        # name before the open (HDF5's own "unable to determine if ... is
+        # accessible" surfaced first, S5-7), the file untouched, no lock left;
+        # a zero-byte file is still treated as fresh.
+        pN2 = joinpath(dir, "notart.h5")
+        write(pN2, "not an hdf5 file")
+        errN = quiet(() -> refusal(() -> execute!(TrackingTask((disp(),); artifact=RunArtifact(pN2; append=true)), mkp(); turns=1)))
+        msgN = sprint(showerror, errN)
+        @test errN isa ArgumentError
+        @test occursin("RunArtifact(append=true): " * pN2 * " exists (16 bytes) and is not an HDF5 file", msgN)
+        @test occursin("use a new path or append=false", msgN)
+        @test read(pN2, String) == "not an hdf5 file" && !isfile(pN2 * ".lock")
+        pZ = joinpath(dir, "zero.h5")
+        touch(pZ)
+        execute!(TrackingTask((disp(),); artifact=RunArtifact(pZ; append=true)), mkp(); turns=1)
+        @test ex_rows(pZ) == 1
+
+        # (g) The partial slot (owner decision 2026-10-16). The writer creates
+        # the slot group's cursor `elements_valid_through` at 0 BEFORE the
+        # first element group and advances it after each element is complete
+        # (its series dataset included), so a writer that stopped mid-way is
+        # recognisable: the readers read such a slot as far as the cursor with
+        # one warning naming it, never error, never roll back; `append=true`
+        # onto the file is refused by name. Built through HDF5 directly, in
+        # the two shapes a stopped writer leaves: element 2 half-written, and
+        # element 2 never created.
+        pP = joinpath(dir, "P.h5")
+        set_global_rng!(seed=0x5eed, method=:philox)
+        execute!(TrackingTask((disp(), crab(), rf()); artifact=RunArtifact(pP; record_turn_modulation=true)), mkp(); turns=2)
+        full = turn_modulation_provenance(pP)
+        @test length(full) == 1 && length(full[1].elements) == 2
+        @test Octopus._RA_TM_CURSOR == "elements_valid_through"
+        HDF5.h5open(pP, "r") do f
+            g = f["turn_modulation"]["1"]
+            @test read(HDF5.attributes(g)["element_count"]) == 2
+            @test read(HDF5.attributes(g)["elements_valid_through"]) == 2
+            @test haskey(g["1"], "series") && haskey(g["2"], "series")
+        end
+        set_cursor!(p, v) = HDF5.h5open(p, "r+") do f
+            Octopus._ra_set_attr!(f["turn_modulation"]["1"], "elements_valid_through", Int64(v))
+        end
+        p1 = joinpath(dir, "P1.h5"); cp(pP, p1)
+        set_cursor!(p1, 1)
+        HDF5.h5open(p1, "r+") do f
+            eg = f["turn_modulation"]["1"]["2"]
+            HDF5.delete_attribute(eg, "element")
+            HDF5.delete_object(eg, "series")
+        end
+        p2 = joinpath(dir, "P2.h5"); cp(pP, p2)
+        set_cursor!(p2, 1)
+        HDF5.h5open(p2, "r+") do f
+            HDF5.delete_object(f["turn_modulation"]["1"], "2")
+        end
+        partial = r"/turn_modulation/1 is partial: 1 of 2 modulated element group\(s\) were written before the writer stopped"
+        for p in (p1, p2)
+            @testset let partial_file = basename(p)
+                prov = @test_logs (:warn, partial) turn_modulation_provenance(p)
+                @test length(prov) == 1 && length(prov[1].elements) == 1
+                @test prov[1].elements[1] == full[1].elements[1]
+                @test (@test_logs (:warn, partial) read(TaskOutput(p), :turn_modulation)) == prov
+                toc = @test_logs (:warn, partial) read(TaskOutput(p))
+                @test length(toc["turn_modulation"][1].elements) == 1
+                @test length((@test_logs (:warn, partial) read(TaskOutput(p), :all)).turn_modulation[1].elements) == 1
+                errP = quiet(() -> refusal(() -> execute!(
+                    TrackingTask((disp(), crab(), rf()); artifact=RunArtifact(p; append=true, record_turn_modulation=true)),
+                    mkp(); turns=1, start_turn=2)))
+                msgP = sprint(showerror, errP)
+                @test errP isa ArgumentError
+                @test occursin("RunArtifact(append=true): /turn_modulation/1 at " * p * " is partial (1 of 2", msgP)
+                @test occursin("neither continues past nor rolls back", msgP) && occursin("use a new path", msgP)
+                @test ex_rows(p) == 1 && !isfile(p * ".lock")
+                @test (@test_logs (:warn, partial) length(turn_modulation_provenance(p)[1].elements)) == 1   # left as found
+            end
+        end
+        # Negative controls: a COMPLETE slot (cursor == count) missing a group
+        # is torn as before; a cursor beyond the count is torn; a slot written
+        # before the cursor existed reads as complete, and torn on a mismatch.
+        p3 = joinpath(dir, "P3.h5"); cp(pP, p3)
+        HDF5.h5open(p3, "r+") do f
+            HDF5.delete_object(f["turn_modulation"]["1"], "2")
+        end
+        err3 = refusal(() -> turn_modulation_provenance(p3))
+        @test err3 isa ArgumentError && occursin("is torn: element_count = 2 but 1 element group(s) present", sprint(showerror, err3))
+        p4 = joinpath(dir, "P4.h5"); cp(pP, p4)
+        set_cursor!(p4, 3)
+        err4 = refusal(() -> turn_modulation_provenance(p4))
+        @test err4 isa ArgumentError && occursin("elements_valid_through = 3 exceeds element_count = 2", sprint(showerror, err4))
+        p5 = joinpath(dir, "P5.h5"); cp(pP, p5)
+        HDF5.h5open(p5, "r+") do f
+            HDF5.delete_attribute(f["turn_modulation"]["1"], "elements_valid_through")
+        end
+        @test turn_modulation_provenance(p5) == full
+        HDF5.h5open(p5, "r+") do f
+            HDF5.delete_object(f["turn_modulation"]["1"], "2")
+        end
+        @test refusal(() -> turn_modulation_provenance(p5)) isa ArgumentError
+        # ... and a slot WITHOUT the cursor (a file written before it existed)
+        # is not the append check's concern: the append proceeds and the
+        # readers judge the slot (the partial slot of p1/p2 above sat in an
+        # earlier execution than the refused window: the check walks every slot).
+        quiet(() -> execute!(TrackingTask((disp(), crab(), rf()); artifact=RunArtifact(p5; append=true)), mkp(); turns=1, start_turn=2))
+        @test ex_rows(p5) == 2
+        # the design notes name the cursor and the decision
+        for doc in ("docs/design/run_artifact.md", "docs/design/turn_modulation_record.md")
+            text = read(joinpath(root, doc), String)
+            @test occursin("elements_valid_through", text) && occursin("partial", text)
+            @test occursin(":run_artifact_output", text)
+        end
+
+        # (h) The recorder's buffers are sized at creation (`sizehint!`,
+        # capacity turns of the element's active columns), so the recording
+        # hook -- begin, the draws, end -- is allocation-free below the flush
+        # (U9-5: 1568 bytes over 62 turns on this fixture before, growth by
+        # doubling; 580 bytes per turn averaged on U9's 20-element line).
+        w = compile_runtime(crab())
+        entries = Octopus._turn_modulation_entries((w,), 1)
+        columns = Octopus._turn_modulation_columns!(Any[], (w,))
+        pR = joinpath(dir, "R.h5")
+        artR = RunArtifact(pR; capacity=64, record_turn_modulation=true)
+        Octopus.prepare_run_artifact!(artR, String[], 0, 200; turn_modulation=entries, turn_modulation_columns=columns)
+        rec = Octopus._turn_modulation_sink(artR, 1)
+        @test length(rec.active[1]) == 2
+        @test length(rec.buffers[1].ref.mem) >= 64 * 2         # the hint landed
+        hook!(rec, t) = (Octopus._tm_begin_turn!(rec); Octopus._record_turn_draws!(rec, (1.0t, 2.0t, 3.0t, 4.0t));
+                         Octopus._tm_end_turn!(rec, t); nothing)
+        hook!(rec, 0)                                           # warm-up: turn 0 of the first 64
+        @test sum(t -> @allocated(hook!(rec, t)), 1:62) == 0    # turns 1..62, below the flush at 64
+        @test rec.rows == 63 && length(rec.buffers[1]) == 126
+        Octopus.finalize_run_artifact!(artR)
+        @test size(HDF5.h5open(f -> read(f["turn_modulation/1/1/series"]), pR)) == (63, 2)
         set_global_rng!(seed=0x5eed, method=:philox)
     end
 end

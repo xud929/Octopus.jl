@@ -775,20 +775,30 @@ concrete observer by `validate_configuration_metadata()`.
 """
 function observer_option_schema end
 
+#
+# Every option below names the `:observer_output` receipt its observer records
+# at each fire, and that receipt carries a field named after each option
+# (`name`, `moments` as the selection's length, `npart` beside the count
+# captured): the pairing the suite derives from these schemas and checks
+# (2026-10-16 fix batch, S4-3). `moments` had named `:moment_reduction`, a
+# consumer no receipt ever recorded, while its value rode in this receipt all
+# along; the snapshot observer recorded no receipt at all.
 observer_option_schema(::Type{MomentObserver}) = (
     name=ConfigurationOptionMeta(String, nothing,
         "Group identity inside the task's run artifact (/moments/<name>); required, unique within a task.";
         category=:output, consumer=:observer_output),
     moments=ConfigurationOptionMeta(Tuple, nothing,
-        "Canonical moment selection resolved from orders/extra/exclude; exclude wins.";
-        category=:output, consumer=:moment_reduction),)
+        "Canonical moment selection resolved from orders/extra/exclude; exclude wins. " *
+        "The :observer_output receipt carries the selection's length per fire.";
+        category=:output, consumer=:observer_output),)
 observer_option_schema(::MomentObserver) = observer_option_schema(MomentObserver)
 observer_option_schema(::Type{CoordinateSnapshotObserver}) = (
     name=ConfigurationOptionMeta(String, nothing,
         "Group identity inside the task's run artifact (/snapshot/<name>); required, unique within a task.";
         category=:output, consumer=:observer_output),
     npart=ConfigurationOptionMeta(Union{Nothing,Int}, nothing,
-        "Leading particle count captured per fire; nothing captures every particle.";
+        "Leading particle count captured per fire; nothing captures every particle. " *
+        "The :observer_output receipt carries the request beside the count captured.";
         category=:output, consumer=:observer_output),)
 observer_option_schema(::CoordinateSnapshotObserver) =
     observer_option_schema(CoordinateSnapshotObserver)
@@ -798,7 +808,7 @@ function configuration_report(observer::MomentObserver)
         ConfigurationEntry(:name, observer.name, observer.name, :resolved,
             "artifact group identity (/moments/<name>)", :observer_output),
         ConfigurationEntry(:moments, observer.moments, observer.moments, :resolved,
-            "canonical selection resolved from orders/extra/exclude", :moment_reduction),
+            "canonical selection resolved from orders/extra/exclude", :observer_output),
     )
 end
 
@@ -829,9 +839,11 @@ struct BeamSwapAction{F} <: AbstractBeamAction
 end
 
 function observe!(observer::MomentObserver, ctx::TrackingContext, rep)
+    # `name` joined the receipt in the 2026-10-16 fix batch (S4-3): the option
+    # names this receipt as its consumer, and it carried no field for it.
     _record_execution!(:observer_output, _observer_backend(),
-        (observer=:MomentObserver, turn=ctx.turn, capacity=observer.buffer_capacity,
-         moments=length(observer.moments)))
+        (observer=:MomentObserver, name=Symbol(observer.name), turn=ctx.turn,
+         capacity=observer.buffer_capacity, moments=length(observer.moments)))
     observer.initialized || throw(ArgumentError("MomentObserver must be prepared by a predictable schedule before tracking"))
     observer.buffer_length += 1
     observer.buffer[observer.buffer_length, :] .= _moment_observer_row(ctx, rep, observer.moments, observer)
@@ -877,6 +889,13 @@ function observe!(observer::CoordinateSnapshotObserver, ctx::TrackingContext, re
         "CoordinateSnapshotObserver npart $(npart) exceeds particle count $(global_n)"))
     observer.artifact_key === nothing && throw(ArgumentError(
         "CoordinateSnapshotObserver must be prepared (artifact-bound) before tracking"))
+    # The receipt the schema declares for `name` and `npart` (2026-10-16 fix
+    # batch, S4-3; none was recorded before): the request under the option's
+    # name, the count captured beside it (`nothing` requests every particle).
+    # No `capacity`: a snapshot writes its block per fire and batches nothing.
+    _record_execution!(:observer_output, _observer_backend(),
+        (observer=:CoordinateSnapshotObserver, name=Symbol(observer.name), turn=ctx.turn,
+         npart=observer.npart, captured=npart))
     nlocal = clamp(npart - offset, 0, length(rep))
     rows = Matrix{Float64}(undef, nlocal, 8)
     rows[:, 1] .= Float64(ctx.turn)
