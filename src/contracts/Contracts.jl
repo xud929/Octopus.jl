@@ -609,13 +609,15 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
         cpu = CPUThreadsExecutionPolicy(threads=first(worker_sweep))
         modulated = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,),
                                           phase_noise=(WhiteNoise(1.0e-3),))
-        # The BPM's stream id sits above the registry's counter: the contract's
-        # later probes claim small ids explicitly (`rng_id=1`, `2` on the
-        # strong-strong base beams), and an auto-assigned BPM id in that range
-        # would draw the registry's cross-class warning in a fresh process.
+        # The BPM's stream id sits above the registry's counter and is unheld:
+        # the contract's later probes claim small ids explicitly (`rng_id=1`,
+        # `2` on the strong-strong base beams), and an auto-assigned BPM id in
+        # that range would draw the registry's explicit-after-auto warning in a
+        # fresh process (the suite's fresh-id convention, `_unheld_rng_id`).
         hooks = (ScheduledObserver(MomentObserver(; name="m", orders=1)),
                  ScheduledObserver(CoordinateSnapshotObserver(; name="s", npart=2)),
-                 ScheduledObserver(BPMObserver("b"; artifact=true, rng_id=next_rng_id!() + 1_000_000)))
+                 ScheduledObserver(BPMObserver("b"; artifact=true,
+                                               rng_id=_unheld_rng_id(_GLOBAL_RNG_ID_COUNTER[] + 1_000_000))))
         task = TrackingTask((line..., modulated, hooks...); policy=cpu, loss_report=false,
                             artifact=RunArtifact(joinpath(dir, "output.h5"); append=true,
                                                  capacity=2, record_turn_modulation=true))

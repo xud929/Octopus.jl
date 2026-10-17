@@ -93,23 +93,30 @@ guesses.
 _required_beam_eltype(op::AbstractTrackOp) = _numeric_type_parameter(typeof(op))
 _required_beam_eltype(op) = nothing
 
+# `@generated`: the search over `T.parameters` runs once per concrete type at
+# compile time and the answer is a constant, so the walk that calls this on
+# every element of a compiled line allocates nothing (the runtime loop over
+# `T.parameters` cost 5 kB per call on a 40-element line of eight types,
+# found by the once-per-execute! walk pins when batch 2's units met).
 """
     _numeric_type_parameter(T::Type) -> Union{Nothing,Type}
 
 The one type parameter of the concrete type `T` that is a `Number` type, or
 `nothing`; two distinct ones are refused rather than guessed between.
 """
-function _numeric_type_parameter(::Type{T}) where {T}
+@generated function _numeric_type_parameter(::Type{T}) where {T}
     found = nothing
     for p in T.parameters
         (p isa Type && p <: Number) || continue
-        (found === nothing || p === found) || throw(ArgumentError(
-            "$(nameof(T)) carries two numeric type parameters, $(found) and $(p), so " *
-            "the beam element type it requires cannot be derived; the kind must " *
-            "declare _required_beam_eltype itself"))
+        if found !== nothing && p !== found
+            msg = "$(nameof(T)) carries two numeric type parameters, $(found) and $(p), so " *
+                  "the beam element type it requires cannot be derived; the kind must " *
+                  "declare _required_beam_eltype itself"
+            return :(throw(ArgumentError($msg)))
+        end
         found = p
     end
-    return found
+    return :($found)
 end
 
 """
