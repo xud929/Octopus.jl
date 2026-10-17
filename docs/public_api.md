@@ -463,9 +463,12 @@ kind has a typed form, `Spec{Float32}(; ...)` or `Spec(; numeric_type=Float32,
 which stores `numeric_type = Float32` and compiles the `Float32` element. A
 beam whose element type differs from an element's is refused when the task
 compiles the line, by name, on both backends and in either direction, with the
-remedy naming the kind's typed form; only the marker, which has no numeric
-parameter, takes either beam (`current_runtime.md`, "Current Backends", with
-the 31-kind measurement).
+remedy naming the kind's typed form; the marker included (`MarkerSpec{Float32}`
+types its placement frames; fix I, 2026-10-17) (`current_runtime.md`, "Current
+Backends", with the 31-kind measurement). The same section states which
+coordinates of each kind agree bitwise between the CPU and CUDA kernels and
+which agree to a stated number of ulps (`_cross_backend_rounding`, checked by
+measurement in the suite and by `validation/tracking_backend_consistency.jl`).
 
 ## Particle Loss
 

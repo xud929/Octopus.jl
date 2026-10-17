@@ -146,14 +146,18 @@ type differs from an element's is refused BY NAME when a task compiles the
 line, on both backends and in either direction, with the remedy naming the
 kind's typed form (`_required_beam_eltype`, `src/track/Track.jl`, derived from
 the runtime's numeric type parameter; the check in `_runtime_entries` and its
-strong-strong twin): a `Float32` beam needs `Float32` elements everywhere. Only
-the marker, which has no numeric parameter, takes a beam of either type.
-Measured 2026-10-16 over all 31 registered kinds, and re-derived by the suite's
-"One precision rule" testset on every run (both backends when CUDA is active):
-with the `Float64` registry example on a `Float32` beam, 30 kinds refuse by
-name on the CPU and on CUDA and the marker runs; with the kind's `Float32`
-typed form on a `Float32` beam, 31 of 31 run on both backends with `Float32`
-coordinates; no `InvalidIRError` anywhere (the two strong beams needed the
+strong-strong twin): a `Float32` beam needs `Float32` elements everywhere, the
+marker included (fix I, 2026-10-17: its `Marker{M,T}` runtime carries the type
+as a bare parameter, so an untyped marker in a `Float32` beam is refused like
+every kind and the placement frames built around `MarkerSpec{Float32}` are
+`Float32`; before, the marker answered no type and its frames stayed `Float64`
+inside a `Float32` line). Measured 2026-10-16 over all 31 registered kinds,
+and re-derived by the suite's "One precision rule" testset on every run (both
+backends when CUDA is active): with the `Float64` registry example on a
+`Float32` beam, every kind refuses by name on the CPU and on CUDA (30 of 31 at
+the time, the marker joining with fix I); with the kind's `Float32` typed form
+on a `Float32` beam, 31 of 31 run on both backends with `Float32` coordinates;
+no `InvalidIRError` anywhere (the two strong beams needed the
 literals of their kick and virtual drifts written in the kick's working type,
 `oftype(S, 0.5)` and `T(0.5)` -- the same Float64 operations wherever anything
 is Float64, Float32 only when everything is -- to compile in `Float32`; the
@@ -167,6 +171,43 @@ the other (the thick-magnet family, both strong beams, the accelerating cavity,
 the RF cavity, the radiation element, and `:line` through its drift); fix D put
 the two modulated cavities and the radiation element behind the refusal, the
 owner's decision put every kind.
+
+Cross-backend rounding: which quantities agree BITWISE between the CPU and
+CUDA kernels and which agree to a few ulps is declared per element kind on its
+runtime type -- `_cross_backend_rounding(op)` returning a `CrossBackendRounding`
+(the rule and the classes are stated in `src/track/Track.jl`, the declarations
+sit beside the runtime structs in `src/elements/`) -- and checked by
+measurement: the suite's "Cross-backend rounding classes" testset tracks every
+registry example on both backends against its declaration, and
+`validation/tracking_backend_consistency.jl` checks every instance of its line
+the same way (its header is the other statement of the rule; the per-kind
+table it prints is the current measurement). The rule, measured 2026-10-17
+(fix I of the crab-cavity noise neighbour audit): both backends round the
+IEEE operations alike, but the device fuses `a*b + c` into one FMA where the
+host rounds twice -- which multiply it fuses is the compiler's choice in the
+surrounding kernel, and the straight drift is bitwise at `L = 0.5` only
+because scaling by a power of two is exact -- and the device's libm differs
+from the host's by one to three ulp on a few percent of transcendental
+arguments. So a coordinate is bitwise across backends only when the kind never
+writes it or writes it through single or fusion-exact operations: every
+coordinate of a marker and of an aperture (a kill is NaN on both sides), the
+momenta of a straight drift (its x, y, z are of the ulp class), px and py of a
+thin dipole or quadrupole kick and of the kickers, px and py of the
+accelerating cavity (one multiply by rho each), every coordinate of a
+damping-only radiation element, a coordinate a dispersion map or a matrix row
+returns as it came (a zero coefficient, a unit row), and pz through every
+magnet, solenoid and patch (never written). Everything else is
+of the ulp class with a stated bound in ulps of the coordinate's scale: 4 to 8
+for kicks, cavities, dispersion maps and a round thin strong beam, 32 for a
+straight magnet with content and the design roll, 64 for a round Gaussian
+strong beam, 128 for the accelerating cavity, and large where a kernel cancels
+O(1) intermediates against each other (an elliptic strong beam's
+Bassetti-Erskine kick 2048, the sector bend and curved frames 8192, the
+solenoid 4096, the Lorentz boosts 16384, a pitched or rolled misalignment
+1024). A line is bitwise in a coordinate only when no member writes it or
+every member is bitwise. A pin that compares the two backends consults the
+class instead of claiming "bit for bit" by observation: the surveyed-cavity
+pin did, and held for z alone until the drift changed under it.
 
 Use `CPUThreadsExecutionPolicy(threads=:auto)` for CPU storage. An explicit
 integer is an Octopus logical-worker limit within Julia's default thread pool

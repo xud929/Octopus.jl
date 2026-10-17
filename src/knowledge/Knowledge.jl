@@ -549,6 +549,15 @@ function MyElement(spec::ElementSpec{:my_element},
     return MyElement(method, T(param(spec, :strength)))
 end
 
+# The cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl):
+# per coordinate, whether the CPU and CUDA kernels agree bitwise (never written,
+# or written by arithmetic exact under any FMA fusion) or within a stated
+# number of ulps of the coordinate's scale, and why. No default: a kind without
+# a method is refused by name, and the suite measures every declaration.
+_cross_backend_rounding(::MyElement) = _rounding_class(
+    untouched=(:x, :y, :z, :pz), ulp=(:px, :py), ulp_bound=8,
+    why="the kick `px - strength x` fuses on the device and rounds twice on the host")
+
 @element_spec begin
     kind = :my_element
     spec_type = ElementSpec{:my_element}
@@ -580,6 +589,7 @@ Validation checklist:
 - use `DataType[]` for contracts until real validation implementations exist;
 - declare `TwissDispersionAnalysis` on every kind whose `tracking_methods` contain `Symplectic6DMap` and not `NonSymplectic6DMap` (the suite's set tripwires derive that set and fail on a kind that departs from it); use `PlaceholderAnalysis` only for kinds that have no analysis;
 - the numeric type follows ONE rule for every kind (owner decision 2026-10-16): the compile constructor builds the runtime in `numeric_type(spec)`, the promotion of the stored parameters over a `Float64` floor for an untyped friendly constructor (a `Float32` input gives a `Float64` element, a dual or complex input widens it, nothing narrows) and the stored `numeric_type` for the `Spec{T}` form -- which every kind has, so every kind can sit in a `Float32` line; the typed form stores `_typed_spec_params(T; ...)` (floating-point inputs as `T`, `numeric_type = T`) and the untyped form routes `numeric_type=T` to it, storing no type itself (an untyped form that builds through its typed one drops the stored type again with `_floor_form`, so a dual or BigFloat placed later by a knob or a placement override still widens the element); declare the schema entry by splicing `_PLACEMENT_PARAMS...` (or `numeric_type=_PLACEMENT_PARAMS.numeric_type`); the runtime struct carries `T<:Number` as its one numeric type parameter, from which `_required_beam_eltype` (`src/track/Track.jl`) derives the beam element type the kind requires, so a task refuses a beam of another type by name; the suite pins the derived set against the registry;
+- declare the cross-backend rounding class on the runtime type (`_cross_backend_rounding`, `CrossBackendRounding` in `src/track/Track.jl`): for each of the six coordinates `:untouched`, `:bitwise` (written by single IEEE operations or arithmetic exact under any FMA fusion) or `:ulp` with a bound in ulps of the coordinate's scale and a `why` naming the operations; the device fuses `a b + c` into one FMA and its libm differs from the host's on transcendentals, so anything else is `:ulp`; there is no default, and the suite's "Cross-backend rounding classes" testset derives the set of types that must declare and measures every registry example against its declaration (the measurement wins);
 - run `validate_element_metadata()`;
 - run `element_help(MyElementSpec)` and `element_help(:my_element)`;
 - smoke-test execution through `TrackingTask`.

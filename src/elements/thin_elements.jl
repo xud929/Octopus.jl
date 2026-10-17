@@ -17,6 +17,7 @@ export MarkerSpec, ThinMultipoleSpec, ThinDipoleSpec, ThinQuadrupoleSpec,
 # ---------------------------------------------------------------------------
 
 """
+    Marker{M,T}
     Marker(spec, method)
 
 The identity map. A marker occupies no length and does nothing to a particle;
@@ -26,16 +27,34 @@ reference, the place a diagnostic will eventually live.
 Kept as a real element rather than an omission so that a line's element list
 matches the lattice description it came from, and so that positions survive
 round-tripping through a lattice file.
+
+`T<:Number` is a BARE type parameter: a marker has no numeric field, but it
+carries the number type it compiled in, `numeric_type(spec)` (the stored type
+of `MarkerSpec{T}`, the Float64 floor of the untyped form), so that
+`_required_beam_eltype` derives it like every kind's and the placement wraps
+built around it (`_wrap_numeric_type`) follow. One precision rule for every
+kind, the marker included (fix I of the crab-cavity noise neighbour audit,
+2026-10-17): before, the marker answered `nothing`, a Float64 marker in a
+Float32 line was never refused, and its misalignment and design-roll frames
+stayed Float64 -- the one Float64 frame change a Float32 beam could still meet.
 """
-struct Marker{M<:AbstractTrackingMethod} <: AbstractTrackOp
+struct Marker{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
 end
-Marker(::ElementSpec, method::AbstractTrackingMethod=Symplectic6DMap()) = Marker(method)
+Marker(spec::ElementSpec, method::AbstractTrackingMethod=Symplectic6DMap()) =
+    Marker{typeof(method),numeric_type(spec)}(method)
+# The direct form, no spec: the Float64 floor, as the crab cavity's and the
+# Lorentz boost's direct forms.
+Marker(method::AbstractTrackingMethod=Symplectic6DMap()) = Marker{typeof(method),Float64}(method)
 
 @inline track_particle(::Symplectic6DMap, ::Marker, x, px, y, py, z, pz) =
     (x, px, y, py, z, pz)
 @inline (elem::Marker)(x, px, y, py, z, pz) =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
+
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl).
+_cross_backend_rounding(::Marker) = _rounding_class(untouched=_COORDINATE_NAMES,
+    why="the identity: nothing is written")
 
 # `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
 # truncated power series is `<:Number`, so the tighter bound refuses a parameter
@@ -78,6 +97,32 @@ end
 
 @inline (elem::ThinMultipole)(x, px, y, py, z, pz) =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
+
+"""
+    _thin_kick_rounds_alike(knl, ksl) -> Bool
+
+Whether `_lattice_kick` at unit length in a straight frame is exact under any
+FMA fusion the device may choose: only dipole and quadrupole content (indices
+1 and 2), normal OR skew at each order but not both. Then every product in the
+recurrence meets an exact zero or a factor of one (`(tr x - ti y)/1` with
+`ti = 0`, `kn tr - ks ti` with one of the two zero, `L g ar` with
+`L = g = 1`), and `px - ar`, `px + hkick` are single operations, so CPU and
+CUDA agree bitwise. Measured on 1e5 particles (fix I, 2026-10-17): 0 part for a
+thin quadrupole, a thin dipole and the kickers; 27 for a thin sextupole, 11401
+for a quadrupole with both `k1l` and `k1sl`.
+"""
+_thin_kick_rounds_alike(knl::NTuple{N,T}, ksl::NTuple{N,T}) where {N,T} =
+    all(i -> i <= 2 ? !(!iszero(knl[i]) && !iszero(ksl[i])) : (iszero(knl[i]) && iszero(ksl[i])), 1:N)
+
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl):
+# the content decides.
+function _cross_backend_rounding(op::ThinMultipole)
+    _thin_kick_rounds_alike(op.knl, op.ksl) && return _rounding_class(
+        untouched=(:x, :y, :z, :pz), bitwise=(:px, :py),
+        why="a thin dipole or quadrupole kick (normal or skew, not both at one order) plus a steering kick is exact under any fusion: every product in the kick recurrence meets an exact zero or a factor of one, and `px - knl x`, `px + hkick` are single operations (bitwise on 1e5 particles)")
+    return _rounding_class(untouched=(:x, :y, :z, :pz), ulp=(:px, :py), ulp_bound=4,
+        why="the kick recurrence `(tr x - ti y)/n` from the sextupole order up, and `kn tr - ks ti` with both strengths set, fuse on the device where the host rounds twice (27 and 11401 of 1e5 particles part in px for a thin sextupole and a normal-plus-skew quadrupole; 1 ulp of scale); x, y, z, pz are never written")
+end
 
 function ThinMultipole(spec::ElementSpec,
                        method::AbstractTrackingMethod=tracking_method(spec))
@@ -172,8 +217,10 @@ for (kind, ctor) in ((:marker, :MarkerSpec), (:hkicker, :HKickerSpec),
     @eval begin
         abstract type $ctor{T} end
         # The same untyped / typed pair as the strength-folding kinds above; a
-        # marker has no numeric parameter, so its `T` types only the placement
-        # wraps built around it.
+        # marker has no numeric parameter, so its `T` is carried by the
+        # `Marker{M,T}` runtime as a bare type parameter: the one precision rule
+        # and the placement wraps built around it follow `numeric_type(spec)`
+        # like every kind's.
         function $ctor(; numeric_type=nothing, kwargs...)
             numeric_type === nothing || return $ctor{numeric_type}(; kwargs...)
             return ElementSpec{$(QuoteNode(kind))}(_spec_params(; kwargs...))

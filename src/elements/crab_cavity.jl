@@ -247,6 +247,10 @@ end
 @inline (cavity::ThinCrabCavity)(x0, px0, y0, py0, z0, pz0) =
     track_particle(cavity.method, cavity, x0, px0, y0, py0, z0, pz0)
 
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl).
+_cross_backend_rounding(::ThinCrabCavity) = _rounding_class(untouched=(:x, :y, :z), ulp=(:px, :py, :pz), ulp_bound=8,
+    why="`sin` and `cos` of `i kcc z + phase_i` on each backend's libm, the device fusing `i kcc z + phase` into one FMA once the phase is nonzero, and the harmonic sums `dpx -= sx s/(i kcc)`, `dpz -= (sx x + sy y) c` (8.6% of 1e5 particles part in px and py, 6.5% in pz; 2 ulps of scale over 3 turns); x, y, z are never written")
+
 function _harmonic_tuple(::Val{N}, values, ::Type{T}) where {N,T}
     if values === () || length(values) == 0
         return ntuple(_ -> zero(T), N)

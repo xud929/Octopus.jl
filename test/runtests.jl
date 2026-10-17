@@ -10343,6 +10343,7 @@ end
                         (Octopus._check_turn_window, 1), (Octopus._turn_modulation_provenance!, 2),
                         (Octopus._turn_modulation_columns!, 2), (Octopus._each_modulated, 2),
                         (Octopus._check_beam_eltype, 1), (Octopus._required_beam_eltype, 1),
+                        (Octopus._cross_backend_rounding, 1),
                         (Octopus.track_luminous, 1), (Octopus.track_particle, 2)]
     # The device conversion (design D8): `cudaconvert` recurses through the
     # fused tuple with `Adapt.adapt_structure`, so a wrapper without its own
@@ -12811,17 +12812,18 @@ end
     stored_floats(spec) = Any[x for v in values(Octopus.params(spec)) for x in floats(v)]
 
     # (a) The trait is DERIVED, for every kind, from the runtime's numeric type
-    # parameter: every registry example compiles to a runtime answering Float64
-    # except the marker, which has no numeric parameter (pinned both ways);
-    # structurally, no concrete runtime op carries two numeric type parameters,
-    # and the ops carrying none are exactly the marker and the two containers
-    # that answer with what they hold.
+    # parameter: every registry example compiles to a runtime answering Float64,
+    # the marker included since fix I (its `Marker{M,T}` carries the type as a
+    # bare parameter; it answered `nothing` before, the one kind outside the
+    # rule); structurally, no concrete runtime op carries two numeric type
+    # parameters, and the ops carrying none are exactly the two containers that
+    # answer with what they hold.
     no_type = Symbol[]
     for kind in kinds
         t = Octopus._required_beam_eltype(compile_runtime(example_spec(ElementSpec{kind})))
         t === nothing ? push!(no_type, kind) : (@test t === Float64)
     end
-    @test no_type == [:marker]
+    @test isempty(no_type)
     numeric_params(S) = [p for p in Base.unwrap_unionall(S).parameters
                          if p isa TypeVar && p.ub !== Any && p.ub <: Number]
     # Octopus-defined ops only: the suite's own fixture ops (synthetic
@@ -12829,9 +12831,9 @@ end
     concrete_ops = Octopus._concrete_octopus_subtypes(Octopus.AbstractTrackOp)
     @test all(S -> length(numeric_params(S)) <= 1, concrete_ops)
     @testset let typeless_ops = sort!(string.(nameof.([S for S in concrete_ops if isempty(numeric_params(S))])))
-        @test typeless_ops == ["CompositeLine", "Marker", "TurnModulated"]
+        @test typeless_ops == ["CompositeLine", "TurnModulated"]
     end
-    @test Octopus._required_beam_eltype(compile_runtime(BeamLine("markers", MarkerSpec(), MarkerSpec()))) === nothing
+    @test Octopus._required_beam_eltype(compile_runtime(BeamLine("markers", MarkerSpec(), MarkerSpec()))) === Float64
     mixed = attempt(() -> compile_runtime(BeamLine("mixed", DriftSpec(L=0.5), DriftSpec{Float32}(L=0.5))))
     @test !(mixed isa Exception) && Octopus._required_beam_eltype(mixed) === nothing   # the members disagree
     @test occursin("LatticeMagnet: the beam's coordinates are Float32 but the element compiled in Float64",
@@ -12840,8 +12842,8 @@ end
     # (b) Every kind but :line has a typed form, reached by `Spec{Float32}` and
     # by the keyword `numeric_type=Float32` (the same stored parameters): the
     # schema declares the key, the spec stores Float32 and every floating-point
-    # parameter as Float32, the runtime's trait is Float32 (the marker's stays
-    # `nothing`), a Float32 beam tracks through it on the CPU with Float32
+    # parameter as Float32, the runtime's trait is Float32 (the marker's too,
+    # since fix I), a Float32 beam tracks through it on the CPU with Float32
     # coordinates, and the two mismatches are refused by name, the remedy
     # naming this kind's typed form.
     for kind in kinds
@@ -12865,22 +12867,17 @@ end
             @test direct isa Exception || untyped_params(direct) == untyped_params(typed)   # the two spellings store the same
             @test direct isa Exception || numeric_type(direct) === Float32
             rt32 = compile_runtime(typed)
-            @test Octopus._required_beam_eltype(rt32) === (kind === :marker ? nothing : Float32)
+            @test Octopus._required_beam_eltype(rt32) === Float32
             set_global_rng!(seed=0x5eed, method=:philox)
             r = rep32()
             execute!(TrackingTask((typed,); policy=cpu), r; turns=1)
             @test finite32(r)
-            if kind === :marker
-                @test refusal(example, rep32(), cpu) === nothing   # no precision to disagree with
-                @test refusal(typed, rep64(), cpu) === nothing
-            else
-                err = refusal(example, rep32(), cpu)
-                @test occursin("the beam's coordinates are Float32 but the element compiled in Float64", message(err))
-                @test occursin("Remedy: ", message(err)) && occursin(typed_name(kind, Float32), message(err))
-                reverse = refusal(typed, rep64(), cpu)
-                @test occursin("the beam's coordinates are Float64 but the element compiled in Float32", message(reverse))
-                @test occursin(typed_name(kind, Float64), message(reverse))
-            end
+            err = refusal(example, rep32(), cpu)
+            @test occursin("the beam's coordinates are Float32 but the element compiled in Float64", message(err))
+            @test occursin("Remedy: ", message(err)) && occursin(typed_name(kind, Float32), message(err))
+            reverse = refusal(typed, rep64(), cpu)
+            @test occursin("the beam's coordinates are Float64 but the element compiled in Float32", message(reverse))
+            @test occursin(typed_name(kind, Float64), message(reverse))
         end
     end
     # :line has no typed form of its own: its members carry the type. The
@@ -12905,12 +12902,8 @@ end
             typed isa Exception && continue                         # reported by part (b)
             @testset let kind = kind
                 err = refusal(example, cuda_rep(rep32()), gpu)
-                if kind === :marker
-                    @test err === nothing
-                else
-                    @test err isa ArgumentError
-                    @test occursin("the beam's coordinates are Float32 but the element compiled in Float64", message(err))
-                end
+                @test err isa ArgumentError
+                @test occursin("the beam's coordinates are Float32 but the element compiled in Float64", message(err))
                 set_global_rng!(seed=0x5eed, method=:philox)
                 g = cuda_rep(rep32())
                 execute!(TrackingTask((typed,); policy=gpu), g; turns=1)
@@ -13001,8 +12994,8 @@ end
     # (e) The wraps follow their subject: a typed element's misalignment and
     # design roll are built in its type, a Float32 girder's frame changes in
     # its members' type, a modulated Float32 cavity's wraps in Float32, and a
-    # typed marker's placement in its own type (the one place the marker's
-    # `numeric_type` acts).
+    # marker's placement in its own type like every kind's (fix I: the
+    # `Marker{M,T}` runtime carries the type the wraps are built in).
     wq = attempt(() -> compile_runtime(QuadrupoleSpec{Float32}(L=0.4, k1=1.7, nst=2, x_offset=1.0e-4, ref_tilt=0.01)))
     @test wq isa Octopus.RefTilted{<:Octopus.MisalignedElement{<:Octopus.LatticeMagnet{Symplectic6DMap,Float32},Float32},Float32}
     @test !(wq isa Exception) && Octopus._required_beam_eltype(wq) === Float32
@@ -13101,6 +13094,314 @@ end
                                                     (StrongStrongCollision(:ip), DriftSpec{Float32}(L=1.0))), b1, b2; turns=1))
     @test !(ran32 isa Exception) && finite32(b1.rep) && finite32(b2.rep)
     set_global_rng!(seed=0x5eed, method=:philox)
+end
+
+@testset "Cross-backend rounding classes declared per kind and checked by measurement, and the marker completes the one precision rule" begin
+    # Fix I of the 2026-10-16 crab-cavity noise neighbour audit (2026-10-17),
+    # two owner-authorised follow-ups of batch 2.
+    #
+    # (1) Which cross-backend quantities are bitwise and which are of the ulp
+    # class was stated nowhere, and the suite carried pins written "bit for
+    # bit" by observation -- the surveyed-cavity pin held for z alone while pz
+    # already parted by one ulp through `sin`. Now every runtime op type
+    # DECLARES its class (`_cross_backend_rounding` -> `CrossBackendRounding`,
+    # src/track/Track.jl: per coordinate `:untouched`, `:bitwise` or `:ulp`
+    # with a bound in ulps of the coordinate's scale and a `why`), there is no
+    # silent default, the set of types that must declare is derived from the
+    # registry and the `AbstractTrackOp` tree, and the declaration is checked
+    # by MEASUREMENT: every registry example tracked on both backends (part d),
+    # with the mixed fixtures the wrappers and lines need. The rule the classes
+    # rest on, measured on 1e5 particles (probes 1 to 7 in
+    # result/audit_crab_noise_2026_10_16/fixes/I/): the device fuses `a*b + c`
+    # into one FMA where the host rounds twice (which multiply it fuses is the
+    # compiler's choice; the drift is bitwise at L = 0.5 only because scaling
+    # by a power of two is exact), and its libm differs from the host's on
+    # transcendentals by one to three ulp on a few percent of arguments, so
+    # only untouched or single-operation coordinates are bitwise.
+    #
+    # (2) The marker, with no numeric parameter, answered `nothing` to
+    # `_required_beam_eltype`, so an untyped marker in a Float32 beam was never
+    # refused and its placement frames stayed Float64 inside a Float32 line.
+    # `Marker{M,T}` now carries the type as a bare parameter: the trait derives
+    # it, the wraps follow, the refusal names the kind like every other.
+    coords = (:x, :px, :y, :py, :z, :pz)
+    mark(class) = join((c === :ulp ? "u" : c === :bitwise ? "b" : "-") for c in (getfield(class, k) for k in coords))
+    message(err) = err isa Exception ? sprint(showerror, err) : ""
+    attempt(f) = try
+        f()
+    catch e
+        e
+    end
+    kinds = sort!(collect(keys(Octopus.ELEMENT_META_BY_KIND)))
+    cpu = CPUThreadsExecutionPolicy()
+    rep32() = Phase6DRep(Float32[1.0e-3, -5.0e-4, 2.0e-4], Float32[2.0e-4, 1.0e-4, -3.0e-4],
+                         Float32[-5.0e-4, 2.5e-4, 1.0e-4], Float32[1.0e-4, -2.0e-4, 5.0e-5],
+                         Float32[2.0e-3, -1.0e-3, 5.0e-4], Float32[1.0e-3, -5.0e-4, 2.0e-4])
+    rep64() = Phase6DRep([1.0e-3, -5.0e-4, 2.0e-4], [2.0e-4, 1.0e-4, -3.0e-4],
+                         [-5.0e-4, 2.5e-4, 1.0e-4], [1.0e-4, -2.0e-4, 5.0e-5],
+                         [2.0e-3, -1.0e-3, 5.0e-4], [1.0e-3, -5.0e-4, 2.0e-4])
+    cuda_rep(h) = Phase6DRep((Octopus.CUDA.CuArray(a) for a in coordinate_arrays(h))...)
+    finite_of(T, rep) = eltype(first(coordinate_arrays(rep))) === T &&
+                        all(all(isfinite, Array(a)) for a in coordinate_arrays(rep))
+    refusal(spec, rep, policy) = try
+        execute!(TrackingTask((spec,); policy=policy), rep; turns=1)
+        nothing
+    catch e
+        e
+    end
+    zpz_map = [1.0 0 0 0 0 0; 0 1.0 0 0 0 0; 0 0 1.0 0 0 0; 0 0 0 1.0 0 0; 0 0 0 0 1.0 -20.0; 0 0 0 0 0 1.0]
+
+    # (a) The marker completes the one precision rule: its runtime carries the
+    # type, the trait derives it, the wraps are built in it, a mismatched beam
+    # is refused by name with the remedy naming MarkerSpec{T}, and a Float32
+    # marker with placement tracks a Float32 beam on both backends.
+    @testset "the marker completes the one precision rule" begin
+        @test Octopus._required_beam_eltype(compile_runtime(MarkerSpec())) === Float64
+        @test Octopus._required_beam_eltype(compile_runtime(MarkerSpec{Float32}())) === Float32
+        @test Octopus._required_beam_eltype(compile_runtime(MarkerSpec(; numeric_type=Float32))) === Float32
+        @test compile_runtime(MarkerSpec{Float32}()) isa Octopus.Marker{Symplectic6DMap,Float32}
+        @test compile_runtime(MarkerSpec()) isa Octopus.Marker{Symplectic6DMap,Float64}
+        @test Octopus.Marker() isa Octopus.Marker{Symplectic6DMap,Float64}            # the direct form floors
+        w32 = attempt(() -> compile_runtime(MarkerSpec{Float32}(x_offset=1.0e-4, ref_tilt=0.01)))
+        @test w32 isa Octopus.RefTilted{<:Octopus.MisalignedElement{<:Octopus.Marker{Symplectic6DMap,Float32},Float32},Float32}
+        @test !(w32 isa Exception) && Octopus._required_beam_eltype(w32) === Float32
+        @test compile_runtime(MarkerSpec(x_offset=1.0e-4)) isa Octopus.MisalignedElement{<:Octopus.Marker{Symplectic6DMap,Float64},Float64}
+        @test Octopus._required_beam_eltype(compile_runtime(BeamLine("markers", MarkerSpec(), MarkerSpec()))) === Float64
+        @test Octopus._required_beam_eltype(compile_runtime(BeamLine("markers32", MarkerSpec{Float32}(), DriftSpec{Float32}(L=0.5)))) === Float32
+        @test Octopus._required_beam_eltype(compile_runtime(BeamLine("mixed", MarkerSpec(), DriftSpec{Float32}(L=0.5)))) === nothing   # the members disagree
+        @test Octopus._typed_form_names(compile_runtime(MarkerSpec())) == ["MarkerSpec"]
+        err = refusal(MarkerSpec(), rep32(), cpu)
+        @test occursin("Marker: the beam's coordinates are Float32 but the element compiled in Float64", message(err))
+        @test occursin("Remedy: ", message(err)) && occursin("MarkerSpec{Float32}(; ...)", message(err))
+        @test occursin("Marker: the beam's coordinates are Float64 but the element compiled in Float32",
+                       message(refusal(MarkerSpec{Float32}(), rep64(), cpu)))
+        @test occursin("Marker: the beam's coordinates are Float32",
+                       message(refusal(BeamLine("mixed", MarkerSpec(), DriftSpec{Float32}(L=0.5)), rep32(), cpu)))
+        @test occursin("Marker: the beam's coordinates are Float32",
+                       message(refusal(MarkerSpec(x_offset=1.0e-4, ref_tilt=0.01), rep32(), cpu)))   # the wraps descend
+        r = rep32()
+        @test refusal(MarkerSpec{Float32}(x_offset=1.0e-4, ref_tilt=0.01), r, cpu) === nothing && finite_of(Float32, r)
+        r64 = rep64()
+        @test refusal(MarkerSpec(x_offset=1.0e-4, ref_tilt=0.01), r64, cpu) === nothing && finite_of(Float64, r64)
+        if CUDA_TESTS_ACTIVE
+            g = cuda_rep(rep32())
+            @test refusal(MarkerSpec{Float32}(x_offset=1.0e-4, ref_tilt=0.01), g, CUDAExecutionPolicy()) === nothing
+            Octopus.CUDA.synchronize()
+            @test finite_of(Float32, g)
+            @test occursin("Marker: the beam's coordinates are Float32 but the element compiled in Float64",
+                           message(refusal(MarkerSpec(), cuda_rep(rep32()), CUDAExecutionPolicy())))
+        else
+            @test_skip "CUDA inactive: the Float32 marker on the device and the device-side refusal are not exercised"
+        end
+        @test occursin("Symplectic6DMap => Marker", registry_snapshot_markdown())   # the runtime keeps its name
+    end
+
+    # (b) Every runtime op type declares its class and the set is derived both
+    # ways: the concrete Octopus `AbstractTrackOp` subtypes (the suite's own
+    # fixture ops are not Octopus types) are exactly the registry's runtime
+    # types plus the three wrappers and `CompositeLine`, each owning a method
+    # narrower than the root; a type without one is refused by name, never
+    # defaulted; `_rounding_class` refuses a partial, double or unbounded
+    # declaration.
+    @testset "every runtime type declares, no default" begin
+        @test Octopus._COORDINATE_NAMES == coords
+        concrete_ops = Octopus._concrete_octopus_subtypes(Octopus.AbstractTrackOp)
+        owns(W) = any(methods(Octopus._cross_backend_rounding)) do m
+            P = Base.unwrap_unionall(m.sig).parameters
+            length(P) >= 2 || return false
+            S = Base.rewrap_unionall(P[2], m.sig)
+            return !(Octopus.AbstractTrackOp <: S) && W <: S
+        end
+        @testset let undeclared = sort!(string.(nameof.([S for S in concrete_ops if !owns(S)])))
+            @test isempty(undeclared)
+        end
+        registry_runtimes = Set{Any}(Base.unwrap_unionall(rt).name.wrapper
+                                     for meta in values(Octopus.ELEMENT_META_BY_KIND)
+                                     for rt in values(meta.runtime_types) if rt isa Type)
+        containers = Set{Any}([Octopus.MisalignedElement, Octopus.RefTilted, Octopus.TurnModulated, Octopus.CompositeLine])
+        @test Set{Any}(Base.unwrap_unionall(S).name.wrapper for S in concrete_ops) == union(registry_runtimes, containers)
+        @test isempty(intersect(registry_runtimes, containers))
+        isdefined(Main, :_FixIBareOp) || Core.eval(Main, :(struct _FixIBareOp <: Octopus.AbstractTrackOp end))
+        bare = attempt(() -> Octopus._cross_backend_rounding(Main._FixIBareOp()))
+        @test bare isa ArgumentError && occursin("_FixIBareOp declares no cross-backend rounding class", message(bare))
+        @test_throws ArgumentError Octopus._rounding_class(untouched=(:x,), why="w")                       # five undeclared
+        @test_throws ArgumentError Octopus._rounding_class(untouched=coords, ulp=(:x,), ulp_bound=4, why="w")   # listed twice
+        @test_throws ArgumentError Octopus._rounding_class(untouched=(:x, :px, :y, :py, :z), ulp=(:pz,), ulp_bound=2, why="w")
+        @test_throws ArgumentError Octopus._rounding_class(untouched=(:x, :px, :y, :py, :z), ulp=(:pz,), why="w")  # no bound
+        @test_throws ArgumentError Octopus._rounding_class(untouched=coords, ulp_bound=4, why="w")           # bound without ulp
+        @test_throws ArgumentError Octopus._rounding_class(untouched=coords, why="  ")
+        @test_throws ArgumentError Octopus._rounding_class(untouched=(:x, :px, :y, :py, :z, :q), why="w")
+        c = Octopus._rounding_class(untouched=(:x, :y), bitwise=(:z,), ulp=(:px, :py, :pz), ulp_bound=8, why="w")
+        @test mark(c) == "-u-ubu" && c.ulp_bound == 8 && c.why == "w"
+        @test Octopus._bitwise_coordinates(c) == (:x, :y, :z) && Octopus._ulp_coordinates(c) == (:px, :py, :pz)
+        @test Octopus._untouched_coordinates(c) == (:x, :y) && !Octopus._all_bitwise(c)
+        @test Octopus._all_bitwise(Octopus._rounding_class(untouched=coords, why="w"))
+    end
+
+    # (c) The declared table over the registry examples, printed so the
+    # classification is visible in every run, with the load-bearing entries
+    # pinned: what is bitwise by construction, what the instance decides, how
+    # the wrappers and lines compose.
+    table = Dict{Symbol,Any}()
+    @testset "the declared classes" begin
+        println("cross-backend rounding classes of the registry examples (u ulp, b bitwise, - untouched):")
+        for kind in kinds
+            class = Octopus._cross_backend_rounding(compile_runtime(example_spec(ElementSpec{kind})))
+            table[kind] = class
+            println("    ", rpad(string(kind), 26), mark(class), "  bound=", class.ulp_bound)
+            @test class isa Octopus.CrossBackendRounding && !isempty(class.why)
+        end
+        @test mark(table[:marker]) == "------" && mark(table[:aperture]) == "------"
+        @test mark(table[:drift]) == "u-u-u-" && table[:drift].ulp_bound == 8          # the straight drift writes x, y, z only
+        @test mark(table[:quadrupole]) == "uuuuu-" && table[:quadrupole].ulp_bound == 32
+        @test mark(table[:sbend]) == "uuuuu-" && table[:sbend].ulp_bound == 8192       # the bend's cancellation
+        @test mark(table[:solenoid]) == "uuuuu-" && table[:solenoid].ulp_bound == 4096
+        @test mark(table[:thin_quadrupole]) == "-b-b--" && mark(table[:thin_dipole]) == "-b-b--"
+        @test mark(table[:hkicker]) == "-b-b--" && mark(table[:vkicker]) == "-b-b--" && mark(table[:kicker]) == "-b-b--"
+        @test mark(table[:thin_sextupole]) == "-u-u--" && mark(table[:thin_multipole]) == "-u-u--"
+        @test mark(table[:thin_rf_cavity]) == "----uu" && mark(table[:thin_crab_cavity]) == "-u-u-u"
+        @test mark(table[:thin_accelerating_cavity]) == "-b-buu" && table[:thin_accelerating_cavity].ulp_bound == 128
+        @test mark(table[:linear6d]) == "------"                     # the identity example: unit rows return as they came
+        @test mark(table[:lumped_radiation]) == "bbbbbb"             # damping only: one multiply per coordinate
+        @test mark(table[:thin_strong_beam]) == "uuuu-u" && mark(table[:gaussian_strong_beam]) == "uuuu-u"   # Hirata leaves z
+        @test mark(table[:lorentz_boost]) == "uuubuu" && table[:lorentz_boost].ulp_bound == 16384
+        @test mark(table[:rev_lorentz_boost]) == "uuubuu"
+        @test mark(table[:crab_dispersion]) == "u----u" && mark(table[:momentum_dispersion]) == "u---u-"
+        @test mark(table[:xy_coupling]) == "uuuu--" && mark(table[:chromaticity_kick]) == "uuuuu-"
+        @test mark(table[:patch]) == "uuuuu-" && mark(table[:line]) == "uuuuu-"
+        # the instance decides
+        class_of(spec) = Octopus._cross_backend_rounding(compile_runtime(spec))
+        @test mark(class_of(ThinQuadrupoleSpec(k1l=0.05, k1sl=0.02))) == "-u-u--"              # normal and skew at one order
+        @test mark(class_of(ThinMultipoleSpec(knl=(1.0e-3, 0.05)))) == "-b-b--"                 # dipole plus quadrupole: exact
+        @test mark(class_of(DriftSpec(L=0.35))) == "u-u-u-" && class_of(DriftSpec(L=0.35)).ulp_bound == 8
+        @test mark(class_of(DriftSpec(L=0.35, h=0.02))) == "uuuuu-" && class_of(DriftSpec(L=0.35, h=0.02)).ulp_bound == 8192
+        @test mark(class_of(ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV, L=0.5))) == "u-u-uu"
+        @test mark(class_of(ThinRFCavitySpec(400.8e6; voltage=0.0, e0=275.0e9, mc2=PMASS_EV))) == "------"
+        @test mark(class_of(Linear6DSpec(matrix=zpz_map))) == "----u-"                         # one coupled row
+        @test mark(class_of(LumpedRadSpec(damping_turns=(1000.0, 1000.0, 500.0), sigma=(1.0e-4, 8.0e-5, 1.0e-2)))) == "uuuuuu"
+        @test mark(class_of(LumpedRadSpec(damping_turns=(1000.0, 1000.0, 500.0), is_damping=false, is_excitation=false))) == "------"
+        @test mark(class_of(CrabDispersionSpec(zeta1=0.0))) == "------"
+        @test mark(class_of(XYCouplingSpec(r1=0.01, r2=-0.003, r3=0.002, r4=0.004))) == "uuuu--"
+        @test mark(class_of(ThinStrongBeamSpec(kbb=1.0e-4, beta=(1.0, 1.0), sigma=(1.0e-3, 1.0e-3), virtual_drift=ChromaticDrift()))) == "uuuuuu"
+        @test class_of(ThinStrongBeamSpec(kbb=1.0e-4, beta=(1.0, 1.0), sigma=(1.0e-3, 1.0e-3))).ulp_bound == 8          # round
+        @test class_of(ThinStrongBeamSpec(kbb=1.0e-8, beta=(0.82, 0.075), sigma=(110.0e-6, 12.0e-6))).ulp_bound == 2048  # elliptic: the Bassetti-Erskine cancellation
+        @test mark(class_of(ChromaticityKickSpec(xi=(1.2, -0.8), beta=(0.82, 0.075), zeta=(0.002, -0.001, 0.0, 0.0)))) == "uuuuuu"   # the crab map writes pz
+        # the wrappers and lines compose
+        @test mark(class_of(MarkerSpec(x_offset=1.0e-4))) == "------"                           # a translation passes through
+        @test mark(class_of(MarkerSpec(z_offset=1.0e-3))) == "u-u-u-"                           # the face drift reads the momenta
+        @test mark(class_of(MarkerSpec(x_pitch=1.0e-3))) == "uuuuu-" && class_of(MarkerSpec(x_pitch=1.0e-3)).ulp_bound == 1024
+        @test mark(class_of(MarkerSpec(ref_tilt=0.01))) == "uuuu--" && class_of(MarkerSpec(ref_tilt=0.01)).ulp_bound == 32
+        @test mark(class_of(SBendSpec(L=1.1, angle=0.05, ref_tilt=0.05))) == "uuuuu-" && class_of(SBendSpec(L=1.1, angle=0.05, ref_tilt=0.05)).ulp_bound == 8192
+        modulated = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase_noise=(WhiteNoise(1.0e-3; rng_id=Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)),))
+        @test compile_runtime(modulated) isa TurnModulated && mark(class_of(modulated)) == "-u-u-u"
+        @test mark(class_of(BeamLine("markers", MarkerSpec(), MarkerSpec()))) == "------"
+        @test mark(class_of(BeamLine("thin", ThinQuadrupoleSpec(k1l=0.05), HKickerSpec(hkick=1.0e-4)))) == "-b-b--"   # all members bitwise
+        @test mark(class_of(BeamLine("rf", ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV), DriftSpec(L=0.5)))) == "u-u-uu"
+        @test mark(class_of(BeamLine("cell", DriftSpec(L=0.5), QuadrupoleSpec(L=0.4, k1=1.7, nst=2); x_offset=1.0e-4))) == "uuuuu-"
+        @test mark(Octopus._cross_backend_rounding(map(compile_runtime, (DriftSpec(L=100.0), Linear6DSpec(matrix=zpz_map), ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV))))) == "u-u-uu"
+        @test mark(Octopus._cross_backend_rounding(())) == "------"
+    end
+
+    # (d) THE MEASUREMENT: every registry example (Float64, 400 particles with
+    # spread, 3 turns; the single-pass cavity 1) and the mixed fixtures tracked
+    # on the CPU and on CUDA from the same state, and the agreement checked
+    # against the declaration: a bitwise coordinate `===` on every particle, a
+    # ulp-class coordinate within the declared bound in ulps of its scale
+    # (`_cross_backend_violations`). A ulp-class coordinate that agrees
+    # bitwise is not a violation. The table is printed, so the numbers behind
+    # the bounds are in every log.
+    if CUDA_TESTS_ACTIVE
+        @testset "the declaration against the measurement" begin
+            base = Octopus._contract_default_initial_rep(400, Float64)
+            function tracked(spec, policy, turns)
+                rep = policy isa CUDAExecutionPolicy ?
+                    Phase6DRep((Octopus.CUDA.CuArray(copy(a)) for a in coordinate_arrays(base))...) :
+                    Phase6DRep((copy(a) for a in coordinate_arrays(base))...)
+                set_global_rng!(seed=0x5eed, method=:philox)
+                execute!(TrackingTask((spec,); policy=policy), rep; turns=turns)
+                Octopus.CUDA.synchronize()
+                return rep
+            end
+            println("cross-backend measurement, 400 particles, CPU against CUDA (measured B or ulps of scale / declared):")
+            function measure(label, spec)
+                class = Octopus._cross_backend_rounding(compile_runtime(spec))
+                turns = 3
+                host = try
+                    tracked(spec, cpu, turns)
+                catch e
+                    e isa ArgumentError || rethrow()        # a single-pass kind refuses a multi-turn window
+                    turns = 1
+                    tracked(spec, cpu, 1)
+                end
+                device = tracked(spec, CUDAExecutionPolicy(), turns)
+                agreement = Octopus._cross_backend_agreement(host, device)
+                println("    ", rpad(label, 26), "turns=", turns, " ", Octopus._cross_backend_summary(class, agreement))
+                @testset let case = label, violations = Octopus._cross_backend_violations(class, agreement; label=label)
+                    @test isempty(violations)
+                end
+                return agreement
+            end
+            for kind in kinds
+                measure(string(kind), example_spec(ElementSpec{kind}))
+            end
+            fixtures = (
+                ("drift L=0.35", DriftSpec(L=0.35)),
+                ("drift L=100", DriftSpec(L=100.0)),
+                ("drift curved", DriftSpec(L=0.35, h=0.02)),
+                ("quad fringe+offset", QuadrupoleSpec(L=0.4, k1=0.8, nst=2, fringe=:all, va=0.03, vs=1.0e-4, x_offset=1.0e-4)),
+                ("sext tilt", SextupoleSpec(L=0.25, k2=6.0, nst=2, tilt=0.01)),
+                ("sbend fringe ref_tilt", SBendSpec(L=1.1, angle=0.05, k1=0.2, e1=0.02, e2=0.015, fringe=:all, nst=2, ref_tilt=0.05)),
+                ("solenoid kn", SolenoidSpec(L=0.8, ks=0.3, kn=(0.0, 0.2), nst=2)),
+                ("thin skew+normal quad", ThinQuadrupoleSpec(k1l=0.05, k1sl=0.02)),
+                ("rf thick", ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV, phase=0.3, L=0.5)),
+                ("rf modulated", ThinRFCavitySpec(197.0e6; strength=1.0e-4, beta0=reference_beta(51.1e6, 0.511e6), gamma0=reference_gamma(51.1e6, 0.511e6),
+                                                  phase_noise=TurnTable([0.02 * cos(2pi * k / 5) for k in 1:3]; name="fixI_rf_phase"),
+                                                  strength_noise=WhiteNoise(5.0e-3; rng_id=Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)))),
+                ("crab modulated", ThinCrabCavitySpec{2}(197.0e6; strengthX=(1.0e-5, -2.0e-6), strengthY=(3.0e-6, 0.0), phase=(0.0, 0.2),
+                                                         phase_noise=(WhiteNoise(2.0e-3; rng_id=Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)), nothing))),
+                ("radiation exciting", LumpedRadSpec(damping_turns=(1000.0, 1000.0, 500.0), sigma=(1.0e-4, 8.0e-5, 1.0e-2))),
+                ("strong beam chromatic", ThinStrongBeamSpec(kbb=1.0e-4, beta=(1.0, 1.0), sigma=(1.0e-3, 1.0e-3), virtual_drift=ChromaticDrift())),
+                ("strong beam elliptic", ThinStrongBeamSpec(kbb=1.0e-8, klum=1.0, beta=(0.82, 0.075), alpha=(0.01, -0.02), sigma=(110.0e-6, 12.0e-6))),
+                ("chromaticity kick with zeta", ChromaticityKickSpec(xi=(1.2, -0.8), beta=(0.82, 0.075), alpha=(0.01, -0.02), zeta=(0.002, -0.001, 0.0, 0.0),
+                                                                     eta=(0.001, 0.0, -0.001, 0.0), R=(0.001, -0.0005, 0.0003, 0.0007))),
+                ("linear6d z-pz row", Linear6DSpec(matrix=zpz_map)),
+                ("patch", PatchSpec(dx=1.0e-5, dz=2.0e-5, angle_x=1.0e-4, angle_s=0.01)),
+                ("marker x_offset", MarkerSpec(x_offset=1.0e-4)),
+                ("marker z_offset", MarkerSpec(z_offset=1.0e-3)),
+                ("marker x_pitch", MarkerSpec(x_pitch=1.0e-3)),
+                ("marker ref_tilt", MarkerSpec(ref_tilt=0.01)),
+                ("line misaligned", BeamLine("G", DriftSpec(L=0.5), QuadrupoleSpec(L=0.4, k1=1.7, nst=2); x_offset=1.0e-4)),
+                ("line markers", BeamLine("M", MarkerSpec(), MarkerSpec())),
+                ("aperture killing", ApertureSpec(shape=:ellipse, x_limit=7.0e-5, y_limit=5.6e-5)),
+            )
+            for (label, spec) in fixtures
+                measure(label, spec)
+            end
+            # Anti-vacuity: the measurement sees differences where the classes
+            # say it may (the sector bend parts in x on this fixture), and the
+            # killing aperture killed something on both sides.
+            bend = measure("sbend (anti-vacuity)", example_spec(ElementSpec{:sbend}))
+            @test !bend.x.bitwise
+            killed = measure("aperture killing (anti-vacuity)", ApertureSpec(shape=:ellipse, x_limit=7.0e-5, y_limit=5.6e-5))
+            @test killed.x.compared < 400 && killed.x.lost_one_backend == 0
+        end
+    else
+        @test_skip "CUDA inactive: the measurement of the declared classes (31 registry examples and 25 mixed fixtures) is not exercised"
+    end
+
+    # (e) The pointers are real: the backend-consistency script consults the
+    # trait and the checker, and the backends section of current_runtime.md
+    # names the trait and the script as the stated list.
+    @testset "the stated list is pointed to" begin
+        script = read(joinpath(pkgdir(Octopus), "validation", "tracking_backend_consistency.jl"), String)
+        @test occursin("_cross_backend_rounding", script) && occursin("_cross_backend_violations", script)
+        @test occursin("CrossBackendRounding", script)
+        runtime_doc = read(joinpath(pkgdir(Octopus), "docs", "current_runtime.md"), String)
+        backends = first(split(runtime_doc, "## Current Counter RNG"))
+        @test occursin("## Current Backends", backends)
+        @test occursin("_cross_backend_rounding", backends) && occursin("tracking_backend_consistency.jl", backends)
+        @test occursin("CrossBackendRounding", backends)
+    end
 end
 
 
@@ -14452,26 +14753,30 @@ end
     @test occursin("No knob-driven parameters under", String(take!(buf)))
 end
 
-@testset "CUDA surveyed cavity matches CPU bit for bit" begin
+@testset "CUDA surveyed cavity matches CPU within its derived rounding class" begin
     # The slip-corrected kick is a new branch reachable from the fused CUDA
     # kernels (AGENTS.md: every branch must compile as device IR), and the
     # backend-consistency validation compiles its cavity BARE, so without
     # this pin the surveyed branch would never build as device code in the
-    # suite. The correction is a per-op constant, so CPU and CUDA must agree
-    # exactly on ONE pass from the same state -- the first turn is pinned
-    # bitwise in z and pz. Over the 64-turn run the two backends part in the
-    # last bit of pz through the kick's `sin` (the 1-ulp CPU/CUDA libm
-    # difference the suite documents; measured here 1-4 ulp of pz after 64
-    # turns on both the pre- and post-2026-10-16 drift) and the one-turn map
-    # couples it into z as -0.2 C pz; the 64-turn pin was bitwise in z alone
-    # until the drift's cancellation-free z update (2026-10-16 neighbour
-    # audit, U2-4) removed the eps(100 m) ~ 1e-14 of z noise the old drift
-    # added per pass (3e-14 over this run, 3e5 ulp of z, identical on both
-    # backends), after which the pre-existing pz difference flipped z's last
-    # bit. The run is therefore pinned at 16 ulp in z and pz: a 1-ulp step
-    # per kick accumulating as a random walk over 64 turns stays within
-    # sqrt(64) = 8 ulp, doubled; a wrong slip constant moves z by the shift
-    # itself, C (beta/beta0 - 1) ~ 1e-5, which is 1e14 ulp.
+    # suite. WHAT THE PIN MAY CLAIM IS DERIVED, not observed: from the line's
+    # cross-backend rounding class (`_cross_backend_rounding`,
+    # src/track/Track.jl; fix I of the 2026-10-16 crab-noise neighbour
+    # audit). The RF kick's pz goes through `sin` on each backend's libm and
+    # its z through the kicked velocity, the drift's `x + px/ps0 L` fuses on
+    # the device, and the coupling row `z - 0.2 C pz` of the Linear6D fuses
+    # too, so z and pz are of the ulp class here and the one-pass comparison
+    # is the class's bound, not `===`. This testset was titled "bit for bit"
+    # and pinned the first pass bitwise: true of z alone, by the fixture (one
+    # particle starting with every momentum zero, so the fused coupling row
+    # is exact), and of pz only until the kick's `sin` parts the backends
+    # (1 ulp from the third turn; unit G's finding, 2026-10-16) -- a pin
+    # written by observation. The 64-turn run keeps its own derived bound of
+    # 16 ulp: a 1-ulp step per kick accumulating as a random walk over 64
+    # turns stays within sqrt(64) = 8 ulp, doubled; a wrong slip constant
+    # moves z by the shift itself, C (beta/beta0 - 1) ~ 1e-5, which is 1e14
+    # ulp. Both bounds are per-particle ulp distances on the one tracked
+    # particle, whose z and pz are far from zero, so the scale-based bound of
+    # the class (ulps of the coordinate's scale over a beam) coincides with it.
     if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         C = 100.0
         m = [1.0 0 0 0 0 0; 0 1.0 0 0 0 0; 0 0 1.0 0 0 0; 0 0 0 1.0 0 0;
@@ -14479,6 +14784,13 @@ end
         specs = (DriftSpec(L=C), Linear6DSpec(matrix=m),
                  ThinRFCavitySpec(2.99792458e6; voltage=1.0e6, e0=2.5e9,
                                   mc2=PMASS_EV))
+        # The class the pin consults, derived from the compiled line: z and pz
+        # of the ulp class (the premise of the bound below is asserted, so a
+        # future kernel that made them bitwise would move this pin to `===`
+        # by failing here first).
+        line_class = Octopus._cross_backend_rounding(map(compile_runtime, specs))
+        @test line_class.z === :ulp && line_class.pz === :ulp
+        @test line_class.ulp_bound >= 4
         function zrun(arr)
             t = TrackingTask(specs)
             rep = Phase6DRep(arr([0.0]), arr([0.0]), arr([0.0]), arr([0.0]),
@@ -14493,7 +14805,13 @@ end
         ulps(a, b) = abs(a - b) / eps(max(abs(a), abs(b)))
         first_cpu, run_cpu = zrun(identity)
         first_gpu, run_gpu = zrun(Octopus.CUDA.CuArray)
-        @test first_cpu === first_gpu                  # one pass: bitwise, z and pz
+        # One pass: within the line's declared class (z and pz are of the ulp
+        # class, so `===` is not a claim the class supports).
+        @testset let first_z_ulp = ulps(first_cpu[1], first_gpu[1]),
+                     first_pz_ulp = ulps(first_cpu[2], first_gpu[2]), bound = line_class.ulp_bound
+            @test first_z_ulp <= bound
+            @test first_pz_ulp <= bound
+        end
         @testset let z_ulp = ulps(run_cpu[1], run_gpu[1]), pz_ulp = ulps(run_cpu[2], run_gpu[2])
             @test z_ulp <= 16
             @test pz_ulp <= 16

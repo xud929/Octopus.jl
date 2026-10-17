@@ -88,6 +88,24 @@ docstrings of public objects.
      both ways and runs every kind's `Float32` form on both backends; a new
      kind that departs from the pattern fails there by name
      (`../current_runtime.md` "Current Backends" carries the measurement).
+   - Cross-backend rounding class (fix I, 2026-10-17): declare
+     `_cross_backend_rounding(::MyElement)` beside the struct, built with
+     `_rounding_class(untouched=..., bitwise=..., ulp=..., ulp_bound=...,
+     why=...)` (`CrossBackendRounding` in `src/track/Track.jl` states the
+     rule). A coordinate the kernel never writes is `:untouched`; one written
+     by single IEEE operations or by arithmetic exact under any FMA fusion is
+     `:bitwise`; anything else -- a fused `a b + c`, a transcendental -- is
+     `:ulp`, with a bound in ulps of the coordinate's scale over the beam (the
+     measurement on the registry example times four, rounded up to a power of
+     two, at least 4) and a `why` naming the operations. Read the instance
+     when the arithmetic depends on it (a drift against a quadrupole, zero
+     coefficients, a damping-only radiation element). There is no default: a
+     type without a method fails the suite's "Cross-backend rounding classes"
+     testset by name; that testset also tracks the registry example on both
+     backends and fails a declaration the measurement contradicts, and
+     `validation/tracking_backend_consistency.jl` checks its own instance the
+     same way. Where the two disagree, the measurement wins and the
+     declaration changes.
 7. Confirm `element_help(MyElementSpec)` and `element_help(:my_element)` give a
    useful summary, and run `validate_element_metadata()`.
 8. Add a testset in `test/runtests.jl` (the suite is a single file; element

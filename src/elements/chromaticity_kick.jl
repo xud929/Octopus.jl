@@ -141,6 +141,20 @@ end
 @inline (elem::ChromaticityKick)(x, px, y, py, z, pz) =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
 
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl):
+# the kick itself never writes pz, but the crab-dispersion map around it does
+# (`pz + zeta2 x - zeta1 px + ...`) whenever a zeta is set -- the backend
+# script's instance showed pz parting by half an ulp of its scale where the
+# registry example (zeta = 0) coincides, so the instance decides.
+function _cross_backend_rounding(op::ChromaticityKick)
+    zeta_set = !all(iszero, (op.zeta.zeta1, op.zeta.zeta2, op.zeta.zeta3, op.zeta.zeta4))
+    return _rounding_class(untouched=zeta_set ? () : (:pz,),
+                           ulp=zeta_set ? _COORDINATE_NAMES : (:x, :px, :y, :py, :z), ulp_bound=8,
+        why="`sin` and `cos` of 2 pi xi pz on each backend's libm, the fused rotation `x0 (c + alpha s) + px0 beta s` (25% of 1e5 particles part in py) and z through the fused actions J, inside the dispersion and coupling maps; " *
+            (zeta_set ? "the crab-dispersion map around the kick writes pz through its fused `zeta2 x - zeta1 px` sums" :
+                        "pz is never written while every crab-dispersion coefficient is zero"))
+end
+
 function _pair_tuple(values, ::Type{T}) where {T}
     length(values) == 2 || throw(ArgumentError("expected 2 values, got $(length(values))"))
     return (T(values[1]), T(values[2]))

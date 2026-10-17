@@ -247,14 +247,35 @@ end
 # name the subject.
 _required_beam_eltype(elem::MisalignedElement) = _required_beam_eltype(elem.inner)
 
+"""Whether a 3x3 row-major frame matrix is exactly the identity."""
+_is_identity3(Q::NTuple{9,T}) where {T} =
+    Q == (one(T), zero(T), zero(T), zero(T), one(T), zero(T), zero(T), zero(T), one(T))
+
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl):
+# derived from the enclosed element's and from what the two frame changes do.
+function _cross_backend_rounding(elem::MisalignedElement)
+    inner = _cross_backend_rounding(elem.inner)
+    translation = _is_identity3(elem.qin) && _is_identity3(elem.qout)
+    if translation && iszero(elem.oin[3]) && iszero(elem.oout[3])
+        return _rounding_through(inner,
+            "the misalignment is a transverse translation, `x - ox` in and `x + ox` out, single operations exact on both backends, so the classes are the enclosed element's")
+    elseif translation
+        return _rounding_written_over(inner, (:x, :y, :z), 8, inner.why *
+            "; the longitudinal offset drifts onto the displaced face, `x + ds qx/qz` and `z - ds (1+pz)/qz`, which read the momenta (bitwise on 1e5 particles around a marker, declared ulp as a written chain)")
+    end
+    return _rounding_written_over(inner, (:x, :px, :y, :py, :z), 1024, inner.why *
+        "; the pitched or rolled frame change `Q1 a_x + Q4 a_y + Q7 a_z` fuses on the device, and a pitch cancels an O(sin) momentum term back out at the exit face (223 ulps of px's scale over 3 turns for a 1 mrad pitch, 6 for a 10 mrad roll); pz is never written by a frame change")
+end
+
 """
     _wrap_numeric_type(spec, inner) -> Type
 
 The number type a placement wrap (misalignment, design roll) is built in: the
 type of the element it encloses -- `numeric_type(spec)` for a single element,
-the members' common type for a misaligned line, so a girder of Float32 magnets
-gets Float32 frame changes -- and only around an element with no numeric type
-(a marker, a line of markers) the spec's own promotion. One precision rule, the
+the marker included (its `Marker{M,T}` carries the type as a bare parameter,
+fix I), the members' common type for a misaligned line, so a girder of Float32
+magnets gets Float32 frame changes -- and only around a line whose members
+disagree or hold no element the spec's own promotion. One precision rule, the
 wrappers included (owner decision 2026-10-16, fix H).
 """
 _wrap_numeric_type(spec, inner) = something(_required_beam_eltype(inner), numeric_type(spec))

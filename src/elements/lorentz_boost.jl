@@ -173,6 +173,10 @@ end
 @inline (boost::LorentzBoost)(x0, px0, y0, py0, z0, pz0) =
     track_particle(boost.method, boost, x0, px0, y0, py0, z0, pz0)
 
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl).
+_cross_backend_rounding(::LorentzBoost) = _rounding_class(bitwise=(:py,), ulp=(:x, :px, :y, :z, :pz), ulp_bound=16384,
+    why="`px0/c - h1 s`, `pz0 - px1 s` and `x0 + z0 tan + px1/ps1 ds` fuse on the device and cancel O(angle) intermediates, so one ulp of an O(1e-2) term is thousands of ulps of px (3937 ulps of px's scale over 3 turns; 12-24% of 1e5 particles part in px, x, pz); y reads the fused `py1/ps1 ds` (coincident at this amplitude); py is one division by cos")
+
 @inline function track_particle(::NonSymplectic6DMap, boost::RevLorentzBoost, x0, px0, y0, py0, z0, pz0)
     ps0 = sqrt((one(pz0) + pz0)^2 - px0^2 - py0^2)
     h0 = one(pz0) + pz0 - ps0
@@ -190,6 +194,10 @@ end
 
 @inline (boost::RevLorentzBoost)(x0, px0, y0, py0, z0, pz0) =
     track_particle(boost.method, boost, x0, px0, y0, py0, z0, pz0)
+
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl).
+_cross_backend_rounding(::RevLorentzBoost) = _rounding_class(bitwise=(:py,), ulp=(:x, :px, :y, :z, :pz), ulp_bound=16384,
+    why="the inverse boost's `x0 - z0 s`, `(px0 + h0 s) c` and `pz0 + px0 s` fuse on the device and cancel as the forward boost's do (3929 ulps of px's scale over 3 turns); y reads `py0/ps0 x1 s`; py is one multiply by cos")
 
 # `Number`, not `Real`: a crossing angle is a legitimate thing to differentiate
 # with respect to, and a dual number or a complex step is not a `Real`. `T` is

@@ -61,6 +61,14 @@ end
 # built in that type (`_wrap_numeric_type`, src/elements/misalignment.jl).
 _required_beam_eltype(elem::RefTilted) = _required_beam_eltype(elem.inner)
 
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl):
+# the roll writes the four transverse coordinates around the enclosed element.
+function _cross_backend_rounding(elem::RefTilted)
+    inner = _cross_backend_rounding(elem.inner)
+    return _rounding_written_over(inner, (:x, :px, :y, :py), 32, inner.why *
+        "; the design roll `c x + s y`, `c y - s x` in and out fuses on the device (39% of 1e5 particles part in each transverse coordinate at a 10 mrad roll; 6 ulps of scale over 3 turns); z and pz pass through")
+end
+
 """
 Rotate the transverse coordinates and momenta by `-psi`, given `c = cos psi` and
 `s = sin psi`. Pass `-s` to rotate by `+psi`.
