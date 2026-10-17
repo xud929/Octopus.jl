@@ -202,9 +202,11 @@ for kicks, cavities, dispersion maps and a round thin strong beam, 32 for a
 straight magnet with content and the design roll, 64 for a round Gaussian
 strong beam, 128 for the accelerating cavity, and large where a kernel cancels
 O(1) intermediates against each other (an elliptic strong beam's
-Bassetti-Erskine kick 2048, the sector bend and curved frames 8192, the
-solenoid 4096, the Lorentz boosts 16384, a pitched or rolled misalignment
-1024). A line is bitwise in a coordinate only when no member writes it or
+Bassetti-Erskine kick 2048, a bend with pole-face angles 8192, the Lorentz
+boosts 16384, a pitched or rolled misalignment 1024; the curved frame's body
+and the solenoid were 8192 and 4096 while their path lengths cancelled two
+numbers near L, and are 64 and 128 since fix batch 3 unit K formed the excess
+from small quantities, 2026-10-17). A line is bitwise in a coordinate only when no member writes it or
 every member is bitwise. A pin that compares the two backends consults the
 class instead of claiming "bit for bit" by observation: the surveyed-cavity
 pin did, and held for z alone until the drift changed under it.

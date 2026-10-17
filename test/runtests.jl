@@ -13364,8 +13364,10 @@ end
         @test mark(table[:marker]) == "------" && mark(table[:aperture]) == "------"
         @test mark(table[:drift]) == "u-u-u-" && table[:drift].ulp_bound == 8          # the straight drift writes x, y, z only
         @test mark(table[:quadrupole]) == "uuuuu-" && table[:quadrupole].ulp_bound == 32
-        @test mark(table[:sbend]) == "uuuuu-" && table[:sbend].ulp_bound == 8192       # the bend's cancellation
-        @test mark(table[:solenoid]) == "uuuuu-" && table[:solenoid].ulp_bound == 4096
+        # The bend's body and the solenoid were 8192 and 4096 for the cancellation
+        # class fix batch 3 unit K removed (2026-10-17); the face maps keep theirs.
+        @test mark(table[:sbend]) == "uuuuu-" && table[:sbend].ulp_bound == 64
+        @test mark(table[:solenoid]) == "uuuuu-" && table[:solenoid].ulp_bound == 128
         @test mark(table[:thin_quadrupole]) == "-b-b--" && mark(table[:thin_dipole]) == "-b-b--"
         @test mark(table[:hkicker]) == "-b-b--" && mark(table[:vkicker]) == "-b-b--" && mark(table[:kicker]) == "-b-b--"
         @test mark(table[:thin_sextupole]) == "-u-u--" && mark(table[:thin_multipole]) == "-u-u--"
@@ -13384,7 +13386,9 @@ end
         @test mark(class_of(ThinQuadrupoleSpec(k1l=0.05, k1sl=0.02))) == "-u-u--"              # normal and skew at one order
         @test mark(class_of(ThinMultipoleSpec(knl=(1.0e-3, 0.05)))) == "-b-b--"                 # dipole plus quadrupole: exact
         @test mark(class_of(DriftSpec(L=0.35))) == "u-u-u-" && class_of(DriftSpec(L=0.35)).ulp_bound == 8
-        @test mark(class_of(DriftSpec(L=0.35, h=0.02))) == "uuuuu-" && class_of(DriftSpec(L=0.35, h=0.02)).ulp_bound == 8192
+        @test mark(class_of(DriftSpec(L=0.35, h=0.02))) == "uuuuu-" && class_of(DriftSpec(L=0.35, h=0.02)).ulp_bound == 64
+        @test class_of(SBendSpec(L=1.1, angle=0.05, k1=0.2, nst=2)).ulp_bound == 64                            # content without faces: the body
+        @test mark(class_of(SBendSpec(L=1.1, angle=0.05, e1=0.02))) == "uuuuu-" && class_of(SBendSpec(L=1.1, angle=0.05, e1=0.02)).ulp_bound == 8192   # the pole-face maps
         @test mark(class_of(ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV, L=0.5))) == "u-u-uu"
         @test mark(class_of(ThinRFCavitySpec(400.8e6; voltage=0.0, e0=275.0e9, mc2=PMASS_EV))) == "------"
         @test mark(class_of(Linear6DSpec(matrix=zpz_map))) == "----u-"                         # one coupled row
@@ -13401,7 +13405,7 @@ end
         @test mark(class_of(MarkerSpec(z_offset=1.0e-3))) == "u-u-u-"                           # the face drift reads the momenta
         @test mark(class_of(MarkerSpec(x_pitch=1.0e-3))) == "uuuuu-" && class_of(MarkerSpec(x_pitch=1.0e-3)).ulp_bound == 1024
         @test mark(class_of(MarkerSpec(ref_tilt=0.01))) == "uuuu--" && class_of(MarkerSpec(ref_tilt=0.01)).ulp_bound == 32
-        @test mark(class_of(SBendSpec(L=1.1, angle=0.05, ref_tilt=0.05))) == "uuuuu-" && class_of(SBendSpec(L=1.1, angle=0.05, ref_tilt=0.05)).ulp_bound == 8192
+        @test mark(class_of(SBendSpec(L=1.1, angle=0.05, ref_tilt=0.05))) == "uuuuu-" && class_of(SBendSpec(L=1.1, angle=0.05, ref_tilt=0.05)).ulp_bound == 64   # the roll's 32 under the body's 64
         modulated = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase_noise=(WhiteNoise(1.0e-3; rng_id=Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)),))
         @test compile_runtime(modulated) isa TurnModulated && mark(class_of(modulated)) == "-u-u-u"
         @test mark(class_of(BeamLine("markers", MarkerSpec(), MarkerSpec()))) == "------"

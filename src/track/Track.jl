@@ -212,9 +212,12 @@ Coordinate classes:
   the measurement on the registry example (400 particles with spread, 3
   turns) times four, rounded up to a power of two, at least 4; a kernel that
   cancels one O(1) intermediate against another carries a large bound, the
-  sector bend's `px c + ps0 s` against `b0 q C1` 1260 measured and 8192
-  declared, the solenoid's `L (1 - (1+pz)/ps)` 768 and 4096, the Lorentz
-  boost's px 3937 and 16384.
+  bend's pole-face maps 1697 measured and 8192 declared, the Lorentz boost's
+  px 3937 and 16384. The sector bend's body (`px c + ps0 s` against
+  `b0 q C1`, 1260) and the solenoid (`L (1 - (1+pz)/ps)`, 768) were of that
+  class until fix batch 3 unit K (2026-10-17) formed their momenta and
+  path-length excess from small quantities: 10 and 25 since, declared 64
+  and 128.
 
 The classes are a property of the kernel's arithmetic for the instance, so
 one runtime type answers differently for a drift and a quadrupole, for a

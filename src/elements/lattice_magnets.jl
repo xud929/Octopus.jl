@@ -967,8 +967,12 @@ function _cross_backend_rounding(op::LatticeMagnet{M,T,N,ORDER,F,MC,NC,C}) where
         return _rounding_class(untouched=(:pz,), ulp=(:x, :px, :y, :py, :z), ulp_bound=32,
             why="a straight magnet: the kick `px - L g ar` and the recurrence `kn tr - ks ti` fuse on the device (34% of 1e5 particles part in px through a quadrupole), the fringe maps use `exp`, `tan` and `atan`, and the drift's x, y, z read the kicked momenta; pz is never written (1 to 2 ulps of scale over 3 turns bare, 8 with soft fringes and an offset)")
     end
-    return _rounding_class(untouched=(:pz,), ulp=(:x, :px, :y, :py, :z), ulp_bound=8192,
-        why="a curved frame or a bend: `sin` and `cos` of hL on each backend's libm and the fused `px c + ps0 s` are cancelled against the dipole's `b0 q C1`, so the last bit of an O(hL) intermediate lands on an O(px) result (932 to 1260 ulps of scale over 3 turns; 99% of 1e5 particles part in x, px, z through a sector bend); the curved drift's `z + L - (1+pz) Delta` is the same cancellation class; pz is never written")
+    if !iszero(op.e1) || !iszero(op.e2)
+        return _rounding_class(untouched=(:pz,), ulp=(:x, :px, :y, :py, :z), ulp_bound=8192,
+            why="a bend with pole-face angles: `_rot_xz(e)` turns the momentum by the face angle, an O(sin e) share of ps, and `_wedge(-e, b1)` turns it back with the field on, so the last bits of two O(sin e) intermediates (each backend's sin and cos of e, the device's fused `px c + ps s`) land on the O(px) result (829 to 1697 ulps of scale over 3 turns at e1 = 0.02, e2 = 0.015, with or without the hard-edge fringe); the body itself is within 10 ulps (below); pz is never written")
+    end
+    return _rounding_class(untouched=(:pz,), ulp=(:x, :px, :y, :py, :z), ulp_bound=64,
+        why="a curved frame or a bend without pole-face angles: sin and cos of hL on each backend's libm and the device's fused rotation and kick products, on a body whose exit momentum and path-length excess are formed from small quantities (fix batch 3 unit K, 2026-10-17: 932 to 1260 ulps of scale over 3 turns before, when `px c + ps0 s` was cancelled against `b0 q C1` and z carried `z + L - (1+pz) Delta`; 2 to 10 after, through a curved drift, a sector bend and a bend with k1; the bound is the widest times four, rounded up); pz is never written")
 end
 
 # ---------------------------------------------------------------------------
