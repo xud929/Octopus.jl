@@ -12824,8 +12824,9 @@ end
     @test no_type == [:marker]
     numeric_params(S) = [p for p in Base.unwrap_unionall(S).parameters
                          if p isa TypeVar && p.ub !== Any && p.ub <: Number]
-    concrete_ops = [S for S in Octopus._subtypes_recursive(Octopus.AbstractTrackOp)
-                    if !isabstracttype(Base.unwrap_unionall(S))]
+    # Octopus-defined ops only: the suite's own fixture ops (synthetic
+    # `AbstractTrackOp` subtypes other testsets define) are not kinds.
+    concrete_ops = Octopus._concrete_octopus_subtypes(Octopus.AbstractTrackOp)
     @test all(S -> length(numeric_params(S)) <= 1, concrete_ops)
     @testset let typeless_ops = sort!(string.(nameof.([S for S in concrete_ops if isempty(numeric_params(S))])))
         @test typeless_ops == ["CompositeLine", "Marker", "TurnModulated"]
