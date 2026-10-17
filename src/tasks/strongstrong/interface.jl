@@ -2486,10 +2486,11 @@ function execute!(task::StrongStrongTask, beam1::Beam, beam2::Beam;
     #
     # The preflight refusals of `_execute_strong_strong_task!` (the block
     # validation, the divided-run features, the turn-table windows) run inside
-    # the scope AFTER its two receipts (`:strong_strong_diagnostics`,
-    # `:strong_strong_output`) and after the two shard collectives: receipts
-    # record intent, so a refused call leaves those two in the audit for a run
-    # that never ran -- the pre-existing position of every strong-strong
+    # the scope AFTER its `:strong_strong_diagnostics` receipt (the
+    # `:strong_strong_output` receipt moved after the artifact's prepare in
+    # the 2026-10-16 fix batch 2, unit E) and after the two shard collectives:
+    # receipts record intent, so a refused call leaves that one in the audit
+    # for a run that never ran -- the pre-existing position of every strong-strong
     # preflight, unlike the TrackingTask twin, which refuses before activation
     # and records nothing. Hoisting the two compiles and the window checks
     # above the activation is an owner item (2026-10-13 neighbour audit,
