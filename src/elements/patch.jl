@@ -208,10 +208,21 @@ PatchSpec(dx = 0.05, dz = 1.2)        # a beamline junction
 
 Composing a patch with its exact inverse is the identity, which is the cheapest
 check that the rotation is composed in the right direction.
-"""
-abstract type PatchSpec end
 
-PatchSpec(; kwargs...) = ElementSpec{:patch}(_spec_params(; kwargs...))
+`PatchSpec{T}(; ...)` is the typed form: `T` is the number type the patch
+compiles in (`numeric_type`; `Float32` for a Float32 line).
+"""
+abstract type PatchSpec{T} end
+
+# Untyped: stored as given, compiled in `numeric_type(spec)` (the Float64-floor
+# promotion); `numeric_type=T` by keyword routes to the typed form, which
+# stores `numeric_type = T` and the floating-point inputs as `T` (one precision
+# rule for every kind, owner decision 2026-10-16).
+function PatchSpec(; numeric_type=nothing, kwargs...)
+    numeric_type === nothing || return PatchSpec{numeric_type}(; kwargs...)
+    return ElementSpec{:patch}(_spec_params(; kwargs...))
+end
+(::Type{PatchSpec{T}})(; kwargs...) where {T} = ElementSpec{:patch}(_typed_spec_params(T; kwargs...))
 
 default_method(::Type{ElementSpec{:patch}}) = NonSymplectic6DMap()
 
@@ -227,8 +238,9 @@ function Patch(spec::ElementSpec{:patch},
     conv = Symbol(getparam(spec, :convention, :bmad))
     conv in (:bmad, :madx) || throw(ArgumentError(
         "patch convention must be :bmad or :madx; got $(repr(conv))"))
-    T = float(promote_type(typeof(dx), typeof(dy), typeof(dz),
-                           typeof(ax), typeof(ay), typeof(as), typeof(dt), Float64))
+    # `numeric_type(spec)`: the stored type of a `PatchSpec{T}`, else the
+    # Float64-floor promotion of the stored parameters (one rule, 2026-10-16).
+    T = numeric_type(spec)
     return Patch{typeof(method),T}(method, T(dx), T(dy), T(dz),
                                    T(ax), T(ay), T(as), T(dt), conv === :madx)
 end
@@ -256,5 +268,5 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = PatchSpec(angle_x=12.5e-3)
-    construction_help = "Friendly constructor: PatchSpec(; dx=0, dy=0, dz=0, angle_x=0, angle_y=0, angle_s=0, t_offset=0, convention=:bmad, tracking_method=NonSymplectic6DMap()). A DELIBERATE frame change -- a crossing angle, a beamline junction, a spectrometer arm -- not a misalignment: the new frame persists downstream instead of being restored. The map is exact in delta and amplitude because it is geometry, and composing a patch with its inverse is the identity. Derivation: docs/theory/misalignment_and_patch_maps.md Section 7.5. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: PatchSpec(; dx=0, dy=0, dz=0, angle_x=0, angle_y=0, angle_s=0, t_offset=0, convention=:bmad, tracking_method=NonSymplectic6DMap()). A DELIBERATE frame change -- a crossing angle, a beamline junction, a spectrometer arm -- not a misalignment: the new frame persists downstream instead of being restored. The map is exact in delta and amplitude because it is geometry, and composing a patch with its inverse is the identity. Derivation: docs/theory/misalignment_and_patch_maps.md Section 7.5. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form PatchSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end

@@ -57,6 +57,10 @@ struct RefTilted{E,T<:Number} <: AbstractTrackOp
     s::T
 end
 
+# Its subject's beam element type, as for `MisalignedElement`: the wrap is
+# built in that type (`_wrap_numeric_type`, src/elements/misalignment.jl).
+_required_beam_eltype(elem::RefTilted) = _required_beam_eltype(elem.inner)
+
 """
 Rotate the transverse coordinates and momenta by `-psi`, given `c = cos psi` and
 `s = sin psi`. Pass `-s` to rotate by `+psi`.
@@ -148,7 +152,7 @@ function _ref_tilt_wrap(spec, inner)
     # Promoted from the spec, so seeding an alignment parameter with a dual
     # gives a derivative of the orbit with respect to the misalignment --
     # what beam-based alignment and orbit correction need.
-    T = numeric_type(spec)
+    T = _wrap_numeric_type(spec, inner)
     psi = T(getparam(spec, :ref_tilt, zero(T)))
     psi == 0 && return inner
     W = _misalign_matrix(T, zero(T), zero(T), psi, false)

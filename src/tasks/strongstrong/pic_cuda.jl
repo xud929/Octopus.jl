@@ -6248,8 +6248,12 @@ if _HAS_CUDA
                     y = rep.y[index]; py = rep.py[index]
                     z = rep.z[index]; pz = rep.pz[index]
                     drift = _soft_gaussian_drift(virtual_drift, longitudinal_kick)
+                    # The drift's working type is MT (`lum_scale` is `one(MT)`),
+                    # passed explicitly with the centre in the beam's type, as
+                    # the CPU twin `_apply_slice_kick_one!` does (fix H,
+                    # 2026-10-16).
                     x, px, y, py, z, pz, S = _forward_virtual_drift(
-                        drift, x, px, y, py, z, pz, center2)
+                        drift, x, px, y, py, z, pz, center2, typeof(lum_scale))
                     xx = x - moments2.mx + moments2.mpx * S
                     yy = y - moments2.my + moments2.mpy * S
                     px0, py0, pz0 = px, py, pz
@@ -6263,7 +6267,7 @@ if _HAS_CUDA
                         pz = pz0
                     end
                     x, px, y, py, z, pz = _reverse_virtual_drift(
-                        drift, x, px, y, py, z, pz, center2)
+                        drift, x, px, y, py, z, pz, center2, typeof(lum_scale))
                     rep.x[index] = x; rep.px[index] = px
                     rep.y[index] = y; rep.py[index] = py
                     rep.z[index] = z; rep.pz[index] = pz
@@ -6444,8 +6448,10 @@ if _HAS_CUDA
                     py = beam1 ? rep1.py[particle] : rep2.py[particle]
                     z = beam1 ? rep1.z[particle] : rep2.z[particle]
                     pz = beam1 ? rep1.pz[particle] : rep2.pz[particle]
+                    # The drift's working type is MT (`seg_scale`'s eltype),
+                    # passed explicitly, as in `_cuda_slice_kick_kernel!`.
                     x, px, y, py, z, pz, S = _forward_virtual_drift(
-                        drift, x, px, y, py, z, pz, center2)
+                        drift, x, px, y, py, z, pz, center2, typeof(lum_scale))
                     xx = x - mmx + mmpx * S
                     yy = y - mmy + mmpy * S
                     px0, py0, pz0 = px, py, pz
@@ -6457,7 +6463,7 @@ if _HAS_CUDA
                         pz = pz0
                     end
                     x, px, y, py, z, pz = _reverse_virtual_drift(
-                        drift, x, px, y, py, z, pz, center2)
+                        drift, x, px, y, py, z, pz, center2, typeof(lum_scale))
                     if beam1
                         rep1.x[particle] = x; rep1.px[particle] = px
                         rep1.y[particle] = y; rep1.py[particle] = py

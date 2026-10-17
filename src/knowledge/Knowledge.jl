@@ -256,6 +256,16 @@ const _PLACEMENT_PARAMS = (
     # per-kind entry wins over this one.
     name=ParamMeta(default="",
         meaning="label for this element, carried into beam-line provenance paths (ARC1/QF[3]) and into diagnostics that name an element rather than an index; read by the line walker, never by a tracking kernel"),
+    # `numeric_type` is here for the same reason: the number type a kind's
+    # runtime compiles in is a property of EVERY kind, one rule (owner
+    # decision 2026-10-16, fix H of the crab-cavity noise neighbour audit).
+    # The untyped friendly constructor leaves it unset -- `numeric_type(spec)`
+    # then promotes the stored parameters over a Float64 floor -- and the
+    # `Spec{T}` form every kind has stores `T` (`_typed_spec_params`). The two
+    # tracking precisions are its `alternatives`, so the parameter-effectiveness
+    # contract perturbs it and checks the typed form reaches the map.
+    numeric_type=ParamMeta(default=Float64, alternatives=(Float64, Float32),
+        meaning="the number type the compiled runtime is built in, read by numeric_type(spec) at compile_runtime: unset by the untyped friendly constructor (the promotion of the stored parameters over a Float64 floor, so Float32 inputs give a Float64 element and a dual or complex input widens it), stored as T by the kind's Spec{T} form -- Spec{Float32}(; ...) is the Float32 element, and Spec(; numeric_type=Float32, ...) is the same element by keyword; a beam whose element type differs from the element's is refused by name when a task compiles the line"),
     x_offset=ParamMeta(default=0, unit="m",
         meaning="horizontal displacement of the element body, a placement error consumed by the generic misalignment wrap at compile_runtime, not by the element kernel; see src/elements/misalignment.jl"),
     y_offset=ParamMeta(default=0, unit="m",
@@ -506,27 +516,38 @@ Minimal pattern for a new accelerator element type:
 ```julia
 abstract type MyElementSpec{T} end
 
-MyElementSpec(; strength, tracking_method=Symplectic6DMap(), kwargs...) =
-    MyElementSpec{Float64}(; strength, tracking_method, kwargs...)
+# The untyped form stores its inputs as given and compiles in
+# `numeric_type(spec)`, the Float64-floor promotion; `numeric_type = T` as a
+# keyword routes to the typed form, which is how reflection and the
+# parameter-effectiveness contract reach it.
+MyElementSpec(; numeric_type=nothing, strength, tracking_method=Symplectic6DMap(), kwargs...) =
+    numeric_type === nothing ?
+        ElementSpec{:my_element}(_spec_params(; strength, tracking_method, kwargs...)) :
+        MyElementSpec{numeric_type}(; strength, tracking_method, kwargs...)
 
+# The typed form stores `numeric_type = T` and its floating-point inputs as `T`.
 function (::Type{MyElementSpec{T}})(; strength,
                                     tracking_method=Symplectic6DMap(),
                                     kwargs...) where {T}
     return ElementSpec{:my_element}(
-        _spec_params(; strength=T(strength),
-                     tracking_method=tracking_method,
-                     kwargs...)
+        _typed_spec_params(T; strength=strength,
+                           tracking_method=tracking_method,
+                           kwargs...)
     )
 end
 
-struct MyElement{M<:AbstractTrackingMethod,T<:AbstractFloat} <: AbstractTrackOp
+# `T<:Number`, the ONE numeric type parameter: `_required_beam_eltype` derives
+# the beam element type the kind requires from it.
+struct MyElement{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     method::M
     strength::T
 end
 
-MyElement(spec::ElementSpec{:my_element},
-          method::AbstractTrackingMethod=tracking_method(spec)) =
-    MyElement(method, param(spec, :strength))
+function MyElement(spec::ElementSpec{:my_element},
+                   method::AbstractTrackingMethod=tracking_method(spec))
+    T = numeric_type(spec)
+    return MyElement(method, T(param(spec, :strength)))
+end
 
 @element_spec begin
     kind = :my_element
@@ -542,6 +563,7 @@ MyElement(spec::ElementSpec{:my_element},
         strength=ParamMeta(required=true, meaning="element strength"),
         tracking_method=ParamMeta(default=Symplectic6DMap(),
                                   meaning="per-element tracking method"),
+        _PLACEMENT_PARAMS...,   # placement, name and numeric_type: every kind
     )
     example = MyElementSpec(strength=0.1)
     construction_help = "Friendly constructor: MyElementSpec(; strength, tracking_method=Symplectic6DMap(), kwargs...)."
@@ -557,7 +579,7 @@ Validation checklist:
 - use `friendly_constructor`, not `friendly`;
 - use `DataType[]` for contracts until real validation implementations exist;
 - declare `TwissDispersionAnalysis` on every kind whose `tracking_methods` contain `Symplectic6DMap` and not `NonSymplectic6DMap` (the suite's set tripwires derive that set and fail on a kind that departs from it); use `PlaceholderAnalysis` only for kinds that have no analysis;
-- decide the numeric-type rule and keep it in one place: an untyped friendly constructor promotes its named numeric parameters over a `Float64` floor (`_linear_map_eltype`, or `numeric_type(spec)` at compile) and never narrows; a `Spec{T}` form stores and compiles `T`. If the kind's kernel cannot promote with the beam -- a branch on a runtime flag that returns the beam's type on one side and the element's on the other does not compile as device IR -- declare `_required_beam_eltype` (`src/track/Track.jl`) so a mismatched beam is refused at compile by name; the suite derives the declaring set from that method table;
+- the numeric type follows ONE rule for every kind (owner decision 2026-10-16): the compile constructor builds the runtime in `numeric_type(spec)`, the promotion of the stored parameters over a `Float64` floor for an untyped friendly constructor (a `Float32` input gives a `Float64` element, a dual or complex input widens it, nothing narrows) and the stored `numeric_type` for the `Spec{T}` form -- which every kind has, so every kind can sit in a `Float32` line; the typed form stores `_typed_spec_params(T; ...)` (floating-point inputs as `T`, `numeric_type = T`) and the untyped form routes `numeric_type=T` to it, storing no type itself (an untyped form that builds through its typed one drops the stored type again with `_floor_form`, so a dual or BigFloat placed later by a knob or a placement override still widens the element); declare the schema entry by splicing `_PLACEMENT_PARAMS...` (or `numeric_type=_PLACEMENT_PARAMS.numeric_type`); the runtime struct carries `T<:Number` as its one numeric type parameter, from which `_required_beam_eltype` (`src/track/Track.jl`) derives the beam element type the kind requires, so a task refuses a beam of another type by name; the suite pins the derived set against the registry;
 - run `validate_element_metadata()`;
 - run `element_help(MyElementSpec)` and `element_help(:my_element)`;
 - smoke-test execution through `TrackingTask`.
@@ -660,22 +682,99 @@ getparam(spec::ElementSpec, key::Symbol, default=nothing) = get(spec.params, key
 """
     numeric_type(spec, default=Float64)
 
-The number type a spec's runtime should be built in, promoted over its numeric
-parameters.
+The number type a spec's runtime is built in -- the one rule every compile
+constructor follows (owner decision 2026-10-16): the stored `numeric_type`
+parameter when the spec was built by a kind's `Spec{T}` form (or given
+`numeric_type=T` by keyword), otherwise the promotion of the stored numeric
+parameters over the `default` floor.
 
-`Float64` for an ordinary element, and the promoted type when a parameter is a
-dual number or a truncated power series — which is what lets a derivative be
-taken with respect to a *parameter* (a strength, a length, an alignment error)
-rather than only with respect to a coordinate. Coordinate derivatives need none
-of this: the coordinates promote against `Float64` fields on their own.
+`Float64` for an ordinary element: integers and `Float32` inputs to an untyped
+friendly constructor land on the floor, so nothing is ever narrowed silently,
+and the promoted type when a parameter is a dual number or a truncated power
+series — which is what lets a derivative be taken with respect to a
+*parameter* (a strength, a length, an alignment error) rather than only with
+respect to a coordinate. Coordinate derivatives need none of this: the
+coordinates promote against `Float64` fields on their own. `Spec{Float32}(; ...)`
+is the Float32 element of every kind; a stored type that is not a `Number` type
+is refused here by name.
 
 Non-numeric parameters are ignored, and so are unresolved knob expressions —
 they are numbers by the time `compile_runtime` reaches a runtime constructor,
 and ignoring them here means an unresolved spec still reports a usable type.
 """
-numeric_type(spec::ElementSpec, default::Type=Float64) =
-    foldl(_promote_param_type, values(getfield(spec, :params)); init=default)
+function numeric_type(spec::ElementSpec, default::Type=Float64)
+    stored = get(getfield(spec, :params), :numeric_type, nothing)
+    if stored !== nothing
+        (stored isa Type && stored <: Number) || throw(ArgumentError(
+            "ElementSpec{$(repr(kind(spec)))}: numeric_type must be a Number type " *
+            "(Float64, Float32, a dual or complex type); got $(repr(stored))"))
+        return stored
+    end
+    return foldl(_promote_param_type, values(getfield(spec, :params)); init=default)
+end
 numeric_type(x, default::Type=Float64) = default
+
+"""
+    _typed_spec_params(T; kwargs...) -> Dict{Symbol,Any}
+
+The stored parameters of a kind's `Spec{T}` form: every keyword as given, with
+floating-point values (scalars, tuples, arrays) converted to `T`, and
+`numeric_type = T`, which `numeric_type(spec)` returns and every compile
+constructor builds in. Integers, Bools, Symbols, strings, rule objects and knob
+expressions are stored untouched (an integer count stays a count; `L = 1`
+compiles to `T(1)`); a dual or complex value is stored as given and converts
+at compile only when `T` can hold it, so the typed form is the precision the
+caller spelled, never a promotion.
+"""
+function _typed_spec_params(::Type{T}; kwargs...) where {T}
+    params = Dict{Symbol,Any}(Symbol(k) => _as_numeric_type(T, v) for (k, v) in pairs(kwargs))
+    params[:numeric_type] = T
+    return params
+end
+_as_numeric_type(::Type{T}, v::AbstractFloat) where {T} = T(v)
+_as_numeric_type(::Type{T}, v::Tuple) where {T} = map(x -> _as_numeric_type(T, x), v)
+_as_numeric_type(::Type{T}, v::AbstractArray{<:AbstractFloat}) where {T} = T.(v)
+_as_numeric_type(::Type{T}, v) where {T} = v
+
+"""
+    _stamp_numeric_type!(params::Dict, T) -> params
+
+`numeric_type = T` written into the stored parameters of a typed form that
+converted its values to `T` by hand (the linear maps, `Linear6DSpec`, the
+chromaticity kick, the strong beams, the radiation element, the crab cavity):
+the same stored type `_typed_spec_params` writes, over any `numeric_type`
+keyword that reached the typed form.
+"""
+_stamp_numeric_type!(params::Dict{Symbol,Any}, ::Type{T}) where {T} =
+    (params[:numeric_type] = T; params)
+
+"""
+    _floor_form(spec, requested) -> spec
+
+The UNTYPED form of a kind whose untyped constructor builds through its typed
+one (the linear maps, `Linear6DSpec`, the chromaticity kick, the strong beams,
+the radiation element, the crab cavity): the stored `numeric_type` is dropped
+again unless the caller requested one (`numeric_type=T` by keyword), so the
+untyped form stores no type and `numeric_type(spec)` re-derives its promotion
+from the stored values at every compile -- a dual or BigFloat placed later by a
+knob or a placement override still widens the element (2026-08-05_b audit,
+U9-6), where a stored type would have narrowed it silently. Only an explicit
+`Spec{T}` or `numeric_type=T` stores the type.
+"""
+function _floor_form(spec::ElementSpec, requested)
+    requested === nothing && delete!(getfield(spec, :params), :numeric_type)
+    return spec
+end
+
+"""
+    _with_numeric_type(spec, T) -> ElementSpec
+
+`spec` with `numeric_type = T` stored and its other parameters unchanged, for a
+compile constructor that hands a sub-spec the type of the element it builds:
+the Gaussian strong beam compiles its `thin` in its own type.
+"""
+_with_numeric_type(spec::ElementSpec{Kind}, ::Type{T}) where {Kind,T} =
+    ElementSpec{Kind}(merge(getfield(spec, :params), Dict{Symbol,Any}(:numeric_type => T)))
 
 _promote_param_type(T::Type, v::Number) = promote_type(T, typeof(v))
 _promote_param_type(T::Type, v::Union{Tuple,AbstractArray}) =

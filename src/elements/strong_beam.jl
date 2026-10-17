@@ -153,7 +153,8 @@ Turn-dependent modulation is deliberately not part of this element. It belongs
 in a scheduled task action, keeping the runtime element a compact description
 of collision physics.
 """
-ThinStrongBeamSpec(; kwargs...) = ThinStrongBeamSpec{Float64}(; kwargs...)
+ThinStrongBeamSpec(; numeric_type=nothing, kwargs...) =
+    _floor_form(ThinStrongBeamSpec{something(numeric_type, Float64)}(; kwargs...), numeric_type)
 function (::Type{ThinStrongBeamSpec{T}})(; kbb,
                                         klum=one(T),
                                         beta=nothing,
@@ -170,7 +171,7 @@ function (::Type{ThinStrongBeamSpec{T}})(; kbb,
     covariance4 = transverse_covariance(T;
         beta=beta, alpha=alpha, sigma=sigma,
         covariance=covariance, coupling=coupling)
-    return ElementSpec{:thin_strong_beam}(
+    return ElementSpec{:thin_strong_beam}(_stamp_numeric_type!(
         _spec_params(;
             kbb=T(kbb),
             klum=T(klum),
@@ -181,7 +182,7 @@ function (::Type{ThinStrongBeamSpec{T}})(; kbb,
             virtual_drift=_virtual_drift(virtual_drift),
             tracking_method=tracking_method,
             kwargs...,
-        ),
+        ), T),
     )
 end
 
@@ -221,8 +222,10 @@ function ThinStrongBeam(spec::ElementSpec{:thin_strong_beam},
     center = param(spec, :center)
     angle = param(spec, :angle)
     curvature = param(spec, :curvature)
-    T = promote_type(map(typeof, (covariance4..., center..., angle..., curvature...,
-                                  param(spec, :kbb), param(spec, :klum)))...)
+    # `numeric_type(spec)`, the one rule of every kind: the stored type of a
+    # `ThinStrongBeamSpec{T}`, else the Float64-floor promotion of the stored
+    # parameters.
+    T = numeric_type(spec)
     moments = _strong_transverse_moments(covariance4, T)
     return ThinStrongBeam(
         method,
@@ -330,7 +333,8 @@ equal-charge family is tail-limited to first order; `:gauss_hermite` and
 `:sqrt_density` attack that) are in
 `docs/theory/gaussian_longitudinal_slicing.md`.
 """
-GaussianStrongBeamSpec(; kwargs...) = GaussianStrongBeamSpec{Float64}(; kwargs...)
+GaussianStrongBeamSpec(; numeric_type=nothing, kwargs...) =
+    _floor_form(GaussianStrongBeamSpec{something(numeric_type, Float64)}(; kwargs...), numeric_type)
 function (::Type{GaussianStrongBeamSpec{T}})(; thin,
                                             ns,
                                             slice_center=nothing,
@@ -347,7 +351,7 @@ function (::Type{GaussianStrongBeamSpec{T}})(; thin,
                                             hvoffset=nothing,
                                             tracking_method=WeakStrongBeamBeamMap(),
                                             kwargs...) where {T}
-    return ElementSpec{:gaussian_strong_beam}(
+    return ElementSpec{:gaussian_strong_beam}(_stamp_numeric_type!(
         _spec_params(;
             thin=thin,
             ns=Int(ns),
@@ -365,7 +369,7 @@ function (::Type{GaussianStrongBeamSpec{T}})(; thin,
             hvoffset=hvoffset,
             tracking_method=tracking_method,
             kwargs...,
-        ),
+        ), T),
     )
 end
 
@@ -400,9 +404,20 @@ end
 
 function GaussianStrongBeam(spec::ElementSpec{:gaussian_strong_beam},
                             method::AbstractTrackingMethod=tracking_method(spec))
+    # `numeric_type(spec)`, the one rule of every kind: the Gaussian's stored
+    # type (`GaussianStrongBeamSpec{T}`; the untyped form stores Float64) is
+    # the type its `thin` compiles in too -- a thin SPEC is compiled with it
+    # (`_with_numeric_type`), a thin RUNTIME of another type is refused rather
+    # than mixed (fix H, 2026-10-16).
+    T0 = numeric_type(spec)
     thin_raw = param(spec, :thin)
-    thin = thin_raw isa ThinStrongBeam ? thin_raw : ThinStrongBeam(thin_raw, method)
-    T0 = typeof(thin.kbb)
+    thin = thin_raw isa ThinStrongBeam ? thin_raw :
+           ThinStrongBeam(_with_numeric_type(thin_raw, T0), method)
+    typeof(thin.kbb) === T0 || throw(ArgumentError(
+        "gaussian_strong_beam: the wrapped thin strong beam compiled in $(typeof(thin.kbb)) " *
+        "but this spec's numeric type is $(T0); build both in one type " *
+        "(ThinStrongBeamSpec{$(T0)} inside GaussianStrongBeamSpec{$(T0)}) -- one " *
+        "precision rule for every kind"))
     covariance6 = getparam(spec, :covariance, nothing)
     crab_slope = ntuple(_ -> zero(T0), 4)
     if covariance6 !== nothing
@@ -565,9 +580,9 @@ end
     _reverse_virtual_drift(elem.virtual_drift, x, px, y, py, z, pz, elem.zo)
 
 @inline function _forward_virtual_drift(
-        ::_ChromaticFrozenEnergyDrift, x, px, y, py, z, pz, zo)
-    S = 0.5 * (z - zo)
-    phi = sqrt(1 - 0.5 * (px * px + py * py) / ((1 + pz) * (1 + pz))) - 1
+        ::_ChromaticFrozenEnergyDrift, x, px, y, py, z, pz, zo, ::Type{W}) where {W}
+    S = W(z - zo) / 2
+    phi = sqrt(1 - oftype(S, 0.5) * (px * px + py * py) / ((1 + pz) * (1 + pz))) - 1
     x += S * px / (1 + pz)
     y += S * py / (1 + pz)
     z += 2 * S * phi
@@ -575,9 +590,9 @@ end
 end
 
 @inline function _reverse_virtual_drift(
-        ::_ChromaticFrozenEnergyDrift, x, px, y, py, z, pz, zo)
-    S = 0.5 * (z - zo)
-    psi = sqrt(1 + 0.5 * (px * px + py * py) / ((1 + pz) * (1 + pz))) - 1
+        ::_ChromaticFrozenEnergyDrift, x, px, y, py, z, pz, zo, ::Type{W}) where {W}
+    S = W(z - zo) / 2
+    psi = sqrt(1 + oftype(S, 0.5) * (px * px + py * py) / ((1 + pz) * (1 + pz))) - 1
     x -= S * px / (1 + pz)
     y -= S * py / (1 + pz)
     z += 2 * S * psi
@@ -585,51 +600,70 @@ end
 end
 
 @inline function _forward_virtual_drift(
-        ::_ParaxialFrozenLongitudinalDrift, x, px, y, py, z, pz, zo)
-    S = 0.5 * (z - zo)
+        ::_ParaxialFrozenLongitudinalDrift, x, px, y, py, z, pz, zo, ::Type{W}) where {W}
+    S = W(z - zo) / 2
     x += S * px
     y += S * py
     return x, px, y, py, z, pz, S
 end
 
 @inline function _reverse_virtual_drift(
-        ::_ParaxialFrozenLongitudinalDrift, x, px, y, py, z, pz, zo)
-    S = 0.5 * (z - zo)
+        ::_ParaxialFrozenLongitudinalDrift, x, px, y, py, z, pz, zo, ::Type{W}) where {W}
+    S = W(z - zo) / 2
     x -= S * px
     y -= S * py
     return x, px, y, py, z, pz
 end
 
 @inline _forward_virtual_drift(
-        drift::UnsafeVirtualDrift, x, px, y, py, z, pz, zo) =
-    _forward_virtual_drift(drift.model, x, px, y, py, z, pz, zo)
+        drift::UnsafeVirtualDrift, x, px, y, py, z, pz, zo, ::Type{W}) where {W} =
+    _forward_virtual_drift(drift.model, x, px, y, py, z, pz, zo, W)
 
 @inline _reverse_virtual_drift(
-        drift::UnsafeVirtualDrift, x, px, y, py, z, pz, zo) =
-    _reverse_virtual_drift(drift.model, x, px, y, py, z, pz, zo)
+        drift::UnsafeVirtualDrift, x, px, y, py, z, pz, zo, ::Type{W}) where {W} =
+    _reverse_virtual_drift(drift.model, x, px, y, py, z, pz, zo, W)
+
+# The WORKING type `W` of a virtual drift (fix H, 2026-10-16): the half slice
+# distance is `S = W(z - zo) / 2` and every literal in the drift is `oftype(S,
+# c)`, so the arithmetic runs in `W` -- the difference `z - zo` itself is taken
+# in the operands' type first, as the original `0.5 * (z - zo)` took it. The
+# eight-argument form derives `W` from the operands: Float64 whenever the
+# coordinate or the longitudinal parameter (an element's `zo`) is, Float32 only
+# when both are, which is one tuple type for a Float32 element on a Float32
+# beam and what lets that kernel compile on CUDA. The strong-strong solvers
+# pass their working type explicitly (the solver's scalar type, U3-4) with a
+# slice centre in the beam's type, which is exactly the arithmetic the Float64
+# literal gave them before: a Float32 difference, then Float64 -- `S * px` is
+# then exact in Float64 and the device's FMA contraction cannot move it, which
+# is what keeps the two backends bit-identical on a Float32 beam ("Slice
+# geometry is bit-identical across backends").
+@inline _forward_virtual_drift(drift::AbstractVirtualDrift, x, px, y, py, z, pz, zo) =
+    _forward_virtual_drift(drift, x, px, y, py, z, pz, zo, typeof(z - zo))
+@inline _reverse_virtual_drift(drift::AbstractVirtualDrift, x, px, y, py, z, pz, zo) =
+    _reverse_virtual_drift(drift, x, px, y, py, z, pz, zo, typeof(z - zo))
 
 @inline function _forward_virtual_drift(
-        ::HirataParaxialDrift, x, px, y, py, z, pz, zo)
-    S = 0.5 * (z - zo)
+        ::HirataParaxialDrift, x, px, y, py, z, pz, zo, ::Type{W}) where {W}
+    S = W(z - zo) / 2
     x += S * px
     y += S * py
-    pz -= 0.25 * (px * px + py * py)
+    pz -= oftype(S, 0.25) * (px * px + py * py)
     return x, px, y, py, z, pz, S
 end
 
 @inline function _reverse_virtual_drift(
-        ::HirataParaxialDrift, x, px, y, py, z, pz, zo)
-    S = 0.5 * (z - zo)
+        ::HirataParaxialDrift, x, px, y, py, z, pz, zo, ::Type{W}) where {W}
+    S = W(z - zo) / 2
     x -= S * px
     y -= S * py
-    pz += 0.25 * (px * px + py * py)
+    pz += oftype(S, 0.25) * (px * px + py * py)
     return x, px, y, py, z, pz
 end
 
 @inline function _forward_virtual_drift(
-        ::ChromaticDrift, x, px, y, py, z, pz, zo)
-    S = 0.5 * (z - zo)
-    phi = sqrt(1 - 0.5 * (px * px + py * py) / ((1 + pz) * (1 + pz))) - 1
+        ::ChromaticDrift, x, px, y, py, z, pz, zo, ::Type{W}) where {W}
+    S = W(z - zo) / 2
+    phi = sqrt(1 - oftype(S, 0.5) * (px * px + py * py) / ((1 + pz) * (1 + pz))) - 1
     x += S * px / (1 + pz)
     y += S * py / (1 + pz)
     z += 2 * S * phi
@@ -638,9 +672,9 @@ end
 end
 
 @inline function _reverse_virtual_drift(
-        ::ChromaticDrift, x, px, y, py, z, pz, zo)
-    S = 0.5 * (z - zo)
-    psi = sqrt(1 + 0.5 * (px * px + py * py) / ((1 + pz) * (1 + pz))) - 1
+        ::ChromaticDrift, x, px, y, py, z, pz, zo, ::Type{W}) where {W}
+    S = W(z - zo) / 2
+    psi = sqrt(1 + oftype(S, 0.5) * (px * px + py * py) / ((1 + pz) * (1 + pz))) - 1
     x -= S * px / (1 + pz)
     y -= S * py / (1 + pz)
     z += 2 * S * psi
@@ -649,25 +683,26 @@ end
 end
 
 @inline function _forward_virtual_drift(
-        ::ExactHamiltonianDrift, x, px, y, py, z, pz, zo)
+        ::ExactHamiltonianDrift, x, px, y, py, z, pz, zo, ::Type{W}) where {W}
+    half = W(0.5)
     ps = sqrt((1 + pz) * (1 + pz) - px * px - py * py)
     H = 1 + pz - ps
-    rr = 0.5 * H / ps
+    rr = half * H / ps
     z2 = (z + rr * zo) / (1 + rr)
-    S = 0.5 * (z2 - zo)
+    S = W(z2 - zo) / 2
     z -= H / ps * S
-    pz -= 0.5 * H
+    pz -= half * H
     x += px / ps * S
     y += py / ps * S
     return x, px, y, py, z, pz, S
 end
 
 @inline function _reverse_virtual_drift(
-        ::ExactHamiltonianDrift, x, px, y, py, z, pz, zo)
-    S = 0.5 * (z - zo)
-    H0 = 0.5 * (px * px + py * py) / (1 + pz)
-    ps0 = 1 + pz - 0.5 * H0
-    pz += 0.5 * H0
+        ::ExactHamiltonianDrift, x, px, y, py, z, pz, zo, ::Type{W}) where {W}
+    S = W(z - zo) / 2
+    H0 = oftype(S, 0.5) * (px * px + py * py) / (1 + pz)
+    ps0 = 1 + pz - oftype(S, 0.5) * H0
+    pz += oftype(S, 0.5) * H0
     x -= px / ps0 * S
     y -= py / ps0 * S
     z += H0 / ps0 * S
@@ -675,14 +710,19 @@ end
 end
 
 @inline function _cp_kick(elem::_ThinStrongKickSource, S, x, px, y, py, z, pz)
-    xx = x - elem.xo + elem.pxo * S - 0.5 * elem.ppxo * S * S
-    yy = y - elem.yo + elem.pyo * S - 0.5 * elem.ppyo * S * S
+    # The literal in the drift's working type (`oftype(S, 0.5)`): the Float64
+    # `0.5` of the original code whenever the element or the beam is Float64,
+    # a Float32 one only when both are -- the bare Float64 literal promoted a
+    # Float32 kick to Float64, so a Float32 strong beam on a Float32 beam
+    # returned tuples of two types and failed CUDA compile (fix H, 2026-10-16).
+    xx = x - elem.xo + elem.pxo * S - oftype(S, 0.5) * elem.ppxo * S * S
+    yy = y - elem.yo + elem.pyo * S - oftype(S, 0.5) * elem.ppyo * S * S
     px0, py0 = px, py
     x, px, y, py, z, pz, density = _cp_covariance_kick(
         elem.moments, elem.kbb, S, xx, yy, x, px, y, py, z, pz)
     centroid_u_x = elem.pxo - elem.ppxo * S
     centroid_u_y = elem.pyo - elem.ppyo * S
-    pz += 0.5 * ((px - px0) * centroid_u_x + (py - py0) * centroid_u_y)
+    pz += oftype(S, 0.5) * ((px - px0) * centroid_u_x + (py - py0) * centroid_u_y)
     return x, px, y, py, z, pz, density
 end
 
@@ -693,12 +733,12 @@ end
     sigx, sigy = sqrt(a), sqrt(d)
     Kx, Ky, Hxx, Hyy =
         _gaussian_beambeam_kick_response(kbb, sigx, sigy, xx, yy)
-    expterm = exp(-0.5 * (xx * xx / (sigx * sigx) + yy * yy / (sigy * sigy)))
+    expterm = exp(-T(0.5) * (xx * xx / (sigx * sigx) + yy * yy / (sigy * sigy)))
     Fx, Fy = Kx * kbb, Ky * kbb
     px += Fx
     py += Fy
-    pz += 0.25 * (Hxx * au + Hyy * du)
-    return x, px, y, py, z, pz, expterm / TWOPI / sigx / sigy
+    pz += T(0.25) * (Hxx * au + Hyy * du)
+    return x, px, y, py, z, pz, expterm / T(TWOPI) / sigx / sigy
 end
 
 @inline function _cp_covariance_kick(m::StrongTransverseMoments{T,true}, kbb,
@@ -711,16 +751,16 @@ end
     if D == zero(D)
         sigma = sqrt((a + d) / 2)
         Kx, Ky = gaussian_beambeam_kick(sigma, sigma, xx, yy)
-        expterm = exp(-0.5 * (xx * xx + yy * yy) / (sigma * sigma))
+        expterm = exp(-T(0.5) * (xx * xx + yy * yy) / (sigma * sigma))
         Fx, Fy = kbb * Kx, kbb * Ky
         Hxx, Hxy, Hyy = _round_gaussian_hessian(kbb, sigma, xx, yy, expterm)
         px += Fx
         py += Fy
-        pz += 0.25 * (Hxx * au + 2 * Hxy * bu + Hyy * du)
-        return x, px, y, py, z, pz, expterm / (TWOPI * sigma * sigma)
+        pz += T(0.25) * (Hxx * au + 2 * Hxy * bu + Hyy * du)
+        return x, px, y, py, z, pz, expterm / (T(TWOPI) * sigma * sigma)
     end
 
-    theta = 0.5 * atan(2 * b, a - d)
+    theta = T(0.5) * atan(2 * b, a - d)
     c, s = cos(theta), sin(theta)
     lambda1 = (a + d + D) / 2
     lambda2 = (a + d - D) / 2
@@ -737,7 +777,7 @@ end
             _gaussian_beambeam_kick_response_principal(
                 kbb, sig1, sig2, xh, yh)
     end
-    expterm = exp(-0.5 * (xh * xh / lambda1 + yh * yh / lambda2))
+    expterm = exp(-T(0.5) * (xh * xh / lambda1 + yh * yh / lambda2))
     Fxh, Fyh = kbb * Kxh, kbb * Kyh
     Fx = c * Fxh - s * Fyh
     Fy = s * Fxh + c * Fyh
@@ -746,10 +786,10 @@ end
 
     Du = (adiff * (au - du) + 4 * b * bu) / D
     traceu = au + du
-    pz += 0.125 * ((H11 + H22) * traceu + (H11 - H22) * Du)
+    pz += T(0.125) * ((H11 + H22) * traceu + (H11 - H22) * Du)
     rotation_projection = (adiff * bu - b * (au - du)) / D
-    pz -= 0.5 * kbb * rotation_projection * L_over_D
-    return x, px, y, py, z, pz, expterm / (TWOPI * sig1 * sig2)
+    pz -= T(0.5) * kbb * rotation_projection * L_over_D
+    return x, px, y, py, z, pz, expterm / (T(TWOPI) * sig1 * sig2)
 end
 
 @inline function _transport_transverse_moments(m::StrongTransverseMoments, S)
@@ -1657,8 +1697,8 @@ end
         tracking_method=ParamMeta(default=WeakStrongBeamBeamMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
-    example = ThinStrongBeamSpec{Float64}(kbb=1e-4, beta=(1.0, 1.0), sigma=(1e-3, 1e-3))
-    construction_help = "Friendly constructor: ThinStrongBeamSpec{T}(; kbb, klum=1, beta=nothing, alpha=(0,0), sigma=nothing, covariance=nothing, coupling=nothing, center=(0,0,0), angle=(0,0,0), curvature=(0,0,0), virtual_drift=:hirata, tracking_method=WeakStrongBeamBeamMap(), kwargs...). Supply beta/sigma or covariance; coupling transforms the uncoupled covariance. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    example = ThinStrongBeamSpec(kbb=1e-4, beta=(1.0, 1.0), sigma=(1e-3, 1e-3))
+    construction_help = "Friendly constructor: ThinStrongBeamSpec{T}(; kbb, klum=1, beta=nothing, alpha=(0,0), sigma=nothing, covariance=nothing, coupling=nothing, center=(0,0,0), angle=(0,0,0), curvature=(0,0,0), virtual_drift=:hirata, tracking_method=WeakStrongBeamBeamMap(), kwargs...). Supply beta/sigma or covariance; coupling transforms the uncoupled covariance. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinStrongBeamSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 @element_spec begin
@@ -1689,8 +1729,8 @@ end
         tracking_method=ParamMeta(default=WeakStrongBeamBeamMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
-    example = GaussianStrongBeamSpec{Float64}(thin=ThinStrongBeamSpec{Float64}(kbb=1e-4, beta=(1.0, 1.0), sigma=(1e-3, 1e-3)), ns=3, sigz=0.01)
-    construction_help = "Friendly constructor: GaussianStrongBeamSpec{T}(; thin, ns, sigz=nothing, mean=nothing, covariance=nothing, slice_method=:sqrt_density, slice_width=nothing, slice_center=nothing, slice_weight=nothing, slice_hoffset=nothing, slice_voffset=nothing, slice_pxoffset=nothing, slice_pyoffset=nothing, hvoffset=nothing, tracking_method=WeakStrongBeamBeamMap(), kwargs...). A 6 x 6 covariance is conditioned on each longitudinal slice. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    example = GaussianStrongBeamSpec(thin=ThinStrongBeamSpec(kbb=1e-4, beta=(1.0, 1.0), sigma=(1e-3, 1e-3)), ns=3, sigz=0.01)
+    construction_help = "Friendly constructor: GaussianStrongBeamSpec{T}(; thin, ns, sigz=nothing, mean=nothing, covariance=nothing, slice_method=:sqrt_density, slice_width=nothing, slice_center=nothing, slice_weight=nothing, slice_hoffset=nothing, slice_voffset=nothing, slice_pxoffset=nothing, slice_pyoffset=nothing, hvoffset=nothing, tracking_method=WeakStrongBeamBeamMap(), kwargs...). A 6 x 6 covariance is conditioned on each longitudinal slice. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form GaussianStrongBeamSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 default_method(::Type{ElementSpec{:thin_strong_beam}}) = WeakStrongBeamBeamMap()

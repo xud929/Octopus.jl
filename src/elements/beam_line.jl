@@ -656,6 +656,22 @@ struct CompositeLine{T<:Tuple} <: AbstractTrackOp
 end
 CompositeLine(ops::T) where {T<:Tuple} = CompositeLine{T}(ops)
 
+# The beam element type a kept-whole line requires (`_required_beam_eltype`,
+# src/track/Track.jl): its members' common type, so a misaligned line's frame
+# changes are built in it (`_wrap_numeric_type`); `nothing` when no member has
+# one or the members disagree -- the task's walk (`_check_beam_eltype`) then
+# descends and refuses the odd member out by name.
+function _required_beam_eltype(elem::CompositeLine)
+    T = nothing
+    for op in elem.ops
+        t = _required_beam_eltype(op)
+        t === nothing && continue
+        T === nothing && (T = t; continue)
+        t === T || return nothing
+    end
+    return T
+end
+
 # Both call paths delegate to `fusedTrack`, which is `@generated` and unrolls
 # the (possibly nested) op tuple at COMPILE time.
 #

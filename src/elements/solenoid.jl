@@ -422,8 +422,11 @@ Two consequences worth knowing, both from `docs/theory/solenoid.md`:
 - **Coordinates inside a solenoid are canonical.** Since elements are
   entrance-to-exit maps this is not reachable today, but it becomes reachable
   the moment one is split -- which is the second reason not to.
+
+`SolenoidSpec{T}(; ...)` is the typed form: `T` is the number type the solenoid
+compiles in (`numeric_type`; `Float32` for a Float32 line).
 """
-abstract type SolenoidSpec end
+abstract type SolenoidSpec{T} end
 
 # `ks` is the SOLENOID strength here, following MAD-X's `KS`. Every other thick
 # magnet in Octopus uses `ks` for the *skew multipole tuple*, so the solenoid --
@@ -442,10 +445,21 @@ abstract type SolenoidSpec end
 _FOLDED_NAMED_STRENGTHS[:solenoid] = _MULTIPOLE_NAMED
 _FOLDED_TUPLE_KEYS[:solenoid] = (:kn, :kskew)
 
-SolenoidSpec(; kwargs...) = ElementSpec{:solenoid}(
-    _spec_params(; _fold_named_strengths(_MULTIPOLE_NAMED, kwargs;
-                                         nkey=:kn, skey=:kskew,
-                                         kind=:solenoid)...))
+# Untyped: stored as given, compiled in `numeric_type(spec)` (the Float64-floor
+# promotion); `numeric_type=T` by keyword routes to the typed form, which
+# stores `numeric_type = T` and the floating-point inputs as `T` (one precision
+# rule for every kind, owner decision 2026-10-16).
+function SolenoidSpec(; numeric_type=nothing, kwargs...)
+    numeric_type === nothing || return SolenoidSpec{numeric_type}(; kwargs...)
+    return ElementSpec{:solenoid}(
+        _spec_params(; _fold_named_strengths(_MULTIPOLE_NAMED, kwargs;
+                                             nkey=:kn, skey=:kskew,
+                                             kind=:solenoid)...))
+end
+(::Type{SolenoidSpec{T}})(; kwargs...) where {T} = ElementSpec{:solenoid}(
+    _typed_spec_params(T; _fold_named_strengths(_MULTIPOLE_NAMED, kwargs;
+                                                nkey=:kn, skey=:kskew,
+                                                kind=:solenoid)...))
 
 function Solenoid(spec::ElementSpec,
                   method::AbstractTrackingMethod=Symplectic6DMap())
@@ -522,11 +536,12 @@ function Solenoid(spec::ElementSpec,
             contraction_factor = q, nst = nst, suggested_nst = nst_ok)
     end
     n = max(length(kn_raw), length(ksk_raw))
-    # Promote over the multipole strengths too, not only (L, ks, h): a dual
-    # k1 through `numeric_type`-blind conversion was a `Float64(::Dual)`
-    # MethodError (2026-08-05 audit, U10-2).
-    T = float(promote_type(typeof(L), typeof(ks), typeof(h), Float64,
-                           map(typeof, (kn_raw..., ksk_raw...))...))
+    # `numeric_type(spec)`, the one rule of every kind: the stored type of a
+    # `SolenoidSpec{T}`, else the promotion of every stored parameter -- the
+    # multipole strengths included, so a dual k1 widens the element instead of
+    # dying in a `Float64(::Dual)` conversion (2026-08-05 audit, U10-2) --
+    # over a Float64 floor.
+    T = numeric_type(spec)
     kn = ntuple(i -> i <= length(kn_raw) ? T(kn_raw[i]) : zero(T), n)
     ksk = ntuple(i -> i <= length(ksk_raw) ? T(ksk_raw[i]) : zero(T), n)
     # The runtime stores hc — the curvature the element actually TRACKS with —
@@ -577,5 +592,5 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = SolenoidSpec(L=2.0, ks=0.35)
-    construction_help = "Friendly constructor: SolenoidSpec(; L, ks, h=0, curved=nothing, kn=(), kskew=(), nst=1, tracking_method=Symplectic6DMap()), plus named k0/k1/k2... and skew k0s/k1s/k2s... exactly as QuadrupoleSpec takes them. ks = B_s/(B*rho) is MAD-X's KS and is the SOLENOID strength; because that name is taken, skew multipoles fold into `kskew` rather than the `ks` other magnets use. Multipole strengths are THICK K_n, not the thin family's integrated K_n L. h is the reference-frame curvature and `curved` selects the tracking path, defaulting to curved when h != 0; curved=true at h=0 runs the integrator where the exact map also exists, which validates it directly, and curved=false at h!=0 ignores the curvature and warns. A straight pure solenoid is the exact flow and ignores nst; ks=0 reproduces the exact drift and ks=0 with k1 reproduces QuadrupoleSpec, both to roundoff. With multipoles the map is a second-order Strang splitting over nst steps and is no longer exact, because the solenoid rotates the frame the multipole kicks in. Entrance and exit fringes are included and cannot be disabled: they are the canonical-to-kinetic momentum conversion a transverse vector potential forces, not an optional model. Do not split a solenoid -- a split point lies where the vector potential is non-zero. Derivation: docs/theory/solenoid.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: SolenoidSpec(; L, ks, h=0, curved=nothing, kn=(), kskew=(), nst=1, tracking_method=Symplectic6DMap()), plus named k0/k1/k2... and skew k0s/k1s/k2s... exactly as QuadrupoleSpec takes them. ks = B_s/(B*rho) is MAD-X's KS and is the SOLENOID strength; because that name is taken, skew multipoles fold into `kskew` rather than the `ks` other magnets use. Multipole strengths are THICK K_n, not the thin family's integrated K_n L. h is the reference-frame curvature and `curved` selects the tracking path, defaulting to curved when h != 0; curved=true at h=0 runs the integrator where the exact map also exists, which validates it directly, and curved=false at h!=0 ignores the curvature and warns. A straight pure solenoid is the exact flow and ignores nst; ks=0 reproduces the exact drift and ks=0 with k1 reproduces QuadrupoleSpec, both to roundoff. With multipoles the map is a second-order Strang splitting over nst steps and is no longer exact, because the solenoid rotates the frame the multipole kicks in. Entrance and exit fringes are included and cannot be disabled: they are the canonical-to-kinetic momentum conversion a transverse vector potential forces, not an optional model. Do not split a solenoid -- a split point lies where the vector potential is non-zero. Derivation: docs/theory/solenoid.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form SolenoidSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end

@@ -115,10 +115,21 @@ for (kind, ctor, named) in ((:thin_multipole, :ThinMultipoleSpec, :_THIN_MULTI_N
                             (:thin_quadrupole, :ThinQuadrupoleSpec, :_THIN_QUAD_NAMED),
                             (:thin_sextupole, :ThinSextupoleSpec, :_THIN_SEXT_NAMED))
     @eval begin
-        abstract type $ctor end
-        $ctor(; kwargs...) = ElementSpec{$(QuoteNode(kind))}(_spec_params(;
-            _fold_named_strengths($named, kwargs; nkey=:knl, skey=:ksl,
-                                  kind=$(QuoteNode(kind)))...))
+        abstract type $ctor{T} end
+        # Untyped: stored as given, compiled in `numeric_type(spec)` (the
+        # Float64-floor promotion); `numeric_type=T` by keyword routes to the
+        # typed form. Typed: `numeric_type = T` stored and the floating-point
+        # inputs as `T`, so `Spec{Float32}` is the Float32 element (one
+        # precision rule for every kind, owner decision 2026-10-16).
+        function $ctor(; numeric_type=nothing, kwargs...)
+            numeric_type === nothing || return $ctor{numeric_type}(; kwargs...)
+            return ElementSpec{$(QuoteNode(kind))}(_spec_params(;
+                _fold_named_strengths($named, kwargs; nkey=:knl, skey=:ksl,
+                                      kind=$(QuoteNode(kind)))...))
+        end
+        (::Type{$ctor{T}})(; kwargs...) where {T} = ElementSpec{$(QuoteNode(kind))}(
+            _typed_spec_params(T; _fold_named_strengths($named, kwargs; nkey=:knl, skey=:ksl,
+                                                        kind=$(QuoteNode(kind)))...))
     end
 end
 
@@ -126,7 +137,8 @@ end
 Friendly constructor for `ElementSpec{:thin_multipole}`: a zero-length
 multipole kick with integrated strengths `knl`/`ksl` (`knl[i] = K_{i-1} L`),
 MAD-X's MULTIPOLE. See `element_help(:thin_multipole)` for the parameter
-schema.
+schema. `ThinMultipoleSpec{T}(; ...)` is the typed form: `T` is the number type the
+element compiles in (`numeric_type`; `Float32` for a Float32 line).
 """
 ThinMultipoleSpec
 
@@ -134,36 +146,48 @@ ThinMultipoleSpec
 Friendly constructor for `ElementSpec{:thin_dipole}`: a zero-length dipole
 kick of integrated field strength `k0l`, so `dpx = -k0l`; for a steering
 corrector with the opposite sign convention use `HKickerSpec`. See
-`element_help(:thin_dipole)` for the parameter schema.
+`element_help(:thin_dipole)` for the parameter schema. `ThinDipoleSpec{T}(; ...)` is the typed form: `T` is the number type the
+element compiles in (`numeric_type`; `Float32` for a Float32 line).
 """
 ThinDipoleSpec
 
 """
 Friendly constructor for `ElementSpec{:thin_quadrupole}`: the thin-lens
 quadrupole with integrated strength `k1l`, focal length `1/k1l`. See
-`element_help(:thin_quadrupole)` for the parameter schema.
+`element_help(:thin_quadrupole)` for the parameter schema. `ThinQuadrupoleSpec{T}(; ...)` is the typed form: `T` is the number type the
+element compiles in (`numeric_type`; `Float32` for a Float32 line).
 """
 ThinQuadrupoleSpec
 
 """
 Friendly constructor for `ElementSpec{:thin_sextupole}`: the thin-lens
 sextupole with integrated strength `k2l`, the workhorse of chromaticity
-correction. See `element_help(:thin_sextupole)` for the parameter schema.
+correction. See `element_help(:thin_sextupole)` for the parameter schema. `ThinSextupoleSpec{T}(; ...)` is the typed form: `T` is the number type the
+element compiles in (`numeric_type`; `Float32` for a Float32 line).
 """
 ThinSextupoleSpec
 
 for (kind, ctor) in ((:marker, :MarkerSpec), (:hkicker, :HKickerSpec),
                      (:vkicker, :VKickerSpec), (:kicker, :KickerSpec))
     @eval begin
-        abstract type $ctor end
-        $ctor(; kwargs...) = ElementSpec{$(QuoteNode(kind))}(_spec_params(; kwargs...))
+        abstract type $ctor{T} end
+        # The same untyped / typed pair as the strength-folding kinds above; a
+        # marker has no numeric parameter, so its `T` types only the placement
+        # wraps built around it.
+        function $ctor(; numeric_type=nothing, kwargs...)
+            numeric_type === nothing || return $ctor{numeric_type}(; kwargs...)
+            return ElementSpec{$(QuoteNode(kind))}(_spec_params(; kwargs...))
+        end
+        (::Type{$ctor{T}})(; kwargs...) where {T} =
+            ElementSpec{$(QuoteNode(kind))}(_typed_spec_params(T; kwargs...))
     end
 end
 
 """
 Friendly constructor for `ElementSpec{:marker}`: the identity map, kept as a
 real element so a lattice can name a position. See `element_help(:marker)` for
-the parameter schema.
+the parameter schema. `MarkerSpec{T}(; ...)` is the typed form: `T` is the number type the
+element compiles in (`numeric_type`; `Float32` for a Float32 line).
 """
 MarkerSpec
 
@@ -171,21 +195,24 @@ MarkerSpec
 Friendly constructor for `ElementSpec{:hkicker}`: a zero-length horizontal
 steering corrector, `dpx = +hkick` -- the steering sign convention, opposite a
 `ThinDipoleSpec` field of the same strength. See `element_help(:hkicker)` for
-the parameter schema.
+the parameter schema. `HKickerSpec{T}(; ...)` is the typed form: `T` is the number type the
+element compiles in (`numeric_type`; `Float32` for a Float32 line).
 """
 HKickerSpec
 
 """
 Friendly constructor for `ElementSpec{:vkicker}`: a zero-length vertical
 steering corrector, `dpy = +vkick`. See `element_help(:vkicker)` for the
-parameter schema.
+parameter schema. `VKickerSpec{T}(; ...)` is the typed form: `T` is the number type the
+element compiles in (`numeric_type`; `Float32` for a Float32 line).
 """
 VKickerSpec
 
 """
 Friendly constructor for `ElementSpec{:kicker}`: a zero-length combined
 steering corrector, `dpx = +hkick` and `dpy = +vkick`. See
-`element_help(:kicker)` for the parameter schema.
+`element_help(:kicker)` for the parameter schema. `KickerSpec{T}(; ...)` is the typed form: `T` is the number type the
+element compiles in (`numeric_type`; `Float32` for a Float32 line).
 """
 KickerSpec
 
@@ -217,7 +244,7 @@ const _THIN_COMMON = (
         _PLACEMENT_PARAMS...,
     )
     example = MarkerSpec()
-    construction_help = "Friendly constructor: MarkerSpec(; tracking_method=Symplectic6DMap()). Takes no physics parameters, because it has none: the map is the identity. Use it to name an interaction point, a survey reference, or a place a diagnostic will live. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: MarkerSpec(; tracking_method=Symplectic6DMap()). Takes no physics parameters, because it has none: the map is the identity. Use it to name an interaction point, a survey reference, or a place a diagnostic will live. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form MarkerSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 @element_spec begin
@@ -259,9 +286,10 @@ end
         # ordinary lattice element warned that the value was NOT being
         # tracked (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
+        numeric_type=_PLACEMENT_PARAMS.numeric_type,
     )
     example = ThinMultipoleSpec(k1l=0.05, k2l=1.2)
-    construction_help = "Friendly constructor: ThinMultipoleSpec(; knl=(), ksl=(), k0l=0, k0sl=0, k1l=0, k1sl=0, k2l=0, k2sl=0, k3l=0, k3sl=0, k4l=0, k4sl=0, k5l=0, k5sl=0, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). Strengths are integrated: knl[i] is K_{i-1} L. This is MAD-X's MULTIPOLE. For a steering kick use HKickerSpec/VKickerSpec/KickerSpec, whose sign convention is the opposite one. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: ThinMultipoleSpec(; knl=(), ksl=(), k0l=0, k0sl=0, k1l=0, k1sl=0, k2l=0, k2sl=0, k3l=0, k3sl=0, k4l=0, k4sl=0, k5l=0, k5sl=0, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). Strengths are integrated: knl[i] is K_{i-1} L. This is MAD-X's MULTIPOLE. For a steering kick use HKickerSpec/VKickerSpec/KickerSpec, whose sign convention is the opposite one. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinMultipoleSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 @element_spec begin
@@ -293,9 +321,10 @@ end
         # ordinary lattice element warned that the value was NOT being
         # tracked (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
+        numeric_type=_PLACEMENT_PARAMS.numeric_type,
     )
     example = ThinDipoleSpec(k0l=1.0e-3)
-    construction_help = "Friendly constructor: ThinDipoleSpec(; k0l=0, k0sl=0, knl=(), ksl=(), x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). A field, so dpx = -k0l. For a steering corrector, whose sign is the other way, use HKickerSpec. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: ThinDipoleSpec(; k0l=0, k0sl=0, knl=(), ksl=(), x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). A field, so dpx = -k0l. For a steering corrector, whose sign is the other way, use HKickerSpec. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinDipoleSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 @element_spec begin
@@ -327,9 +356,10 @@ end
         # ordinary lattice element warned that the value was NOT being
         # tracked (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
+        numeric_type=_PLACEMENT_PARAMS.numeric_type,
     )
     example = ThinQuadrupoleSpec(k1l=0.05)
-    construction_help = "Friendly constructor: ThinQuadrupoleSpec(; k1l=0, k1sl=0, knl=(), ksl=(), x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The thin-lens quadrupole, focal length 1/k1l. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: ThinQuadrupoleSpec(; k1l=0, k1sl=0, knl=(), ksl=(), x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The thin-lens quadrupole, focal length 1/k1l. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinQuadrupoleSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 @element_spec begin
@@ -361,9 +391,10 @@ end
         # ordinary lattice element warned that the value was NOT being
         # tracked (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
+        numeric_type=_PLACEMENT_PARAMS.numeric_type,
     )
     example = ThinSextupoleSpec(k2l=1.2)
-    construction_help = "Friendly constructor: ThinSextupoleSpec(; k2l=0, k2sl=0, knl=(), ksl=(), x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The thin-lens sextupole used for chromaticity correction. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: ThinSextupoleSpec(; k2l=0, k2sl=0, knl=(), ksl=(), x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The thin-lens sextupole used for chromaticity correction. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinSextupoleSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 @element_spec begin
@@ -392,9 +423,10 @@ end
         # ordinary lattice element warned that the value was NOT being
         # tracked (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
+        numeric_type=_PLACEMENT_PARAMS.numeric_type,
     )
     example = HKickerSpec(hkick=1.0e-4)
-    construction_help = "Friendly constructor: HKickerSpec(; hkick=0, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). dpx = +hkick, the steering convention; a ThinDipoleSpec of strength k0l gives dpx = -k0l instead. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: HKickerSpec(; hkick=0, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). dpx = +hkick, the steering convention; a ThinDipoleSpec of strength k0l gives dpx = -k0l instead. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form HKickerSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 @element_spec begin
@@ -423,9 +455,10 @@ end
         # ordinary lattice element warned that the value was NOT being
         # tracked (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
+        numeric_type=_PLACEMENT_PARAMS.numeric_type,
     )
     example = VKickerSpec(vkick=1.0e-4)
-    construction_help = "Friendly constructor: VKickerSpec(; vkick=0, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). dpy = +vkick. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: VKickerSpec(; vkick=0, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). dpy = +vkick. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form VKickerSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 @element_spec begin
@@ -455,7 +488,8 @@ end
         # ordinary lattice element warned that the value was NOT being
         # tracked (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
+        numeric_type=_PLACEMENT_PARAMS.numeric_type,
     )
     example = KickerSpec(hkick=1.0e-4, vkick=-5.0e-5)
-    construction_help = "Friendly constructor: KickerSpec(; hkick=0, vkick=0, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). dpx = +hkick and dpy = +vkick. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: KickerSpec(; hkick=0, vkick=0, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). dpx = +hkick and dpy = +vkick. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form KickerSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end

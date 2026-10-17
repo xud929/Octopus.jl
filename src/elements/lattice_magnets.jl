@@ -1111,38 +1111,55 @@ for (kind, ctor, named) in ((:drift, :DriftSpec, :_NO_NAMED),
                             (:octupole, :OctupoleSpec, :_OCT_NAMED),
                             (:multipole, :MultipoleSpec, :_MULTIPOLE_NAMED))
     @eval begin
-        abstract type $ctor end
-        $ctor(; kwargs...) = ElementSpec{$(QuoteNode(kind))}(
-            _spec_params(; _fold_named_strengths($named, kwargs;
-                                                 kind=$(QuoteNode(kind)))...))
+        abstract type $ctor{T} end
+        # The untyped form stores its inputs as given and compiles in
+        # `numeric_type(spec)`, the Float64-floor promotion; `numeric_type=T`
+        # by keyword routes to the typed form (reflection's road to it).
+        function $ctor(; numeric_type=nothing, kwargs...)
+            numeric_type === nothing || return $ctor{numeric_type}(; kwargs...)
+            return ElementSpec{$(QuoteNode(kind))}(
+                _spec_params(; _fold_named_strengths($named, kwargs;
+                                                     kind=$(QuoteNode(kind)))...))
+        end
+        # The typed form, `Spec{T}(; ...)`: `numeric_type = T` stored and the
+        # floating-point inputs as `T` (`_typed_spec_params`), so the magnet
+        # compiles in `T` and `Spec{Float32}` is the Float32 magnet (one
+        # precision rule for every kind, owner decision 2026-10-16).
+        (::Type{$ctor{T}})(; kwargs...) where {T} = ElementSpec{$(QuoteNode(kind))}(
+            _typed_spec_params(T; _fold_named_strengths($named, kwargs;
+                                                        kind=$(QuoteNode(kind)))...))
     end
 end
 
 """
 Friendly constructor for `ElementSpec{:drift}`: a field-free drift of length
 `L`, exact in `(1+delta)`; the reference frame may be curved. See
-`element_help(:drift)` for the parameter schema.
+`element_help(:drift)` for the parameter schema. `DriftSpec{T}(; ...)` is the typed form: `T` is the number type the
+element compiles in (`numeric_type`; `Float32` for a Float32 line).
 """
 DriftSpec
 
 """
 Friendly constructor for `ElementSpec{:quadrupole}`: a thick quadrupole of
 length `L` and strength `k1`, tracked as exact drifts interleaved with
-multipole kicks. See `element_help(:quadrupole)` for the parameter schema.
+multipole kicks. See `element_help(:quadrupole)` for the parameter schema. `QuadrupoleSpec{T}(; ...)` is the typed form: `T` is the number type the
+element compiles in (`numeric_type`; `Float32` for a Float32 line).
 """
 QuadrupoleSpec
 
 """
 Friendly constructor for `ElementSpec{:sextupole}`: a thick sextupole of
 length `L` and strength `k2`, tracked as exact drifts interleaved with
-multipole kicks. See `element_help(:sextupole)` for the parameter schema.
+multipole kicks. See `element_help(:sextupole)` for the parameter schema. `SextupoleSpec{T}(; ...)` is the typed form: `T` is the number type the
+element compiles in (`numeric_type`; `Float32` for a Float32 line).
 """
 SextupoleSpec
 
 """
 Friendly constructor for `ElementSpec{:octupole}`: a thick octupole of length
 `L` and strength `k3`, tracked as exact drifts interleaved with multipole
-kicks. See `element_help(:octupole)` for the parameter schema.
+kicks. See `element_help(:octupole)` for the parameter schema. `OctupoleSpec{T}(; ...)` is the typed form: `T` is the number type the
+element compiles in (`numeric_type`; `Float32` for a Float32 line).
 """
 OctupoleSpec
 
@@ -1150,7 +1167,8 @@ OctupoleSpec
 Friendly constructor for `ElementSpec{:multipole}`: a thick general multipole
 with strengths `kn`/`ks` (`kn[i] = K_{i-1}`, thick strengths, not the thin
 family's integrated `K_n L`). See `element_help(:multipole)` for the parameter
-schema.
+schema. `MultipoleSpec{T}(; ...)` is the typed form: `T` is the number type the
+element compiles in (`numeric_type`; `Float32` for a Float32 line).
 """
 MultipoleSpec
 
@@ -1158,9 +1176,11 @@ MultipoleSpec
 Friendly constructor for `ElementSpec{:sbend}`: an exact sector bend, where
 `angle` sets both the frame curvature and the dipole field, `h = b0 =
 angle / L`, with pole-face angles and fringe fields available. See
-`element_help(:sbend)` for the parameter schema.
+`element_help(:sbend)` for the parameter schema. `SBendSpec{T}(; ...)` is the
+typed form: `T` is the number type the bend compiles in (`numeric_type`;
+`Float32` for a Float32 line).
 """
-abstract type SBendSpec end
+abstract type SBendSpec{T} end
 
 """
 Friendly constructor for a rectangular bend, built as an `ElementSpec{:sbend}`
@@ -1185,9 +1205,11 @@ construction and never stored, so it cannot be overridden on a placement
 (the guard names the conversion). The choice of arc-`L` is a feature, not an
 accident: one length rule for every element is what keeps the survey a plain
 `L`-sum, and it is pinned externally against a true MAD-X RBEND by the
-`MADXSurveyConsistencyContract` fixture `rbend_chord`.
+`MADXSurveyConsistencyContract` fixture `rbend_chord`. `RBendSpec{T}(; ...)` is
+the typed form, an RBEND compiled in `T` through the sector bend's own
+(`numeric_type`; `Float32` for a Float32 line).
 """
-abstract type RBendSpec end
+abstract type RBendSpec{T} end
 
 # An RBEND is a sector bend whose faces are parallel to each other rather than
 # perpendicular to the design orbit, which is the same magnet with `angle/2`
@@ -1195,7 +1217,9 @@ abstract type RBendSpec end
 # stays a construction convenience over the validated sector-bend map rather
 # than a second bend implementation. `e1`/`e2` remain available and are taken as
 # *additional* face angles on top of the half-angle, matching MAD-X.
-function RBendSpec(; kwargs...)
+RBendSpec(; kwargs...) = SBendSpec(; _rbend_params(kwargs)...)
+(::Type{RBendSpec{T}})(; kwargs...) where {T} = SBendSpec{T}(; _rbend_params(kwargs)...)
+function _rbend_params(kwargs)
     d = Dict{Symbol,Any}(kwargs)
     haskey(d, :angle) || throw(ArgumentError("RBendSpec needs angle"))
     if haskey(d, :chord)
@@ -1212,14 +1236,23 @@ function RBendSpec(; kwargs...)
     half = float(d[:angle]) / 2
     d[:e1] = float(get(d, :e1, 0.0)) + half
     d[:e2] = float(get(d, :e2, 0.0)) + half
-    return SBendSpec(; (Symbol(k) => v for (k, v) in d)...)
+    return d
 end
 
 # `angle` is the design-orbit spelling: one number sets both the frame curvature
 # and the field, h = b0 = angle / L, which is what a lattice file means by a
 # bend angle. Giving h and b0 directly stays available for the case they differ
 # (a bend off its design orbit), but giving both spellings is contradictory.
-function SBendSpec(; kwargs...)
+function SBendSpec(; numeric_type=nothing, kwargs...)
+    numeric_type === nothing || return SBendSpec{numeric_type}(; kwargs...)
+    return ElementSpec{:sbend}(_spec_params(; _sbend_params(kwargs)...))
+end
+# The typed form (the macro-built kinds above have the same pair): `numeric_type
+# = T` stored and the floating-point inputs as `T`, the bend's h = b0 = angle/L
+# included.
+(::Type{SBendSpec{T}})(; kwargs...) where {T} =
+    ElementSpec{:sbend}(_typed_spec_params(T; _sbend_params(kwargs)...))
+function _sbend_params(kwargs)
     d = _fold_named_strengths(_BEND_NAMED, kwargs; kind=:sbend)
     if haskey(d, :angle)
         (haskey(d, :h) || haskey(d, :b0)) && throw(ArgumentError(
@@ -1230,7 +1263,7 @@ function SBendSpec(; kwargs...)
         d[:b0] = d[:h] = float(d[:angle]) / L
         delete!(d, :angle)
     end
-    return ElementSpec{:sbend}(_spec_params(; d...))
+    return d
 end
 
 @element_spec begin
@@ -1251,7 +1284,7 @@ end
         _PLACEMENT_PARAMS...,
     ))
     example = DriftSpec(L=0.5)
-    construction_help = "Friendly constructor: DriftSpec(; L, h=0, curved=nothing, nst=1, integrator_order=2, tracking_method=Symplectic6DMap()). Exact in (1+delta); h != 0 gives a curved drift. nst and integrator_order are accepted for interface uniformity; a pure drift is exact and ignores them, while a drift given body strengths splits like any magnet. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel." * _LATTICE_BODY_HELP
+    construction_help = "Friendly constructor: DriftSpec(; L, h=0, curved=nothing, nst=1, integrator_order=2, tracking_method=Symplectic6DMap()). Exact in (1+delta); h != 0 gives a curved drift. nst and integrator_order are accepted for interface uniformity; a pure drift is exact and ignores them, while a drift given body strengths splits like any magnet. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form DriftSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line." * _LATTICE_BODY_HELP
 end
 
 @element_spec begin
@@ -1286,9 +1319,10 @@ end
         # ordinary lattice element warned that the value was NOT being
         # tracked (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
+        numeric_type=_PLACEMENT_PARAMS.numeric_type,
     ))
     example = QuadrupoleSpec(L=0.3, k1=1.2)
-    construction_help = "Friendly constructor: QuadrupoleSpec(; L, k1=0, k1s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k1, with k1s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[2] is K1, and setting both k1 and a nonzero kn[2] throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel." * _LATTICE_BODY_HELP
+    construction_help = "Friendly constructor: QuadrupoleSpec(; L, k1=0, k1s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k1, with k1s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[2] is K1, and setting both k1 and a nonzero kn[2] throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form QuadrupoleSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line." * _LATTICE_BODY_HELP
 end
 
 @element_spec begin
@@ -1323,9 +1357,10 @@ end
         # ordinary lattice element warned that the value was NOT being
         # tracked (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
+        numeric_type=_PLACEMENT_PARAMS.numeric_type,
     ))
     example = SextupoleSpec(L=0.2, k2=12.0)
-    construction_help = "Friendly constructor: SextupoleSpec(; L, k2=0, k2s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k2, with k2s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[3] is K2, and setting both k2 and a nonzero kn[3] throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel." * _LATTICE_BODY_HELP
+    construction_help = "Friendly constructor: SextupoleSpec(; L, k2=0, k2s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k2, with k2s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[3] is K2, and setting both k2 and a nonzero kn[3] throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form SextupoleSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line." * _LATTICE_BODY_HELP
 end
 
 @element_spec begin
@@ -1360,9 +1395,10 @@ end
         # ordinary lattice element warned that the value was NOT being
         # tracked (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
+        numeric_type=_PLACEMENT_PARAMS.numeric_type,
     ))
     example = OctupoleSpec(L=0.1, k3=300.0)
-    construction_help = "Friendly constructor: OctupoleSpec(; L, k3=0, k3s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k3, with k3s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[4] is K3, and setting both k3 and a nonzero kn[4] throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel." * _LATTICE_BODY_HELP
+    construction_help = "Friendly constructor: OctupoleSpec(; L, k3=0, k3s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is k3, with k3s for the skew partner. kn/ks remain available for field errors: kn[i] is K_{i-1}, so kn[4] is K3, and setting both k3 and a nonzero kn[4] throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form OctupoleSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line." * _LATTICE_BODY_HELP
 end
 
 @element_spec begin
@@ -1407,9 +1443,10 @@ end
         # ordinary lattice element warned that the value was NOT being
         # tracked (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
+        numeric_type=_PLACEMENT_PARAMS.numeric_type,
     ))
     example = MultipoleSpec(L=0.2, k1=1.0, k2=5.0)
-    construction_help = "Friendly constructor: MultipoleSpec(; L, k0=0, k0s=0, k1=0, k1s=0, k2=0, k2s=0, k3=0, k3s=0, k4=0, k4s=0, k5=0, k5s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Named strengths run K0 (dipole corrector) through K5 (dodecapole), each folded into kn/ks at construction, so a decapole is k4 rather than four leading zeros. Orders beyond K5 and field errors use the positional tuples, where kn[i] is K_{i-1}. Setting a named strength and the matching nonzero kn entry together throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel." * _LATTICE_BODY_HELP
+    construction_help = "Friendly constructor: MultipoleSpec(; L, k0=0, k0s=0, k1=0, k1s=0, k2=0, k2s=0, k3=0, k3s=0, k4=0, k4s=0, k5=0, k5s=0, kn=(), ks=(), nst=1, integrator_order=2, fringe=:none, va=0, vs=0, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Named strengths run K0 (dipole corrector) through K5 (dodecapole), each folded into kn/ks at construction, so a decapole is k4 rather than four leading zeros. Orders beyond K5 and field errors use the positional tuples, where kn[i] is K_{i-1}. Setting a named strength and the matching nonzero kn entry together throws. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form MultipoleSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line." * _LATTICE_BODY_HELP
 end
 
 @element_spec begin
@@ -1445,10 +1482,11 @@ end
         # Declared explicitly because this kind enumerates the common keys
         # instead of splatting `_PLACEMENT_PARAMS` (2026-08-05_b audit, U15-12).
         name=_PLACEMENT_PARAMS.name,
+        numeric_type=_PLACEMENT_PARAMS.numeric_type,
         tracking_method=_COMMON_PARAMS.tracking_method,
     ))
     example = SBendSpec(L=1.0, angle=0.05)
-    construction_help = "Friendly constructor: SBendSpec(; L, angle=0, h=0, b0=0, k1=0, k1s=0, k2=0, k2s=0, kn=(), ks=(), e1=0, e2=0, fint1=0, fint2=0, hgap1=0, hgap2=0, hface1=0, hface2=0, bend_fringe=true, bend_model=:exact, curved=nothing, curved_order=8, wedge_coeff=(1,2), nst=1, integrator_order=2, fringe=:none, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, ref_tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is angle, which sets h = b0 = angle / L; give h and b0 directly when the frame curvature and the field differ, but not alongside angle. Combined-function bends take k1/k2 (k1s/k2s skew), with kn/ks for higher orders and field errors. TILT VERSUS REF_TILT: tilt rolls the magnet body and is an error (Bmad roll, MAD-X EALIGN dpsi); ref_tilt rolls the design orbit plane and is a design choice (Bmad ref_tilt, MAD-X `sbend, tilt=`). A vertical bend is ref_tilt=pi/2. Translating a MAD-X bend tilt into Octopus tilt is the common mistake and gives a machine error where the lattice meant geometry. RBendSpec(; L, angle, ...) builds this same kind with parallel pole faces: it adds angle/2 to each of e1/e2 (the MAD-X RBEND face conversion) and forwards everything else to SBendSpec, so every contract and parameter here applies to it. RBendSpec's L is the ARC length like every Octopus element -- NOT MAD-X's default RBEND semantics, where the written L is the chord (RBARC=true) and the surveyed arc is longer; porting a MAD-X RBEND, give RBendSpec(chord=..., angle=...) and the arc L = chord*(angle/2)/sin(angle/2) is computed at construction (chord and L are mutually exclusive; chord is folded and never stored). Pinned against a true MAD-X RBEND by the MADXSurveyConsistencyContract fixture rbend_chord. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel." * _LATTICE_BODY_HELP
+    construction_help = "Friendly constructor: SBendSpec(; L, angle=0, h=0, b0=0, k1=0, k1s=0, k2=0, k2s=0, kn=(), ks=(), e1=0, e2=0, fint1=0, fint2=0, hgap1=0, hgap2=0, hface1=0, hface2=0, bend_fringe=true, bend_model=:exact, curved=nothing, curved_order=8, wedge_coeff=(1,2), nst=1, integrator_order=2, fringe=:none, highest_fringe=0, kill_ent_fringe=false, kill_exi_fringe=false, x_offset=0, y_offset=0, z_offset=0, x_pitch=0, y_pitch=0, tilt=0, ref_tilt=0, misalign_convention=:bmad, tracking_method=Symplectic6DMap()). The misalignment keywords displace the magnet body rigidly about the element centre; bends are handled through the survey, which uses h and never b0. Normal use is angle, which sets h = b0 = angle / L; give h and b0 directly when the frame curvature and the field differ, but not alongside angle. Combined-function bends take k1/k2 (k1s/k2s skew), with kn/ks for higher orders and field errors. TILT VERSUS REF_TILT: tilt rolls the magnet body and is an error (Bmad roll, MAD-X EALIGN dpsi); ref_tilt rolls the design orbit plane and is a design choice (Bmad ref_tilt, MAD-X `sbend, tilt=`). A vertical bend is ref_tilt=pi/2. Translating a MAD-X bend tilt into Octopus tilt is the common mistake and gives a machine error where the lattice meant geometry. RBendSpec(; L, angle, ...) builds this same kind with parallel pole faces: it adds angle/2 to each of e1/e2 (the MAD-X RBEND face conversion) and forwards everything else to SBendSpec, so every contract and parameter here applies to it. RBendSpec's L is the ARC length like every Octopus element -- NOT MAD-X's default RBEND semantics, where the written L is the chord (RBARC=true) and the surveyed arc is longer; porting a MAD-X RBEND, give RBendSpec(chord=..., angle=...) and the arc L = chord*(angle/2)/sin(angle/2) is computed at construction (chord and L are mutually exclusive; chord is folded and never stored). Pinned against a true MAD-X RBEND by the MADXSurveyConsistencyContract fixture rbend_chord. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form SBendSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line." * _LATTICE_BODY_HELP
 end
 
 # RBendSpec constructs an ElementSpec{:sbend}, so its metadata IS the sector
