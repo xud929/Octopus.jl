@@ -321,9 +321,19 @@ constructor names remain the user-facing way to build those specs.
 
 ## Examples
 
-- `BenchmarkExample`
-- `ReferenceExample`
-- `ResearchStudyExample`
+The curated scripts of `example_catalog()` (categories: `BenchmarkExample`, `ReferenceExample`, `ResearchStudyExample`); resolve an
+entry's script with `example_script_path`.
+
+- `examples/strong_strong_tracking.jl` (`ReferenceExample`)
+  - Objects: `StrongStrongTask`, `StrongStrongCollision`, `PICPoissonSolver`, `LongitudinalSlicing`, `Beam`
+- `examples/weak_strong_tracking.jl` (`ReferenceExample`)
+  - Objects: `TrackingTask`, `ThinStrongBeamSpec`, `ThinCrabCavitySpec`, `Beam`
+- `examples/crab_cavity_noise.jl` (`ReferenceExample`)
+  - Objects: `TrackingTask`, `ThinCrabCavitySpec`, `WhiteNoise`, `PinkNoise`, `SpectralNoise`, `TurnTable`, `TurnModulated`, `RunArtifact`
+- `examples/knob_control.jl` (`ReferenceExample`)
+  - Objects: `KnobRef`, `TrackingTask`, `ElementSpec`
+- `examples/twiss_dispersion_dba_ring.jl` (`ReferenceExample`)
+  - Objects: `TwissDispersionAnalysis`, `BeamLine`, `ThinRFCavitySpec`, `SBendSpec`
 
 ## Tasks
 

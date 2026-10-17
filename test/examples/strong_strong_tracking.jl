@@ -297,6 +297,14 @@ if use_mpi && Base.get_extension(Main.Octopus, :OctopusMPIExt) === nothing
           "into Main before it.")
 end
 
+# The default task seed, ONE constant the run reads and the suite derives: the
+# multi-process harness testset (test/runtests.jl, "The developer harnesses run
+# divided under an MPI launcher") reads this line by its text to find rank 0's
+# artifact directory, which is named by the seed, instead of copying the number
+# (2026-10-16 neighbour audit, U6-6). Keep the form `const HARNESS_DEFAULT_SEED
+# = <digits>` on one line.
+const HARNESS_DEFAULT_SEED = 123456789
+
 input = (
     case_name = "pic_hcc",
     # OCTOPUS_RESULT_DIR lets concurrent or comparative runs write somewhere of
@@ -307,7 +315,7 @@ input = (
     # repository's own "loud beats silent" rule, and there was no way to avoid
     # it short of editing the harness.
     result_dir = get(ENV, "OCTOPUS_RESULT_DIR", joinpath(@__DIR__, "..", "result")),
-    seed = 123456789,
+    seed = HARNESS_DEFAULT_SEED,
     default_demo_macroparticles = 200,
     crossing_angle = 12.5e-3,
 

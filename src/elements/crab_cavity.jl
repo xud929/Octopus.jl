@@ -396,12 +396,16 @@ The per-slot draws come from `_slot_draws` (`src/elements/turn_modulated.jl`),
 unrolled with literal indices so that a MIXED container -- `nothing` beside a
 rule, a `PinkNoise` -- is as type-stable as a homogeneous one; the harmonic
 tuples are then rebuilt from the homogeneous value tuples with
-`ntuple(..., Val(N))`, so the result has exactly the type of `base`, the
-successor container the type of `rules` (every shipped rule is stateless) and
-the call allocates nothing for every container shape (the suite pins 0 B on
+`ntuple(..., Val(N))` (a `@generated` unroll in Base for every `N`), so the
+result has exactly the type of `base`, the successor container the type of
+`rules` (every shipped rule is stateless) and the call allocates nothing for
+every container shape and harmonic count (the suite pins 0 B on
 `(nothing, WhiteNoise)`, `(nothing, PinkNoise)` and a table slot, where the
 `ntuple`-over-`rules.phase[i]` form allocated 640 to 736 B per `update`;
-review F1, 2026-10-15).
+review F1, 2026-10-15; and 0 B at 32, 33 and 40 harmonics, where the draws
+tuple's `(dphi..., d...)` splat allocated 1.1-2.6 kB per call from 33 on --
+`_slot_concat` in `src/elements/turn_modulated.jl` unrolls it with literal
+indices; 2026-10-16 neighbour audit, U1-2).
 """
 function _realize_draws(rules::CrabCavityNoise, base::ThinCrabCavity{N,M,T},
                         ctx::TrackingContext) where {N,M,T}
@@ -417,7 +421,10 @@ function _realize_draws(rules::CrabCavityNoise, base::ThinCrabCavity{N,M,T},
         ntuple(c -> base.phase[c] + dphi[c], Val(N)),
     )
     successor = CrabCavityNoise(_slot_successors(phase_draws), _slot_successors(strength_draws))
-    return realised, successor, (dphi..., d...)
+    # `_slot_concat`, not `(dphi..., d...)`: a splat past 32 entries per tuple
+    # is a runtime `_apply_iterate` that allocated 1.1-2.6 kB per call from 33
+    # harmonics on, on the plain hook too (2026-10-16 neighbour audit, U1-2).
+    return realised, successor, _slot_concat(dphi, d)
 end
 
 function realize(rules::CrabCavityNoise, base::ThinCrabCavity, ctx::TrackingContext)

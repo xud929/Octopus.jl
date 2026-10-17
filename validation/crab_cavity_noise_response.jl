@@ -274,19 +274,25 @@ parses the harness's final line
     CRAB-NOISE rule=.. scale=.. [phase_rms=.. strength_rel_rms=.. chrom=..] turns=.. n_macro=..
                kbb_scale=.. radiation=.. seed=.. artifact=<path> eps_x_first=.. eps_x_last=..
                eps_y_first=.. eps_y_last=.. lumi_mean=.. wall_s=.. ms_per_turn=..
-               [ranks=.. threads=.. steady_ms_per_turn=..]
+               [ranks=.. threads=.. steady_ms_per_turn=..] [record=.. rms_<label>=.. ...
+               spectrum=.. band=.. amplitudes=..] [device=<n|NA>]
 The bracketed trailing fields arrived with the harness's MPI arm (2026-10-14:
 the recorded rank count, the per-process worker count, the post-warm-up
-median turn time or NA); the parser reads the line as key=value tokens, so
-they are carried and ignored by every check here.
-The receipt must state the requested configuration (a configuration you set
-is not one the code read): rule, scale, turns, n_macro, kbb_scale and
-radiation must match; phase_rms and strength_rel_rms (the EFFECTIVE sigmas,
-request x scale, 0 under rule none), chrom (`xi_x,xi_y`) and table_file
-(path or `none`) must match when present and must be present whenever the
-request departs from the harness default; a table-fed run must carry the
-file's column digests in its `/turn_modulation` provenance. A run that
-cannot show this is an error, not a row.
+median turn time or NA), the recording (2026-10-15), the spectral rule and
+the device readback (2026-10-16); the parser reads the line as key=value
+tokens, so fields a check does not name are carried and ignored.
+The receipt's READBACKS must match the request (a configuration you set is
+not one the code read; the harness header's "READBACKS" paragraph names
+which fields are read back from the compiled line, the artifact's ledger and
+the execution receipts and which are the request as read): rule, scale,
+turns, n_macro, kbb_scale and radiation must match; phase_rms and
+strength_rel_rms (the EFFECTIVE sigmas, request x scale, 0 under rule none),
+chrom (`xi_x,xi_y`) and table_file (path or `none`) must match when present
+and must be present whenever the request departs from the harness default;
+device must be present (a harness predating it cannot show which device
+ran), an integer index under gpu=1 and NA under gpu=0; a table-fed run must
+carry the file's column digests in its `/turn_modulation` provenance. A run
+that cannot show this is an error, not a row.
 Estimators (plan, section 2) from `read(TaskOutput(path), :moments; name =
 "weak_beam")` -- the means `m100000`, `m010000` and the CENTRAL second
 moments `m200000`, `m110000`, `m020000` (vertical `m001000`, `m000100`,
@@ -1349,18 +1355,35 @@ function run_case(; name, rule, scale, phase_rms, strength_rel_rms, turns, n_mac
     return fields
 end
 
-# The receipt must state what was requested (AGENTS.md: a configuration you
-# set is not a configuration the code read). rule, scale, turns, n_macro,
-# kbb_scale and radiation must match. The harness reports the EFFECTIVE
-# sigmas (`phase_rms` = OCTOPUS_PHASE_RMS x scale, `strength_rel_rms` =
-# OCTOPUS_STRENGTH_REL_RMS x scale, both 0 under rule none), `chrom` as
-# `xi_x,xi_y` and `table_file` as the path or `none`; each must match when
-# present, and must be present whenever the request departs from the
-# harness default (a harness predating the field cannot show it read it).
+# The receipt's readbacks must match what was requested (AGENTS.md: a
+# configuration you set is not a configuration the code read). kbb_scale,
+# radiation, chrom and seed are READ BACK by the harness from the compiled
+# line the task tracked and from the artifact's ledger, device from the
+# `:cuda_device` receipt (2026-10-16 neighbour audit, U7-3 and U7-4; the
+# harness header's "READBACKS" paragraph), so comparing them with the
+# request here is a check and not an echo of the request against itself.
+# rule, scale, turns, n_macro, kbb_scale and radiation must match. The
+# harness reports the EFFECTIVE sigmas (`phase_rms` = OCTOPUS_PHASE_RMS x
+# scale, `strength_rel_rms` = OCTOPUS_STRENGTH_REL_RMS x scale, both 0 under
+# rule none), `chrom` as `xi_x,xi_y` and `table_file` as the path or `none`;
+# each must match when present, and must be present whenever the request
+# departs from the harness default (a harness predating the field cannot
+# show it read it). `device` must be present, an integer under gpu = 1 and NA
+# under gpu = 0.
 function verify_receipt(fields, name; rule, scale, phase_rms, strength_rel_rms, turns, n_macro, kbb, chrom, radiation,
-                        table_file = nothing)
+                        gpu, table_file = nothing)
     same(a, b) = isapprox(parse(Float64, a), b; rtol = 1e-9, atol = 0.0)
     problems = String[]
+    if haskey(fields, "device")
+        if gpu == 1
+            tryparse(Int, fields["device"]) === nothing &&
+                push!(problems, "device=$(fields["device"]) is not a CUDA device index although OCTOPUS_USE_GPU=1 was requested")
+        else
+            fields["device"] == "NA" || push!(problems, "device=$(fields["device"]) but OCTOPUS_USE_GPU=0 was requested (a CPU run records no device)")
+        end
+    else
+        push!(problems, "the receipt has no device field, so the harness cannot show which device ran (OCTOPUS_USE_GPU=$(gpu))")
+    end
     fields["rule"] == string(rule) || push!(problems, "rule=$(fields["rule"]) != $(rule)")
     same(fields["scale"], scale) || push!(problems, "scale=$(fields["scale"]) != $(scale)")
     parse(Int, fields["turns"]) == turns || push!(problems, "turns=$(fields["turns"]) != $(turns)")
@@ -1509,7 +1532,7 @@ function case_row(c; id, name, turns, n_macro, moment_step, gpu, threads, radiat
                           kbb = c.kbb, chrom = c.chrom, radiation, moment_step, gpu, threads, artifact_dir, table_file)
     end
     verify_receipt(fields, name; rule = c.rule, scale = c.scale, phase_rms, strength_rel_rms, turns, n_macro,
-                   kbb = c.kbb, chrom = c.chrom, radiation, table_file)
+                   kbb = c.kbb, chrom = c.chrom, radiation, gpu, table_file)
     if table_file !== nothing
         problems = verify_table_digests(fields["artifact"], table_file)
         isempty(problems) || error("case $(name): the table-fed run does not carry the file's digests: " * join(problems, "; "))

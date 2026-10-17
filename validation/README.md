@@ -281,6 +281,21 @@ script's default two-turn run throw at its first `validate` until the
 was not re-walked over the validations that construct cavities -- the second
 time for this script).
 
+The two cavity kinds ride the multi-turn line twice: bare, and with
+turn-by-turn modulation rules -- a `WhiteNoise` on a fixed stream id beside a
+`TurnTable` of exactly the run's turn count, on the crab cavity and on the RF
+cavity -- so the `TurnModulated` wrap, its device conversion and the per-turn
+host `update_line` are on the path of both arms. Until the 2026-10-16
+neighbour audit (S2-1) no case here carried a rule, and the device conversion
+the crab-noise campaign added was verified by the suite's identity testset
+only. A second tripwire, derived from the element schemas (every kind with a
+`phase_noise` parameter), fails the run if a modulatable kind compiles to no
+wrapper, so the cases cannot quietly revert to covering the wrap by name.
+Measured 2026-10-16 (N = 10000, 2 turns, CUDA active): CPU/CPU `max_abs_error`
+0 and CPU/GPU 6.3e-16 (`max_component_rel_error` 8.9e-12 against the 1e-10
+tolerance), against 5.3e-16 for the same line before the modulated cases
+joined it: the rules add nothing to the agreement class.
+
 The CPU/CPU result is a same-process deterministic repeatability check. For the
 current fused elementwise tracking path, exact zero error is expected because
 each particle is independent and stochastic samples are keyed by particle
@@ -431,7 +446,14 @@ section 7 the plan this script executes, section 8 the interpretations it
 adopts); the rules' own contracts are `docs/design/turn_modulation.md`,
 sections 5.1, 5.2, 5.5 and 5.6. The script answers the example's three
 questions in six parts, selected by the first argument, with `key=value`
-overrides after it (every key with its default is in the file header):
+overrides after it (every key with its default is in the file header). The
+parts that run the harness parse its `CRAB-NOISE` line and check its
+READBACKS against the request: `chrom`, `kbb_scale` and `radiation` are read
+by the harness from the compiled line the task tracked, `seed` from the
+artifact's `/execution` ledger and `device` from the `:cuda_device` receipt
+(an index under `gpu=1`, `NA` under `gpu=0`, required either way), so the
+check compares what ran with what was asked rather than the request with
+itself (2026-10-16 neighbour audit, U7-3 and U7-4):
 
 1. Do the rules generate the specified noise? Part `noise` (CPU, about two
    and a half minutes after the load, the three spectral cases included):

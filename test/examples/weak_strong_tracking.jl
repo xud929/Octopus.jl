@@ -178,6 +178,14 @@ if use_mpi && Base.get_extension(Main.Octopus, :OctopusMPIExt) === nothing
           "into Main before it.")
 end
 
+# The default task seed, ONE constant the run reads and the suite derives: the
+# multi-process harness testset (test/runtests.jl, "The developer harnesses run
+# divided under an MPI launcher") reads this line by its text to find rank 0's
+# artifact directory, which is named by the seed, instead of copying the number
+# (2026-10-16 neighbour audit, U6-6). Keep the form `const HARNESS_DEFAULT_SEED
+# = <digits>` on one line.
+const HARNESS_DEFAULT_SEED = 123456789
+
 # Input for this weak-proton crab-crossing case.
 # Set OCTOPUS_TURNS and OCTOPUS_N_MACRO in the shell to run a smaller or larger
 # job without editing the physics input below.
@@ -186,7 +194,7 @@ input = (
     # OCTOPUS_RESULT_DIR: see the strong-strong harness (2026-08-05_b audit,
     # U21-27). Two concurrent runs used to clobber one another silently.
     result_dir = get(ENV, "OCTOPUS_RESULT_DIR", joinpath(@__DIR__, "..", "result")),
-    seed = 123456789,
+    seed = HARNESS_DEFAULT_SEED,
     # NOTE: no `total_turns` or `weak_beam.n_macro` here. Both sat in this
     # block reading as authoritative defaults while nothing read them
     # (2026-08-05_b audit, U21-24): the turn count comes from OCTOPUS_TURNS and

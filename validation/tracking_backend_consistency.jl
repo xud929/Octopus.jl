@@ -32,6 +32,13 @@ The CPU/CPU check runs the same CPU backend twice in the same Julia process.
 For elementwise fused tracking it is expected to be bitwise identical, even with
 multiple Julia threads, because particles are independent and the Octopus
 counter RNG is keyed by particle index rather than thread scheduling order.
+
+The multi-turn line carries each cavity kind twice: bare, and with
+turn-by-turn modulation rules (a white rule and a turn table), so the
+`TurnModulated` wrap, its device conversion and the per-turn host update are on
+the path of both arms; a wrap tripwire after the coverage tripwire fails the run
+if a kind that admits a rule compiles to no wrapper (2026-10-16 neighbour audit,
+S2-1).
 =#
 
 function _bool_env(name, default)
@@ -148,6 +155,32 @@ line = (
     ThinRFCavitySpec(197.0e6; strength=1.0e-4,
                      beta0=reference_beta(51.1e6, 0.511e6),
                      gamma0=reference_gamma(51.1e6, 0.511e6)),
+    # The two cavities WITH turn-modulation rules (2026-10-16 neighbour audit,
+    # S2-1). The bare cavities above cover the kernels; these cover what a
+    # rule adds -- the `TurnModulated` wrap, its device conversion
+    # (`adapt_structure` drops to the realised element at the launch) and the
+    # per-turn `update_line` on the host -- which the Verification Matrix names
+    # this script for and which no case here exercised. A white rule on a
+    # fixed stream id (realised on the host, identically for both backends,
+    # from the seed in force, the id, the turn and the slot) beside a table of
+    # exactly `turns` entries (the task refuses a shorter window), so a
+    # stream rule and a table rule each ride both cavity kinds; mild
+    # strengths, as for every element here. The wrap tripwire after the
+    # coverage tripwire fails the run if a cavity kind compiles to no wrapper.
+    ThinCrabCavitySpec{2}(197.0e6;
+        strengthX=(1.0e-5, -2.0e-6),
+        strengthY=(3.0e-6, 0.0),
+        phase=(0.0, 0.2),
+        phase_noise=(WhiteNoise(2.0e-3; rng_id=7001), nothing),
+        strength_noise=(nothing, TurnTable([0.05 * sin(2pi * k / 7) for k in 1:turns];
+                                           name="contract_crab_amp")),
+    ),
+    ThinRFCavitySpec(197.0e6; strength=1.0e-4,
+                     beta0=reference_beta(51.1e6, 0.511e6),
+                     gamma0=reference_gamma(51.1e6, 0.511e6),
+                     phase_noise=TurnTable([0.02 * cos(2pi * k / 5) for k in 1:turns];
+                                           name="contract_rf_phase"),
+                     strength_noise=WhiteNoise(5.0e-3; rng_id=7002)),
     # The accelerating cavity is NOT here: it is single-pass by contract and
     # rides its own one-turn line below.
     PatchSpec(dx=1.0e-5, dz=2.0e-5, angle_x=1.0e-4, angle_s=0.01),
@@ -192,6 +225,25 @@ let covered = Set(Octopus.kind(spec) for spec in (line..., single_pass_line...))
     isempty(uncovered) || error(
         "kinds declare ElementTrackingBackendConsistencyContract but are " *
         "missing from these lines: " * join(uncovered, ", "))
+end
+
+# Rule↔wrap tripwire (2026-10-16 neighbour audit, S2-1): every kind whose
+# parameters admit a turn-modulation rule (a `phase_noise` parameter, derived
+# from the schemas, never listed) must reach the line through a `TurnModulated`
+# wrap at least once, or the wrap, its device conversion and the per-turn
+# update are covered by name only -- the gap this script had until the
+# modulated cases above joined it.
+let wrapped = Set(Octopus.kind(spec) for spec in line
+                  if compile_runtime(spec) isa Octopus.TurnModulated),
+    modulatable = Symbol[meta.kind for T in Octopus.registered_element_specs()
+                         for meta in (Octopus._element_meta_or_nothing(T),)
+                         if meta !== nothing && haskey(Octopus.parameter_schema(T), :phase_noise)]
+    isempty(modulatable) && error("no element kind declares a phase_noise parameter; the wrap tripwire has nothing to check")
+    unwrapped = sort!(setdiff(modulatable, wrapped))
+    isempty(unwrapped) || error(
+        "the backend-consistency line carries no modulated instance of " *
+        join(unwrapped, ", ") * ": the TurnModulated wrap, its device conversion and the " *
+        "per-turn update_line would be covered by name only")
 end
 
 cpu_cpu = ElementTrackingBackendConsistencyContract(;
