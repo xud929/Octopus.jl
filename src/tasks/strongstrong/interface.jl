@@ -3154,6 +3154,37 @@ StrongStrongBlock(entries::Tuple, collision) =
     StrongStrongBlock{typeof(entries),typeof(collision)}(entries, collision,
                                                          _line_hook_entries(entries))
 
+"""
+    StrongStrongBlocks <: AbstractVector{Any}
+
+One beam's compiled strong-strong line as `_strong_strong_runtime_blocks`
+caches it: the `StrongStrongBlock`s in their `Vector{Any}`, indexed and
+iterated through this wrapper exactly as the vector is (the turn loop reads a
+block per turn as a pointer load, see `_split_strong_strong_line`), beside the
+two tuples the once-per-`execute!` walks derive from them -- the line's
+compiled physics elements with the hook entries dropped
+(`_strong_strong_physics_line`) and its line observers (`_line_observers`).
+Both are built ONCE, when the blocks compile, and go stale exactly when the
+blocks do: a recompile (the compile cache's predicate
+`_strong_strong_cache_current`: the knob epoch of a knob-dependent line, the
+spec epoch of any line) replaces the whole object. Rebuilt per call, the
+physics line cost 12,064 B on two 41-element lines of nine types, twelve
+calls per `execute!` (2026-10-16 neighbour audit U9-4; fix group F's open
+point, fix J). The two tuple fields are abstractly typed on purpose: a read
+is a pointer load of the tuple boxed once at the fill, and the turn loop
+stays compiled for ONE container type whatever the line's element types, as
+it was for the bare vector.
+"""
+struct StrongStrongBlocks <: AbstractVector{Any}
+    blocks::Vector{Any}
+    physics::Tuple
+    observers::Tuple
+end
+Base.size(blocks::StrongStrongBlocks) = size(blocks.blocks)
+Base.IndexStyle(::Type{StrongStrongBlocks}) = IndexLinear()
+Base.@propagate_inbounds Base.getindex(blocks::StrongStrongBlocks, i::Int) = blocks.blocks[i]
+Base.iterate(blocks::StrongStrongBlocks, state...) = iterate(blocks.blocks, state...)
+
 function _execute_strong_strong_segment_pair!(rep1, block1::StrongStrongBlock, plan_cache1,
                                               rep2, block2::StrongStrongBlock, plan_cache2,
                                               policy, ctx1, ctx2, streams, block_index::Integer,
@@ -3247,8 +3278,12 @@ function _split_strong_strong_line(line::Tuple)
     # BOXES A COPY of the whole block (its entries tuple inline) at every
     # access -- about 56 kB per turn on two 41-element lines of nine element
     # types (2026-10-16 neighbour audit, U9-3). Boxed once here, a block is a
-    # pointer load per turn and the segment call specialises on it.
-    return blocks
+    # pointer load per turn and the segment call specialises on it. The
+    # vector travels inside `StrongStrongBlocks`, which indexes as it does,
+    # beside the line's physics and observer tuples built here, once per
+    # compilation, from the same blocks (fix J, 2026-10-17).
+    physics, observers = _build_strong_strong_line_tuples(blocks)
+    return StrongStrongBlocks(blocks, physics, observers)
 end
 
 function _append_strong_strong_line!(blocks, current, line::Tuple, hook_counter)
@@ -3330,20 +3365,28 @@ function _collision_solver(task::StrongStrongTask, c1::StrongStrongCollision, c2
     return task.default_poisson_solver
 end
 
-# The two block walks run once per `execute!` (several times, over both
-# lines). Each block's entries tuple is walked unrolled (`_foreach_unrolled`,
-# src/elements/turn_modulated.jl) behind a per-block function barrier: a `for`
-# over the heterogeneous isbits tuple boxed it per element, and reading
+# The line's two tuples are built ONCE per compilation, at the end of
+# `_split_strong_strong_line`, and read off `StrongStrongBlocks` by every
+# call after that (fix J, 2026-10-17): `_strong_strong_physics_line` and
+# `_line_observers` were walks that rebuilt their tuples per call -- 12,064 B
+# and 32 B on two 41-element lines of nine types, fourteen calls per
+# `execute!` -- over blocks that were themselves compiled once and cached.
+# The build walks each block's entries tuple unrolled (`_foreach_unrolled`,
+# src/elements/turn_modulated.jl) behind a per-block function barrier: a
+# `for` over the heterogeneous isbits tuple boxed it per element, and reading
 # `block.entries` off the `Vector{Any}` of blocks in the caller boxed a copy
-# of the tuple per block -- 39 kB and 27 kB per call on two 41-element lines
-# of nine types before, 22 kB and 10 kB with the unroll alone (2026-10-16
-# neighbour audit, U9-4). One dynamic dispatch per block remains.
-function _line_observers(lines::AbstractVector)
+# of the tuple per block -- 39 kB and 27 kB per call before the unroll
+# (2026-10-16 neighbour audit, U9-4). Through the boxed `Any[]` the result
+# elements are boxed once more, now with the compile that allocates the line
+# itself and never per `execute!`.
+function _build_strong_strong_line_tuples(blocks::Vector{Any})
+    elems = Any[]
     observers = Any[]
-    for block in lines
+    for block in blocks
+        _push_block_physics!(elems, block)
         _push_block_observers!(observers, block)
     end
-    return Tuple(observers)
+    return Tuple(elems), Tuple(observers)
 end
 function _push_block_observers!(observers::Vector{Any}, block::StrongStrongBlock)
     _foreach_unrolled(block.entries) do entry
@@ -3353,13 +3396,6 @@ function _push_block_observers!(observers::Vector{Any}, block::StrongStrongBlock
     return observers
 end
 
-function _strong_strong_physics_line(lines::AbstractVector)
-    elems = Any[]
-    for block in lines
-        _push_block_physics!(elems, block)
-    end
-    return Tuple(elems)
-end
 function _push_block_physics!(elems::Vector{Any}, block::StrongStrongBlock)
     _foreach_unrolled(block.entries) do entry
         entry isa PhysicsEntry && push!(elems, entry.element)
@@ -3367,6 +3403,26 @@ function _push_block_physics!(elems::Vector{Any}, block::StrongStrongBlock)
     end
     return elems
 end
+
+"""
+    _strong_strong_physics_line(blocks::StrongStrongBlocks) -> Tuple
+
+One beam's compiled physics elements in line order, the hook entries dropped
+(the strong-strong twin of `_physics_line`, src/tasks/Tasks.jl): the tuple
+built when the blocks compiled, so a call allocates nothing and every call on
+the same blocks returns the same object. A bare `Vector` of blocks has no
+method here on purpose: the tuples live with the compiled line.
+"""
+_strong_strong_physics_line(blocks::StrongStrongBlocks) = blocks.physics
+
+"""
+    _line_observers(blocks::StrongStrongBlocks) -> Tuple
+
+One beam's line observers in line order, built when the blocks compiled
+(`StrongStrongBlocks`); `prepare_observers!` takes them beside the physics
+line, once per `execute!`.
+"""
+_line_observers(blocks::StrongStrongBlocks) = blocks.observers
 
 function _finalize_strong_strong_line_observers!(lines::AbstractVector)
     for block in lines

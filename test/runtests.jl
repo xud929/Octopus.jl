@@ -17875,8 +17875,13 @@ end
         homo = ss_slope((ip, homo40..., l6a), (ip, homo40..., l6b), "slope_ss_homo.h5")
         het = ss_slope((ip, hetero..., l6a), (ip, hetero..., l6b), "slope_ss_hetero.h5")
         @test het - homo < 100_000
-        # The blocks are a vector, not a tuple (read once per turn, no copy).
-        @test Octopus._strong_strong_runtime_blocks(StrongStrongTask((ip, l6a), (ip, l6b)), 1) isa Vector
+        # The blocks are a vector, not a tuple (read once per turn, no copy);
+        # since fix J (2026-10-17) the vector travels inside `StrongStrongBlocks`
+        # beside the line's two tuples, indexing and iterating as it did.
+        let blocks = Octopus._strong_strong_runtime_blocks(StrongStrongTask((ip, l6a), (ip, l6b)), 1)
+            @test blocks isa AbstractVector{Any} && blocks.blocks isa Vector{Any}
+            @test eltype(blocks) === Any && length(blocks) == 2 && blocks[2] === blocks.blocks[2]
+        end
         set_global_rng!(seed=0x5eed, method=:philox)
     end
 end
@@ -18601,6 +18606,114 @@ end
         end
 
     finally
+        set_global_rng!(seed=0x5eed, method=:philox)
+    end
+end
+
+@testset "The strong-strong physics line and observer tuples are cached per compilation and cost nothing per execute!" begin
+    # 2026-10-17, fix J of the crab-cavity noise audit's second fix batch (fix
+    # group F's open point; todo row "`_strong_strong_physics_line` still
+    # boxes its 42 result elements"). `_strong_strong_physics_line` and
+    # `_line_observers` rebuilt their tuples on every call -- the physics line
+    # through a boxed `Any[]`, 12,064 B per call on the 41-element nine-type
+    # pair, ten to twelve calls per `execute!` plus two of the observers' --
+    # over blocks that are compiled once and cached. Both tuples are now built
+    # once, when the blocks compile, and travel with them
+    # (`StrongStrongBlocks`, src/tasks/strongstrong/interface.jl): a call is a
+    # field read returning the same object every time, and a recompile -- a
+    # knob assignment, a spec mutation -- replaces the blocks and the tuples
+    # together. Measured on c061088 at 4 threads: 12,064 B and 32 B per call,
+    # 507,056 B per `execute!(turns=1)`; fixed, 0 B, 0 B and 386,912 B
+    # (result/audit_crab_noise_2026_10_16/fixes/J/repro_*.log). The pair is
+    # batch 1's auditor/probe_ss_slope.jl fixture: 40 crab cavities of eight
+    # harmonic counts plus a linear map per line, the collision first.
+    set_global_rng!(seed=5, method=:philox)
+    try
+        crab(N) = ThinCrabCavitySpec{N}(394.0e6; strengthX=ntuple(_ -> 2.0e-6, N),
+                                        strengthY=ntuple(_ -> 5.0e-7, N), phase=ntuple(_ -> 0.1, N))
+        hetero = Tuple(crab(mod1(i, 8)) for i in 1:40)
+        L6s(b, t) = Linear6DSpec{Float64}(; beta1=b, beta2=b, alpha1=(0.0, 0.0, 0.0),
+                                          alpha2=(0.0, 0.0, 0.0), dmu=2pi .* t)
+        l6a = L6s((0.55, 0.056, 12.7), (0.08, 0.14, -0.069))
+        l6b = L6s((0.8, 0.072, 90.9), (0.228, 0.210, -0.01))
+        ip = StrongStrongCollision(:ip)
+        mkb(rng_id, charge, mc2, E0) = begin
+            set_global_rng!(seed=5, method=:philox)
+            Beam(64, CPUThreadsExecutionPolicy(), Float64;
+                 beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+                 sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
+                 charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+        end
+        task = StrongStrongTask((ip, hetero..., l6a), (ip, hetero..., l6b))
+        blocks1 = Octopus._strong_strong_runtime_blocks(task, 1)
+        blocks2 = Octopus._strong_strong_runtime_blocks(task, 2)
+        pl1 = Octopus._strong_strong_physics_line(blocks1)
+        ob1 = Octopus._line_observers(blocks1)
+        # The tuples are what the walks returned: the 41 elements in line
+        # order, the eight cavity types then the map, no hook entry among
+        # them, and no observer.
+        @test length(pl1) == 41 && pl1[end] isa typeof(compile_runtime(l6a))
+        @test [nameof(typeof(e)) for e in pl1[1:40]] == fill(:ThinCrabCavity, 40)
+        @test length(unique(typeof.(pl1))) == 9
+        @test ob1 === ()
+        # (a) a call costs nothing after the first: a field read of the tuple
+        # built at the fill (12,064 B and 32 B per call on c061088).
+        f_sp(b) = @allocated Octopus._strong_strong_physics_line(b)
+        f_lo(b) = @allocated Octopus._line_observers(b)
+        for _ in 1:2
+            f_sp(blocks1); f_lo(blocks1)
+        end
+        @testset let strong_strong_physics_line_bytes = f_sp(blocks1), line_observers_bytes = f_lo(blocks1)
+            @test strong_strong_physics_line_bytes <= 64
+            @test line_observers_bytes <= 64
+        end
+        # (b) the same object on every call, and an `execute!` -- which reads
+        # the physics line ten times and the observers twice -- leaves the
+        # blocks and the tuples as they were: nothing recompiles while no
+        # epoch moves.
+        @test Octopus._strong_strong_physics_line(blocks1) === pl1
+        @test Octopus._line_observers(blocks1) === ob1
+        b1, b2 = mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9)
+        execute!(task, b1, b2; turns=1)
+        @test Octopus._strong_strong_runtime_blocks(task, 1) === blocks1
+        @test Octopus._strong_strong_runtime_blocks(task, 2) === blocks2
+        @test Octopus._strong_strong_physics_line(blocks1) === pl1
+        @test Octopus._strong_strong_physics_line(Octopus._strong_strong_runtime_blocks(task, 2)) ===
+              Octopus._strong_strong_physics_line(blocks2)
+        # (c) a recompile refreshes them. Line 1's cavity phase rides a knob
+        # and line 2 holds a drift whose length is mutated in place: each
+        # change moves its epoch, the next cache read replaces the blocks AND
+        # the tuple, and the new tuple carries the new value. A read with no
+        # change in between keeps both, and the knob assignment leaves the
+        # knob-free line 2 as it was (the cache's own predicate): the negative
+        # controls of a cache that never invalidates and one that never holds.
+        @knob fixj_ss.phase = 0.1
+        cav = ElementSpec{:thin_crab_cavity}(; N=1, frequency=394.0e6, strengthX=(2.0e-3,), strengthY=(0.0,),
+                                              phase=(@knob_expr(fixj_ss.phase),))
+        drift = DriftSpec(L=0.1)
+        tk = StrongStrongTask((ip, cav, l6a), (ip, drift, l6b))
+        k1 = Octopus._strong_strong_runtime_blocks(tk, 1)
+        k2 = Octopus._strong_strong_runtime_blocks(tk, 2)
+        p1 = Octopus._strong_strong_physics_line(k1)
+        p2 = Octopus._strong_strong_physics_line(k2)
+        @test p1[1].phase == (0.1,) && p2[1].L == 0.1
+        set_knob!("fixj_ss.phase", 0.2)
+        k1b = Octopus._strong_strong_runtime_blocks(tk, 1)
+        p1b = Octopus._strong_strong_physics_line(k1b)
+        @test k1b !== k1 && p1b !== p1
+        @test p1b[1].phase == (0.2,)
+        @test Octopus._strong_strong_runtime_blocks(tk, 2) === k2
+        @test Octopus._strong_strong_runtime_blocks(tk, 1) === k1b &&
+              Octopus._strong_strong_physics_line(k1b) === p1b
+        drift.L = 0.2
+        k2b = Octopus._strong_strong_runtime_blocks(tk, 2)
+        p2b = Octopus._strong_strong_physics_line(k2b)
+        @test k2b !== k2 && p2b !== p2
+        @test p2b[1].L == 0.2
+        @test Octopus._strong_strong_runtime_blocks(tk, 2) === k2b &&
+              Octopus._strong_strong_physics_line(k2b) === p2b
+    finally
+        Octopus._forget_knob!("fixj_ss.phase")
         set_global_rng!(seed=0x5eed, method=:philox)
     end
 end
