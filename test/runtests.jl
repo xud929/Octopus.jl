@@ -9941,6 +9941,42 @@ end
     end
 end
 
+# The wrapper set of the ownership tripwire (test 7 of the testset below), as
+# the design asked for it: DERIVED from the subtypes that FORWARD
+# `track_particle` (docs/design/turn_modulation.md, "derive the set from the
+# subtypes that forward track_particle"), not from the field name `inner`,
+# which `_compiled_matches_runtime` walks by and which a future wrapper holding
+# its subject under another name would not carry (2026-10-16 neighbour audit,
+# S3-3). A type FORWARDS when it is a concrete `AbstractTrackOp` subtype owning
+# a `track_particle` method narrower than the root at the element position,
+# generic over the tracking method (the subject's method decides, as the three
+# wrappers' `method::AbstractTrackingMethod` signatures are), whose lowered body
+# calls `track_particle` again. `CompositeLine` tracks its ops through
+# `fusedTrack` and is not a forwarder by this rule, which is why the tripwire
+# checks it beside the derived set. Pinned both ways: against the known
+# wrappers and the `inner` rule in the tripwire, and against probe types with
+# and without the forward in the follow-up testset after it.
+function _forwarding_track_ops(types)
+    mentions(ex) = ex isa GlobalRef ? ex.name === :track_particle :
+                   ex isa QuoteNode ? ex.value === :track_particle :
+                   ex isa Symbol ? ex === :track_particle :
+                   ex isa Expr ? any(mentions, ex.args) : false
+    out = Any[]
+    for T in types
+        isabstracttype(Base.unwrap_unionall(T)) && continue
+        forwards = any(methods(Octopus.track_particle)) do m
+            P = Base.unwrap_unionall(m.sig).parameters
+            length(P) == 9 || return false          # f, method, elem, x, px, y, py, z, pz
+            S = Base.rewrap_unionall(P[3], m.sig)
+            (Octopus.AbstractTrackOp <: S || !(T <: S)) && return false
+            Octopus.AbstractTrackingMethod <: Base.rewrap_unionall(P[2], m.sig) || return false
+            any(mentions, Base.uncompressed_ast(m).code)
+        end
+        forwards && push!(out, T)
+    end
+    return Set(out)
+end
+
 @testset "Turn modulation: rules, wrapper and the pure hook" begin
     # 2026-10-12, turn-by-turn modulation stage 1 (docs/design/turn_modulation.md;
     # its section 8 lists the tests owed). The element-level half: tests 2, 4,
@@ -10274,17 +10310,24 @@ end
               strength_noise=(nothing, WhiteNoise(1.0e-2; rng_id=9)))) == UInt64[7, 9]
 
     # (f) Test 7's TRIPWIRE. The wrapper set is DERIVED, not declared: every
-    # AbstractTrackOp with a field named `inner` (the rule
-    # `_compiled_matches_runtime` walks by), pinned in both directions against
-    # the three known wrappers. Then every wrapper-aware walk must own a method
-    # whose wrapper-position parameter is narrower than the abstract root for
-    # every member: a wrapper that falls to a walk's generic fallback fails HERE
-    # BY NAME, which is what replaced the hand-enumerated lists.
-    derived = Set(Any[T for T in Octopus._subtypes_recursive(Octopus.AbstractTrackOp)
-                      if !isabstracttype(Base.unwrap_unionall(T)) &&
-                         :inner in fieldnames(Base.unwrap_unionall(T))])
-    @testset let derived_wrappers = sort!(string.(nameof.(collect(derived))))
+    # concrete AbstractTrackOp of the Octopus module that FORWARDS
+    # `track_particle` (`_forwarding_track_ops` above; the design's rule), pinned
+    # in both directions against the three known wrappers AND against the field
+    # rule `_compiled_matches_runtime` walks by (a field named `inner`), so a
+    # future wrapper holding its subject under another name fails here by name
+    # on the second pin while joining every walk check through the first
+    # (2026-10-16 neighbour audit, S3-3; the set was derived by the field name
+    # alone before). Then every wrapper-aware walk must own a method whose
+    # wrapper-position parameter is narrower than the abstract root for every
+    # member: a wrapper that falls to a walk's generic fallback fails HERE BY
+    # NAME, which is what replaced the hand-enumerated lists.
+    octopus_track_ops = Octopus._concrete_octopus_subtypes(Octopus.AbstractTrackOp)
+    derived = _forwarding_track_ops(octopus_track_ops)
+    by_inner_field = Set(Any[T for T in octopus_track_ops if :inner in fieldnames(Base.unwrap_unionall(T))])
+    @testset let derived_wrappers = sort!(string.(nameof.(collect(derived)))),
+                 inner_field_wrappers = sort!(string.(nameof.(collect(by_inner_field))))
         @test derived == Set(Any[Octopus.MisalignedElement, Octopus.RefTilted, Octopus.TurnModulated])
+        @test by_inner_field == derived
     end
     # The SINGLE SOURCE of the walks a wrapper joins, as (function, position of
     # the wrapper argument): a new walk is added here, a new wrapper is found by
@@ -10672,6 +10715,165 @@ end
         end
     end
     @test containers_seen == container_set(Octopus._slot_rules)
+end
+
+# Probe types of the follow-up testset below (defined at top level, as types
+# must be): a holder that neither forwards nor names `inner`, an `inner` holder
+# that forwards nothing, and a wrapper forwarding `track_particle` under
+# another field name -- the case the `inner` rule cannot see. Defined in Main,
+# so the module-filtered derivation of the tripwire above never meets them.
+struct _FixGBareOp <: Octopus.AbstractTrackOp; elem::Any; end
+struct _FixGInnerNoForward <: Octopus.AbstractTrackOp; inner::Any; end
+struct _FixGSubjectOp{E} <: Octopus.AbstractTrackOp; subject::E; end
+@inline Octopus.track_particle(method::Octopus.AbstractTrackingMethod, w::_FixGSubjectOp, x, px, y, py, z, pz) =
+    Octopus.track_particle(method, w.subject, x, px, y, py, z, pz)
+
+@testset "Elements and scripts follow-ups: the crab cavity's realize and update at forty harmonics, the drift's z update, the catalogue in the snapshot, the harness's readbacks and device, the derived default seed, the ownership tripwire by forwarding" begin
+    # Fix group G of the 2026-10-16 crab-noise neighbour audit (leads U1-2,
+    # U2-4, S2-1, S4-7, U7-3, U7-4, U6-6, S3-3). Each part was RED on the
+    # unfixed tree for its defect's reason (result/audit_crab_noise_2026_10_16/
+    # fixes/G_report.md); the script items (the backend-consistency cases, the
+    # harness's readbacks, the derived seed) are pinned here by what the suite
+    # can see of them -- their text -- and were verified by running them.
+    root = pkgdir(Octopus)
+
+    # (1) U1-2: `realize`, `update` and `update_line` allocation-free past the
+    # splat threshold. `(dphi..., d...)` in the crab cavity's `_realize_draws`
+    # was a runtime `Core._apply_iterate` from 33 harmonics on
+    # (`max_tuple_splat` = 32): 2176 / 1136 B per call at N = 33, 2624 / 1360 B
+    # at N = 40, on the plain hook too; 0 B at 32. `_slot_concat` unrolls it.
+    # Pinned at the old threshold, one past it and the design's forty, on the
+    # all-white, the one-white and the one-table shapes.
+    set_global_rng!(seed=42, method=:philox)
+    ctx = TrackingContext(turn=3, seed=42)
+    crab(N; kw...) = ThinCrabCavitySpec{N}(394.0e6; strengthX=ntuple(_ -> 2.0e-3, N),
+                                           strengthY=ntuple(_ -> 5.0e-4, N), phase=ntuple(_ -> 0.1, N), kw...)
+    a_realize(e, c) = @allocated realize(e.rule, e.base, c)
+    a_update(e, c) = @allocated update(e, c)
+    a_line(l, c) = @allocated update_line(l, c)
+    for N in (32, 33, 40)
+        shapes = ("white on every slot" => crab(N; phase_noise=ntuple(_ -> WhiteNoise(1.0e-2), N),
+                                                strength_noise=ntuple(_ -> WhiteNoise(1.0e-2), N)),
+                  "white on the last phase only" => crab(N; phase_noise=(ntuple(_ -> nothing, N - 1)..., WhiteNoise(1.0e-2))),
+                  "table on the last strength only" => crab(N; strength_noise=(ntuple(_ -> nothing, N - 1)...,
+                                                                               TurnTable(collect(0.001:0.001:0.064); name="t64"))))
+        for (label, spec) in shapes
+            e = compile_runtime(spec)
+            @test e isa Octopus.TurnModulated
+            for _ in 1:2
+                a_realize(e, ctx); a_update(e, ctx); a_line((e,), ctx)
+            end
+            @testset let N = N, shape = label
+                @test a_realize(e, ctx) == 0
+                @test a_update(e, ctx) == 0
+                @test a_line((e,), ctx) == 0
+                @test typeof(update(e, ctx)) === typeof(e)
+            end
+        end
+    end
+
+    # (2) U2-4: the shared straight drift's `z` against the closed formula in
+    # BigFloat. `z + L - (1 + pz)/ps0 * L` cancelled two numbers near L rounded
+    # to eps(L): 94.8 ulp of z = 2e-3 at the probe particle per 0.25 m, up to
+    # 6469 ulp over this particle set at L = 2 m, 67.7-94.8 ulp through the
+    # thick RF cavity; the cancellation-free excess `L (px^2 + py^2) / (ps0 ((1
+    # + pz) + ps0))` is within half an ulp. Pins: 1 ulp for the drift over
+    # 101 particles and three lengths (measured worst 0.50), 4 ulp for the
+    # thick RF cavity's z and pz (measured 1.20 and 1.05); the old form stays
+    # as the negative control.
+    zref(L, u) = begin
+        x, px, y, py, z, pz = big.(u)
+        ps0 = sqrt((1 + pz)^2 - px * px - py * py)
+        z + big(L) - (1 + pz) / ps0 * big(L)
+    end
+    ulps(got, ref) = Float64(abs(big(got) - ref) / big(eps(Float64(ref))))
+    u0 = (1.0e-3, 2.0e-4, -5.0e-4, 1.0e-4, 2.0e-3, 1.0e-3)
+    rng = Random.Xoshiro(2026)
+    particles = [u0]
+    for _ in 1:100
+        push!(particles, (1.0e-3 * randn(rng), 1.0e-3 * randn(rng), 1.0e-3 * randn(rng), 1.0e-3 * randn(rng),
+                          rand(rng, (-1, 1)) * (2.0e-4 + 4.8e-3 * rand(rng)), 1.0e-3 * randn(rng)))
+    end
+    worst_drift_ulp = maximum(ulps(Octopus._lattice_drift(Val(false), 0.0, L, u...)[5], zref(L, u))
+                              for L in (0.25, 0.5, 2.0), u in particles)
+    @test worst_drift_ulp <= 1.0
+    let (x, px, y, py, z, pz) = u0, L = 0.25
+        ps0 = sqrt((1 + pz)^2 - px * px - py * py)
+        old_form_ulp = ulps(z + L - (1 + pz) / ps0 * L, zref(L, u0))
+        @test old_form_ulp > 10.0                     # the negative control: the pre-fix form
+    end
+    rf = compile_runtime(ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV, phase=0.3, L=0.5))
+    rfref = let (x, px, y, py, z, pz) = big.(u0), b0 = big(rf.beta0), g0 = big(rf.gamma0), L = big(0.5)
+        drift(x, px, y, py, z, pz, L) = (ps0 = sqrt((1 + pz)^2 - px * px - py * py);
+            (x + px / ps0 * L, px, y + py / ps0 * L, py, z + L - (1 + pz) / ps0 * L, pz))
+        x, px, y, py, z, pz = drift(x, px, y, py, z, pz, L / 2)
+        z1, pt = Octopus.convert_longitudinal(Octopus.PATHLENGTH_DELTA => Octopus.TIME_ENERGY, z, pz; beta0=b0, gamma0=g0)
+        pt += big(rf.strength) * sin(big(rf.k) * z1 + big(rf.phase))
+        zn, pzn = Octopus.convert_longitudinal(Octopus.TIME_ENERGY => Octopus.PATHLENGTH_DELTA, z1, pt; beta0=b0, gamma0=g0)
+        drift(x, px, y, py, zn, pzn, L / 2)
+    end
+    rf_out = rf(u0...)
+    @test ulps(rf_out[5], rfref[5]) <= 4.0
+    @test ulps(rf_out[6], rfref[6]) <= 4.0
+
+    # (3) S4-7: every catalogue entry is in the snapshot and in
+    # `summarize_registry().examples`, which listed the three category TYPES
+    # and no entry before.
+    md = registry_snapshot_markdown()
+    listed = summarize_registry().examples
+    for e in example_catalog()
+        @testset let title = e.title
+            in_snapshot = occursin("`" * e.title * "`", md)
+            @test in_snapshot
+            @test Symbol(e.title) in listed
+        end
+    end
+
+    # (4) U7-3 / U7-4: the harness's summary line reads back and records the
+    # device; what the suite can see of a script is its text (the lines were
+    # verified by running the harness on the CPU and on CUDA). Bools first,
+    # so a failure prints a word and not the file.
+    harness = read(joinpath(root, "test", "examples", "crab_cavity_noise.jl"), String)
+    validation = read(joinpath(root, "validation", "crab_cavity_noise_response.jl"), String)
+    harness_has = (header_field = occursin("device=<n|NA>", harness),
+                   summary_field = occursin("\" device=\"", harness),
+                   device_receipt = occursin(":cuda_device", harness),
+                   seed_ledger = occursin("rng_seed", harness))
+    validation_has = (device_field = occursin("fields[\"device\"]", validation),
+                      device_in_verify = occursin("device", split(validation, "function verify_receipt")[2][1:2000]))
+    @test harness_has == map(_ -> true, harness_has)
+    @test validation_has == map(_ -> true, validation_has)
+
+    # (5) U6-6: the default seed is one constant per MPI-capable harness,
+    # derived by the MPI testset from the harness's text; the suite's own
+    # text no longer carries the copy.
+    suite = read(joinpath(root, "test", "runtests.jl"), String)
+    suite_copies_seed = occursin("joinpath(outdir, \"123456789\")", suite)
+    @test !suite_copies_seed
+    for h in sort(filter(f -> endswith(f, ".jl"), readdir(joinpath(root, "test", "examples"))))
+        text = read(joinpath(root, "test", "examples", h), String)
+        occursin("use_mpi = env_bool(\"OCTOPUS_USE_MPI\", false)", text) || continue
+        m = match(r"^const HARNESS_DEFAULT_SEED = (\d+)"m, text)
+        @testset let harness = h
+            @test m !== nothing
+            reads_constant = m !== nothing && occursin("HARNESS_DEFAULT_SEED", split(text, "HARNESS_DEFAULT_SEED = ")[2])
+            @test reads_constant                      # read by the harness, not only declared
+        end
+    end
+
+    # (6) S3-3: the wrapper set by forwarding, both ways. On Octopus's own
+    # track ops the derivation names the three wrappers and agrees with the
+    # `inner` rule; on the probe types it finds the forwarder under another
+    # field name and rejects the bare holder and the `inner` holder that
+    # forwards nothing -- the discriminating power the field rule lacked.
+    octopus_ops = Octopus._concrete_octopus_subtypes(Octopus.AbstractTrackOp)
+    derived = _forwarding_track_ops(octopus_ops)
+    @test derived == Set(Any[Octopus.MisalignedElement, Octopus.RefTilted, Octopus.TurnModulated])
+    @test Set(Any[T for T in octopus_ops if :inner in fieldnames(Base.unwrap_unionall(T))]) == derived
+    probe = _forwarding_track_ops((_FixGBareOp, _FixGInnerNoForward, _FixGSubjectOp, Octopus.CompositeLine, Octopus.RefTilted))
+    @test probe == Set(Any[_FixGSubjectOp, Octopus.RefTilted])
+    suite_derives_by_forwarding = occursin("derived = _forwarding_track_ops(octopus_track_ops)", suite)
+    @test suite_derives_by_forwarding
 end
 
 @testset "Turn modulation: slot bounds and labels at the wrap" begin
@@ -13899,7 +14101,20 @@ end
     # backend-consistency validation compiles its cavity BARE, so without
     # this pin the surveyed branch would never build as device code in the
     # suite. The correction is a per-op constant, so CPU and CUDA must agree
-    # exactly, not to a tolerance.
+    # exactly on ONE pass from the same state -- the first turn is pinned
+    # bitwise in z and pz. Over the 64-turn run the two backends part in the
+    # last bit of pz through the kick's `sin` (the 1-ulp CPU/CUDA libm
+    # difference the suite documents; measured here 1-4 ulp of pz after 64
+    # turns on both the pre- and post-2026-10-16 drift) and the one-turn map
+    # couples it into z as -0.2 C pz; the 64-turn pin was bitwise in z alone
+    # until the drift's cancellation-free z update (2026-10-16 neighbour
+    # audit, U2-4) removed the eps(100 m) ~ 1e-14 of z noise the old drift
+    # added per pass (3e-14 over this run, 3e5 ulp of z, identical on both
+    # backends), after which the pre-existing pz difference flipped z's last
+    # bit. The run is therefore pinned at 16 ulp in z and pz: a 1-ulp step
+    # per kick accumulating as a random walk over 64 turns stays within
+    # sqrt(64) = 8 ulp, doubled; a wrong slip constant moves z by the shift
+    # itself, C (beta/beta0 - 1) ~ 1e-5, which is 1e14 ulp.
     if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         C = 100.0
         m = [1.0 0 0 0 0 0; 0 1.0 0 0 0 0; 0 0 1.0 0 0 0; 0 0 0 1.0 0 0;
@@ -13911,12 +14126,21 @@ end
             t = TrackingTask(specs)
             rep = Phase6DRep(arr([0.0]), arr([0.0]), arr([0.0]), arr([0.0]),
                              arr([1.0e-3]), arr([0.0]))
-            for _ in 1:64
+            execute!(t, rep; turns=1)
+            first = (Array(rep.z)[1], Array(rep.pz)[1])
+            for _ in 2:64
                 execute!(t, rep; turns=1)
             end
-            return Array(rep.z)[1]
+            return first, (Array(rep.z)[1], Array(rep.pz)[1])
         end
-        @test zrun(identity) == zrun(Octopus.CUDA.CuArray)
+        ulps(a, b) = abs(a - b) / eps(max(abs(a), abs(b)))
+        first_cpu, run_cpu = zrun(identity)
+        first_gpu, run_gpu = zrun(Octopus.CUDA.CuArray)
+        @test first_cpu === first_gpu                  # one pass: bitwise, z and pz
+        @testset let z_ulp = ulps(run_cpu[1], run_gpu[1]), pz_ulp = ulps(run_cpu[2], run_gpu[2])
+            @test z_ulp <= 16
+            @test pz_ulp <= 16
+        end
     else
         @test_broken false      # visible in the summary, unlike a silent skip
     end
@@ -21267,13 +21491,26 @@ if _lane_gate("The developer harnesses run divided under an MPI launcher")
     # loudly and updates the pattern or itself; it cannot go unclassified.
     harness_dir = joinpath(root, "test", "examples")
     mpi_harnesses = String[]
+    # The default seed names rank 0's artifact directory. It is DERIVED from
+    # each harness's own `const HARNESS_DEFAULT_SEED = <digits>` line, by the
+    # same text discipline as the classification above, rather than copied
+    # (the literal "123456789" stood here for every harness; 2026-10-16
+    # neighbour audit, U6-6): a harness that changes its default, or declares
+    # none, fails here by name instead of failing the artifact pin with no
+    # seed in the message.
+    default_seeds = Dict{String,String}()
     for harness in sort(filter(f -> endswith(f, ".jl"), readdir(harness_dir)))
         text = read(joinpath(harness_dir, harness), String)
         reads = occursin("use_mpi = env_bool(\"OCTOPUS_USE_MPI\", false)", text)
         refuses = occursin("env_bool(\"OCTOPUS_USE_MPI\", false) && error(", text)
         xor(reads, refuses) || @info "TRIPWIRE: a harness under test/examples/ neither reads nor refuses OCTOPUS_USE_MPI (or does both), so the MPI arm would silently skip it" harness reads refuses
         @test xor(reads, refuses)
-        reads && push!(mpi_harnesses, harness)
+        reads || continue
+        push!(mpi_harnesses, harness)
+        seed_match = match(r"^const HARNESS_DEFAULT_SEED = (\d+)"m, text)
+        seed_match === nothing && @info "TRIPWIRE: an MPI-capable harness declares no `const HARNESS_DEFAULT_SEED = <digits>` line, so its default seed (the artifact directory's name) cannot be derived" harness
+        @test seed_match !== nothing
+        seed_match === nothing || (default_seeds[harness] = String(seed_match.captures[1]))
     end
     @test length(mpi_harnesses) >= 2    # the two arms of 2026-09-06
     launcher = try
@@ -21342,11 +21579,16 @@ if _lane_gate("The developer harnesses run divided under an MPI launcher")
                 # run could not say that, which is why this passes the count.
                 @test ok
                 # And rank 0 wrote exactly one artifact, into a directory of its
-                # own. `isdir` FIRST: when the child dies before writing, this
-                # must fail as an assertion rather than throw ENOENT out of the
-                # testset, which is how CI reported it.
-                seed_dir = joinpath(outdir, "123456789")
-                @test isdir(seed_dir) && length(readdir(seed_dir)) == 1
+                # own, named by the harness's default seed (derived above).
+                # `isdir` FIRST: when the child dies before writing, this must
+                # fail as an assertion rather than throw ENOENT out of the
+                # testset, which is how CI reported it. The message names the
+                # seed and what the directory holds.
+                seed = get(default_seeds, harness, "<no HARNESS_DEFAULT_SEED>")
+                seed_dir = joinpath(outdir, seed)
+                one_artifact = isdir(seed_dir) && length(readdir(seed_dir)) == 1
+                one_artifact || @info "rank 0 did not write exactly one artifact under the harness's default-seed directory" harness seed seed_dir contents=(isdir(seed_dir) ? readdir(seed_dir) : "<no directory>") outdir_contents=readdir(outdir)
+                @test one_artifact
             end
             # NOT asserted: the `mpi_rank = r of P` and shard-labelled rms lines
             # the harness prints. They arrive through the LAUNCHER'S MERGED

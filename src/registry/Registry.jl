@@ -12,7 +12,12 @@ edited as external metadata; three short index sections of the generated
 snapshot -- Task Diagnostics, Knob Control, and the Runtime Objects preamble --
 are maintained by hand inside `registry_snapshot_markdown`, because they index
 macros and workflows that are not types (audit part 7, K7 corrected the
-previous claim that everything here was derived).
+previous claim that everything here was derived). `examples` holds the
+`Example` Core Object's concrete members, the `example_catalog()` entries
+(instances, one per curated script), not the three category types: until the
+2026-10-16 neighbour audit (S4-7) it held the categories, so the crab-noise
+example and every other catalogue entry were absent from the snapshot and from
+`summarize_registry().examples`.
 """
 struct OctopusRegistry
     elements::Vector{Any}
@@ -38,9 +43,10 @@ end
     build_registry()
 
 Discover loaded Octopus architectural types. Element specs come from
-`register_element_spec!`; tracking methods, policies, contracts, analyses,
-examples, and tasks are discovered by recursively walking their abstract type
-trees.
+`register_element_spec!`; tracking methods, policies, contracts, analyses, and
+tasks are discovered by recursively walking their abstract type trees; the
+examples are the `example_catalog()` entries (the curated scripts, as `Example`
+objects), since the `AbstractExample` subtypes are categories and not members.
 """
 function build_registry()
     return OctopusRegistry(
@@ -50,7 +56,7 @@ function build_registry()
         _subtypes_recursive(AbstractExecutionPolicy),
         _subtypes_recursive(AbstractContract),
         _subtypes_recursive(AbstractAnalysis),
-        _subtypes_recursive(AbstractExample),
+        example_catalog(),
         _subtypes_recursive(AbstractTask),
     )
 end
@@ -59,7 +65,10 @@ end
     summarize_registry([registry])
 
 Return a compact named tuple of symbolic type names from an `OctopusRegistry`.
-This is useful for notebooks, diagnostics, and AI-agent orientation.
+This is useful for notebooks, diagnostics, and AI-agent orientation. The
+`examples` entry lists the catalogue entries by their script path
+(`Symbol("examples/crab_cavity_noise.jl")`, ...), the name an `Example` object
+has; `example_script_path` resolves one.
 """
 function summarize_registry(reg::OctopusRegistry=build_registry())
     return (
@@ -69,7 +78,7 @@ function summarize_registry(reg::OctopusRegistry=build_registry())
         policies = name.(reg.policies),
         contracts = name.(reg.contracts),
         analyses = name.(reg.analyses),
-        examples = name.(reg.examples),
+        examples = Symbol[Symbol(e.title) for e in reg.examples],
         tasks = name.(reg.tasks),
     )
 end
@@ -129,7 +138,7 @@ function registry_snapshot_markdown(reg::OctopusRegistry=build_registry())
     _write_type_section(io, "Execution Policies", reg.policies)
     _write_type_section(io, "Contracts", reg.contracts)
     _write_type_section(io, "Analyses", reg.analyses)
-    _write_type_section(io, "Examples", reg.examples)
+    _write_example_section(io, reg.examples)
     _write_type_section(io, "Tasks", reg.tasks)
 
     println(io, "## Task Diagnostics")
@@ -183,6 +192,25 @@ function _write_type_section(io, title, types)
     println(io)
     for T in types
         println(io, "- `", nameof(T), "`")
+    end
+    println(io)
+end
+
+# The Examples section lists the CATALOGUE -- `example_catalog()`'s entries,
+# the concrete members of the `Example` Core Object, each with its category and
+# the objects it is a precedent for -- and not only the three category types,
+# which is all it listed until the 2026-10-16 neighbour audit (S4-7). The
+# categories are derived from the type tree, as every other section is.
+function _write_example_section(io, examples)
+    println(io, "## Examples")
+    println(io)
+    println(io, "The curated scripts of `example_catalog()` (categories: ",
+            _markdown_type_list(_subtypes_recursive(AbstractExample)), "); resolve an")
+    println(io, "entry's script with `example_script_path`.")
+    println(io)
+    for e in examples
+        println(io, "- `", e.title, "` (`", nameof(typeof(e)), "`)")
+        println(io, "  - Objects: ", _markdown_type_list(e.objects))
     end
     println(io)
 end
@@ -290,8 +318,10 @@ function registry_types_without_description(reg::OctopusRegistry=build_registry(
     for name in propertynames(reg)
         section = getproperty(reg, name)
         section isa Union{Tuple,AbstractVector} || continue
-        for T in section
-            T isa Type || continue
+        for entry in section
+            # The examples section holds catalogue INSTANCES; their category
+            # type is what carries the description.
+            T = entry isa Type ? entry : typeof(entry)
             isempty(description(T)) && push!(out, (name, T))
         end
     end

@@ -39,7 +39,11 @@ config-that-was-never-read defect class, AGENTS.md Invariants):
     OCTOPUS_N_MACRO           macroparticles of the weak beam (10000)
     OCTOPUS_USE_GPU           1|0: CUDA storage and kernels (0 = CPU threads);
                               one grammar, 1/0 true/false yes/no on/off
-    OCTOPUS_CUDA_DEVICE       CUDA device index (the current device)
+    OCTOPUS_CUDA_DEVICE       CUDA device index (the current device); the
+                              device the run RECORDED is read back from the
+                              `:cuda_device` receipt into the summary line's
+                              device= field. Refused without OCTOPUS_USE_GPU=1,
+                              where nothing would read it
     OCTOPUS_CPU_THREADS       CPU logical workers (auto = the process default);
                               pair it with julia --threads=N; per RANK under
                               OCTOPUS_USE_MPI=1
@@ -208,8 +212,8 @@ config-that-was-never-read defect class, AGENTS.md Invariants):
                               and off (2 turns, 2026-10-16 neighbour audit);
                               the toggle removes an inert element unless the
                               damping turns are set
-    OCTOPUS_SEED              the task seed (123456789, the example's); names
-                              the output directory
+    OCTOPUS_SEED              the task seed (HARNESS_DEFAULT_SEED below, the
+                              example's); names the output directory
     OCTOPUS_RESULT_DIR        output root (test/result beside the tests, as
                               the weak-strong harness; the clean example
                               writes the same layout under the repo-root
@@ -285,8 +289,9 @@ docs/history/production_benchmark_2026_09_06.md names; refused on presence,
 as the weak-strong harness does; the switch is OCTOPUS_USE_MPI), OCTOPUS_RANKS
 without OCTOPUS_USE_MPI=1, OCTOPUS_TURN_TIMING_PATH without
 OCTOPUS_RECORD_TURN_TIMES=1 or set but empty, OCTOPUS_SPECTRUM, OCTOPUS_BAND
-or OCTOPUS_SPECTRAL_AMPLITUDES without OCTOPUS_NOISE_RULE=spectral, and
-OCTOPUS_USE_GPU=1 together with OCTOPUS_USE_MPI=1.
+or OCTOPUS_SPECTRAL_AMPLITUDES without OCTOPUS_NOISE_RULE=spectral,
+OCTOPUS_CUDA_DEVICE without OCTOPUS_USE_GPU=1, and OCTOPUS_USE_GPU=1 together
+with OCTOPUS_USE_MPI=1.
 
 OCTOPUS_USE_MPI=1 needs an environment where BOTH Octopus and MPI resolve as
 PACKAGES. MultiProcessExecutionPolicy reaches a communicator only through the
@@ -345,7 +350,7 @@ before tcca, because the record itself names only the element type), one
 ratio and the band or bitwise verdict applied), and ends with the one line
 the validation driver parses (rank 0's under MPI):
 
-    CRAB-NOISE rule=<r> scale=<s> phase_rms=<rad> strength_rel_rms=<rel> chrom=<xi_x>,<xi_y> table_file=<path|none> turns=<T> n_macro=<N> kbb_scale=<k> radiation=<0|1> seed=<seed> artifact=<path> eps_x_first=<..> eps_x_last=<..> eps_y_first=<..> eps_y_last=<..> lumi_mean=<..> wall_s=<..> ms_per_turn=<..> ranks=<P> threads=<n|NA> steady_ms_per_turn=<ms|NA> record=<true|false> [rms_<cavity>_<parameter>_<i>=<rms> ...] spectrum=<flat|pink|none> band=<lb>,<ub>|none amplitudes=<fixed|rayleigh|none>
+    CRAB-NOISE rule=<r> scale=<s> phase_rms=<rad> strength_rel_rms=<rel> chrom=<xi_x>,<xi_y> table_file=<path|none> turns=<T> n_macro=<N> kbb_scale=<k> radiation=<0|1> seed=<seed> artifact=<path> eps_x_first=<..> eps_x_last=<..> eps_y_first=<..> eps_y_last=<..> lumi_mean=<..> wall_s=<..> ms_per_turn=<..> ranks=<P> threads=<n|NA> steady_ms_per_turn=<ms|NA> record=<true|false> [rms_<cavity>_<parameter>_<i>=<rms> ...] spectrum=<flat|pink|none> band=<lb>,<ub>|none amplitudes=<fixed|rayleigh|none> device=<n|NA>
 
 where the fields through steady_ms_per_turn are the line as it was before
 the recording landed (2026-10-15), so a parser of `key=value` tokens
@@ -354,10 +359,31 @@ crab_cavity_noise_backends.jl) reads the same fields; record is
 OCTOPUS_RECORD_TURN_MODULATION as read, and with it on one `rms_<label>`
 field per recorded slot follows, in slot order, the label the
 OCTOPUS_TABLE_FILE columns use (`tccb_phase_noise_1`, ...; absent with the
-switch off or under rule none); spectrum, band and amplitudes close the line
+switch off or under rule none); spectrum, band and amplitudes follow
 (added after every earlier field, 2026-10-16): under rule spectral the
 preset, the band in cycles per turn and the amplitudes as read, none under
-every other rule. phase_rms and strength_rel_rms are the EFFECTIVE values that ran:
+every other rule; device closes the line (2026-10-16 neighbour audit, U7-4):
+the CUDA device index the run RECORDED, NA on the CPU.
+
+READBACKS, not echoes (a configuration you set is not a configuration the
+code read; 2026-10-16 neighbour audit, U7-3): chrom= is the compiled
+chromaticity kick's (xi_x, xi_y), kbb_scale= the compiled strong beam's kbb
+over the unscaled kbb (the OCTOPUS_KBB_SCALE=1 value, so exactly 1.0 and 0.0
+at the two toggles) and radiation= the count of lumped radiation elements
+(0 or 1), all three read from the compiled runtime line the task tracked
+(its cached runtime entries, after the run); seed= is the rng_seed the
+artifact's /execution ledger recorded for this execute!; device= is the
+`:cuda_device` receipt; ranks= the `:multi_process_communicator` receipt;
+threads= the configuration report's resolved worker count; record= and every
+rms_<label>= the recorded series. Each readback is checked against its
+request and the run is REFUSED, with both numbers, when they differ. The
+remaining fields are the request as the harness read it: rule, scale,
+phase_rms and strength_rel_rms (effective values), turns, n_macro, spectrum,
+band, amplitudes, and table_file -- the artifact records no path; what it
+records for a file-fed run is every active table slot's name and FNV-1a
+digest, checked here against the rules built from the file's columns (the
+validation driver checks the file's column digests again). phase_rms and
+strength_rel_rms are the EFFECTIVE values that ran:
 OCTOPUS_*_RMS times OCTOPUS_NOISE_SCALE when the parameter carries rules, 0
 when it carries none (rms 0, or rule none); strength_rel_rms is the strength
 rule's sigma itself, the relative rms of S (1 + d); with a file table they
@@ -617,6 +643,14 @@ default_case_name = "crab_noise_$(noise_rule_kind)_x$(scale_tag(noise_scale))" *
                     (kbb_scale == 1.0 ? "" : "_kbb" * scale_tag(kbb_scale)) *
                     (use_radiation ? "" : "_norad")
 
+# The default task seed, ONE constant the run reads and the suite derives: the
+# multi-process harness testset (test/runtests.jl, "The developer harnesses run
+# divided under an MPI launcher") reads this line by its text to find rank 0's
+# artifact directory, which is named by the seed, instead of copying the number
+# (2026-10-16 neighbour audit, U6-6). Keep the form `const HARNESS_DEFAULT_SEED
+# = <digits>` on one line.
+const HARNESS_DEFAULT_SEED = 123456789
+
 # Input for this weak-proton crab-crossing case: the example's numbers, which
 # are the weak-strong example's. The run size comes from OCTOPUS_TURNS and
 # OCTOPUS_N_MACRO above, never from a field here (an unread `total_turns` was
@@ -626,7 +660,7 @@ input = (
     # OCTOPUS_RESULT_DIR: two concurrent runs used to clobber one another
     # silently (2026-08-05_b audit, U21-27).
     result_dir = get(ENV, "OCTOPUS_RESULT_DIR", joinpath(@__DIR__, "..", "result")),
-    seed = env_parse(Int, "OCTOPUS_SEED", "123456789"),
+    seed = env_parse(Int, "OCTOPUS_SEED", string(HARNESS_DEFAULT_SEED)),
 
     weak_beam = (
         charge = 1.0,
@@ -734,9 +768,16 @@ if use_gpu
     import CUDA
     CUDA.functional(false) || error("OCTOPUS_USE_GPU=1 requested, but CUDA.functional(false) is false.")
 end
+# OCTOPUS_CUDA_DEVICE reaches `CUDAExecutionPolicy(device = ...)` only; set
+# without the GPU switch it would be a variable nothing reads, so it is refused
+# by name (the header's list).
+cuda_device = isempty(get(ENV, "OCTOPUS_CUDA_DEVICE", "")) ? nothing :
+              env_parse(Int, "OCTOPUS_CUDA_DEVICE", "")
+use_gpu || cuda_device === nothing || error(
+    "OCTOPUS_CUDA_DEVICE=$(cuda_device) without OCTOPUS_USE_GPU=1: the CPU policies " *
+    "read no device, so the variable would be silently dropped. Set OCTOPUS_USE_GPU=1 " *
+    "or unset it.")
 policy = if use_gpu
-    cuda_device = isempty(get(ENV, "OCTOPUS_CUDA_DEVICE", "")) ? nothing :
-                  env_parse(Int, "OCTOPUS_CUDA_DEVICE", "")
     CUDAExecutionPolicy(device = cuda_device)
 else
     cpu_threads_text = lowercase(strip(get(ENV, "OCTOPUS_CPU_THREADS", "auto")))
@@ -875,6 +916,11 @@ table_slot_rms = Tuple{String,Float64}[]
 # rng_id and the slot index -- and `spectral_names` holds that table's
 # canonical name, which the provenance must carry.
 table_offsets = Dict{String,Vector{Float64}}()
+# Every table rule's FNV-1a digest and name, keyed like `table_offsets`: what
+# the artifact's provenance must record for the slot (a spectral slot's are
+# the factory's reference table's, which the compiled rule must have resolved
+# to).
+table_digests = Dict{String,Tuple{UInt64,String}}()
 spectral_names = Dict{String,String}()
 spectral_ids = Dict{String,Int}()
 function noise_rule(parameter::String, cavity::String, i::Int, sigma, rng_id)
@@ -913,6 +959,8 @@ function noise_rule(parameter::String, cavity::String, i::Int, sigma, rng_id)
     end
     push!(table_slot_rms, (label, sqrt(sum(abs2, @view offsets[1:turns]) / turns)))
     table_offsets["$(cavity)_$(parameter)_$(i)"] = offsets
+    table_digests["$(cavity)_$(parameter)_$(i)"] = cn.rule === :spectral ? (reference.digest, reference.name) :
+                                                                          (table.digest, table.name)
     return table
 end
 function crab_noise_rules(cavity::String, id_base::Int)
@@ -1137,6 +1185,26 @@ else
     end
     string(threads_entry.resolved)
 end
+# The CUDA device the run RECORDED: the `:cuda_device` receipt the resolved
+# policy writes at activation, after `CUDA.device!(device)` (src/beam/Beam.jl),
+# so a multi-GPU host shows which device tracked and an OCTOPUS_CUDA_DEVICE
+# the policy did not read would show as another index. NA on the CPU, where
+# no such receipt exists -- and one there is an error (2026-10-16 neighbour
+# audit, U7-4).
+device_receipts = filter(r -> r.consumer === :cuda_device, execution_receipts(audit))
+device_text = if use_gpu
+    isempty(device_receipts) && error(
+        "OCTOPUS_USE_GPU=1, but the run recorded no :cuda_device receipt: the CUDA policy did not activate")
+    recorded_device = Int(last(device_receipts).values.device)
+    cuda_device === nothing || recorded_device == cuda_device || error(
+        "OCTOPUS_CUDA_DEVICE=$(cuda_device) was requested, but the run recorded device $(recorded_device)")
+    string(recorded_device)
+else
+    isempty(device_receipts) || error(
+        "a CPU run recorded a :cuda_device receipt (device $(last(device_receipts).values.device)): " *
+        "the policy in force was not the CPU one")
+    "NA"
+end
 
 # OCTOPUS_RECORD_TURN_TIMES=1: the per-turn series the task clocked. PER RANK
 # by the task's documented semantics: the INSTRUMENT adds no collective, each
@@ -1298,6 +1366,17 @@ else
                                 ", ratio = ", ratio, " (within 1 +- ", rms_tol, ")")
                     elseif s.kind === :table
                         record = table_offsets[label]
+                        # The provenance's identity of the table: the digest (and
+                        # for a synthetic or file table the name, the column label
+                        # under OCTOPUS_TABLE_FILE) of the rule this run built --
+                        # for a file-fed run, what shows the file's columns are
+                        # what the slots carried (U7-3).
+                        want_digest, want_name = table_digests[label]
+                        s.digest == want_digest || error(
+                            "$(label) (table): the provenance records digest 0x$(string(s.digest; base = 16, pad = 16)) " *
+                            "while the rule this run built has 0x$(string(want_digest; base = 16, pad = 16))")
+                        s.name == want_name || error(
+                            "$(label) (table): the provenance names the table $(repr(s.name)); the rule this run built is named $(repr(want_name))")
                         if s.series != record[1:turns]
                             first_bad = findfirst(i -> s.series[i] !== record[i], 1:turns)
                             error("$(label) (table): the recorded series differs from the record's first $(turns) " *
@@ -1394,6 +1473,45 @@ else
     # eps_x = sqrt(<x^2><px^2> - <x px>^2) (columns m200000, m020000, m110000),
     # eps_y from m002000, m000200, m001100.
     out = TaskOutput(artifact_path)
+    # READBACKS for the summary line (the header's paragraph; 2026-10-16
+    # neighbour audit, U7-3): what the run RECORDED or TRACKED, each checked
+    # against its request. seed: the artifact's /execution ledger holds the
+    # global stochastic seed in force when this execute! prepared it. chrom,
+    # kbb_scale, radiation: the compiled runtime line the task tracked -- its
+    # runtime entries, compiled once at the first execute! and cached on the
+    # task (internal accessors, deliberately: no public reader exposes the
+    # compiled line, and recompiling the specs here would read the request
+    # again). The physics line is the entries without the observer.
+    ledger = read(out, :execution)
+    ledger.rng_seed === nothing && error("the artifact's /execution ledger has no rng_seed column")
+    recorded_seed = Int(ledger.rng_seed[end])
+    recorded_seed == input.seed || error(
+        "the artifact's ledger records rng_seed $(recorded_seed) while OCTOPUS_SEED asked $(input.seed)")
+    compiled = Octopus._physics_line(task.runtime_entries_cache[][1])
+    chrom_kicks = [e for e in compiled if e isa Octopus.ChromaticityKick]
+    length(chrom_kicks) == 1 || error(
+        "the compiled line holds $(length(chrom_kicks)) chromaticity kicks; this line has one")
+    chrom_readback = (chrom_kicks[1].xix, chrom_kicks[1].xiy)
+    chrom_readback == chromaticity || error(
+        "the compiled chromaticity kick carries xi = $(chrom_readback) while OCTOPUS_CHROMATICITY asked $(chromaticity)")
+    strong_beams = [e for e in compiled if e isa Octopus.GaussianStrongBeam]
+    length(strong_beams) == 1 || error(
+        "the compiled line holds $(length(strong_beams)) Gaussian strong beams; this line has one")
+    # The unscaled kbb (the OCTOPUS_KBB_SCALE=1 value, the same product as
+    # `kbb` above without the factor), so the ratio is exactly 1.0 and 0.0 at
+    # the two toggles and the request's scale within rounding otherwise.
+    kbb_unit = wb.charge * strong.charge * strong.n_particle * weak_r0 * wb.mass / wb.energy
+    kbb_scale_readback = strong_beams[1].thin.kbb / kbb_unit
+    isapprox(kbb_scale_readback, kbb_scale; rtol = 1.0e-12, atol = 0.0) || error(
+        "the compiled strong beam's kbb $(strong_beams[1].thin.kbb) is $(kbb_scale_readback) times the unscaled " *
+        "kbb $(kbb_unit) while OCTOPUS_KBB_SCALE asked $(kbb_scale)")
+    radiation_readback = count(e -> e isa Octopus.LumpedRad, compiled)
+    radiation_readback == (use_radiation ? 1 : 0) || error(
+        "the compiled line holds $(radiation_readback) lumped radiation element(s) while OCTOPUS_RADIATION=$(use_radiation ? 1 : 0)")
+    println("readbacks: seed = ", recorded_seed, " (ledger rng_seed), chrom = ", chrom_readback,
+            ", kbb_scale = ", kbb_scale_readback, ", radiation = ", radiation_readback,
+            " (compiled line of ", length(compiled), " elements), device = ", device_text,
+            device_text == "NA" ? " (CPU)" : " (:cuda_device receipt)")
     lum = read(out, :luminosity; name = "strong_beam_1")
     lumi_mean = sum(lum.value) / length(lum.value)
     mom = read(out, :moments; name = "weak_beam")
@@ -1406,12 +1524,14 @@ else
     # (docs/experiences.md, "Two ranks printing at the same moment merge
     # mid-line"). wall_s and ms_per_turn are this rank's `execute!`, JIT
     # included; steady_ms_per_turn is the max over ranks after the warm-up.
+    # chrom, kbb_scale, radiation, seed: the READBACKS above, each already
+    # checked against its request (the header's paragraph).
     summary = string("CRAB-NOISE rule=", cn.rule, " scale=", cn.scale,
         " phase_rms=", phase_sigma, " strength_rel_rms=", strength_sigma_rel,
-        " chrom=", chromaticity[1], ",", chromaticity[2],
+        " chrom=", chrom_readback[1], ",", chrom_readback[2],
         " table_file=", isempty(cn.table_file) ? "none" : cn.table_file,
-        " turns=", turns, " n_macro=", n_macro, " kbb_scale=", kbb_scale,
-        " radiation=", use_radiation ? 1 : 0, " seed=", input.seed,
+        " turns=", turns, " n_macro=", n_macro, " kbb_scale=", kbb_scale_readback,
+        " radiation=", radiation_readback, " seed=", recorded_seed,
         " artifact=", artifact_path,
         " eps_x_first=", eps_x[1], " eps_x_last=", eps_x[end],
         " eps_y_first=", eps_y[1], " eps_y_last=", eps_y[end],
@@ -1426,6 +1546,9 @@ else
         # every earlier field for the same reason; none under the other rules.
         " spectrum=", cn.rule === :spectral ? string(cn.spectrum) : "none",
         " band=", cn.rule === :spectral ? "$(cn.band[1]),$(cn.band[2])" : "none",
-        " amplitudes=", cn.rule === :spectral ? string(cn.amplitudes) : "none")
+        " amplitudes=", cn.rule === :spectral ? string(cn.amplitudes) : "none",
+        # The recorded CUDA device, after every earlier field (2026-10-16
+        # neighbour audit, U7-4); NA on the CPU.
+        " device=", device_text)
     println(summary)
 end

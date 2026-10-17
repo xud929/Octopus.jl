@@ -117,10 +117,41 @@ Exact drift in a frame of curvature `h`, in the `z = s - l` convention.
 
 Both `y` and `z` follow from one shared quantity, the second from the first by
 `p_y -> -(1 + p_z)` (Section 5). Written so that no `1/h` is ever formed.
+
+The straight drift's `z` is `z - (l - L)` with the path-length excess
+`l - L = L ((1 + p_z)/p_s - 1)` formed cancellation-free as
+`L (p_x^2 + p_y^2) / (p_s ((1 + p_z) + p_s))` (the same quantity, by
+`(1 + p_z)^2 - p_s^2 = p_x^2 + p_y^2`). The form `z + L - (1 + p_z)/p_s L`
+rounds two numbers near `L` to `eps(L)` before cancelling them, an absolute
+error of about `eps(L)` in a `z` three orders of magnitude smaller: measured
+94.8 ulp of `z = 2e-3` per 0.25 m half drift and 67.7 ulp through the thick
+RF cavity, against 0.23 ulp for this form (2026-10-16 neighbour audit,
+U2-4). Every thick element with `h = 0` and no dipole field passes through
+here -- the RF and accelerating cavities' drift-kick-drift halves and
+`LatticeMagnet`'s straight body step -- so the suite pins the straight
+drift's `z` within 1 ulp of the closed formula over a particle set and the
+thick RF cavity within 4 ulp. The curved form below keeps
+`z + L - (1 + p_z) Delta`: its `Delta` is a composite of `L`-sized terms,
+and a cancellation-free excess for it would need its own derivation.
+
+`p_x^2 + p_y^2` is `_pt2_fused`: one `fma` on IEEE floats, because the device
+contracts a multiply feeding an add into `fma.rn` on its own while Julia's
+host codegen never does (`docs/experiences.md`, "`muladd` is a 1-ulp coin"),
+and the two then disagree in the last bit of the excess -- measured as a
+1-ulp CPU/CUDA difference in `z` through the surveyed RF cavity, the one
+drift pin in the suite that is bitwise across backends. Spelled `fma`, not
+`muladd`, so the fusion is the source's decision on both sides
+(`_shifted_second_moment` in `src/tasks/strongstrong/slicing.jl`); the plain
+sum on every other number type, since complex-step and dual coordinates
+have no `fma`.
 """
+@inline _pt2_fused(px::T, py::T) where {T<:Union{Float32,Float64}} = fma(px, px, py * py)
+@inline _pt2_fused(px, py) = px * px + py * py
+
 @inline function _lattice_drift(::Val{false}, h::T, L::T, x, px, y, py, z, pz) where {T}
     ps0 = sqrt((1 + pz)^2 - px * px - py * py)
-    return x + px / ps0 * L, px, y + py / ps0 * L, py, z + L - (1 + pz) / ps0 * L, pz
+    return x + px / ps0 * L, px, y + py / ps0 * L, py,
+           z - L * _pt2_fused(px, py) / (ps0 * ((1 + pz) + ps0)), pz
 end
 
 @inline function _lattice_drift(::Val{true}, h::T, L::T, x, px, y, py, z, pz) where {T}

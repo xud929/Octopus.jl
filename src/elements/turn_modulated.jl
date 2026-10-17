@@ -1093,6 +1093,25 @@ end
 end
 
 """
+    _slot_concat(a::Tuple, b::Tuple) -> Tuple
+
+`(a..., b...)` unrolled with LITERAL indices. A splat of two tuples is expanded
+into one `tuple` call only while each splatted tuple is at most
+`Core.Compiler.InferenceParams().max_tuple_splat` (32) entries long; past
+that the typed IR keeps a runtime `Core._apply_iterate`, which builds an
+argument array and boxes, so the crab cavity's `(dphi..., d...)` draws tuple
+allocated 1.1-2.6 kB on every `realize`, `update` and `update_line` from 33
+harmonics on -- 0 B at 32 and below -- although its type inferred concrete,
+and the plain hook paid for a tuple it never reads (2026-10-16 neighbour
+audit, U1-2; the suite pins 0 B at 32, 33 and 40 harmonics). The generated
+body is one direct `tuple` call whatever the lengths; `fieldcount` is the
+compile-time length of each argument type.
+"""
+@inline @generated function _slot_concat(a::Tuple, b::Tuple)
+    return :(($([:(a[$i]) for i in 1:fieldcount(a)]...), $([:(b[$j]) for j in 1:fieldcount(b)]...),))
+end
+
+"""
     _check_rule_window(rule, first_turn::Int64, nturns::Int, where::AbstractString)
 
 Throw an `ArgumentError` if `rule` cannot serve every turn of the window

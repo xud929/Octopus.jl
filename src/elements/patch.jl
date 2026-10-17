@@ -124,6 +124,22 @@ Exact patch map. Three steps, following Bmad's `track_a_patch`:
 `p_s` is formed from the incoming momenta and is invariant under the rotation
 (a rotation preserves `|p|` and `delta`), so the drift uses the rotated
 `s`-component rather than recomputing a square root.
+
+The drift to the face is spelled as `_lattice_drift`'s straight drift is: the
+transverse update as `q / q3 * ds` and the path-length EXCESS over `ds` formed
+cancellation-free, `ds (q1^2 + q2^2) / (q3 ((1 + p_z) + q3))` (exact by
+`|q| = 1 + p_z`, with `_pt2_fused` so both backends round it alike), rather
+than `z + ref - ds (1 + p_z)/q3`, which rounded two numbers near `ds` to
+`eps(ds)` before cancelling them (the drift's own defect, 2026-10-16 neighbour
+audit, U2-4). `z` is then `z + sxy + ref_excess - excess`: `sxy = r31 x +
+r32 y` is the particle's transverse position projected on the new axis
+(`s - ds`, exactly, by linearity), `ref_excess` the reference particle's own
+excess over its projection `s`, the same expression at the reference's
+direction `W (0, 0, 1)`. Two identities the suite pins hold by construction
+rather than by two association orders agreeing: a purely longitudinal patch
+has `sxy = 0`, `ref_excess = 0` and `q == p` exactly, so it IS the drift bit
+for bit; the on-axis reference particle has `ds == s` and `q == W (0, 0, 1)`
+exactly, so `excess == ref_excess` bitwise and it lands at exactly `z = 0`.
 """
 @inline function _patch_map(elem::Patch{M,T}, x, px, y, py, z, pz) where {M,T}
     ps = sqrt((1 + pz)^2 - px * px - py * py)
@@ -133,13 +149,18 @@ Exact patch map. Three steps, following Bmad's `track_a_patch`:
     q1, q2, q3 = _patch_apply(W, px, py, ps)
     # Drift to the new entrance face, s = 0.
     ds = -r3
-    xn = r1 + ds * q1 / q3
-    yn = r2 + ds * q2 / q3
-    # Path length actually travelled over that drift, and the reference length
-    # the frame change itself represents.
-    path = ds * (1 + pz) / q3
-    ref = _patch_reference_length(elem, W)
-    return xn, q1, yn, q2, z + ref - path + elem.t_offset, pz
+    xn = r1 + q1 / q3 * ds
+    yn = r2 + q2 / q3 * ds
+    # The path travelled over that drift exceeds `ds` by `excess`; the
+    # reference particle's path to the face exceeds its projection `s` by
+    # `ref_excess` (the same expression at the reference's direction); `ds`
+    # and `s` differ by the particle's transverse projection `sxy`.
+    excess = ds * _pt2_fused(q1, q2) / (q3 * ((1 + pz) + q3))
+    _, _, s = _patch_apply(W, elem.dx, elem.dy, elem.dz)
+    q1r, q2r, q3r = _patch_apply(W, zero(T), zero(T), one(T))
+    ref_excess = s * _pt2_fused(q1r, q2r) / (q3r * (one(T) + q3r))
+    sxy = W[7] * x + W[8] * y
+    return xn, q1, yn, q2, z + sxy + ref_excess - excess + elem.t_offset, pz
 end
 
 """

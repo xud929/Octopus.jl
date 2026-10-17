@@ -15,9 +15,13 @@ using .Octopus
 ```julia
 summarize_registry()
 build_registry()
+example_catalog()                 # the curated scripts, as Example objects
+example_script_path(entry)        # one entry's script, resolved
 ```
 
-The generated inventory is `docs/registry_snapshot.md`. Regenerate it with:
+The generated inventory is `docs/registry_snapshot.md`; its Examples section
+lists the catalogue entries with their categories and objects. Regenerate it
+with:
 
 ```julia
 write_registry_snapshot()
