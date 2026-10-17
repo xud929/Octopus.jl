@@ -150,7 +150,10 @@ is exactly why the straight map's closed form does not survive `h != 0`.
             h * ps + hx * k * gp * Py / ps,     # px'
             hx * Py / ps,                       # y'
             -hx * k * Px / ps,                  # py'
-            one(T) - hx * (1 + pz) / ps,        # z'
+            # z' = 1 - (1 + hx)(1 + pz)/ps, as the two small terms it is:
+            # (ps - (1 + pz)) - h x (1 + pz), over ps, with
+            # ps - (1 + pz) = -(Px^2 + Py^2)/((1 + pz) + ps) (unit K, 2026-10-17).
+            -(_pt2_fused(Px, Py) / ((1 + pz) + ps) + h * x * (1 + pz)) / ps,  # z'
             zero(T))                            # pz'
 end
 
@@ -322,8 +325,13 @@ is what makes this closed-form rather than an expansion.
     Wi = Px * ri + Py * rr
     # Exit edge, at the new position.
     pxn, pyn = _solenoid_edge(-k, xn, yn, Wr, Wi)
-    # p_s is constant, so the longitudinal advance is the drift's, term for term.
-    return xn, pxn, yn, pyn, z + L * (1 - (1 + pz) / ps), pz
+    # p_s is constant, so the longitudinal advance is the drift's, term for
+    # term: the excess `L ((1 + pz)/ps - 1)` as `L (Px^2 + Py^2)/(ps ((1 + pz) + ps))`
+    # with the KINETIC momenta (`ps^2 = (1 + pz)^2 - Px^2 - Py^2`), the form
+    # `_lattice_drift(::Val{false})` carries; `L (1 - (1 + pz)/ps)` rounded two
+    # numbers near `L` (4855 ulp of z at worst over the sweep, fix batch 3
+    # unit K, 2026-10-17).
+    return xn, pxn, yn, pyn, z - L * _pt2_fused(Px, Py) / (ps * ((1 + pz) + ps)), pz
 end
 
 # Pure solenoid, N == 0. Straight frame takes the exact closed form; a curved
