@@ -2841,3 +2841,120 @@ The owner-decided fix batch of the 2026-10-16 neighbour audit's open items
 
 - Row as it stood: state **open (2026-10-16, crab-noise neighbour audit S1-9)**; notes: A Float32 beam through a Float64 `LumpedRadSpec` narrows silently on CPU and fails on CUDA at kernel compile (`InvalidIRError`, `jl_f_tuple` in `fusedTrack`). Fix: a compile-time precision check that refuses by name (one rule with the row above).
 - Closed 2026-10-16 by fix unit D: the same by-name refusal covers `LumpedRad` (a Float32 beam through the Float64 element narrowed on the CPU and failed at CUDA device compile; now refused before any turn on both). Measured for the record: every other kind narrows on the CPU and 12 of 31 fail on CUDA, which is the new owner row.
+
+### Rows retired by the crab-cavity noise audit fix batch 2 — closed 2026-10-16
+
+The second owner-decided batch (record `crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`)
+retired twenty-two rows of `docs/todo.md`: the three owner decisions, the audit's
+small rows and the first batch's follow-ups; each is reproduced as it stood, followed
+by its closing.
+
+#### Artifact options under `TrackingTask` reach no receipt; the strong-strong output receipt reports the request as resolved
+
+- Row as it stood: state **open (2026-10-16, crab-noise neighbour audit S4-1, S4-2, S4-3, S4-10)**; notes: Under `TrackingTask` none of `append`, `capacity`, `record_turn_modulation` reaches a receipt (the declared consumers are reachable only from `StrongStrongTask` or with a `MomentObserver`); the `:strong_strong_output` receipt carries the REQUESTED values and `configuration_report` calls them `:resolved`; `CoordinateSnapshotObserver` declares `:observer_output` and never records it, `BPMObserver`'s receipt carries neither `artifact` nor `capacity`; `TrackingTask` accepts `artifact` and `loss_report` as public keywords with no schema entry and no output receipt (the concrete instance of row 63). Fix: one output receipt per task kind carrying what the artifact resolved (Lesson 11 shape).
+- Closed 2026-10-16 by fix batch 2, unit E (branch `fix-artifact-receipts`, c2c3228): the artifact records its own `:run_artifact_output` receipt once per `execute!` after its last refusal (task kind, path, `append` beside `continued`, `capacity`, `record_turn_modulation` beside `recording`, `execution`), true under both task kinds; each kind records its output receipt after the prepare (`:tracking_output`, new, with `artifact`, `channels`, `loss_report`; `:strong_strong_output` moved after the prepare); `tracking_task_option_schema` gains `artifact` and `loss_report`; the snapshot, BPM and moment receipts carry the fields their metadata names; the option-to-receipt pairing is derived (`_output_receipt_gaps`) and checked by the effectiveness contract (no gap). Pinned by "Run artifact receipts and slots: ...": red on ac3fbb2 (10 pass, 6 fail, 7 error of 23), green after (204 of 204). Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### Hand-copied artifact vocabularies without tripwires
+
+- Row as it stood: state **open (2026-10-16, crab-noise neighbour audit S4-5, S4-8, S4-9)**; notes: The slot `kind` vocabulary "white, pink or table" is hand-copied in four places with no tripwire to `_rule_kind` (a non-resolving new kind round-trips unvalidated); `_RA_KINDS` lists the seven product groups by hand; the `:turn_modulation` receipt's shape is pinned at the slot entry only and the walk's docstring documents the pre-`beam` entry. Fix: derive each from its source and pin it.
+- Closed 2026-10-16 by fix batch 2, unit E: `_rule_kind` declared on the rule types so `_turn_rule_kinds()` derives the slot-kind vocabulary from the `AbstractTurnRule` tree (the reader warns by name on a kind outside it, every text naming the vocabulary pinned to it); one table `_RA_GROUPS` from which `_RA_KINDS` and the named kinds derive, pinned against a seven-producer run; the `:turn_modulation` receipt pinned at its three levels and the walk's docstring corrected. Same testset. Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### `append=true` onto a non-HDF5 file surfaces HDF5's own message
+
+- Row as it stood: state **open (2026-10-16, crab-noise neighbour audit S5-7)**; notes: The by-name refusal ("is not a run artifact ...") is unreachable because `h5open` fails first. Fix: probe the format before opening.
+- Closed 2026-10-16 by fix batch 2, unit E: `HDF5.ishdf5` is probed before the open and the by-name refusal is reached. Same testset. Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### An artifact refused inside `prepare_run_artifact!`'s body still registers in the in-process path registry
+
+- Row as it stood: state **open (2026-10-16, fix batch unit A)**; notes: Registration precedes the body's refusals (label mismatch, provenance mismatch), so a refused writer stays registered as live until the process ends; harmless today (the sidecar lock is taken before registration, so the refused writer holds no lock) and pre-existing. Fix: register after the last refusal, with a pin.
+- Closed 2026-10-16 by fix batch 2, unit E: the registry is written after the prepare body's last refusal (the sidecar lock stays first), pinned. Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### Whether the artifact writer rolls back a partial `/turn_modulation` slot on a write error
+
+- Row as it stood: state **open (owner item of the 2026-10-13 stage 3-4 audit, U5-2; restored 2026-10-16 by the crab-noise neighbour audit, U8-9)**; notes: Listed among the owner items in `history/turn_modulation_stages3_4_2026_10_13.md` section 6.6 and dropped from this ledger. Since 2026-10-16 the writer runs every refusal before the first group is created (U5-3, U5-6), so only a mid-write HDF5 error can leave a partial slot. Owner: roll back, or document the partial slot as a crash artefact the reader reports.
+- Closed 2026-10-16 by the owner's decision (fix batch 2, unit E): the reader reports, no rollback. Each slot group carries a cursor `elements_valid_through` (0 before the first element group, advanced after each complete element, series dataset included); the public readers read a partial slot as far as the cursor with one warning and never error; `append=true` onto such a file is refused by name; `docs/design/turn_modulation_record.md` documents the partial slot as the crash artefact it is. Pinned with a partial slot built through HDF5 directly. Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### Once-per-`execute!` walks over heterogeneous tuples, and the recorder's unsized buffers
+
+- Row as it stood: state **open (2026-10-16, crab-noise neighbour audit U9-4, U9-5)**; notes: `_physics_line`, `_strong_beams_of`, the turn-modulation walks, `prepare_line_observers!` / `_finalize_line_observers!` and the strong-strong physics-line and observer walks each box the whole entries tuple per element (about 1.1 MB per `execute!` on an eight-type line of 40 elements; 85 kB per call per strong-strong walk): harmless for one long call, a cost for turn-by-turn or short-chunk execution. The recorder's row buffers grow by doubling, about 580 B per turn averaged. Fix: `@generated` unrolls as `_update_line_unrolled`, and `sizehint!(buf, capacity * ncols)`, each with a pin.
+- Closed 2026-10-16 by fix batch 2: unit F unrolled the eleven once-per-`execute!` walks with literal indices (each walk 185-206 kB to 0-32 B on the eight-type line of 40 elements; the fast path 1,245,392 to 97,792 B and the general path 1,820,560 to 103,632 B per `execute!`; the strong-strong line walks 38,736 to 12,064 and 26,704 to 32 B), pinned with stated margins; unit E `sizehint!`ed the recorder's row buffers to `capacity * ncols` with a hook-level pin. Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### The `:turn_modulation` and `:tracking_turn_timing` receipts are recorded before three refusals
+
+- Row as it stood: state **open (2026-10-16, crab-noise neighbour audit U3-6)**; notes: The hidden-strong-beam refusal, the `:fused`-on-CUDA refusal and `prepare_run_artifact!`'s refusals can stop the run after the receipts were recorded, so a receipt can describe a run that tracked no turn. Fix: record after the refusals, or stamp the receipts with the turns tracked.
+- Closed 2026-10-16 by fix batch 2, unit F (branch `fix-tasks-walks`, e984040): `_record_tracking_receipts!` records both receipts after the refusals on both task kinds; a refused run leaves none. Pinned by "Tasks and turn modulation follow-ups: ...": red on ac3fbb2 (42 pass, 46 fail, 6 error of 94), green after (108 of 108). Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### The duplicate-stream warning says "on different elements" for one spec placed twice
+
+- Row as it stood: state **open (2026-10-16, crab-noise neighbour audit U8-16)**; notes: Unchanged since the stage 3-4 audit observed it (its section 6.7), and the equal-digest warning adopted the phrase. Fix: count placements, not elements.
+- Closed 2026-10-16 by fix batch 2, unit F: the warning counts placements and is worded for them. Same testset. Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### Two warnings for one cause: a table pair the constructor names is named again at compile
+
+- Row as it stood: state **open (2026-10-16, fix batch unit B)**; notes: One spec placed twice, or two offline copies of one table, warn at task construction and again when the resolved line is checked at the compile-cache fill; both docstrings say so. Fix: the resolved check skips the pairs the constructor already reported (a per-task memo of reported digests), with a pin that the SpectralNoise-beside-offline-twin case still warns exactly once.
+- Closed 2026-10-16 by fix batch 2, unit F: the resolved-line check skips the pairs the constructor already reported; the SpectralNoise-beside-offline-twin case warns exactly once (pinned); batch 1's unit B pin now expects silence at `execute!` for a spec placed twice. Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### The hidden-aperture warning misses an aperture inside a bare `BeamLine` placed in a task tuple
+
+- Row as it stood: state **open (2026-10-16, crab-noise neighbour audit S3-1)**; notes: The line compiles whole into a `CompositeLine`; the aperture's kill is then reported as unattributed by a message saying nothing was collimating. Fix: descend bare `BeamLine`s in the hidden-aperture walk.
+- Closed 2026-10-16 by fix batch 2, unit F: the hidden-aperture walk descends bare `BeamLine`s; the warning fires and the kill is attributed (pinned). Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### Spectral preset name clash and the mutable `TurnTable.offsets`
+
+- Row as it stood: state **open (2026-10-16, crab-noise neighbour audit U1-7, U1-8)**; notes: A custom spectrum labelled with a preset's name (`"flat" => f -> 1/f`) yields the preset's canonical name; `TurnTable.offsets` is a mutable `Vector` exposed as a field while `digest` and `name` are frozen at construction, so mutating it desynchronises the provenance. Fix: refuse preset labels on custom functors; freeze or copy the offsets.
+- Closed 2026-10-16 by fix batch 2, unit F: a preset's name on a custom spectrum functor is refused by name; the table holds a private copy of its offsets, so mutating the caller's vector after construction changes nothing (pinned). Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### Stream-id registry follow-ups: holder memory and an explicit `typemax(UInt64)`
+
+- Row as it stood: state **open (2026-10-16, fix batch unit C)**; notes: The holder table keeps one entry (about 30 B) per auto-assigned consumer for the life of the process (a million consumers hold about 30 MB); an explicit claim of `typemax(UInt64)` raises the counter to the top so the next automatic assignment throws by name until `reset_rng_id_counter!`; `BPMObserver(rng_id=nothing)` is a MethodError (no caller used it); row 40 (negative ids) unchanged. Fix: bound the table (auto ids below the counter need no entry once no explicit claim can precede them) and skip explicit ids in the automatic sequence instead of raising the counter.
+- Closed 2026-10-16 by fix batch 2, unit F: the registry keeps a fixed 64 kB ring for automatic ids plus one entry per distinct explicit id (0 B per automatic assignment, was 132.6 B); the automatic sequence skips explicit claims instead of jumping past them, so `typemax(UInt64)` stays claimable and the sequence continues; beyond 65536 automatic assignments an explicit claim of an old automatic id warns without the holder's class (the message says so); the suite's fresh-id convention is `Octopus._unheld_rng_id(...)`. Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### `claim_rng_id!` turns a negative id into an `InexactError`
+
+- Row as it stood: state **open (2026-10-13, turn-modulation audit U7-6, the shared path)**; notes: The rule constructors `WhiteNoise`/`PinkNoise` now refuse a negative or non-`Integer` `rng_id` with an `ArgumentError` (fixed in the stages 3-4 batch), but the shared `claim_rng_id!` path still converts through `UInt64`: `rng_id = -1` on `LumpedRadSpec` and `BPMObserver` is an `InexactError`. Shape: an `id >= 0` check throwing an `ArgumentError` inside `claim_rng_id!`, covering every consumer; the regression test lands with the fix.
+- Closed 2026-10-16 by fix batch 2, unit F: a negative or non-integer id is refused by name at the registry and at `LumpedRadSpec`, which no longer converts before the registry. Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### Crab cavity `realize` / `update` allocates for 33 or more harmonics
+
+- Row as it stood: state **open (2026-10-16, crab-noise neighbour audit U1-2)**; notes: A crab cavity of 33+ harmonics allocates 1.1-2.6 kB on every `realize` and `update` (the `ntuple` closures past the compiler's unrolling threshold); the allocation-free contract pins small N only. Fix: an `@generated` unroll as `_update_line_unrolled`, or a pinned threshold in the contract.
+- Closed 2026-10-16 by fix batch 2, unit G (branch `fix-elements-validation`, e9a3c3d): the `(dphi..., d...)` splat past `max_tuple_splat = 32` (through `_apply_iterate`) replaced by `_slot_concat`; 0 B at N = 16 to 64 (was 2176 and 1360 B). Pinned by "Elements and scripts follow-ups: ...": red on ac3fbb2 (33 pass, 40 fail of 73), green after (73 of 73). Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### The shared thick drift's `z` update cancels `L` against a number near `L`
+
+- Row as it stood: state **open (2026-10-16, crab-noise neighbour audit U2-4)**; notes: In the RF cavity's `L != 0` drift-kick-drift path the tracked `z` agrees with the closed formula to 67.7 ulp only (CPU and CUDA bitwise identical); the gap is `_lattice_drift(::Val{false})`'s `z + L - (1 + pz)/ps0 * L`. Physically negligible; `z - ((1 + pz)/ps0 - 1) * L` would recover the ulps for every thick element and needs the symplecticity and backend cases re-run.
+- Closed 2026-10-16 by fix batch 2, unit G: `z - ((1 + pz)/ps0 - 1) L` with `px^2 + py^2` fused through `fma` (`_pt2_fused`) so CPU and CUDA round alike; worst 0.50 ulp over 101 particles and three lengths (was 6469), the thick RF cavity's `z` 94.8 to 1.20 ulp with `pz` unchanged; pinned at 1 ulp against BigFloat (drift) and 4 ulp (thick cavity); the `Patch` element's own copy of the formula made cancellation-free too (bitwise equal to `DriftSpec`, the reference particle exactly `z = 0`); the surveyed-cavity CPU/CUDA pin re-derived (first pass bitwise, 64 turns within 16 ulp: its "bit for bit" had held for `z` only). The curved drift, `_lattice_bend` and the solenoid keep the old form (new row). Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### The backend-consistency script covers neither cavity with a rule
+
+- Row as it stood: state **open (2026-10-16, crab-noise neighbour audit S2-1)**; notes: `validation/tracking_backend_consistency.jl`, which the Verification Matrix names for CUDA-reachable element code, has no modulated crab or RF cavity case; the campaign's device conversion is verified by the suite's identity testset only. Fix: add both modulated cases to the script.
+- Closed 2026-10-16 by fix batch 2, unit G: a modulated crab cavity and a modulated RF cavity (white and table rules, fixed seed) in `validation/tracking_backend_consistency.jl`; CUDA active: CPU/CPU 0, CPU/GPU 6.3e-16. Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### The registry snapshot never lists `example_catalog()` entries
+
+- Row as it stood: state **open (2026-10-16, crab-noise neighbour audit S4-7)**; notes: "## Examples" lists the `AbstractExample` subtypes only, so the crab example and every catalogue entry are absent from `docs/registry_snapshot.md` and `summarize_registry().examples`. Fix: consult `example_catalog()` in `build_registry`.
+- Closed 2026-10-16 by fix batch 2, unit G: `example_catalog()` feeds `build_registry`, the snapshot's Examples section and `summarize_registry().examples` (five entries; `docs/registry_snapshot.md` regenerated and committed; pinned). Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### The harness's `CRAB-NOISE` line echoes parsed variables and omits the CUDA device
+
+- Row as it stood: state **open (2026-10-16, crab-noise neighbour audit U7-3, U7-4)**; notes: `kbb_scale`, `radiation`, `chrom`, `table_file` and `seed` are echoes of the parsed environment, not readbacks of anything the run recorded, so `verify_receipt` in the validation checks the request against itself; `OCTOPUS_CUDA_DEVICE` reaches the policy but no output. Fix: read the fields back from the receipt and the artifact; record the device.
+- Closed 2026-10-16 by fix batch 2, unit G: `kbb_scale`, `radiation`, `chrom`, `table_file` and `seed` are read back from the receipts and the artifact (the header says which fields are readbacks), `device=<n|NA>` is printed, `OCTOPUS_CUDA_DEVICE` without the GPU switch is refused; the validation's parser and `verify_receipt` follow; the 2-turn CPU line differs from before only by the device field. Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### The MPI harness testset hand-copies the harnesses' default seed
+
+- Row as it stood: state **open (2026-10-16, crab-noise neighbour audit U6-6)**; notes: `seed_dir = joinpath(outdir, "123456789")` (test/runtests.jl, the multi-process harness testset) copies every harness's default seed; a harness that changes its default fails the pin with no message naming the seed. Fix: expose the default seed from the harnesses and derive it.
+- Closed 2026-10-16 by fix batch 2, unit G: each harness exposes `HARNESS_DEFAULT_SEED` and the multi-process testset derives it; the pin's message names the seed. Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### The ownership tripwire derives the wrapper set by the field name `inner`
+
+- Row as it stood: state **open (2026-10-16, crab-noise neighbour audit S3-3)** (information); notes: A future wrapper holding its subject under another field joins no walk check; the design asked for derivation from the subtypes that forward `track_particle`.
+- Closed 2026-10-16 by fix batch 2, unit G: derived from the `AbstractTrackOp` subtypes that forward `track_particle` (`_forwarding_track_ops`), pinned both ways against the known wrappers and a synthetic non-forwarding type. Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### Float32 beams through the other element kinds narrow on the CPU and fail at CUDA device compile
+
+- Row as it stood: state **open (2026-10-16, fix batch unit D; owner)**; notes: Measured over every registry example with a Float32 beam, one turn: CPU 31 of 31 kinds run with the coordinates narrowed on store; CUDA 19 run and 12 fail with `InvalidIRError` (drift, quadrupole, sextupole, octupole, multipole, sbend, `:line`, both strong beams, the accelerating cavity, before the fix also the RF cavity and radiation). The by-name refusal of a mismatched beam covers the two modulated cavities and the radiation element only (`_required_beam_eltype`), and the Lorentz boost still types itself from its angle. Owner: generalise the refusal, convert the elements to the beam's precision at compile, or keep the narrowing as the documented standing behaviour (`current_runtime.md`).
+- Closed 2026-10-16 by the owner's decision (fix batch 2, unit H, branch `fix-precision-all`, b754439): one rule, refuse every mismatch. `_required_beam_eltype` is derived from the runtime's one `T <: Number` type parameter for every kind (wrappers answer with what they hold); every kind has `Spec{T}(...)` and `Spec(; numeric_type = T, ...)`, the key declared once in `_PLACEMENT_PARAMS` and checked by the effectiveness contract (500 to 530 checked); the refusal names the kind's typed forms. After, over 31 kinds with a Float32 beam: the Float64 example refused by name on CPU and CUDA for 30 (the marker, with no numeric parameter, runs), the Float32 typed form runs on both backends for 31 of 31, no `InvalidIRError`; the typed Float32 strong beams compile on CUDA with the kick and drift literals in the working type, the Float32 CPU/CUDA bit-identity pinned as before. Pinned by "One precision rule: ...": red on ac3fbb2 (48 pass, 95 fail, 12 error), green after (627 of 627, CUDA active). Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.
+
+#### The frozen stage 0 relative-strength record still says "in progress"
+
+- Row as it stood: state **open (2026-10-16, crab-noise neighbour audit U8-7)** **(owner)**; notes: `history/crab_cavity_noise_relative_strength_2026_10_15.md` carries "Status: in progress 2026-10-15" and "Not verified: CI on this tree, which is not pushed"; the push (c070750) and CI run 454 are recorded in its siblings only. History is frozen: the addendum its siblings carry needs the owner's word.
+- Closed 2026-10-16 by the owner's decision (fix batch 2): a dated addendum appended to `history/crab_cavity_noise_relative_strength_2026_10_15.md` (landed as f7cfe6a, pushed 2026-10-15 as c070750, CI run 454 green), the body verbatim. Record `history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`.

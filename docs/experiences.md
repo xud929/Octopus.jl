@@ -1652,6 +1652,21 @@ moves is a hand-copy of that mechanism; derive the property from the
 component that owns it, and when a mechanism changes grep the suite for the
 arithmetic that assumed the old one.
 
+## A structural pin over the subtype tree sees the suite's fixtures too
+
+A pin that enumerates `_subtypes_recursive(AbstractTrackOp)` and compares the
+result with the package's kinds is true in a process that loaded Octopus
+alone and false in the suite, which defines synthetic subtypes of the same
+roots for its own tripwires (the ownership tripwire's three fixture ops,
+2026-10-16). The second fix batch of the crab-noise audit met it when two
+units' testsets, each green in its own worktree and under the stage runner's
+per-block process, ran together in one fast lane: unit H's "typeless ops are
+exactly the marker and the two containers" grew unit G's `_FixG*` fixtures.
+Enumerate package-defined types through `_concrete_octopus_subtypes`, as the
+analysis and linearization derivations do, and treat the stage runner's green
+as what it is: one block in one process. Only the lane runs the suite as the
+one process it is.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

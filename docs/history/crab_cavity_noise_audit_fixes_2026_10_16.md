@@ -258,3 +258,11 @@ green (`fast_lane_audit_fastD.log`). Not verified: CI (CPU only) runs on the pus
   tuples.
 - The audit record carries an addendum (pushed as 8ace18b, CI run 459 green,
   this batch opened); its body is unchanged.
+
+---
+
+**Added after the push (2026-10-16).** Pushed as ac3fbb2 (origin/main, on the
+owner's word); CI run 460 (GitHub Actions, the CPU full lane) completed green
+at 21:11 EDT. The owner then opened batch 2 for the three decisions and the
+remaining rows; its record is
+[`crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`](crab_cavity_noise_audit_fixes_batch2_2026_10_16.md).

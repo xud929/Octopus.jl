@@ -354,3 +354,13 @@ recur.
 - Documents changed in this batch: section 2's documents bullet.
 - The implementer's and the validation agent's details replace the three
   markers; the status line changes to the gate's result when the push lands.
+
+---
+
+**Added after the push (2026-10-16, on the owner's decision in the crab-cavity
+noise audit fix batch 2).** The status line above was written before the push
+and is left as written: this batch landed as f7cfe6a and was pushed 2026-10-15
+as c070750; CI run 454 completed green (znver4, 29.5 min), as the sibling
+record `turn_modulation_record_2026_10_15.md` and `docs/todo.md` row 21
+recorded at the time. The neighbour audit of 2026-10-16 (lead U8-7) found the
+status unamended; the owner chose the addendum over a rewrite.

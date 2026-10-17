@@ -572,6 +572,13 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   modulated cavities and the by-name refusal of a mismatched beam (U2-1 /
   S2-2 / S2-3, S1-9). The decisions, what each unit reproduced and landed,
   the gate, and the rows retired.
+- [`crab_cavity_noise_audit_fixes_batch2_2026_10_16.md`](history/crab_cavity_noise_audit_fixes_batch2_2026_10_16.md) —
+  the second owner-decided batch on the neighbour audit's ledger: the three
+  decisions the first batch left open (a partial turn-modulation slot is
+  reported by the reader, the frozen stage 0 record gets its addendum, one
+  precision rule for every element kind) and the seventeen small rows the
+  audit priced, with the first batch's follow-ups, as four units; what each
+  reproduced and landed, the gate, and the rows retired.
 - [`twiss_dispersion_degeneracy_theory_2026_09_11.md`](history/twiss_dispersion_degeneracy_theory_2026_09_11.md) —
   derivation record for theory Section 13 (mode degeneracy) and the analysis
   design note: provenance of the ported working notes and the convention key,
