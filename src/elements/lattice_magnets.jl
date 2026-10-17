@@ -813,6 +813,27 @@ end
 @inline (elem::LatticeMagnet)(x, px, y, py, z, pz) =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
 
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl):
+# pz is never written by a magnet (the body maps and every fringe return it
+# unchanged); which of the rest are bitwise depends on the instance.
+function _cross_backend_rounding(op::LatticeMagnet{M,T,N,ORDER,F,MC,NC,C}) where {M,T,N,ORDER,F,MC,NC,C}
+    curved = !iszero(op.h) || !iszero(op.b0)
+    # Every fringe map is the identity without strength (`_multipole_fringe`
+    # returns at N <= 1, `_soft_quad_fringe` needs N >= 2, the dipole faces
+    # return at b1 = 0), so the fringe bits F alone are no content: a drift
+    # compiles with the edge bits set and is still the pure drift.
+    content = N > 0 || NC > 0 || !iszero(op.e1) || !iszero(op.e2)
+    if !curved && !content
+        return _rounding_class(untouched=(:px, :py, :pz), ulp=(:x, :y, :z), ulp_bound=8,
+            why="the straight drift: the device fuses `x + px/ps0 L` into one FMA where the host rounds the product first (bitwise at L = 0.5 only because scaling by a power of two is exact; 7% of 1e5 particles part at L = 0.35, 26% at L = 100 m) and fuses the radicand `(1+pz)^2 - px^2 - py^2` in some kernels; z reads them through the cancellation-free excess (coincident at this beam's amplitudes); px, py, pz are never written")
+    elseif !curved
+        return _rounding_class(untouched=(:pz,), ulp=(:x, :px, :y, :py, :z), ulp_bound=32,
+            why="a straight magnet: the kick `px - L g ar` and the recurrence `kn tr - ks ti` fuse on the device (34% of 1e5 particles part in px through a quadrupole), the fringe maps use `exp`, `tan` and `atan`, and the drift's x, y, z read the kicked momenta; pz is never written (1 to 2 ulps of scale over 3 turns bare, 8 with soft fringes and an offset)")
+    end
+    return _rounding_class(untouched=(:pz,), ulp=(:x, :px, :y, :py, :z), ulp_bound=8192,
+        why="a curved frame or a bend: `sin` and `cos` of hL on each backend's libm and the fused `px c + ps0 s` are cancelled against the dipole's `b0 q C1`, so the last bit of an O(hL) intermediate lands on an O(px) result (932 to 1260 ulps of scale over 3 turns; 99% of 1e5 particles part in x, px, z through a sector bend); the curved drift's `z + L - (1+pz) Delta` is the same cancellation class; pz is never written")
+end
+
 # ---------------------------------------------------------------------------
 # Specs. Six element kinds share one runtime type and one tracking method: the
 # magnet kind is data, not a separate implementation (AGENTS.md two-layer

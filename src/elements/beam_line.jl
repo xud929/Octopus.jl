@@ -672,6 +672,12 @@ function _required_beam_eltype(elem::CompositeLine)
     return T
 end
 
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl) of a
+# kept-whole line: its members', composed by the line rule of
+# `_cross_backend_rounding(::Tuple)` (a coordinate no member writes stays
+# bitwise; a written one is bitwise only when every member is).
+_cross_backend_rounding(elem::CompositeLine) = _cross_backend_rounding(elem.ops)
+
 # Both call paths delegate to `fusedTrack`, which is `@generated` and unrolls
 # the (possibly nested) op tuple at COMPILE time.
 #

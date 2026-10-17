@@ -39,6 +39,28 @@ turn-by-turn modulation rules (a white rule and a turn table), so the
 the path of both arms; a wrap tripwire after the coverage tripwire fails the run
 if a kind that admits a rule compiles to no wrapper (2026-10-16 neighbour audit,
 S2-1).
+
+PER KIND, AGAINST THE DECLARED CROSS-BACKEND ROUNDING CLASS (fix I of the
+2026-10-16 crab-noise neighbour audit, 2026-10-17). After the composed-line
+contracts, the script tracks every instance of the lines ALONE on the CPU twice
+(bitwise, the determinism check) and on the CPU against CUDA, and checks the
+result against the kind's declaration, `_cross_backend_rounding(op)` returning a
+`CrossBackendRounding` (src/track/Track.jl, where the rule is stated; the
+declarations sit beside the runtime structs in src/elements/). The rule: both
+backends round the IEEE operations alike -- add, multiply, divide, square root,
+fma -- but the device fuses `a * b + c` into one FMA where the host rounds twice
+(and which multiply it fuses is the compiler's choice: the straight drift's
+`x + px/ps0 L` is bitwise at L = 0.5 only because scaling by a power of two is
+exact), and its libm differs from the host's by one to three ulp on a few
+percent of transcendental arguments (`sin`, `cos`, `exp`, `log`, `atan`). So a
+coordinate the class declares bitwise -- never written, or written through
+single IEEE operations or arithmetic exact under any fusion -- must agree to the
+bit, and a coordinate of the ulp class must agree within the class's bound in
+ulps of the coordinate's scale over the beam (`_cross_backend_violations`). The
+composed-line contracts above keep their one tolerance, because a line mixes
+every kind; the per-kind table is where the declaration meets the measurement,
+and a violation fails the run by name. Measured 2026-10-17 (N = 10000, 2
+turns, RTX 4500 Ada): every instance within its class; the figures are printed.
 =#
 
 function _bool_env(name, default)
@@ -360,6 +382,71 @@ for (backend_b, label) in aperture_backends
               "$(result.metrics[:lost_one_backend]) coordinate(s)")
     println("  killed ", lost, " of ", lost + compared,
             " coordinate slots, compared ", compared)
+end
+
+# --- per kind, against the declared cross-backend rounding class -------------
+#
+# Every instance of the lines above, tracked ALONE (so one kind's class meets
+# its own measurement, not the line's mixture), on the CPU twice and on the
+# CPU against CUDA. The CPU/CPU pair must be bitwise in every coordinate: the
+# fused elementwise path has no shared reduction and the counter RNG is keyed
+# by particle index. The CPU/CUDA pair must satisfy the kind's declared class
+# (`_cross_backend_rounding`; the header states the rule): a bitwise coordinate
+# to the bit, a ulp-class coordinate within the declared bound in ulps of its
+# scale over the beam. The accelerating cavity is single-pass (one turn); the
+# killing aperture of the arm above joins so a kill is checked against the
+# class too (NaN on both backends is agreement, NaN on one is a violation the
+# comparator counts by name). A violation fails the run by name.
+println("\nPer-kind cross-backend rounding classes (CrossBackendRounding, src/track/Track.jl)")
+println("  per coordinate: measured B (bitwise) or ulps of the coordinate's scale / declared u (ulp), b (bitwise), - (untouched)")
+let violations = String[],
+    cases = Tuple{String,Any,Int}[]
+    for spec in line
+        push!(cases, (string(Octopus.kind(spec)) * (compile_runtime(spec) isa Octopus.TurnModulated ? " (modulated)" : ""), spec, turns))
+    end
+    for spec in single_pass_line
+        push!(cases, (string(Octopus.kind(spec)) * " (single pass)", spec, 1))
+    end
+    push!(cases, ("aperture (killing)", aperture_line[1], 1))
+    gpu_arm = should_run_gpu || require_gpu
+    gpu_arm && !_cuda_visible() && require_gpu &&
+        error("per-kind cross-backend rounding classes were required on CUDA but no device is visible")
+    old_seed = global_rng_seed()
+    old_method = global_rng_method()
+    try
+        for (label, spec, nturns) in cases
+            class = Octopus._cross_backend_rounding(compile_runtime(spec))
+            base = Octopus._contract_default_initial_rep(N, Float64)
+            run_on(backend) = begin
+                rep = Octopus._contract_rep_for_backend(base, backend)
+                set_global_rng!(seed=seed, method=:philox)
+                execute!(TrackingTask((spec,); policy=Octopus._contract_policy(backend)), rep; turns=nturns)
+                rep
+            end
+            cpu_a = run_on(CPUThreadsBackend)
+            cpu_b = run_on(CPUThreadsBackend)
+            cpu_cpu = Octopus._cross_backend_agreement(cpu_a, cpu_b)
+            for k in Octopus._COORDINATE_NAMES
+                getfield(cpu_cpu, k).bitwise || push!(violations,
+                    "$(label): CPU/CPU $(k) not bitwise (max |a - b| = $(getfield(cpu_cpu, k).max_abs))")
+            end
+            if gpu_arm && _cuda_visible()
+                gpu = run_on(CUDABackend)
+                Octopus.CUDA.synchronize()
+                agreement = Octopus._cross_backend_agreement(cpu_a, gpu)
+                println("  ", rpad(label, 36), Octopus._cross_backend_summary(class, agreement))
+                append!(violations, Octopus._cross_backend_violations(class, agreement; label=label))
+            else
+                println("  ", rpad(label, 36), "CPU/CPU bitwise; CPU/GPU not run (declared ", join((string(getfield(class, k))[1] for k in Octopus._COORDINATE_NAMES)), ")")
+            end
+        end
+    finally
+        set_global_rng!(seed=old_seed, method=old_method)
+    end
+    isempty(violations) || error("per-kind cross-backend rounding classes violated (the declaration or the kernel is wrong; the measurement wins):\n  " *
+                                 join(violations, "\n  "))
+    println("  per-kind cross-backend rounding classes: ", length(cases), " instances within their declared classes",
+            gpu_arm && _cuda_visible() ? " on CPU/CPU and CPU/GPU" : " on CPU/CPU (CPU/GPU not run)")
 end
 
 println("tracking backend consistency validation complete")

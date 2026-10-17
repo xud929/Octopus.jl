@@ -108,6 +108,25 @@ struct LumpedRad{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     rng_id::UInt64
 end
 
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl):
+# the instance decides -- the method and the flags select damping and
+# excitation, and the dispersion and coupling maps around them may be identities.
+function _cross_backend_rounding(op::LumpedRad)
+    excites = op.is_excitation && !(op.method isa Damping6DMap)
+    damps = op.is_damping && !(op.method isa Diffusion6DMap)
+    plain = all(iszero, (op.zeta.zeta1, op.zeta.zeta2, op.zeta.zeta3, op.zeta.zeta4,
+                         op.eta.eta1, op.eta.eta2, op.eta.eta3, op.eta.eta4,
+                         op.coupling.r1, op.coupling.r2, op.coupling.r3, op.coupling.r4))
+    excites && return _rounding_class(ulp=_COORDINATE_NAMES, ulp_bound=8,
+        why="stochastic excitation: the counter RNG's Box-Muller draws `sqrt(-2 log u) cos(theta)`, `sin(theta)` on each backend's libm (13-15% of draws differ, at most 3 ulp) scaled into every coordinate (2 ulps of scale over 3 turns)")
+    damps && plain && return _rounding_class(bitwise=_COORDINATE_NAMES,
+        why="damping only: one multiply by exp(-1/tau) per coordinate, the constant formed on the host, with identity dispersion and coupling maps around it (`x + 0 z` is exact under any fusion)")
+    damps && return _rounding_class(ulp=_COORDINATE_NAMES, ulp_bound=8,
+        why="damping inside dispersion or coupling maps whose fused sums `x + zeta z`, `g (x + r4 y - r2 py)` the device rounds once and the host twice")
+    return _rounding_class(untouched=_COORDINATE_NAMES,
+        why="neither damping nor excitation applies under this method and these flags: the identity")
+end
+
 # A mismatched beam is refused at compile by name (`_required_beam_eltype`,
 # src/track/Track.jl, derived from the `T` parameter above; the check in
 # src/tasks/Tasks.jl). The context-aware kernel returns the input tuple

@@ -296,6 +296,25 @@ Measured 2026-10-16 (N = 10000, 2 turns, CUDA active): CPU/CPU `max_abs_error`
 tolerance), against 5.3e-16 for the same line before the modulated cases
 joined it: the rules add nothing to the agreement class.
 
+After the composed-line contracts the script checks EVERY instance of its
+lines alone against the kind's declared cross-backend rounding class
+(`_cross_backend_rounding`, `CrossBackendRounding` in `src/track/Track.jl`;
+fix I of the 2026-10-16 neighbour audit, 2026-10-17): the instance is tracked
+on the CPU twice (bitwise in every coordinate, the determinism check) and on
+the CPU against CUDA, and a coordinate the class declares bitwise -- never
+written, or written through single IEEE operations or arithmetic exact under
+any FMA fusion -- must agree to the bit, while a coordinate of the ulp class
+must agree within the declared bound in ulps of the coordinate's scale over
+the beam. The composed line keeps its one tolerance because it mixes every
+kind; the per-kind table is where each declaration meets its measurement, and
+a violation fails the run by name. The script's header states the rule (the
+device fuses `a*b + c` into one FMA where the host rounds twice, and its libm
+differs on transcendentals), `docs/current_runtime.md` "Current Backends"
+carries the resulting table of what is bitwise, and the suite's
+"Cross-backend rounding classes" testset measures the registry examples the
+same way. Measured 2026-10-17 (N = 10000, 2 turns, CUDA active): every
+instance within its class; the printed table is the record.
+
 The CPU/CPU result is a same-process deterministic repeatability check. For the
 current fused elementwise tracking path, exact zero error is expected because
 each particle is independent and stochastic samples are keyed by particle

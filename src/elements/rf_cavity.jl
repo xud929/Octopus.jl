@@ -179,6 +179,22 @@ end
 @inline (elem::ThinRFCavity)(x, px, y, py, z, pz) =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
 
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl):
+# the instance decides -- a thick cavity's drift halves read the kicked pz.
+function _cross_backend_rounding(op::ThinRFCavity)
+    thick = !iszero(op.L)
+    if iszero(op.strength)
+        thick && return _rounding_class(untouched=(:px, :py, :pz), ulp=(:x, :y, :z), ulp_bound=8,
+            why="a cavity at zero voltage is its two drift halves: the straight drift's fused `x + px/ps0 L` (see LatticeMagnet)")
+        return _rounding_class(untouched=_COORDINATE_NAMES, why="a thin cavity at zero voltage: the identity")
+    end
+    return _rounding_class(untouched=thick ? (:px, :py) : (:x, :px, :y, :py),
+                           ulp=thick ? (:x, :y, :z, :pz) : (:z, :pz), ulp_bound=8,
+        why="the kick `pt += V sin(k z1 + phase)` on each backend's libm (935 of 1e5 particles part in pz by one ulp) and z through the kicked particle's velocity in the conversion back to path length (25 of 1e5); a surveyed cavity adds the slip `ds_turn g(pz)` to z before the kick; " *
+            (thick ? "the drift halves read the kicked pz into x and y; px, py are never written" :
+                     "x, px, y, py are never written"))
+end
+
 # No context-aware method is defined: with the arc argument in difference
 # form the slip correction is a per-op CONSTANT, so the generic
 # AbstractTrackOp ctx fallback (which drops ctx and calls the contextless op)
@@ -870,6 +886,20 @@ end
 
 @inline (elem::ThinAcceleratingCavity)(x, px, y, py, z, pz) =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
+
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl).
+function _cross_backend_rounding(op::ThinAcceleratingCavity)
+    thick = !iszero(op.L)
+    if iszero(op.strength)
+        thick && return _rounding_class(untouched=(:px, :py, :pz), ulp=(:x, :y, :z), ulp_bound=8,
+            why="an accelerating cavity at zero voltage is its two drift halves (see LatticeMagnet)")
+        return _rounding_class(untouched=_COORDINATE_NAMES, why="a thin accelerating cavity at zero voltage: the identity")
+    end
+    return _rounding_class(untouched=thick ? () : (:x, :y), bitwise=(:px, :py),
+                           ulp=thick ? (:x, :y, :z, :pz) : (:z, :pz), ulp_bound=128,
+        why="`pt += V cos(k z1 + phase)` on each backend's libm, then `(pt - V cos(phase)) rho` cancels the design gain, so one ulp of the O(V) cosine is many ulps of the O(1e-3) pz (16 ulps of scale in one pass on the 1.3 GHz example, 31.5 on the backend script's 51 MeV instance; 25% of 1e5 particles part) and z follows through the exit conversion; px, py are one multiply by rho each" *
+            (thick ? "; the drift halves read the kicked pz into x and y" : ""))
+end
 
 # No turn-modulation rule on this kind (turn-modulation stage 3 decision): the
 # accelerating cavity is SINGLE-PASS -- a closed ring containing one is

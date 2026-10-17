@@ -137,6 +137,20 @@ end
 @inline (elem::CrabDispersion)(x0, px0, y0, py0, z0, pz0) =
     track_particle(elem.method, elem, x0, px0, y0, py0, z0, pz0)
 
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl): a
+# coordinate written with a zero coefficient, `x0 + 0 z0`, comes back as it was
+# under any fusion (untouched); one written with a nonzero coefficient is fused
+# on the device and rounded twice on the host.
+function _cross_backend_rounding(op::CrabDispersion)
+    zetas = (op.zeta1, op.zeta2, op.zeta3, op.zeta4)
+    all(iszero, zetas) && return _rounding_class(untouched=_COORDINATE_NAMES,
+        why="every crab-dispersion coefficient is zero: each coordinate gains an exact zero and comes back as it was")
+    moved = Tuple(c for (c, v) in zip((:x, :px, :y, :py), zetas) if !iszero(v))
+    return _rounding_class(untouched=(Tuple(c for c in (:x, :px, :y, :py) if !(c in moved))..., :z),
+                           ulp=(moved..., :pz), ulp_bound=8,
+        why="`x += zeta1 z`, `pz += zeta2 x - zeta1 px + ...`: the device fuses the products with the sums, the host rounds twice (23% of 1e5 particles part in x at zeta1 = 0.1; 2 ulps of scale over 3 turns); a coordinate with a zero coefficient comes back as it was; z is never written")
+end
+
 """
     MomentumDispersionSpec{T=Float64}(; eta1=0, eta2=0, eta3=0, eta4=0,
                                       tracking_method=Symplectic6DMap(), kwargs...)
@@ -224,6 +238,18 @@ end
 
 @inline (elem::MomentumDispersion)(x0, px0, y0, py0, z0, pz0) =
     track_particle(elem.method, elem, x0, px0, y0, py0, z0, pz0)
+
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl), as
+# for `CrabDispersion` with the roles of z and pz exchanged.
+function _cross_backend_rounding(op::MomentumDispersion)
+    etas = (op.eta1, op.eta2, op.eta3, op.eta4)
+    all(iszero, etas) && return _rounding_class(untouched=_COORDINATE_NAMES,
+        why="every dispersion coefficient is zero: each coordinate gains an exact zero and comes back as it was")
+    moved = Tuple(c for (c, v) in zip((:x, :px, :y, :py), etas) if !iszero(v))
+    return _rounding_class(untouched=(Tuple(c for c in (:x, :px, :y, :py) if !(c in moved))..., :pz),
+                           ulp=(moved..., :z), ulp_bound=8,
+        why="`x += eta1 pz`, `z -= eta2 x - eta1 px + ...`: fused on the device, rounded twice on the host (34% of 1e5 particles part in x at eta1 = 0.2; 2 ulps of scale over 3 turns); a coordinate with a zero coefficient comes back as it was; pz is never written")
+end
 
 @enum XYCouplingMode::UInt8 XY_UNDEF=0 XY_MODEA=1 XY_MODEB=2
 
@@ -377,3 +403,11 @@ end
 
 @inline (elem::XYCoupling)(x0, px0, y0, py0, z0, pz0) =
     track_particle(elem.method, elem, x0, px0, y0, py0, z0, pz0)
+
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl).
+function _cross_backend_rounding(op::XYCoupling)
+    op.mode == XY_UNDEF && return _rounding_class(untouched=_COORDINATE_NAMES,
+        why="an undefined coupling mode: the identity")
+    return _rounding_class(untouched=(:z, :pz), ulp=(:x, :px, :y, :py), ulp_bound=4,
+        why="the fused sums `g (x0 + r4 y0 - r2 py0)` the device rounds once and the host twice (0.6% of 1e5 particles part in px at r1 = 0.01); z, pz are never written")
+end

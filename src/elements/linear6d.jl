@@ -123,6 +123,21 @@ end
 @inline (elem::Linear6D)(x, px, y, py, z, pz) =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
 
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl): a
+# row that is its own coordinate's unit row, `1 x + 0 px + ...`, returns the
+# coordinate as it came under any fusion (untouched); a dense row
+# `m1 x + m2 px + ... + m6 pz` is fused term by term on the device (54% of 1e5
+# random six-term rows part from the host's).
+function _cross_backend_rounding(op::Linear6D)
+    unit_row(i) = all(j -> op.matrix[(i - 1) * 6 + j] == (i == j ? 1 : 0), 1:6)
+    passed = Tuple(c for (i, c) in enumerate(_COORDINATE_NAMES) if unit_row(i))
+    fused = Tuple(c for (i, c) in enumerate(_COORDINATE_NAMES) if !unit_row(i))
+    isempty(fused) && return _rounding_class(untouched=_COORDINATE_NAMES,
+        why="the identity matrix: every row is its coordinate's unit row and returns it as it came")
+    return _rounding_class(untouched=passed, ulp=fused, ulp_bound=8,
+        why="a dense row `m1 x + m2 px + ... + m6 pz` is fused term by term on the device and rounded per term on the host (54% of 1e5 random rows part; 3 ulps of scale over 3 turns on the backend script's instance, 1.5 on a z-pz coupling); a unit row returns its coordinate as it came")
+end
+
 function _matrix66_tuple(matrix, ::Type{T}) where {T}
     if matrix isa AbstractMatrix
         size(matrix) == (6, 6) || throw(ArgumentError("matrix must be 6x6"))

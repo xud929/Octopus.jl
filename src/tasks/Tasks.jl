@@ -1711,8 +1711,10 @@ end
 Walk a compiled runtime line (tuples, the three wrappers, `CompositeLine`) and
 refuse, by name, every element whose `_required_beam_eltype`
 (`src/track/Track.jl`, the runtime's numeric type parameter) is a type other
-than the beam's element type `B`. Only an element with no numeric parameter
-(a marker) answers `nothing` and passes. Called by `_runtime_entries` for a
+than the beam's element type `B`. Every kind answers a type, the marker
+included since fix I (2026-10-17; it carries its type as a bare parameter), so
+only an object that is not a runtime element answers `nothing` and passes.
+Called by `_runtime_entries` for a
 `TrackingTask` and by `_check_strong_strong_beam_eltype` for each
 strong-strong line, before any turn runs and before the stored turn advances.
 The message names the element's runtime type, the beam's type, the element's

@@ -298,6 +298,10 @@ end
 @inline (elem::Aperture{F,M,Nothing})(x, px, y, py, z, pz) where {F,M} =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
 
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl).
+_cross_backend_rounding(::Aperture) = _rounding_class(untouched=_COORDINATE_NAMES,
+    why="survivors pass through untouched and a lost particle is NaN in all six coordinates on both backends; the in-or-out test (`(x/a)^2 + (y/b)^2 > 1` for an ellipse) may fuse on the device, so a particle within an ulp of the boundary could be killed by one backend only -- measured never (255 of 400 and 10000 of 10000 particles judged alike), and the loss-consistency arms count that disagreement by name")
+
 # Recording path. Reached only through the context-aware call, which is the only
 # one carrying the turn and the particle index.
 @inline function (elem::Aperture{F,M,<:LossRecord})(ctx::TrackingContext, particle_id,

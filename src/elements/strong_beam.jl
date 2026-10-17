@@ -58,6 +58,18 @@ function UnsafeVirtualDrift(name::Symbol)
 end
 
 _virtual_drift(drift::AbstractVirtualDrift) = drift
+
+"""
+    _virtual_drift_writes_z(drift) -> Bool
+
+Whether a virtual drift model moves `z`: the paraxial Hirata drift and its
+frozen-longitudinal diagnostic twin leave `z` alone (`x += S px`,
+`pz -= S/2 (px^2 + py^2)`); the chromatic and exact-Hamiltonian models advance
+it. Read by the strong beams' cross-backend rounding class.
+"""
+_virtual_drift_writes_z(::AbstractVirtualDrift) = true
+_virtual_drift_writes_z(::HirataParaxialDrift) = false
+_virtual_drift_writes_z(::UnsafeVirtualDrift{_ParaxialFrozenLongitudinalDrift}) = false
 function _virtual_drift(name::Symbol)
     hasproperty(_VIRTUAL_DRIFT_TYPES, name) || throw(ArgumentError(
         "unknown virtual_drift :$name; expected one of $(keys(_VIRTUAL_DRIFT_TYPES))"))
@@ -214,6 +226,35 @@ mutable struct ThinStrongBeam{M<:AbstractTrackingMethod,T<:Number,
     ppzo::T
     virtual_drift::D
     last_luminosity::T
+end
+
+"""
+    _strong_beam_round(moments) -> Bool
+
+Whether a strong beam's nominal transverse moments are exactly round and
+uncoupled (`a0 == d0`, `b0 == 0`), so the kick takes the round-beam branch
+`(1 - exp(-r^2/2v))/r^2` on both backends. Anything else reaches the
+near-round series or the elliptic Bassetti-Erskine kick, whose difference of
+two Faddeeva functions cancels and amplifies the last bit. Read by the strong
+beams' cross-backend rounding class; the kernel decides per particle on the
+transported moments, this reads the nominal ones.
+"""
+_strong_beam_round(m::StrongTransverseMoments) = m.a0 == m.d0 && iszero(m.b0)
+
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl):
+# the virtual drift model decides whether z is written, the beam's shape the
+# bound (the backend script's 110 by 12 um beam measured 412 ulps of px's
+# scale where the round registry example measures 2).
+function _cross_backend_rounding(op::ThinStrongBeam)
+    moves_z = _virtual_drift_writes_z(op.virtual_drift)
+    round_beam = _strong_beam_round(op.moments)
+    return _rounding_class(untouched=moves_z ? () : (:z,),
+                           ulp=moves_z ? _COORDINATE_NAMES : (:x, :px, :y, :py, :pz),
+                           ulp_bound=round_beam ? 8 : 2048,
+        why="the Gaussian kick through `exp` on each backend's libm, the fused virtual-drift updates `x + S px` and the synchro-beam energy term `pz -= S/2 (px^2 + py^2)`; " *
+            (round_beam ? "a round beam takes the `(1 - exp(-r^2/2v))/r^2` branch (2 ulps of scale over 3 turns)" :
+                          "an elliptic beam's Bassetti-Erskine kick, the difference of two Faddeeva functions, cancels and amplifies the last bit (412 and 331 ulps of px's and py's scale over 2 turns on a 110 by 12 um beam)") *
+            "; the $(nameof(typeof(op.virtual_drift))) virtual drift " * (moves_z ? "advances z" : "leaves z alone"))
 end
 
 function ThinStrongBeam(spec::ElementSpec{:thin_strong_beam},
@@ -400,6 +441,21 @@ mutable struct GaussianStrongBeam{M<:AbstractTrackingMethod,T<:Number,
     slice_pyoffset::Vector{T}
     thin::ThinStrongBeam{M,T,P,D}
     last_luminosity::T
+end
+
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl): as
+# the thin beam's, slice by slice (the elliptic backend-script instance
+# measured 313 ulps of px's scale with 3 slices, the round example 11).
+function _cross_backend_rounding(op::GaussianStrongBeam)
+    moves_z = _virtual_drift_writes_z(op.thin.virtual_drift)
+    round_beam = _strong_beam_round(op.thin.moments)
+    return _rounding_class(untouched=moves_z ? () : (:z,),
+                           ulp=moves_z ? _COORDINATE_NAMES : (:x, :px, :y, :py, :pz),
+                           ulp_bound=round_beam ? 64 : 2048,
+        why="$(op.ns) slices, each the thin kick (`exp`, the fused virtual drift to the slice centre and back, the synchro-beam energy term) at its own centre; " *
+            (round_beam ? "a round beam (11 ulps of scale over 3 turns with 3 slices)" :
+                          "an elliptic beam's Bassetti-Erskine kick cancels (313 and 236 ulps of px's and py's scale over 2 turns on a 115 by 13 um beam)") *
+            "; the $(nameof(typeof(op.thin.virtual_drift))) virtual drift " * (moves_z ? "advances z" : "leaves z alone"))
 end
 
 function GaussianStrongBeam(spec::ElementSpec{:gaussian_strong_beam},

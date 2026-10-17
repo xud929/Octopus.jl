@@ -1435,6 +1435,14 @@ end
 # every turn by `realize` with exactly `base`'s type, so the two agree.
 _required_beam_eltype(w::TurnModulated) = _required_beam_eltype(w.base)
 
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl): the
+# nominal element's. `inner` is realised from `base` on the host with the same
+# values for both backends, so a rule changes WHAT is kicked, not which
+# coordinates the kernel writes or through which functions (the device fuses
+# `i kcc z + phase` once the realised phase is nonzero -- the same coordinates).
+_cross_backend_rounding(w::TurnModulated) = _rounding_through(_cross_backend_rounding(w.base),
+    "the turn-modulation wrap realises the element on the host, identically for both backends, so the classes are the nominal element's")
+
 # The forwards MisalignedElement defines, plus the context-aware call whose
 # absence on that wrapper once dropped the context of a wrapped stochastic
 # element (F13, 2026-08-05 audit), defined from the start.

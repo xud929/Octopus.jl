@@ -67,6 +67,10 @@ struct Patch{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     madx::Bool               # composition order; false = :bmad, as for misalignments
 end
 
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl).
+_cross_backend_rounding(::Patch) = _rounding_class(untouched=(:pz,), ulp=(:x, :px, :y, :py, :z), ulp_bound=8,
+    why="the rotation `_patch_rotation` from `sin`/`cos` of the angles, evaluated per particle on each backend's libm, and the fused frame products `W1 x + W2 y + W3 dz` (33% of 1e5 particles part in py for a rotation about x); z through the face drift and the reference excess; pz is never written")
+
 """
     _patch_rotation(T, angle_x, angle_y, angle_s, madx)
 

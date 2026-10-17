@@ -395,6 +395,10 @@ end
 @inline (elem::Solenoid)(x, px, y, py, z, pz) =
     track_particle(elem.method, elem, x, px, y, py, z, pz)
 
+# Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl).
+_cross_backend_rounding(::Solenoid) = _rounding_class(untouched=(:pz,), ulp=(:x, :px, :y, :py, :z), ulp_bound=4096,
+    why="the body's `sincos(kappa L/2)`, kappa = ks/ps per particle, on each backend's libm, the fused edge shift `px + k y` and the rotation products; z through `z + L (1 - (1+pz)/ps)`, which cancels an O(1) ratio whose radicand the device fuses, so one ulp of the ratio is eps(1) L of z (768 ulps of scale over 3 turns; 9% of 1e5 particles part per pass); pz is never written")
+
 """
     SolenoidSpec(; L, ks, tracking_method=Symplectic6DMap())
 
