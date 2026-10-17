@@ -468,6 +468,44 @@ $\arctan b_0G$, so $\arctan(u)/u$ finishes the job that $\sin(hL)/h$ started.
 Error now falls linearly in $b_0$ with no floor, to $10^{-15}$ and the limit of
 double precision. PTC agreement is unchanged at $5.0\times10^{-13}$.
 
+**Resolved, the longitudinal half (2026-10-17).** Both rewrites above left the
+path length on its direct form, $z'=z+L-(1+\delta)\Delta$, which subtracts two
+numbers near $L$ to leave an excess of order $L(p_x^2+p_y^2)/2$. Measured
+against the same kernels evaluated in `BigFloat` over a sweep of 100 particles
+at $|x|,|p|\lesssim10^{-3}$, in ulps of $\max(|z|,|E|)$ with $E$ the excess
+(the output $z$ itself can cross zero), $z$ carried 2835 ulp in the curved
+drift ($h=10^{-3}$, $L=0.5$), 5190 in the bend ($h=b_0=0.3$, $L=2$), 4855 in
+the solenoid ($k_s=1.7$, $L=1.3$) and 768 in the curved solenoid. Each kernel
+now forms $E=(1+\delta)\Delta-L$ from the quantities that make it small and
+applies $z'=z-E$:
+
+- the curved drift, with $N=w^2\Delta$, $C_1=L+S_1$ and $S_1=(\sin hL-hL)/h$
+  (a series for $|hL|<1$):
+  $(1+\delta)N-Lw^2=L\,\dfrac{p_y^2p_{s,0}-(1+\delta)p_x^2}{(1+\delta)+p_{s,0}}+(1+\delta)\big[p_{s,0}S_1-p_xC_2+(x'p_x'-xp_x)\big]$;
+- the bend, whose exit momentum is now $p_x'=\kappa C_1+\mathrm dp$ with
+  $\kappa=h-b_0$ — the design orbit's exit momentum plus the particle's
+  departure from it, so that a sector bend on its axis exits with $p_x'=0$
+  exactly — and whose excess splits into the design orbit's own,
+  $-\big(\kappa S_1+(\arcsin\kappa C_1-\kappa C_1)\big)/b_0$, the particle's
+  departure $-\delta\varphi/b_0$ with $\delta\varphi$ the angle of
+  $(p_s'+ip_x')(p_{s,d}-ip_{x,d})(p_{s,0}-ip_x)$ formed from $\mathrm dp$ so
+  that no near-equal products meet, and $\delta\,\Delta$. Where
+  $|b_0|\le|h|/2$ the two design terms tend to the same $u^3/6$ with opposite
+  signs and the kernel keeps the direct form. For the same reason the bracket
+  of $x'=x+(1+hx)(C_1R-C_2)$ is formed as $C_1\big(R-\tan\tfrac{hL}2\big)$
+  expanded in $p_x'+p_x$;
+- the solenoid, $z'=z-L\,(P_x^2+P_y^2)/\big(p_s((1+\delta)+p_s)\big)$ in the
+  kinetic momenta, and the curved solenoid's integrand
+  $-\big((P_x^2+P_y^2)/((1+\delta)+p_s)+hx(1+\delta)\big)/p_s$.
+
+Measured after: 4.7, 15.6, 0.5 and 2.1 ulp respectively; the bend's floor is
+the deviation angle's rounding over $b_0$, 52.6 ulp at $b_0=0.05$. The bend's
+$x'$ went from 5863 to 2.1 ulp and $p_x'$ from 1225 to 1.6 ($L=0.5$). The
+price is two more roundings at the $hC_1$ scale in $p_x'$ as $b_0\to0$: 2.8
+ulp of $p_x'$ against the drift at $b_0=10^{-15}$ where it was 0.4, which the
+suite's pin carries as an explicit eight-ulp floor. The PTC reference cases
+pass unchanged.
+
 Beyond $|hL|>\pi/2$ in one step the $b_0=0$ state runs *backwards* through the
 rotated frame, so $p_{s,n}+p_{s,r}$ can vanish and the $\arctan$ difference
 wraps. There is also nothing to protect there — no small-$b_0$ limit exists,

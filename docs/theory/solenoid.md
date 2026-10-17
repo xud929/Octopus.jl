@@ -188,6 +188,18 @@ $$
     z(L)=z_0+L\left(1-\frac{1+\delta}{p_s}\right),\qquad \delta(L)=\delta_0 .
 $$
 
+*Implementation note (2026-10-17).* The kernel does not form this difference.
+With $p_s=\sqrt{(1+\delta)^2-P_x^2-P_y^2}$,
+$L\big(1-\tfrac{1+\delta}{p_s}\big)=-L\,\dfrac{P_x^2+P_y^2}{p_s\,((1+\delta)+p_s)}$
+exactly, and the right-hand side never subtracts two numbers near $L$:
+measured against the same map evaluated in `BigFloat` over 100 particles at
+$k_s=1.7$, $L=1.3$, $z$ carried 4855 ulp (of $\max(|z|,|E|)$, $E$ the excess)
+at worst and 0.5 after the rewrite. The curved frame's integrand (Section 15.2)
+is formed the same way,
+$z'=-\big((P_x^2+P_y^2)/((1+\delta)+p_s)+hx(1+\delta)\big)/p_s$: 768 ulp
+before, 2.1 after. `_lattice_drift` and `_lattice_bend` received the same
+treatment (conventions note, Section 5.2).
+
 **Identical in form to the exact drift**, with $p_s$ built from the kinetic
 rather than the canonical momenta. That is not a coincidence: the solenoid does
 not change $|\mathbf P|$, so the path length per unit $s$ is the same function

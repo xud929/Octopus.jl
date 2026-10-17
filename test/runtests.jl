@@ -9310,9 +9310,16 @@ end
                                                 fringe=:soft_quad, va=0.05, vs=1.0e-3)))
         @test !isapprox(qn, qs)                          # soft edge IS linear
         # Bend: no linear effect with perpendicular faces, first-order with an angle.
+        # The perpendicular-face fringe is second order, so its only trace in a
+        # complex-step Jacobian is the step's own square (1e-60) surviving in
+        # entries that are exactly zero otherwise. The bend exact on its design
+        # orbit (fix batch 3 unit K, 2026-10-17) no longer swamps that trace in
+        # a rounding residual, which is why this is a bound far below roundoff
+        # (5.7e-64 measured) and not the bitwise equality it used to be; a
+        # linear effect would be of order one.
         b0 = lin(compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.18, nst=4, bend_fringe=false)))
         b1 = lin(compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.18, nst=4, bend_fringe=true)))
-        @test b0 == b1
+        @test maximum(abs, b0 - b1) < 1.0e-40
         e0 = lin(compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.18, e1=0.1, e2=0.1,
                                            nst=4, bend_fringe=false)))
         e1 = lin(compile_runtime(SBendSpec(L=1.1, h=0.18, b0=0.18, e1=0.1, e2=0.1,
@@ -9672,16 +9679,23 @@ end
     # difference from the drift limit must now fall linearly in b0 with no
     # floor -- at b0 = 1e-15 the old map was off by 0.16.
     #
-    # The tolerance widens as b0 shrinks, and that is the floating-point floor
-    # rather than slack: the quantity being resolved is a b0-sized change in
-    # momenta of order one, so at b0 = 1e-15 it is about ten ulp and agreeing to
-    # 1% is as well as double precision can do. The defect this catches is not
-    # subtle at that scale -- the old map was wrong by a factor of 1.5e14 there.
+    # The tolerance has two parts. The relative part, 1e-8, is the linear law
+    # itself. The absolute part is the floating-point floor made explicit
+    # rather than hidden in a widening rtol: the quantity resolved is the
+    # b0-sized change of an exit momentum of order h C1 ~ 0.2, and the bend
+    # forms that momentum around its design orbit (`kappa = h - b0`,
+    # `kappa C1`, `pxd + dp`; fix batch 3 unit K, 2026-10-17) against the
+    # drift's `ps0 s` and its sum -- six roundings at ulp(0.2)/2, measured
+    # 2.8 ulp after unit K and 0.4 before (the table that stood until then
+    # allowed 2 to 4 ulp). The floor is eight ulp of the drift's exit momentum,
+    # which still leaves the defect nowhere to hide: the old map was wrong by a
+    # factor of 1.5e14 at b0 = 1e-15.
     let h = 0.18, L = 1.1, ref = ld(h, L, u)
         slope = maximum(abs, lb(h, 1.0e-3, L, u) .- ref) / 1.0e-3
-        for (b0, rtol) in ((1.0e-5, 1.0e-8), (1.0e-7, 1.0e-8), (1.0e-9, 1.0e-7),
-                           (1.0e-11, 1.0e-5), (1.0e-13, 1.0e-3), (1.0e-15, 0.05))
-            @test maximum(abs, lb(h, b0, L, u) .- ref) ≈ slope * b0 rtol = rtol
+        floor8 = 8 * eps(abs(ref[2]))
+        for b0 in (1.0e-5, 1.0e-7, 1.0e-9, 1.0e-11, 1.0e-13, 1.0e-15)
+            @test isapprox(maximum(abs, lb(h, b0, L, u) .- ref), slope * b0;
+                           rtol = 1.0e-8, atol = floor8)
         end
     end
 
@@ -9716,6 +9730,102 @@ end
     @test Octopus._atan_over(1.0e-5) ≈ 1.0 - 1.0e-10 / 3 rtol = 1.0e-12
     @test Octopus._atan_over(1.0e-4 + eps()) ≈ Octopus._atan_over(1.0e-4 - eps()) rtol = 1.0e-14
     @test Octopus._atan_over(0.7) ≈ atan(0.7) / 0.7
+end
+
+@testset "Cancellation-free longitudinal updates for the curved drift, the bend and the solenoid" begin
+    # 2026-10-17, fix batch 3 unit K (the row unit G opened): the curved drift,
+    # `_lattice_bend` and both solenoid maps formed the path-length excess as
+    # `z + L - (1 + pz) Delta`, two numbers near L rounded to eps(L) before
+    # cancelling, an absolute error of eps(L) in a z orders of magnitude
+    # smaller: measured against the SAME kernel in BigFloat, in ulps of the
+    # computation's own scale max(|z|, |excess|), 2835 (curved drift), 5190
+    # (sector bend, L = 2), 4855 (solenoid) and 768 (curved solenoid) at worst
+    # over the sweep below. Now each excess is formed from the quantities that
+    # make it small: the curved drift's from `(sin hL - hL)/h` and the
+    # drift's px^2 + py^2 identity, the bend's from the design orbit's exit
+    # momentum and the particle's rotation away from it, the solenoids' from
+    # the kinetic momenta. The versine's closed branch is `2 sin^2(u/2)/h`.
+    # The one regime kept on the direct form, a bend whose field is weaker
+    # than half its frame's curvature, is pinned at its own class.
+    O = Octopus
+    kulps(got, ref, zin) = Float64(abs(big(got) - ref) / big(eps(max(abs(Float64(zin)), abs(Float64(big(zin) - ref))))))
+    cerr(got, ref, scale) = Float64(abs(big(got) - ref) / big(eps(Float64(scale))))
+    krng = Random.Xoshiro(2026)
+    kparts = [(1.0e-3, 2.0e-4, -5.0e-4, 1.0e-4, 2.0e-3, 1.0e-3)]
+    for _ in 1:100
+        push!(kparts, (1.0e-3 * randn(krng), 1.0e-3 * randn(krng), 1.0e-3 * randn(krng), 1.0e-3 * randn(krng),
+                       rand(krng, (-1, 1)) * (2.0e-4 + 4.8e-3 * rand(krng)), 1.0e-3 * randn(krng)))
+    end
+    # (a) z in ulps of max(|z|, |excess|), and the transverse outputs within a
+    # few ulp of their scale, for every kernel over the sweep (measured 2026-10-17:
+    # curved drift z <= 4.7, bend z <= 15.6 except the weak bend's 52.6, solenoid
+    # 0.5, curved solenoid 2.1; transverse <= 10 everywhere).
+    function worst(f64, fbig, through)
+        wz = 0.0; wt = 0.0
+        for u in kparts
+            r64 = f64(u); rb = fbig(big.(u))
+            wz = max(wz, kulps(r64[5], rb[5], u[5]))
+            for i in (1, 2, 3, 4)
+                i in through && continue
+                wt = max(wt, cerr(r64[i], rb[i], max(abs(Float64(rb[i])), abs(u[i]))))
+            end
+            @test all(i -> r64[i] === u[i], through)   # the coordinates the map leaves alone
+        end
+        return wz, wt
+    end
+    for (h, L, zb, tb) in ((1.0e-3, 0.5, 4, 16), (0.05, 0.5, 4, 16), (0.35, 0.5, 16, 16), (0.35, 2.0, 16, 16))
+        wz, wt = worst(u -> O._lattice_drift(Val(true), h, L, u...), u -> O._lattice_drift(Val(true), big(h), big(L), u...), (4, 6))
+        @testset let kernel = "curved drift", h = h, L = L, z_ulps = wz, transverse_ulps = wt
+            @test z_ulps <= zb
+            @test transverse_ulps <= tb
+        end
+    end
+    # The bend: the excess's floor is the deviation angle's rounding over b0,
+    # eps |px| ps0 / |b0| in z, so the weak bend (b0 = 0.05) carries a wider
+    # bound; the drift-like regime (|b0| < |h|/2) keeps the direct form and is
+    # pinned at its own, pre-fix class.
+    for (h, b0, L, zb) in ((0.3, 0.3, 0.5, 32), (0.3, 0.3, 2.0, 64), (0.05, 0.05, 0.5, 256),
+                           (0.3, 0.25, 0.5, 64), (0.0, 0.3, 0.5, 32), (0.3, 1.0e-4, 0.5, 4096))
+        wz, wt = worst(u -> O._lattice_bend(h, b0, L, u...), u -> O._lattice_bend(big(h), big(b0), big(L), u...), (4, 6))
+        @testset let kernel = "bend", h = h, b0 = b0, L = L, z_ulps = wz, transverse_ulps = wt
+            @test z_ulps <= zb
+            @test transverse_ulps <= 32
+        end
+    end
+    # A sector bend on its design orbit (h = b0, the frame's axis) exits with
+    # px = 0 and z unchanged EXACTLY: the excess is zero by construction.
+    let r = O._lattice_bend(0.3, 0.3, 0.5, 0.0, 0.0, 0.0, 0.0, 2.0e-3, 0.0)
+        @test r[2] === 0.0 && r[5] === 2.0e-3
+    end
+    for (ks, L, zb) in ((1.7, 1.3, 2), (0.2, 0.5, 2))
+        wz, wt = worst(u -> O._solenoid_map(ks, L, u...), u -> O._solenoid_map(big(ks), big(L), u...), (6,))
+        @testset let kernel = "solenoid", ks = ks, L = L, z_ulps = wz, transverse_ulps = wt
+            @test z_ulps <= zb
+            @test transverse_ulps <= 64
+        end
+    end
+    for (h, ks, L, nst, zb) in ((0.18, 1.7, 1.3, 16, 8), (0.01, 0.2, 0.5, 4, 8))
+        wz, wt = worst(u -> O._solenoid_curved_map(h, ks, L, nst, u...), u -> O._solenoid_curved_map(big(h), big(ks), big(L), nst, u...), (6,))
+        @testset let kernel = "curved solenoid", h = h, ks = ks, L = L, z_ulps = wz, transverse_ulps = wt
+            @test z_ulps <= zb
+            @test transverse_ulps <= 16
+        end
+    end
+    # (b) The two helpers against BigFloat across their series/direct seams, and
+    # the versine's closed branch at eps.
+    for u in (1.0e-5, 1.0e-3, 0.1, 0.5, 0.99, 1.0, 1.5, 2.5)
+        got = O._curv_sin_excess(u / 0.5, 0.5)
+        ref = (sin(big(u)) - big(u)) / (big(u) / big(0.5))
+        @test abs(big(got) - ref) / abs(ref) < 1.0e-15
+    end
+    for t in (1.0e-6, 1.0e-3, 0.1, 0.3, 0.39, 0.4, 0.6, 0.9)
+        got = O._asin_excess(t)
+        ref = asin(big(t)) - big(t)
+        @test abs(big(got) - ref) / abs(ref) < (t < 0.4 ? 1.0e-15 : 1.0e-14)
+    end
+    for u in (0.125, 0.2, 0.5, 1.0)
+        @test abs(big(O._curv_vers(u, 1.0)) - (1 - cos(big(u))) / big(u)) / ((1 - cos(big(u))) / big(u)) < 4.0e-16
+    end
 end
 
 @testset "Series helpers hold full precision across their crossovers" begin

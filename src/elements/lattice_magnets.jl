@@ -91,7 +91,12 @@ end
     # of `cos` is amplified 118x here.
     abs(u) < real(T)(CURV_VERS_CROSSOVER) && return h * L * L / 2 *
         (one(T) - u * u / 12 * (one(T) - u * u / 30 * (one(T) - u * u / 56 * (one(T) - u * u / 90))))
-    return (one(T) - cos(u)) / h
+    # `2 sin^2(u/2)/h`, not `(1 - cos u)/h`: the versine as a square, so the
+    # closed branch rounds at eps like the series instead of amplifying half an
+    # ulp of `cos` by 1/u^2 (the 7.1e-15 relative at the crossover the paragraph
+    # above records); through `xn pxn` that error reached the curved drift's z
+    # at 20 ulp of its own scale (fix batch 3 unit K, 2026-10-17).
+    return 2 * sin(u / 2)^2 / h
 end
 
 """
@@ -130,9 +135,17 @@ U2-4). Every thick element with `h = 0` and no dipole field passes through
 here -- the RF and accelerating cavities' drift-kick-drift halves and
 `LatticeMagnet`'s straight body step -- so the suite pins the straight
 drift's `z` within 1 ulp of the closed formula over a particle set and the
-thick RF cavity within 4 ulp. The curved form below keeps
-`z + L - (1 + p_z) Delta`: its `Delta` is a composite of `L`-sized terms,
-and a cancellation-free excess for it would need its own derivation.
+thick RF cavity within 4 ulp. The curved drift, the bend and the two solenoid
+maps form their excess the same way since 2026-10-17 (fix batch 3 unit K;
+the derivations sit at each kernel): the curved drift's from
+`(sin hL - hL)/h` and the identity above, the bend's from the design orbit's
+exit momentum and the particle's rotation away from it, the solenoids' from
+the kinetic momenta. Measured in ulps of the computation's own scale
+`max(|z|, |excess|)` over a sweep of a hundred particles: curved drift 2835 to
+4.7, sector bend 5190 to 15.6 (the weak bend's floor is the deviation
+angle's rounding over `b0`), solenoid 4855 to 0.5, curved solenoid 768 to
+2.1; the one regime kept on the direct form, a bend whose field is weaker
+than half its frame's curvature, stays at its eps(L) class and says so.
 
 `p_x^2 + p_y^2` is `_pt2_fused`: one `fma` on IEEE floats, because the device
 contracts a multiply feeding an add into `fma.rn` on its own while Julia's
@@ -148,6 +161,68 @@ have no `fma`.
 @inline _pt2_fused(px::T, py::T) where {T<:Union{Float32,Float64}} = fma(px, px, py * py)
 @inline _pt2_fused(px, py) = px * px + py * py
 
+# `a b - c d` with one rounding (Kahan): the error of the rounded product `c d`
+# is recovered by an `fma` and added back. Used where a difference of two
+# nearly equal products is the SMALL quantity a map needs (the sine of the
+# bend's momentum rotation, section 5): the plain form rounds both products
+# to their own ulp before cancelling them. Plain on every other number type.
+@inline function _diff_of_products(a::T, b::T, c::T, d::T) where {T<:Union{Float32,Float64}}
+    cd = c * d
+    err = fma(-c, d, cd)
+    return fma(a, b, -cd) + err
+end
+@inline _diff_of_products(a, b, c, d) = a * b - c * d
+
+# Two-argument arctangent that also admits complex-step arguments: Base has no
+# `atan(::Complex, ::Complex)`, and the suite differentiates the bend by complex
+# step. Wherever real(x) > 0 the one-argument form is the same function, and
+# an infinitesimal imaginary perturbation cannot move x across zero; real
+# arguments keep the full-circle form so a particle turned past a right angle
+# keeps its branch (ForwardDiff's duals are `Real` and take it too).
+@inline _atan2(y::Real, x::Real) = atan(y, x)
+@inline _atan2(y, x) = atan(y / x)
+
+# `(sin(hL) - hL)/h`, the path-length excess of the frame's own arc, formed
+# without subtracting two numbers near `L`: the alternating series in `u = hL`
+# to `u^20/21!` (its remainder is below `4e-23` of the leading term at
+# `|u| = 1`), and the direct difference beyond, where `sin u - u` keeps its
+# digits. `_curv_sin(h, L) - L` would round `C1` to `eps(L)` first and leave the
+# excess with an absolute error of that size, the cancellation this whole
+# family of forms exists to avoid (2026-10-17, fix batch 3 unit K).
+# `asin(t) - t`, the excess of an arc over its chord's projection, formed
+# without subtracting two numbers near `t`: the series `t^3 sum a_k t^(2k-2)`
+# with `a_1 = 1/6`, `a_k = a_(k-1) (2k-1)^2 / (2k (2k+1))`, 26 terms for
+# `|t| < 0.4` (the last term is below `3e-20` of the first), the direct
+# difference beyond, where `asin t - t` keeps its digits. Used for the design
+# orbit's path-length excess through a bend whose field does not match its
+# frame (`_lattice_bend`).
+@inline function _asin_excess(t)
+    T = typeof(t)
+    if abs(t) < real(T)(0.4)
+        t2 = t * t
+        term = t * t2 / 6
+        acc = term
+        for k in 2:26
+            term *= t2 * (T((2k - 1)^2) / T(2k * (2k + 1)))
+            acc += term
+        end
+        return acc
+    end
+    return asin(t) - t
+end
+
+@inline function _curv_sin_excess(h, L)
+    u = h * L
+    T = typeof(u)
+    u2 = u * u
+    if abs(u) < real(T)(1)
+        return L * (-u2 / 6 * (one(T) - u2 / 20 * (one(T) - u2 / 42 * (one(T) - u2 / 72 *
+               (one(T) - u2 / 110 * (one(T) - u2 / 156 * (one(T) - u2 / 210 * (one(T) - u2 / 272 *
+               (one(T) - u2 / 342 * (one(T) - u2 / 420))))))))))
+    end
+    return (sin(u) - u) / h
+end
+
 @inline function _lattice_drift(::Val{false}, h::T, L::T, x, px, y, py, z, pz) where {T}
     ps0 = sqrt((1 + pz)^2 - px * px - py * py)
     return x + px / ps0 * L, px, y + py / ps0 * L, py,
@@ -162,8 +237,23 @@ end
     pxn = px * c + ps0 * s
     psn = -px * s + ps0 * c
     xn = (ps0 * C2 + px * C1 + x * ps0) / psn
-    Delta = (-px * C2 + ps0 * C1 + xn * pxn - x * px) / ((1 + pz)^2 - py * py)
-    return xn, pxn, y + py * Delta, py, z + L - (1 + pz) * Delta, pz
+    w2 = (1 + pz)^2 - py * py
+    Delta = (-px * C2 + ps0 * C1 + xn * pxn - x * px) / w2
+    # The path-length excess `(1 + pz) Delta - L` formed from small quantities
+    # (fix batch 3 unit K, 2026-10-17). With `N = w2 Delta` and
+    # `C1 = L + S1`, `S1 = (sin hL - hL)/h`:
+    #   (1 + pz) N - L w2 = L [py^2 ps0 - (1 + pz) px^2] / ((1 + pz) + ps0)
+    #                       + (1 + pz) [ps0 S1 - px C2 + (xn pxn - x px)],
+    # using (1 + pz) ps0 - (1 + pz)^2 = -(1 + pz)(px^2 + py^2)/((1 + pz) + ps0).
+    # Every term is of the excess's own size: at h -> 0 it is the straight
+    # drift's L (px^2 + py^2)/(ps0 ((1 + pz) + ps0)); on the frame's axis it is
+    # (tan hL - hL)/h, the chord through the curved frame. The old
+    # `z + L - (1 + pz) Delta` rounded two numbers near `L`: 280 ulp of
+    # z = 2e-3 on the probe particle, 3190 at worst over the sweep.
+    S1 = _curv_sin_excess(h, L)
+    E = (L * (py * py * ps0 - (1 + pz) * px * px) / ((1 + pz) + ps0) +
+         (1 + pz) * (ps0 * S1 - px * C2 + (xn * pxn - x * px))) / w2
+    return xn, pxn, y + py * Delta, py, z - E, pz
 end
 
 # Value-dispatched shim for callers outside the tracking path (tests, the
@@ -190,7 +280,18 @@ sector bend on its design orbit.
     # b0 explicit instead of hiding it inside a 0/0.
     pxr = px * c + ps0 * s
     psr = ps0 * c - px * s
-    pxn = pxr - b0 * q * C1                 # identically px*c + dpx0*C1
+    # pxn = pxr - b0 q C1 (identically px c + dpx0 C1), formed as the design
+    # orbit's exit momentum kappa C1 plus the particle's departure from it, so
+    # that a sector bend on its design orbit (h = b0, px = 0) exits with
+    # pxn = 0 exactly instead of with the rounding of s - b0 C1, which the
+    # path-length excess below would otherwise carry at eps(L) (unit K,
+    # 2026-10-17):
+    #   ps0 s - b0 q C1 = s (ps0 - 1) + (h - b0) C1 - b0 h x C1,
+    #   ps0 - 1 = (pz (2 + pz) - (px^2 + py^2)) / (1 + ps0).
+    kappa = h - b0
+    pxd = kappa * C1
+    dp = px * c + s * ((pz * (2 + pz) - _pt2_fused(px, py)) / (1 + ps0)) - b0 * h * x * C1
+    pxn = pxd + dp
     psn = sqrt(w2 - pxn * pxn)
     den = psn + psr
     U = psn * s - pxn * c
@@ -206,7 +307,15 @@ sector bend on its design orbit.
         # the dipole turns the momentum through comes out as atan(b0 G), so
         # both 1/b0 factors cancel analytically rather than numerically.
         R = (pxn + pxr) / den
-        xn = x + q * (C1 * R - C2)
+        # xn = x + q (C1 R - C2) with C2 = C1 tan(u/2) identically, so the
+        # bracket is C1 (R - s/(1 + c)); formed from the quantities that make
+        # it small (unit K, 2026-10-17):
+        #   R - s/(1 + c) = (pxn + px) [(1 + c) + s (pxn - px)/(ps0 + psn)] / (den (1 + c)),
+        # using pxr (1 + c) - s psr = px (1 + c) + ps0 s and
+        # ps0 - psn = (pxn - px)(pxn + px)/(ps0 + psn). Before, `C1 R - C2`
+        # rounded two numbers near C2: 5863 ulp of x at worst over the sweep
+        # (h = b0 = 0.3, L = 0.5), 6156 at L = 2.
+        xn = x + q * C1 * (pxn + px) * ((1 + c) + s * (pxn - px) / (ps0 + psn)) / (den * (1 + c))
         G = q * C1 * (pxr * R + psr) / D
         Δ = G * _atan_over(b0 * G)
     else
@@ -220,7 +329,35 @@ sector bend on its design orbit.
         xn = x + ((psn - ps0) + px * s + dpx0 * C2) / b0
         Δ = (h * L - (asin(pxn / w) - asin(px / w))) / b0
     end
-    return xn, pxn, y + py * Δ, py, z + L - (1 + pz) * Δ, pz
+    # The path-length excess E = (1 + pz) Δ - L, so z -> z - E. With
+    # phi = asin(pxn/w) - asin(px/w) the in-plane momentum rotation and
+    # Δ = (hL - phi)/b0,
+    #   E = [L (h - b0) - phi_d]/b0 - (phi - phi_d)/b0 + pz Δ,
+    # phi_d = asin(kappa C1) the design orbit's rotation. The first term is the
+    # design orbit's own excess, -(kappa S1 + (asin(pxd) - pxd))/b0 with
+    # S1 = C1 - L (zero on a sector bend with h = b0; the straight-frame bend's
+    # (asin(b0 L) - b0 L)/b0); the second is the particle's departure, the
+    # angle of (psn + i pxn)(psd - i pxd)(ps0 - i px) formed from `dp` so the
+    # near-equal products never meet; the third is small by itself. Where the
+    # field is weaker than half the frame's curvature the bend is a curved
+    # drift with a perturbation and both terms of the design excess tend to
+    # the same u^3/6 with opposite signs, so that regime keeps the direct form
+    # and its eps(L) rounding (the curved drift proper has its own form). The
+    # strict `>` also keeps b0 = 0 exactly, reachable through this function
+    # though not through `_body_step`, off the 1/b0 terms.
+    # Measured before: 48 ulp of z on the probe particle and 3629 at worst
+    # over the sweep (h = b0 = 0.3, L = 0.5), 41519 at L = 2.
+    if abs(real(b0)) > abs(real(h)) / 2
+        S1 = _curv_sin_excess(h, L)
+        psd = sqrt(one(T) - pxd * pxd)
+        Pi = dp * psd + pxd * (((py * py - pz * (2 + pz)) + dp * (pxn + pxd)) / (psd + psn))
+        Pr = psn * psd + pxn * pxd
+        dphi = _atan2(_diff_of_products(Pi, ps0, Pr, px), Pr * ps0 + Pi * px)
+        E = -(kappa * S1 + _asin_excess(pxd)) / b0 - dphi / b0 + pz * Δ
+    else
+        E = (1 + pz) * Δ - L
+    end
+    return xn, pxn, y + py * Δ, py, z - E, pz
 end
 
 """
