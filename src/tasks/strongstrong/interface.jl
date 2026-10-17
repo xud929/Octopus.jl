@@ -2345,6 +2345,10 @@ struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: Abstrac
     plan_cache1::Dict{Any,Any}
     plan_cache2::Dict{Any,Any}
     runtime_cache::Dict{Any,Any}
+    # What the constructor's sharing warnings named over both lines, read by
+    # the resolved-line equal-digest check so one cause warns once
+    # (`ReportedSharing`, src/tasks/Tasks.jl; 2026-10-16, fix group F).
+    reported_sharing::ReportedSharing
 end
 
 function configuration_report(task::StrongStrongTask, beam1::Beam, beam2::Beam)
@@ -2400,7 +2404,7 @@ function StrongStrongTask(line1, line2;
     # 2026-10-16 neighbour audit (lead S1-3; the "stays ledgered" gap had no
     # ledger row). Both are the TrackingTask constructor's calls.
     _warn_duplicate_radiation_streams((line_tuple1..., line_tuple2...))
-    _warn_duplicate_turn_modulation_streams((line_tuple1..., line_tuple2...))
+    reported_sharing = _warn_duplicate_turn_modulation_streams((line_tuple1..., line_tuple2...))
     # Retired with the TrackingTask twin (2026-10-16 neighbour audit, U3-1):
     # the keyword warned and then ignored the value.
     seed === nothing || throw(ArgumentError(
@@ -2443,6 +2447,7 @@ function StrongStrongTask(line1, line2;
         Dict{Any,Any}(),
         Dict{Any,Any}(),
         Dict{Any,Any}(),
+        reported_sharing,
     )
 end
 
@@ -2658,17 +2663,16 @@ function _execute_strong_strong_task!(
     # the site naming the beam's line (as at the TrackingTask site; U3-2).
     _warn_resolved_seed_drift(((_strong_strong_physics_line(blocks1), 1),
                                (_strong_strong_physics_line(blocks2), 2)))
-    # The turn-modulation receipt (docs/design/turn_modulation.md 5.6), as at
+    # The turn-modulation entries (docs/design/turn_modulation.md 5.6), as at
     # the TrackingTask site: both lines are walked, beam 1's entries first,
-    # each tagged with its beam; recorded only when a line has a modulated
-    # element, so an unmodulated run's ledger is unchanged. The same entries
-    # go into the artifact's /turn_modulation group below.
+    # each tagged with its beam. They go into the artifact's /turn_modulation
+    # group below and into the `:turn_modulation` receipt, which is recorded
+    # AFTER the solver preflight, the artifact's prepare and the observers'
+    # prepare, immediately before the first turn: a run one of those refuses
+    # leaves no receipt claiming it ran (2026-10-16 neighbour audit, U3-6; the
+    # receipt sat here, ahead of all three, before).
     prov = vcat(_turn_modulation_entries(_strong_strong_physics_line(blocks1), 1),
                 _turn_modulation_entries(_strong_strong_physics_line(blocks2), 2))
-    if !isempty(prov)
-        _record_execution!(:turn_modulation, backend_type(policy),
-                           (elements = prov, first_turn = first_turn, turns = turns))
-    end
     solvers = _preflight_solver_configurations!(task, blocks1, blocks2, policy)
     # Validate every output preparer BEFORE any of them commits, then commit.
     #
@@ -2726,6 +2730,13 @@ function _execute_strong_strong_task!(
     catch
         task.artifact === nothing || finalize_run_artifact!(task.artifact)
         rethrow()
+    end
+    # Recorded only when a line has a modulated element, so an unmodulated
+    # run's ledger is unchanged; the window RESOLVED for this call, not the
+    # turns completed (a crash mid-way leaves it, as the ledger row does).
+    if !isempty(prov)
+        _record_execution!(:turn_modulation, backend_type(policy),
+                           (elements = prov, first_turn = first_turn, turns = turns))
     end
     line_observers_finalized = false
     try
@@ -3219,7 +3230,8 @@ function _strong_strong_runtime_blocks(task::StrongStrongTask, which::Integer)
         blocks1 = which == 1 ? blocks : other[1]
         blocks2 = which == 1 ? other[1] : blocks
         _warn_resolved_duplicate_tables(((task.line1, _strong_strong_physics_line(blocks1), 1),
-                                         (task.line2, _strong_strong_physics_line(blocks2), 2)))
+                                         (task.line2, _strong_strong_physics_line(blocks2), 2)),
+                                        task.reported_sharing)
     end
     return blocks
 end
@@ -3318,20 +3330,42 @@ function _collision_solver(task::StrongStrongTask, c1::StrongStrongCollision, c2
     return task.default_poisson_solver
 end
 
+# The two block walks run once per `execute!` (several times, over both
+# lines). Each block's entries tuple is walked unrolled (`_foreach_unrolled`,
+# src/elements/turn_modulated.jl) behind a per-block function barrier: a `for`
+# over the heterogeneous isbits tuple boxed it per element, and reading
+# `block.entries` off the `Vector{Any}` of blocks in the caller boxed a copy
+# of the tuple per block -- 39 kB and 27 kB per call on two 41-element lines
+# of nine types before, 22 kB and 10 kB with the unroll alone (2026-10-16
+# neighbour audit, U9-4). One dynamic dispatch per block remains.
 function _line_observers(lines::AbstractVector)
     observers = Any[]
-    for block in lines, entry in block.entries
-        entry isa LineObserverEntry && push!(observers, entry.observer)
+    for block in lines
+        _push_block_observers!(observers, block)
     end
     return Tuple(observers)
+end
+function _push_block_observers!(observers::Vector{Any}, block::StrongStrongBlock)
+    _foreach_unrolled(block.entries) do entry
+        entry isa LineObserverEntry && push!(observers, entry.observer)
+        nothing
+    end
+    return observers
 end
 
 function _strong_strong_physics_line(lines::AbstractVector)
     elems = Any[]
-    for block in lines, entry in block.entries
-        entry isa PhysicsEntry && push!(elems, entry.element)
+    for block in lines
+        _push_block_physics!(elems, block)
     end
     return Tuple(elems)
+end
+function _push_block_physics!(elems::Vector{Any}, block::StrongStrongBlock)
+    _foreach_unrolled(block.entries) do entry
+        entry isa PhysicsEntry && push!(elems, entry.element)
+        nothing
+    end
+    return elems
 end
 
 function _finalize_strong_strong_line_observers!(lines::AbstractVector)

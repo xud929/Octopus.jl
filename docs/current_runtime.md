@@ -341,15 +341,24 @@ One `rng_id` policy holds for every stochastic consumer -- `Beam`,
 `SpectralNoise`) and `BPMObserver` (owner decision 2026-10-16, after the
 crab-noise neighbour audit): `rng_id = 0`, the default, requests a fresh
 stream, assigned at CONSTRUCTION by `next_rng_id!`; an explicit positive id
-is recorded by `claim_rng_id!`, which raises the auto-assign counter past it
-and warns -- never refuses -- when the id is already held in this process by
+is recorded by `claim_rng_id!`, which the automatic sequence then skips when
+it reaches it (the claim no longer raises the counter past the id, fix group
+F of the same audit: an explicit `typemax(UInt64)` leaves the sequence
+intact, and a claim of 1000 no longer moves the next fresh id to 1001), and
+which warns -- never refuses -- when the id is already held in this process by
 an auto-assigned consumer or by an explicit consumer of another class (the
 warning names the id, both classes and the remedy: an id above the counter,
 or 0). Explicit reuse of one id by one class is silent (the reproducibility
 handle; placements sharing a stream within one task are warned by the task
 constructor), as is every fresh id. Ids are `UInt64` wherever a consumer
-stores one, up to `typemax(UInt64)`; above an explicit `typemax(UInt64)` the
-exhausted counter refuses by name. The stream is assigned at construction and
+stores one, up to `typemax(UInt64)`; a negative id is refused by name at
+every consumer; the counter refuses by name only when the sequence itself
+reaches `typemax(UInt64)`. The registry's memory is bounded: one entry per
+DISTINCT explicit id, plus a 64 kB ring holding the consumer class of the
+last 65536 automatic assignments (an older automatic id still warns when
+claimed, its class reported as not retained); automatic ids need no table,
+every id between the floor and the counter that is not explicit having been
+issued by the sequence. The stream is assigned at construction and
 not at compile on purpose: a knob change recompiles the line, and a stream
 assigned at compile would move mid-run; a `:lumped_radiation` spec that still
 carries `rng_id` 0 when it reaches `compile_runtime` (a raw

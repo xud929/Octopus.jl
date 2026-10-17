@@ -1628,6 +1628,30 @@ cancels the once-per-call walks and the per-element thread overhead; a pin on
 a one-element line, or one that compares an option on against off on the same
 loop, cancels the defect with the noise.
 
+## A "fresh id above the counter" is a hand-copy of the counter's semantics
+
+The suite's convention for an explicit stream id a strict silence pin may
+claim -- `next_rng_id!() + 1_000_000`, "above the counter and above every
+literal" -- was written when an explicit claim raised the counter past its
+id, so two testsets drawing from that band could never meet: the first claim
+moved the counter a million past the second's start. Fix group F of the
+2026-10-16 crab-noise neighbour audit changed the registry so that the
+automatic sequence steps over explicit ids instead of jumping past them (an
+explicit `typemax(UInt64)` had exhausted the counter), and the convention
+broke at once: the neighbour-audit testset claimed `base`, `base + 1` as
+radiation streams, the effectiveness testset's "fresh" id landed on
+`base + 1` two testsets later, and the registry warned, by design, about a
+turn rule sharing a radiation stream. Five sites carried the convention, and
+three more pins read consecutive automatic ids off the counter (`next ==
+claimed + 1`), which the skip also breaks once a small literal sits ahead of
+the sequence. The repair is one derived query, `_unheld_rng_id(start)`, which
+asks the registry rather than assuming what the counter does, and pins that
+read the registry (`_rng_id_held`) instead of inferring a claim from
+arithmetic. The rule: a test convention that encodes how an internal counter
+moves is a hand-copy of that mechanism; derive the property from the
+component that owns it, and when a mechanism changes grep the suite for the
+arithmetic that assumed the old one.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

@@ -216,7 +216,12 @@ sinusoids is a deterministic waveform rather than noise.
 a spectrum that vanishes on every bin with `sigma > 0` (the implementer's
 addition, "pass sigma = 0 for a quiet table or a spectrum with power in
 the band") and a non-callable custom `S` (review nit, refused by name through `applicable`; `_spectral_slot`
-likewise refuses a negative or non-integer `slot`); the
+likewise refuses a negative or non-integer `slot`); a third from the
+neighbour audit's fix group F (U1-7): a custom label that is a preset's
+name, `"flat" => S` with `S` not the preset's own shape (case and blank
+padding do not make it distinct), because D7 records the label and not `S`,
+so such a table was named `spectral(flat; ...)` byte for byte like the
+preset's and only the digest told them apart; the
 few-bins warning is raised once per rule construction through a warn flag,
 not a content-keyed `maxlog` (review F2: that keying silenced later rules
 with another `sigma` or spectrum), and the resolution at compile never
@@ -319,7 +324,13 @@ the silent common-mode choice of D4 (U1-6 / S3-2 / U3-3 / S5-3). The
 harness `test/examples/crab_cavity_noise.jl` synthesises its spectral tables
 over at least 256 turns so that a 2-turn smoke run, whose synthesis holds one
 Nyquist bin, no longer carries identical tables on three of four phase slots
-(U7-2).)
+(U7-2). Fix group F of the same audit: the three checks warn once per cause.
+The constructor's two word one spec object placed twice as placements and
+distinct specs as distinct elements (U8-16), and the task keeps the ids and
+digests they named (`ReportedSharing`, src/tasks/Tasks.jl) so the
+resolved-line check skips what they covered -- two placements of one spec,
+two offline copies of one table, two `SpectralNoise` on one explicit id --
+and names what they could not see, the rule beside its offline twin first.)
 
 (2026-10-16, review: per-slot independence under one `rng_id`, as the live
 rules give it: the resolution passes the rule's slot into the key (F1,

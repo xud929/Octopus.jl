@@ -46,22 +46,57 @@ global_rng_method() = rng_method_symbol(_GLOBAL_RNG_METHOD[])
 """Return the current Octopus global RNG method as an isbits code."""
 global_rng_method_code() = _GLOBAL_RNG_METHOD[]
 
-"""
-    _RNG_ID_HOLDERS
+"""One explicitly claimed id: the class of the automatic assignment that
+preceded its first claim (`nothing` for none, `missing` for one outside the
+class window) and the classes that have claimed it, in claim order."""
+struct _RngIdClaim
+    auto::Union{Nothing,Missing,Symbol}
+    classes::Vector{Symbol}
+end
 
-The stream ids this process has issued or recorded, each with the consumer
-classes holding it: `id => [(class, explicit)]`, where `explicit` is `false`
-for an id `next_rng_id!` assigned and `true` for one `claim_rng_id!` recorded.
-The memory beside the high-water-mark counter (owner policy 2026-10-16,
-crab-noise neighbour audit S1-6, todo rows 34 and 38): the counter alone
-could not see an explicit id chosen AFTER a fresh consumer had received it,
-nor two consumer classes choosing one id. Guarded by `_RNG_ID_REGISTRY_LOCK`;
-the counter stays atomic so a fresh id never needs the lock's serialisation.
-Cleared by `__init__` (what the precompile process claimed -- the
-`@element_spec` examples -- is not this process's) and by
-`reset_rng_id_counter!`.
 """
-const _RNG_ID_HOLDERS = Dict{UInt64,Vector{Tuple{Symbol,Bool}}}()
+    _RNG_ID_REGISTRY
+
+The stream-id registry beside the atomic counter of the automatic sequence
+(owner policy 2026-10-16, crab-noise neighbour audit S1-6, todo rows 34 and
+38; re-shaped by fix group F the same day, todo rows 31 and 40, when the
+counter stopped being a high-water mark over explicit claims): the counter
+alone could not see an explicit id chosen AFTER a fresh consumer had received
+it, nor two consumer classes choosing one id. Three tables, all guarded by
+`_RNG_ID_REGISTRY_LOCK`:
+
+  * `explicit`: every explicitly claimed id, with the classes that claimed it
+    and whether an automatic assignment preceded the first claim (`nothing`:
+    none; a class symbol; `missing`: one whose class the window below no
+    longer held). One entry per DISTINCT explicit id, each the user's own
+    choice, so this table grows only with deliberate claims.
+  * `classes`: a ring of class codes for the last `_RNG_ID_CLASS_WINDOW`
+    automatic assignments (one byte each, `class_names` decoding the codes),
+    the memory behind "already held by a beam consumer (auto-assigned at
+    construction)". Automatic ids need no table of their own: `next_rng_id!`
+    issues them consecutively from the counter, skipping the explicit ones, so
+    every id in `(floor, counter]` that is not explicit WAS auto-assigned, by
+    arithmetic; the ring only remembers by whom. Before fix group F the
+    registry kept a `Dict` entry per automatic assignment (measured 132.6 B
+    each, 13.3 MB per 100,000 consumers); now 64 kB fixed.
+  * `floor`: the counter's value at the last `reset_rng_id_counter!` or at
+    `__init__`. Ids at or below it are unknown to this process (what the
+    precompile process claimed -- the `@element_spec` examples -- is not this
+    process's; a reset may reissue them) and are never reported as held.
+"""
+mutable struct _RngIdRegistry
+    floor::UInt64
+    classes::Vector{UInt8}
+    class_names::Vector{Symbol}
+    explicit::Dict{UInt64,_RngIdClaim}
+end
+
+"""How many automatic assignments keep their consumer class in the registry
+(`_RngIdRegistry.classes`); an explicit claim of an older automatic id still
+warns, as auto-assigned, with its class reported as not retained."""
+const _RNG_ID_CLASS_WINDOW = 1 << 16
+const _RNG_ID_REGISTRY = _RngIdRegistry(UInt64(0), zeros(UInt8, _RNG_ID_CLASS_WINDOW), Symbol[],
+                                        Dict{UInt64,_RngIdClaim}())
 const _RNG_ID_REGISTRY_LOCK = ReentrantLock()
 
 """
@@ -72,54 +107,115 @@ in the registry as held by `consumer` (the class label a constructor passes:
 `:beam`, `:lumped_radiation`, `:turn_rule`, `:bpm_observer`; the suite derives
 the list from the call sites). This is what every consumer's `rng_id = 0`
 resolves to, at construction: the one policy for the Beam, `LumpedRadSpec`,
-the turn-modulation rules and `BPMObserver`. Throws when the counter is
-exhausted at `typemax(UInt64)` -- reachable only through an explicit claim of
-`typemax(UInt64)`, which the registry accepts -- rather than wrapping to 0,
+the turn-modulation rules and `BPMObserver`. The sequence is the counter's
+successor, SKIPPING every id claimed explicitly in this process (fix group F,
+2026-10-16): before, `claim_rng_id!` raised the counter past its id, so an
+explicit `typemax(UInt64)` left the next automatic consumer with nothing to
+issue, and a claim of `1000` moved the sequence from 3 to 1001. Throws when
+the counter itself is exhausted at `typemax(UInt64)` -- 2^64 assignments, or
+a `reset_rng_id_counter!(value)` near the top -- rather than wrapping to 0,
 the id every consumer reads as "fresh".
 """
 function next_rng_id!(; consumer::Symbol=:unspecified)
-    id = _issue_rng_id!()
-    _record_rng_id_holder!(id, consumer, false)
+    lock(_RNG_ID_REGISTRY_LOCK)
+    try
+        registry = _RNG_ID_REGISTRY
+        id = _GLOBAL_RNG_ID_COUNTER[]
+        while true
+            id == typemax(UInt64) && throw(ArgumentError(
+                "the automatic rng_id counter is exhausted: every stream id from the " *
+                "counter's floor $(registry.floor) to typemax(UInt64) has been issued or " *
+                "claimed in this process (the automatic sequence skips explicitly claimed " *
+                "ids, so reaching the top takes 2^64 assignments, or a " *
+                "reset_rng_id_counter!(value) near it). Call reset_rng_id_counter!(value) " *
+                "in a session that no longer needs the ids above value."))
+            id += UInt64(1)
+            haskey(registry.explicit, id) || break
+        end
+        _GLOBAL_RNG_ID_COUNTER[] = id
+        registry.classes[_rng_id_ring_slot(id)] = _rng_id_class_code!(registry, consumer)
+        return id
+    finally
+        unlock(_RNG_ID_REGISTRY_LOCK)
+    end
+end
+
+_rng_id_ring_slot(id::UInt64) = Int(id % UInt64(_RNG_ID_CLASS_WINDOW)) + 1
+
+# The class code of `consumer`, assigned at its first appearance; code 0 is
+# "no automatic assignment" (a ring slot never written since the last reset)
+# and the last code stands for every class beyond the 254 the table names.
+function _rng_id_class_code!(registry::_RngIdRegistry, consumer::Symbol)
+    code = findfirst(==(consumer), registry.class_names)
+    code === nothing || return UInt8(code)
+    length(registry.class_names) < 254 || return UInt8(255)
+    push!(registry.class_names, consumer)
+    return UInt8(length(registry.class_names))
+end
+
+# The automatic holder of `uid`, read under the lock: `nothing` when the id was
+# never auto-assigned since the floor, its class while the ring still holds
+# it, `missing` once the ring has moved on. Every id in `(floor, counter]` is
+# either explicit or auto-assigned (the sequence is consecutive), and an
+# explicit id is answered from its own claim record, so the ring is read only
+# for ids the sequence actually issued.
+function _rng_id_auto_holder(registry::_RngIdRegistry, uid::UInt64)
+    counter = _GLOBAL_RNG_ID_COUNTER[]
+    (registry.floor < uid <= counter) || return nothing
+    counter - uid < UInt64(_RNG_ID_CLASS_WINDOW) || return missing
+    code = registry.classes[_rng_id_ring_slot(uid)]
+    code == 0 && return missing
+    code == 255 && return Symbol("a class beyond the 254 this registry names")
+    return registry.class_names[code]
+end
+
+"""
+    _rng_id_held(id::Integer) -> Bool
+    _unheld_rng_id(start::Integer) -> UInt64
+
+Whether a stream id is held in this process -- claimed explicitly, or issued
+automatically since the registry's floor (`_RNG_ID_REGISTRY`) -- and the
+smallest id at or above `start` that nobody holds. Not a claim: the id is
+free only until a consumer takes it. The suite's "fresh explicit id"
+convention is `_unheld_rng_id(next_rng_id!() + 1_000_000)`: above the counter,
+above every literal id of the suite and, since a claim no longer moves the
+counter (fix group F, 2026-10-16), clear of the ids another test claimed from
+the same band -- `next_rng_id!() + 1_000_000` alone collided once the counter
+stopped jumping past claims (two testsets' ids met on a lumped_radiation /
+turn_rule pair). An id a refused constructor was handed stays unheld, which
+is how a test shows the refusal claimed nothing.
+"""
+function _rng_id_held(id::Integer)
+    id >= 0 || return false
+    uid = UInt64(id)
+    lock(_RNG_ID_REGISTRY_LOCK)
+    try
+        registry = _RNG_ID_REGISTRY
+        haskey(registry.explicit, uid) && return true
+        return registry.floor < uid <= _GLOBAL_RNG_ID_COUNTER[]
+    finally
+        unlock(_RNG_ID_REGISTRY_LOCK)
+    end
+end
+function _unheld_rng_id(start::Integer)
+    id = UInt64(start)
+    while _rng_id_held(id)
+        id == typemax(UInt64) && throw(ArgumentError(
+            "no unheld rng_id at or above $(start): every id up to typemax(UInt64) is held"))
+        id += UInt64(1)
+    end
     return id
-end
-
-# Atomic: two beams or radiation specs constructed concurrently must not draw
-# the same stream id, which would mean identical noise (2026-08-05 audit,
-# U15-5). A compare-and-swap rather than an add so that the exhausted counter
-# refuses instead of issuing stream 0, then 1, 2, ... Its own function so that
-# the id the loop rebinds is never captured by the registry lock's closure
-# (the suite's Core.Box sweep).
-function _issue_rng_id!()
-    while true
-        current = _GLOBAL_RNG_ID_COUNTER[]
-        current == typemax(UInt64) && throw(ArgumentError(
-            "the automatic rng_id counter is exhausted: an explicit claim of " *
-            "typemax(UInt64) left no fresh stream above it (the counter is a " *
-            "high-water mark over every claimed id, so next_rng_id! never " *
-            "reissues one). Claim explicit ids below typemax(UInt64), or call " *
-            "reset_rng_id_counter!(value) in a session that no longer needs the " *
-            "ids above value."))
-        next = current + UInt64(1)
-        Threads.atomic_cas!(_GLOBAL_RNG_ID_COUNTER, current, next) === current && return next
-    end
-end
-
-function _record_rng_id_holder!(id::UInt64, consumer::Symbol, explicit::Bool)
-    lock(_RNG_ID_REGISTRY_LOCK) do
-        push!(get!(() -> Tuple{Symbol,Bool}[], _RNG_ID_HOLDERS, id), (consumer, explicit))
-    end
-    return nothing
 end
 
 """
     claim_rng_id!(id; consumer=:unspecified) -> UInt64
 
 Record an **explicitly chosen** stochastic stream id and return it as a
-`UInt64`, advancing the auto-assign counter past it so `next_rng_id!` can never
-reissue it, and warning -- never refusing -- when the id is already held in
-this process by a consumer the claim would share a stream with.
+`UInt64`; the automatic sequence (`next_rng_id!`) skips it from now on, and
+the claim warns -- never refuses -- when the id is already held in this
+process by a consumer the claim would share a stream with.
 
-Without the counter, an explicit id and an automatic one collide silently.
+Without the registry, an explicit id and an automatic one collide silently.
 Measured (2026-08-05_b audit, U14-2): `Beam(...; rng_id = 1)` left the counter
 at 0, an auto-assigned `LumpedRadSpec` in the same session then also received
 id 1, and the two consumers drew **the same stream** -- beam initial
@@ -127,20 +223,28 @@ coordinates and radiation excitation correlating at 0.99988. That is the
 worst possible correlation for an emittance-growth study, because the
 excitation is aligned with the distribution it is supposed to diffuse.
 
-The counter is a high-water mark: atomic, order-independent, one
-compare-and-swap per stochastic consumer. It does not see the reverse order --
-an explicit id chosen to match an auto-assignment that has already issued
+Until fix group F (2026-10-16) the claim raised the atomic counter past its id
+(a high-water mark), which kept the sequence clear of it but let one claim
+move the sequence: `claim_rng_id!(1000)` sent the next fresh consumer to 1001,
+and an explicit `typemax(UInt64)` left the next automatic consumer with
+nothing to issue until a reset (todo row 31). Now the claim is recorded and
+the sequence steps over every recorded id when it reaches it, so the counter
+moves only by automatic assignments and `typemax(UInt64)` is as claimable as
+any other id. The counter did not see the reverse order either -- an
+explicit id chosen to match an auto-assignment that has already issued
 (measured 2026-10-16, crab-noise neighbour audit S1-6: a Beam took auto id 7,
 `LumpedRadSpec(rng_id = 7)` was accepted silently and their turn-0 cells were
 equal) -- nor two consumer CLASSES choosing one id (S1-5: a `SpectralNoise`,
 a `LumpedRadSpec` and a `BPMObserver` on id 5 built with no warning, the
 spectral bin k's Rayleigh pair being radiation particle k's normals). The
-registry beside the counter (`_RNG_ID_HOLDERS`) sees both, and the policy
-(owner decision 2026-10-16) is:
+registry (`_RNG_ID_REGISTRY`) sees both, and the policy (owner decision
+2026-10-16) is:
 
   * an explicit claim of an id that was AUTO-ASSIGNED earlier in this process
-    warns by name: the id, the holder's class, the claimant's class, and the
-    remedy (an id above the registry's counter, or `rng_id = 0`);
+    warns by name: the id, the holder's class (or that the class is no longer
+    retained, beyond the last `_RNG_ID_CLASS_WINDOW` assignments), the
+    claimant's class, and the remedy (an id above the registry's counter, or
+    `rng_id = 0`);
   * an explicit claim of an id already claimed explicitly by a DIFFERENT class
     (beam, radiation, turn-modulation rule, BPM observer) warns, naming both
     classes;
@@ -149,7 +253,10 @@ registry beside the counter (`_RNG_ID_HOLDERS`) sees both, and the policy
     1)`), and two placements of one class sharing a stream in one task are
     caught by the task constructor's duplicate-stream warnings;
   * `id = 0` is refused: it is the request for a fresh stream, which every
-    consumer resolves at construction through `next_rng_id!`, never a stream.
+    consumer resolves at construction through `next_rng_id!`, never a stream;
+  * a negative `id` is refused by name (todo row 40; it used to die in the
+    `UInt64` conversion with an `InexactError`, on `LumpedRadSpec`, `Beam` and
+    `BPMObserver`; the rules refused it themselves).
 
 Each `(id, class)` pair warns once; a warning is a shared stream, not a
 refusal, because sharing is sometimes intended. Two consumers on one stream
@@ -157,41 +264,58 @@ draw identical normals wherever their key regions coincide (the key layout
 above `_RULE_COMPONENT_BASE` in `src/elements/turn_modulated.jl` says which
 classes do). `consumer` keeps its default so a call site that has not been
 taught its class still compiles; the suite's tripwire requires every call site
-in `src/` to pass one. A negative `id` dies in the `UInt64` conversion as
-before (todo row 40, open).
+in `src/` to pass one.
 """
 function claim_rng_id!(id::Integer; consumer::Symbol=:unspecified)
+    id >= 0 || throw(ArgumentError(
+        "rng_id $(id) is negative: a counter-RNG stream id is a non-negative integer " *
+        "(0 requests a fresh stream, assigned at construction; a positive id up to " *
+        "typemax(UInt64) is claimed as the consumer's own stream); claimant: $(consumer)"))
     uid = UInt64(id)
     uid == 0 && throw(ArgumentError(
         "rng_id 0 is not a stream: it is the request for a fresh stream, which every " *
         "consumer resolves at construction with next_rng_id!(); claim_rng_id! records " *
         "an explicitly chosen positive id (claimant: $(consumer))"))
-    Threads.atomic_max!(_GLOBAL_RNG_ID_COUNTER, uid)
     message = _register_rng_id_claim!(uid, consumer)
     message === nothing || @warn message rng_id = uid claimant = consumer
     return uid
 end
 
-# The locked part of `claim_rng_id!`: record `(consumer, explicit)` unless the
-# same class already holds the id explicitly, and return the sharing message
-# when another holder exists (emitted outside the lock).
+# The locked part of `claim_rng_id!`: record the claim unless the same class
+# already holds the id explicitly, and return the sharing message when another
+# holder exists (emitted outside the lock).
 function _register_rng_id_claim!(uid::UInt64, consumer::Symbol)
-    return lock(_RNG_ID_REGISTRY_LOCK) do
-        holders = get!(() -> Tuple{Symbol,Bool}[], _RNG_ID_HOLDERS, uid)
-        same_class = any(h -> h[1] === consumer && h[2], holders)
-        msg = (same_class || isempty(holders)) ? nothing :
-              _rng_id_sharing_message(uid, consumer, holders)
-        same_class || push!(holders, (consumer, true))
-        msg
+    lock(_RNG_ID_REGISTRY_LOCK)
+    try
+        registry = _RNG_ID_REGISTRY
+        claim = get(registry.explicit, uid, nothing)
+        if claim === nothing
+            auto = _rng_id_auto_holder(registry, uid)
+            registry.explicit[uid] = _RngIdClaim(auto, [consumer])
+            return auto === nothing ? nothing : _rng_id_sharing_message(uid, consumer, auto, Symbol[])
+        end
+        consumer in claim.classes && return nothing
+        others = copy(claim.classes)
+        push!(claim.classes, consumer)
+        return _rng_id_sharing_message(uid, consumer, claim.auto, others)
+    finally
+        unlock(_RNG_ID_REGISTRY_LOCK)
     end
 end
 
-function _rng_id_sharing_message(id::UInt64, consumer::Symbol, holders)
-    held = join(["a $(h[1]) consumer ($(h[2] ? "explicit" : "auto-assigned at construction"))"
-                 for h in holders], ", ")
+function _rng_id_sharing_message(id::UInt64, consumer::Symbol, auto, explicit_classes)
+    holders = String[]
+    auto === nothing || push!(holders,
+        auto === missing ?
+            "an auto-assigned consumer (its class is no longer retained: the registry keeps " *
+            "the class of the last $(_RNG_ID_CLASS_WINDOW) automatic assignments)" :
+            "a $(auto) consumer (auto-assigned at construction)")
+    for class in explicit_classes
+        push!(holders, "a $(class) consumer (explicit)")
+    end
     return "rng_id $(id), claimed explicitly by a $(consumer) consumer, is already held in " *
-           "this process by $(held): two consumers on one counter-RNG stream draw identical " *
-           "normals wherever their key regions coincide (the key layout above " *
+           "this process by $(join(holders, ", ")): two consumers on one counter-RNG stream " *
+           "draw identical normals wherever their key regions coincide (the key layout above " *
            "_RULE_COMPONENT_BASE in src/elements/turn_modulated.jl says which classes do). " *
            "Give the new consumer an id above the registry's counter " *
            "($(_GLOBAL_RNG_ID_COUNTER[])), or leave rng_id = 0, which assigns a fresh stream " *
@@ -204,23 +328,41 @@ end
     reset_rng_id_counter!(value=0) -> UInt64
 
 Reset the automatic stochastic consumer stream-id counter to `value` and
-forget every recorded holder (`_RNG_ID_HOLDERS`): ids at or below `value` may
+forget every recorded holder (`_RNG_ID_REGISTRY`): ids at or below `value` may
 be reissued, so the memory of who held them would be wrong. A test that
-claims an extreme id saves the counter (`next_rng_id!()`) first and restores
-it through this.
+claims an extreme id or needs a known fresh sequence saves the counter
+(`next_rng_id!()`) first and restores it through this.
 """
 function reset_rng_id_counter!(value::Integer=0)
-    _GLOBAL_RNG_ID_COUNTER[] = UInt64(value)
-    _forget_rng_id_holders!()
-    return _GLOBAL_RNG_ID_COUNTER[]
+    lock(_RNG_ID_REGISTRY_LOCK)
+    try
+        _GLOBAL_RNG_ID_COUNTER[] = UInt64(value)
+        _forget_rng_id_holders_locked!()
+        return _GLOBAL_RNG_ID_COUNTER[]
+    finally
+        unlock(_RNG_ID_REGISTRY_LOCK)
+    end
 end
 
-"""Empty the registry's holder memory (the counter is untouched); `__init__` and
+"""Empty the registry's holder memory (the counter is untouched, and becomes
+the floor below which nothing is known); `__init__` and
 `reset_rng_id_counter!` call it."""
 function _forget_rng_id_holders!()
-    lock(_RNG_ID_REGISTRY_LOCK) do
-        empty!(_RNG_ID_HOLDERS)
+    lock(_RNG_ID_REGISTRY_LOCK)
+    try
+        _forget_rng_id_holders_locked!()
+    finally
+        unlock(_RNG_ID_REGISTRY_LOCK)
     end
+    return nothing
+end
+
+function _forget_rng_id_holders_locked!()
+    registry = _RNG_ID_REGISTRY
+    registry.floor = _GLOBAL_RNG_ID_COUNTER[]
+    fill!(registry.classes, UInt8(0))
+    empty!(registry.class_names)
+    empty!(registry.explicit)
     return nothing
 end
 

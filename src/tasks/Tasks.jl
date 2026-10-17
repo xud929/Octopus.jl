@@ -12,6 +12,34 @@ luminosity(elem::Union{ThinStrongBeam,GaussianStrongBeam}, ctx::TrackingContext,
     elem.last_luminosity
 
 """
+    ReportedSharing(rng_ids::Set{UInt64}, digests::Set{UInt64})
+
+What a task's constructor named in its two sharing warnings over the SPEC
+layer -- the stream ids of `_warn_duplicate_turn_modulation_streams` and the
+table digests of `_warn_duplicate_turn_tables` -- kept on the task
+(`TrackingTask.reported_sharing`, `StrongStrongTask.reported_sharing`) and
+read by the equal-digest check over the RESOLVED line
+(`_warn_resolved_duplicate_tables`, once per compilation), which skips a
+digest group whose every site the constructor already covered: a table slot
+whose spec-level rule is the table with that digest when the digest was
+named, or a stochastic rule (`SpectralNoise`) whose `rng_id` was named. One
+cause, one warning: one spec placed twice, two offline copies of one table,
+and two `SpectralNoise` rules sharing an explicit id on two elements were
+warned about at construction and again at the compile-cache fill (2026-10-16
+neighbour audit, U8-16, and fix B's open point). Values rather than spec
+identities, because an overridden placement compiles a fresh merged spec at
+every walk, so an identity recorded at construction would not be found at the
+compile; and what the constructor did NOT see -- a rule added by a
+post-construction `set_param!`, a `SpectralNoise` beside its offline twin --
+is not in the memo and still warns.
+"""
+struct ReportedSharing
+    rng_ids::Set{UInt64}
+    digests::Set{UInt64}
+end
+ReportedSharing() = ReportedSharing(Set{UInt64}(), Set{UInt64}())
+
+"""
     TrackingTask
 
 Workflow for tracking one or more element specs through a phase-space
@@ -77,6 +105,9 @@ struct TrackingTask <: AbstractTask
     # reusing the isolated path's partition and fold order -- so this is an
     # execution choice, not a physics one.
     luminosity_tracking::Symbol
+    # What the constructor's sharing warnings named, read by the resolved-line
+    # equal-digest check so one cause warns once (`ReportedSharing`; 2026-10-16).
+    reported_sharing::ReportedSharing
 end
 
 """Routes `luminosity_tracking` accepts."""
@@ -223,7 +254,7 @@ function TrackingTask(elements;
         "deprecation warning): seed the counter RNG with " *
         "set_global_rng!(seed=$(seed)) before constructing the task"))
     _warn_duplicate_radiation_streams(element_tuple)
-    _warn_duplicate_turn_modulation_streams(element_tuple)
+    reported_sharing = _warn_duplicate_turn_modulation_streams(element_tuple)
     _warn_hidden_apertures(element_tuple)
     action_tuple, observer_tuple = classify_task_hooks(hooks, actions, observers)
     art = artifact === nothing ? nothing :
@@ -231,7 +262,7 @@ function TrackingTask(elements;
     return TrackingTask(element_tuple, policy, action_tuple, observer_tuple, contracts, analyses,
                         Ref{Int64}(0), Ref{Any}(nothing), Dict{Any,Any}(),
                         loss_report, Ref{Any}(nothing), art, Ref(WeakRef(nothing)),
-                        record_turn_times, Float64[], luminosity_tracking)
+                        record_turn_times, Float64[], luminosity_tracking, reported_sharing)
 end
 
 """
@@ -378,21 +409,34 @@ function _effective_spec(entry::LineEntry)
 end
 
 """
-Warn when an aperture sits inside an own-state (kept-whole) sub-line.
+Warn when an aperture sits inside a sub-line that compiles whole.
 
-A kept-whole line compiles to ONE runtime op, so the aperture binder cannot
-reach an aperture inside it: the kill still happens, but with no element id,
-no counts row, and no name — the loss surfaces only as the unattributed
-warning (2026-08-05 audit, U11-8). Until the binder learns to thread ids
-through composite lines, the honest behavior is to say so at construction.
+Every line spec this walk meets -- an element of the task's tuple, an item of
+a nested vector, a placement's spec -- compiles to ONE `CompositeLine`
+whatever its own state (`_append_runtime_line!` ->
+`compile_runtime(::ElementSpec{:line})`): the only dissolutions happen before
+the walk, in `_element_tuple` for the line handed to the constructor directly
+and at a parent `BeamLine`'s construction for a bare line nested in it. The
+aperture binder cannot reach an aperture inside a composite, so the kill
+still happens, but with no element id, no counts row, and no name -- the loss
+surfaces only as the unattributed warning (2026-08-05 audit, U11-8). Until
+the binder learns to thread ids through composite lines, the honest behavior
+is to say so at construction. Until the 2026-10-16 neighbour audit (S3-1) the
+walk marked a line's contents hidden only for an own-state line -- the rule
+by which a line dissolves at the top or inside a parent, not the rule by
+which it compiles -- so a bare `BeamLine` placed inside a task tuple warned
+nothing and its aperture's kill was reported as "nothing was collimating".
 """
 function _warn_hidden_apertures(elements::Tuple)
     hidden = Symbol[]
     _collect_hidden_apertures!(hidden, elements, false)
-    isempty(hidden) || @warn "aperture(s) inside a kept-whole (own-state) line are " *
+    isempty(hidden) || @warn "aperture(s) inside a sub-line that compiles whole are " *
         "outside loss accounting: they still kill particles, but the losses " *
-        "surface only as unattributed. Dissolve the line or place the " *
-        "aperture at task level for per-aperture attribution." apertures = hidden
+        "surface only as unattributed. A BeamLine placed inside the task's element " *
+        "tuple compiles to one CompositeLine whatever its own state, as does one " *
+        "carrying state of its own (a misalignment, a tracking method) wherever it " *
+        "sits. Hand the line to the task directly so it dissolves into its placements, " *
+        "or place the aperture at task level, for per-aperture attribution." apertures = hidden
     return nothing
 end
 _collect_hidden_apertures!(out, elements::Tuple, inside) =
@@ -402,10 +446,10 @@ _collect_hidden_apertures!(out, elements::AbstractVector, inside) =
 _collect_hidden_apertures!(out, entry::LineEntry, inside) =
     _collect_hidden_apertures!(out, _effective_spec(entry), inside)
 function _collect_hidden_apertures!(out, element::ElementSpec{:line}, inside)
-    # Entering an own-state line: everything below compiles to one op.
-    own = _line_has_own_state(element)
-    foreach(e -> _collect_hidden_apertures!(out, e, inside || own),
-            line_entries(element))
+    # Entering a line this walk meets: everything below compiles to one op,
+    # own state or not (S3-1; `_element_tuple` dissolved the top-level bare
+    # line before the walk, and a parent BeamLine dissolved a nested bare one).
+    foreach(e -> _collect_hidden_apertures!(out, e, true), line_entries(element))
     return out
 end
 _collect_hidden_apertures!(out, element::ElementSpec{:aperture}, inside) =
@@ -452,31 +496,75 @@ _collect_radiation_ids!(ids, element::ElementSpec{:lumped_radiation}) =
 _collect_radiation_ids!(ids, element) = ids
 
 """
-    _warn_duplicate_turn_modulation_streams(elements::Tuple)
+    _warn_duplicate_turn_modulation_streams(elements::Tuple) -> ReportedSharing
 
 The turn-modulation sibling of `_warn_duplicate_radiation_streams`: two ELEMENTS
-whose `WhiteNoise` rules share an `rng_id` draw identical per-turn offsets (the
-counter RNG keys on `(seed, turn, rng_id, slot)` and the slot numbering is per
-element), so their noise is fully correlated. Each element contributes each of
-its distinct ids ONCE (`_collect_turn_modulation_ids!`,
-src/elements/turn_modulated.jl), so one id shared by the entries of a single
-cavity -- independent by slot -- does not warn, while the same id on two
-cavities does. Runs `_warn_duplicate_turn_tables`, the table analogue, first,
-so every constructor that checks streams checks tables through the one call
-it already makes (`TrackingTask` here; `StrongStrongTask` over both lines in
-src/tasks/strongstrong/interface.jl).
+whose stochastic rules (`WhiteNoise`, `PinkNoise`, `SpectralNoise`) share an
+`rng_id` draw identical per-turn offsets (the counter RNG keys on
+`(seed, turn, rng_id, slot)` and the slot numbering is per element), so their
+noise is fully correlated. Each element contributes each of its distinct ids
+ONCE (`_collect_turn_modulation_streams!`, src/elements/turn_modulated.jl), so
+one id shared by the entries of a single cavity -- independent by slot -- does
+not warn, while the same id on two cavities does. Two causes, one warning
+each (2026-10-16 neighbour audit, U8-16): one spec OBJECT placed more than
+once, whose rules hold one stream at every placement (the natural way is a
+repeated `BeamLine` cell), worded as placements with the remedy "a second
+spec"; and distinct specs sharing an id, worded as distinct elements with the
+remedy "their own rng_id" (and a note when some of them are placements of one
+spec). The message said "on different elements" for both until then. Runs
+`_warn_duplicate_turn_tables`, the table analogue, first, so every constructor
+that checks streams checks tables through the one call it already makes
+(`TrackingTask` here; `StrongStrongTask` over both lines in
+src/tasks/strongstrong/interface.jl), and returns what both named as a
+`ReportedSharing` for the task to keep.
 """
 function _warn_duplicate_turn_modulation_streams(elements::Tuple)
-    _warn_duplicate_turn_tables(elements)
-    ids = _collect_turn_modulation_ids!(UInt64[], elements)
-    length(ids) == length(unique(ids)) && return nothing
-    dup = [id for id in unique(ids) if count(==(id), ids) > 1]
-    @warn "multiple turn-modulation rules on different elements share an rng_id: " *
-          "slots of the same index draw identical values on both elements (fully " *
-          "correlated noise; different slot indices, and spectral tables of different " *
-          "lengths, stay independent). Give each element's rules their own rng_id." rng_ids = dup
-    return nothing
+    digests = _warn_duplicate_turn_tables(elements)
+    streams = _collect_turn_modulation_streams!(Any[], elements)
+    ids = UInt64[s.rng_id for s in streams]
+    dup = UInt64[id for id in unique(ids) if count(==(id), ids) > 1]
+    isempty(dup) && return ReportedSharing(Set{UInt64}(), digests)
+    placed, placements, distinct, mixed = _partition_shared(dup, id -> Any[s.spec for s in streams if s.rng_id == id])
+    if !isempty(placed)
+        @warn "$(_placement_phrase(placements)) share an rng_id through its turn-modulation " *
+              "rules: a spec's rules draw from one stream wherever the spec is placed, so slots " *
+              "of the same index apply identical per-turn offsets at every placement (fully " *
+              "correlated noise; different slot indices stay independent). Place a second spec " *
+              "with its own rng_id instead of the same object twice." rng_ids = placed placements = placements
+    end
+    if !isempty(distinct)
+        @warn "multiple turn-modulation rules on distinct elements share an rng_id: slots of " *
+              "the same index draw identical values on every element holding it (fully " *
+              "correlated noise; different slot indices, and spectral tables of different " *
+              "lengths, stay independent). Give each element's rules their own rng_id." *
+              (mixed ? " Some of these elements are placements of one spec object." : "") rng_ids = distinct
+    end
+    return ReportedSharing(Set(dup), digests)
 end
+
+# Split the duplicated keys (ids or digests) by cause: `placed` holds the keys
+# whose owners (`owners_of(key)`, the spec objects holding the key, one per
+# placement visited) are ONE object, with the placement count per key;
+# `distinct` the keys held by two or more distinct specs; `mixed` whether any
+# of the latter also has one spec placed twice among its owners.
+function _partition_shared(dup::Vector{UInt64}, owners_of)
+    placed, placements, distinct = UInt64[], Int[], UInt64[]
+    mixed = false
+    for key in dup
+        owners = owners_of(key)
+        if all(o -> o === owners[1], owners)
+            push!(placed, key)
+            push!(placements, length(owners))
+        else
+            push!(distinct, key)
+            length(unique(objectid, owners)) < length(owners) && (mixed = true)
+        end
+    end
+    return placed, placements, distinct, mixed
+end
+_placement_phrase(placements::Vector{Int}) =
+    length(unique(placements)) == 1 ? "$(placements[1]) placements of one element spec" :
+    "the placements of one element spec ($(join(placements, ", ")) placements per shared key)"
 
 """
     _warn_duplicate_turn_tables(elements::Tuple)
@@ -492,22 +580,34 @@ src/elements/turn_modulated.jl), so one table on two slots of a single
 element -- a deliberate common-mode choice -- does not warn, while equal
 digests on two elements do; distinct digests are silent. The message names
 the digests and, for each table carrying one, the element kind, the slot
-number and the table's name. A `SpectralNoise` has no digest before it
+number and the table's name; as for the streams, one spec object placed more
+than once is worded as placements and distinct specs as distinct elements,
+one warning per cause (U8-16). A `SpectralNoise` has no digest before it
 resolves, so this check cannot see a rule beside its offline twin; the
 resolved-line check `_warn_resolved_duplicate_tables` below repeats the
-comparison on the compiled line once per compilation (2026-10-16).
+comparison on the compiled line once per compilation (2026-10-16), skipping
+what was named here. Returns the set of digests named.
 """
 function _warn_duplicate_turn_tables(elements::Tuple)
     tables = _collect_turn_tables!(NamedTuple[], elements)
     digests = UInt64[t.digest for t in tables]
-    length(digests) == length(unique(digests)) && return nothing
-    dup = [d for d in unique(digests) if count(==(d), digests) > 1]
-    sites = ["$(t.element) slot $(t.slot): $(repr(t.name)) digest $(repr(t.digest))"
-             for t in tables if t.digest in dup]
-    @warn "multiple turn-modulation tables on different elements carry the same digest: " *
-          "their per-turn offsets are identical (fully correlated noise). Build each " *
-          "element's table with its own seed or rng_id, or hand each its own record." digests = dup tables = sites
-    return nothing
+    dup = UInt64[d for d in unique(digests) if count(==(d), digests) > 1]
+    isempty(dup) && return Set{UInt64}()
+    site(t) = "$(t.element) slot $(t.slot): $(repr(t.name)) digest $(repr(t.digest))"
+    placed, placements, distinct, mixed = _partition_shared(dup, d -> Any[t.spec for t in tables if t.digest == d])
+    if !isempty(placed)
+        @warn "$(_placement_phrase(placements)) carry turn-modulation tables of the same digest " *
+              "at every placement: the placements apply identical per-turn offsets (fully " *
+              "correlated noise). Place a second spec holding its own table instead of the " *
+              "same object twice." digests = placed tables = [site(t) for t in tables if t.digest in placed]
+    end
+    if !isempty(distinct)
+        @warn "multiple turn-modulation tables on distinct elements carry the same digest: " *
+              "their per-turn offsets are identical (fully correlated noise). Build each " *
+              "element's table with its own seed or rng_id, or hand each its own record." *
+              (mixed ? " Some of these elements are placements of one spec object." : "") digests = distinct tables = [site(t) for t in tables if t.digest in distinct]
+    end
+    return Set(dup)
 end
 
 """
@@ -580,25 +680,34 @@ stays silent, as at construction. The wording tells two placements of one
 spec object from two distinct elements: the spec-side owners
 (`_modulated_spec_owners`) are paired with the compiled modulated elements
 index by index when the two walks agree in length, and the message says so
-when they do not. A pair the constructor already named (two placements of
-one spec; two offline copies of one table) is named again here, as
-resolved: the compiled line is what the run applies.
+when they do not. A group the constructor already named -- every site's
+spec-level rule is the table whose digest it named, or a stochastic rule
+whose `rng_id` it named (`reported`, the task's `ReportedSharing`;
+`_site_sharing_reported`) -- is skipped: two placements of one spec, two
+offline copies of one table and two `SpectralNoise` rules on one explicit id
+warned twice for one cause until the 2026-10-16 neighbour audit (U8-16, fix
+B's open point). What the constructor could not see -- a rule beside its
+offline twin, a rule added after construction -- still warns here.
 """
-function _warn_resolved_duplicate_tables(lines)
+function _warn_resolved_duplicate_tables(lines, reported::ReportedSharing=ReportedSharing())
     sites = NamedTuple[]
     for (specs, elems, beam) in lines
         modulated = _resolved_table_slots(elems)
         owners = _modulated_spec_owners(specs)
         aligned = length(owners) == length(modulated)
         for (k, m) in enumerate(modulated), s in m.slots
+            owner = aligned ? owners[k] : nothing
             push!(sites, (beam = beam, index = k, element = m.element, slot = s.slot, digest = s.digest,
-                          name = s.name, owner = aligned ? owners[k] : nothing, aligned = aligned,
-                          counts = (length(owners), length(modulated))))
+                          name = s.name, owner = owner, aligned = aligned,
+                          counts = (length(owners), length(modulated)),
+                          reported = _site_sharing_reported(owner, s.index, s.digest, reported)))
         end
     end
     for digest in unique(s.digest for s in sites)
         group = [s for s in sites if s.digest == digest]
         length(unique((s.beam, s.index) for s in group)) >= 2 || continue
+        # Every site covered by a constructor warning: one cause, one warning.
+        all(s -> s.reported, group) && continue
         labels = ["$(s.element) $(s.slot) (modulated element $(s.index)" *
                   (s.beam === nothing ? ")" : " of beam $(s.beam)'s line)") for s in group]
         placed = all(s.aligned for s in group) && all(s.owner === group[1].owner for s in group)
@@ -627,6 +736,28 @@ function _warn_resolved_duplicate_tables(lines)
         end
     end
     return nothing
+end
+
+"""
+    _site_sharing_reported(owner, index::Int, digest::UInt64, reported::ReportedSharing) -> Bool
+
+Whether the constructor's sharing warnings already covered a resolved table
+slot: the spec-level rule at `index` of the owning spec's `_turn_rule_values`
+(the position `_resolved_table_slots` carries beside the slot label) is a
+table carrying `digest` when the constructor named that digest, or a
+stochastic rule -- a `SpectralNoise` that resolved to this table -- whose
+`rng_id` it named. An unknown owner (the spec walk and the compiled walk
+disagree in count) or a slot beyond the spec's rules is never covered, so the
+resolved check warns.
+"""
+function _site_sharing_reported(owner, index::Int, digest::UInt64, reported::ReportedSharing)
+    owner === nothing && return false
+    values = _turn_rule_values(owner)
+    index <= length(values) || return false
+    rule = values[index]
+    hasfield(typeof(rule), :digest) && return rule.digest == digest && digest in reported.digests
+    hasfield(typeof(rule), :rng_id) && return rule.rng_id in reported.rng_ids
+    return false
 end
 
 """
@@ -865,32 +996,20 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
             # neighbour audit, U1-5). Every rank reads the same data and throws
             # alike, ahead of the shard collective below.
             _reject_unsharded_tracking_features(task, runtime_entries)
+            # The turn-modulation entries of the compiled line: one walk, two
+            # consumers, the artifact's /turn_modulation group and the
+            # `:turn_modulation` receipt (docs/design/turn_modulation.md D7,
+            # 5.6). Both per-run receipts -- `:tracking_turn_timing` and
+            # `:turn_modulation` -- are recorded inside
+            # `_execute_tracking_task!` immediately before the first turn, after
+            # every refusal that can still stop the run with no turn tracked
+            # (`_record_tracking_receipts!`; they sat here, ahead of all but
+            # the divided-run refusal, until the 2026-10-16 neighbour audit,
+            # U3-6).
+            prov = _turn_modulation_entries(runtime_elems, 1)
             # Once per call, inside the policy scope: deriving the shard is a
             # collective, and every fold inside the run reads it from here
             # instead of paying for its own.
-            # `fast_path` is what makes the pin non-vacuous: it is the only
-            # way a test can assert the instrument ran on the loop the
-            # benchmark takes, rather than merely that some loop produced
-            # numbers.
-            _record_execution!(:tracking_turn_timing, backend_type(policy), (
-                record_turn_times=task.record_turn_times,
-                turns=nturns,
-                fast_path=_fast_tracking_path(task, runtime_entries),
-            ))
-            # The turn-modulation receipt (specified by the stage-1 record,
-            # docs/history/turn_modulation_stage1_2026_10_12.md section 2; the
-            # design's 5.6 is the table rule): one entry per modulated element
-            # with its active slots, plus the window RESOLVED for this call --
-            # not the turns completed: a crash at turn 2 of 5 leaves a receipt
-            # saying turns = 5, as the ledger row written at prepare does, and
-            # the ledger's current_turn carries the progress (U1-3). Recorded
-            # only when the line has a modulated element, so an unmodulated
-            # run's ledger is unchanged.
-            prov = _turn_modulation_entries(runtime_elems, 1)
-            if !isempty(prov)
-                _record_execution!(:turn_modulation, backend_type(policy),
-                                   (elements = prov, first_turn = first_turn, turns = nturns))
-            end
             _with_shard(rep, _mp_resolve_shard(length(rep))) do
                 _execute_tracking_task!(
                     task, rep, runtime_entries, runtime_elems, nturns, first_turn, policy;
@@ -1150,17 +1269,52 @@ _fast_tracking_path(task, runtime_entries) =
     isempty(task.actions) && isempty(task.observers) &&
     !_has_line_hooks(runtime_entries) && task.artifact === nothing
 
+"""
+    _record_tracking_receipts!(task, runtime_entries, policy, turns, first_turn, prov)
+
+The two per-run receipts of a `TrackingTask`, recorded immediately before its
+first turn, AFTER every refusal that can still stop the run with no turn
+tracked: the divided-run refusal in `execute!`, and in
+`_execute_tracking_task!` the hidden-strong-beam refusal, the artifact's
+prepare (a luminosity-label mismatch, a provenance-slot collision), the
+observers' prepare (a duplicate probe name) and the `:fused`-on-CUDA refusal
+-- so a refused run leaves no receipt claiming it ran (2026-10-16 neighbour
+audit, U3-6: both receipts sat in `execute!` ahead of all but the first, as
+U1-5 had moved only that one). `:tracking_turn_timing` carries the window and
+whether the fast loop is taken (`_fast_tracking_path`, the one predicate this
+receipt and the branch both read, so the pin is non-vacuous: it is the only
+way a test can assert the instrument ran on the loop the benchmark takes).
+`:turn_modulation` (the stage-1 record, docs/history/turn_modulation_stage1_2026_10_12.md
+section 2; the design's 5.6 is the table rule) is recorded only when the line
+has a modulated element, so an unmodulated run's ledger is unchanged, and
+names the window RESOLVED for this call -- not the turns completed: a crash at
+turn 2 of 5 still leaves a receipt saying turns = 5, as the ledger row written
+at prepare does, the ledger's current_turn carrying the progress (U1-3).
+"""
+function _record_tracking_receipts!(task, runtime_entries, policy, turns::Int, first_turn::Int64,
+                                    prov::AbstractVector)
+    _record_execution!(:tracking_turn_timing, backend_type(policy), (
+        record_turn_times=task.record_turn_times,
+        turns=turns,
+        fast_path=_fast_tracking_path(task, runtime_entries),
+    ))
+    isempty(prov) || _record_execution!(:turn_modulation, backend_type(policy),
+                                        (elements = prov, first_turn = first_turn, turns = turns))
+    return nothing
+end
+
 function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
                                  turns::Int, first_turn::Int64, policy;
                                  turn_modulation::AbstractVector=Any[])
-    # `_reject_unsharded_tracking_features` ran in `execute!`, ahead of the
-    # receipts (U1-5).
+    # `_reject_unsharded_tracking_features` ran in `execute!` (U1-5); the fast
+    # loop has no refusal of its own, so the receipts come right before it.
     if _fast_tracking_path(task, runtime_entries)
         # The task's output receipt (S4-10): no artifact on this path (it is a
         # term of the fast-path gate), so it records the output disabled and
         # the loss-report switch the accounting below reads.
         _record_execution!(:tracking_output, backend_type(policy),
                            _ra_task_output_receipt(nothing, nothing; loss_report=task.loss_report))
+        _record_tracking_receipts!(task, runtime_entries, policy, turns, first_turn, turn_modulation)
         _execute_fast_tracking_turns!(
             rep, runtime_elems, turns, first_turn, policy,
             with_index_offset(TrackingContext(), first(_mp_current_shard(rep))),
@@ -1201,7 +1355,7 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     # channel that is never written. The FUSED route serves it correctly,
     # because luminosity flows out through each wrapper's own forwarding.
     if art !== nothing && task.luminosity_tracking === :isolated
-        hidden = sum(_hidden_strong_beam_count, runtime_elems; init=0)
+        hidden = _count_hidden_strong_beams(runtime_elems)
         hidden == 0 || throw(ArgumentError(
             "this line has $(hidden) strong-beam element(s) hidden behind a " *
             "wrapper -- a sub-line, a misalignment (any of x_offset, y_offset, " *
@@ -1266,15 +1420,18 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     #
     # Only when a route is actually TAKEN. With no artifact or no strong beam
     # neither route runs, so there is no request to ignore.
+    if artifact_diagnostics && task.luminosity_tracking === :fused &&
+       backend_type(policy) !== CPUThreadsBackend
+        throw(ArgumentError(
+            "luminosity_tracking = :fused is implemented for the CPU " *
+            "threads backend only, and this task resolved to " *
+            "$(backend_type(policy)). The device keeps the isolated route " *
+            "deliberately -- the split costs nothing there. Either run on a " *
+            "CPU policy, or pass luminosity_tracking = :isolated."))
+    end
+    # The last refusal is behind us: the per-run receipts, then the route's.
+    _record_tracking_receipts!(task, runtime_entries, policy, turns, first_turn, turn_modulation)
     if artifact_diagnostics
-        if task.luminosity_tracking === :fused && backend_type(policy) !== CPUThreadsBackend
-            throw(ArgumentError(
-                "luminosity_tracking = :fused is implemented for the CPU " *
-                "threads backend only, and this task resolved to " *
-                "$(backend_type(policy)). The device keeps the isolated route " *
-                "deliberately -- the split costs nothing there. Either run on a " *
-                "CPU policy, or pass luminosity_tracking = :isolated."))
-        end
         # The route that ACTUALLY ran, not the one requested: a receipt naming
         # the request would pass while the run took the other path.
         _record_execution!(:tracking_luminosity_route, backend_type(policy), (
@@ -1533,7 +1690,8 @@ function _runtime_entries(task::TrackingTask, rep=nothing)
     # Once per compilation, over the RESOLVED line: equal table digests across
     # modulated elements (a SpectralNoise beside its offline twin, one spec
     # placed twice), which the constructor's spec-layer checks cannot see.
-    _warn_resolved_duplicate_tables(((task.elements, _physics_line(entries), nothing),))
+    _warn_resolved_duplicate_tables(((task.elements, _physics_line(entries), nothing),),
+                                    task.reported_sharing)
     return _checked_beam_eltype(entries, rep)
 end
 
@@ -1569,7 +1727,7 @@ failed at CUDA device compile with an `InvalidIRError` for twelve.
 _check_beam_eltype(elem, ::Type{B}) where {B} =
     _refuse_beam_eltype(elem, _required_beam_eltype(elem), B)
 _check_beam_eltype(elems::Tuple, ::Type{B}) where {B} =
-    (foreach(e -> _check_beam_eltype(e, B), elems); nothing)
+    _foreach_unrolled(e -> _check_beam_eltype(e, B), elems)
 # The wrapper's NOMINAL element: `inner` is rebuilt from `base` every turn by
 # `realize`, with exactly the type of `base`, so the two agree.
 _check_beam_eltype(w::TurnModulated, ::Type{B}) where {B} =
@@ -1894,8 +2052,22 @@ _line_entry_or_nothing(element, hook_counter) = nothing
 _line_entry_active(entry, ctx) = false
 _line_entry_requires_diagnostics(entry) = false
 
-function _physics_line(entries::Tuple)
-    return Tuple(entry.element for entry in entries if entry isa PhysicsEntry)
+"""
+    _physics_line(entries::Tuple) -> Tuple
+
+The compiled physics elements of a runtime entries tuple, in line order, the
+hook entries dropped. Generated from the entries' TYPE with literal indices
+(`PhysicsEntry` against the hook entry types is a type-level test), because
+the generator form `Tuple(e.element for e in entries if e isa PhysicsEntry)`
+boxed the whole heterogeneous isbits tuple per element -- 206 kB per call on
+a 40-element line of eight types -- and `execute!` takes this line on every
+call (2026-10-16 neighbour audit, U9-4; `_foreach_unrolled` in
+src/elements/turn_modulated.jl is the same unroll for the walks that return
+nothing).
+"""
+@generated function _physics_line(entries::Tuple)
+    picks = [:(entries[$i].element) for (i, E) in enumerate(entries.parameters) if E <: PhysicsEntry]
+    return :(($(picks...),))
 end
 
 _has_line_hooks(entries::Tuple) = any(entry -> entry isa Union{LineObserverEntry,LineActionEntry}, entries)
@@ -1944,15 +2116,22 @@ struct ActionSegment{A}
 end
 
 # The in-line hook entries of a compiled line, in line order, resolved ONCE
-# per execute! (weak-strong) or per block compilation (strong-strong). The walk
-# is over the heterogeneous entries tuple and boxes; it must not run per turn:
-# `for entry in entries` over an isbits tuple of mixed element types re-boxes
-# the WHOLE tuple at every iteration, a cost quadratic in the line length that
-# every task leaving the fast loop paid once per turn until the 2026-10-16
-# neighbour audit (lead U1-3, localised by U9: ~200 kB/turn on 40 elements of
-# 8 types, ~490 kB/turn on the two strong-strong lines of the same shape).
-_line_hook_entries(entries::Tuple) =
-    Any[entry for entry in entries if entry isa Union{LineObserverEntry,LineActionEntry}]
+# per execute! (weak-strong) or per block compilation (strong-strong), and
+# unrolled (`_foreach_unrolled`): `for entry in entries` over an isbits tuple
+# of mixed element types re-boxes the WHOLE tuple at every iteration, a cost
+# quadratic in the line length that every task leaving the fast loop paid once
+# per turn until the 2026-10-16 neighbour audit (lead U1-3, localised by U9:
+# ~200 kB/turn on 40 elements of 8 types, ~490 kB/turn on the two
+# strong-strong lines of the same shape) and this walk still paid once per
+# call (190 kB, U9-4) until the same audit's fix group F.
+function _line_hook_entries(entries::Tuple)
+    hooks = Any[]
+    _foreach_unrolled(entries) do entry
+        entry isa Union{LineObserverEntry,LineActionEntry} && push!(hooks, entry)
+        nothing
+    end
+    return hooks
+end
 
 # Per turn: only the hooks are consulted, so a hook-less line never touches
 # its entries tuple. The Tuple method is the one-shot form for callers that
@@ -2075,13 +2254,21 @@ function _descend_strong_beams!(acc, elem::CompositeLine)
     return acc
 end
 
-"""Strong beams in `elems`, wrapper-aware, in line order."""
-function _strong_beams_of(elems)
+"""Strong beams in `elems`, wrapper-aware, in line order (the walk over the
+heterogeneous tuple unrolled, `_foreach_unrolled`: a `for` boxed it per
+element, 190 kB per call on a 40-element line of eight types, U9-4)."""
+function _strong_beams_of(elems::Tuple)
     acc = Any[]
-    for e in elems
-        _collect_strong_beams!(acc, e)
-    end
+    _foreach_unrolled(e -> _collect_strong_beams!(acc, e), elems)
     return Tuple(acc)
+end
+
+"""The hidden strong beams of a compiled line, `_hidden_strong_beam_count`
+summed over it unrolled (`sum(f, elems)` boxed the tuple per element, U9-4)."""
+function _count_hidden_strong_beams(elems::Tuple)
+    total = Ref(0)
+    _foreach_unrolled(e -> (total[] += _hidden_strong_beam_count(e); nothing), elems)
+    return total[]
 end
 
 """
@@ -2256,16 +2443,19 @@ end
 # even when an earlier one throws, and the first error surfaces afterwards
 # (audit part 7, T7).
 function _finalize_line_observers!(entries::Tuple)
-    first_error = nothing
-    for entry in entries
-        entry isa LineObserverEntry || continue
+    # A `Ref`, not a rebound local: the unrolled walk hands a closure each
+    # entry, and a captured variable it rebinds would be a `Core.Box`.
+    first_error = Ref{Any}(nothing)
+    _foreach_unrolled(entries) do entry
+        entry isa LineObserverEntry || return nothing
         try
             finalize_observer!(entry.observer.observer)
         catch e
-            first_error === nothing && (first_error = e)
+            first_error[] === nothing && (first_error[] = e)
         end
+        return nothing
     end
-    first_error === nothing || throw(first_error)
+    first_error[] === nothing || throw(first_error[])
     return nothing
 end
 
