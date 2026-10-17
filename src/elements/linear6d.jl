@@ -27,12 +27,13 @@ descriptive metadata and take no part in the promotion.
 Linear6DSpec(; matrix=nothing, beta1=nothing, dmu=nothing, beta2=beta1,
               alpha1=(0, 0, 0), alpha2=alpha1,
               zeta1=(0, 0, 0, 0), eta1=(0, 0, 0, 0), R1=(0, 0, 0, 0),
-              zeta2=zeta1, eta2=eta1, R2=R1, kwargs...) =
-    Linear6DSpec{_linear_map_eltype(matrix, beta1, dmu, beta2, alpha1, alpha2,
-                                    zeta1, eta1, R1, zeta2, eta2, R2)}(;
+              zeta2=zeta1, eta2=eta1, R2=R1, numeric_type=nothing, kwargs...) =
+    _floor_form(Linear6DSpec{something(numeric_type,
+                                       _linear_map_eltype(matrix, beta1, dmu, beta2, alpha1, alpha2,
+                                                          zeta1, eta1, R1, zeta2, eta2, R2))}(;
         matrix=matrix, beta1=beta1, dmu=dmu, beta2=beta2,
         alpha1=alpha1, alpha2=alpha2, zeta1=zeta1, eta1=eta1, R1=R1,
-        zeta2=zeta2, eta2=eta2, R2=R2, kwargs...)
+        zeta2=zeta2, eta2=eta2, R2=R2, kwargs...), numeric_type)
 function (::Type{Linear6DSpec{T}})(; matrix=nothing,
                                   beta1=nothing,
                                   dmu=nothing,
@@ -47,7 +48,7 @@ function (::Type{Linear6DSpec{T}})(; matrix=nothing,
                                   R2=R1,
                                   tracking_method=Symplectic6DMap(),
                                   kwargs...) where {T}
-    params = _spec_params(; tracking_method=tracking_method, kwargs...)
+    params = _stamp_numeric_type!(_spec_params(; tracking_method=tracking_method, kwargs...), T)
     if matrix !== nothing
         typed_matrix = _matrix66_tuple(matrix, T)
         _validate_linear6d_symplectic(typed_matrix; source="Linear6DSpec matrix")
@@ -98,10 +99,11 @@ Base.Matrix(elem::Linear6D{M,T}) where {M,T} =
 function Linear6D(spec::ElementSpec{:linear6d},
                   method::AbstractTrackingMethod=tracking_method(spec))
     matrix = hasparam(spec, :matrix) ? param(spec, :matrix) : _linear6d_matrix_from_optics(spec)
-    # `float(promote_type(...))` rather than a bare promote plus a rejection: an
-    # integer matrix still becomes Float64, and a dual number or a truncated
-    # power series passes through instead of being refused.
-    T = float(promote_type(map(typeof, matrix)...))
+    # `numeric_type(spec)`, the one rule of every kind: the stored type of a
+    # `Linear6DSpec{T}`, else the Float64-floor promotion of the stored
+    # parameters, so an integer matrix still becomes Float64 and a dual number
+    # or a truncated power series passes through instead of being refused.
+    T = numeric_type(spec)
     T <: Number || throw(ArgumentError(
         "Linear6D matrix entries must promote to a Number type; got $(T)"))
     return Linear6D(method, _matrix66_tuple(matrix, T))
@@ -346,6 +348,6 @@ end
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
-    example = Linear6DSpec{Float64}(matrix=Matrix{Float64}(I, 6, 6))
-    construction_help = "Friendly constructor: Linear6DSpec{T}(; matrix, tracking_method=Symplectic6DMap(), kwargs...), where matrix must be canonical symplectic, or Linear6DSpec{T}(; beta1, dmu, beta2=beta1, alpha1=(0,0,0), alpha2=alpha1, zeta1=(0,0,0,0), eta1=(0,0,0,0), R1=(0,0,0,0), zeta2=zeta1, eta2=eta1, R2=R1, tracking_method=Symplectic6DMap(), kwargs...). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    example = Linear6DSpec(matrix=Matrix{Float64}(I, 6, 6))
+    construction_help = "Friendly constructor: Linear6DSpec{T}(; matrix, tracking_method=Symplectic6DMap(), kwargs...), where matrix must be canonical symplectic, or Linear6DSpec{T}(; beta1, dmu, beta2=beta1, alpha1=(0,0,0), alpha2=alpha1, zeta1=(0,0,0,0), eta1=(0,0,0,0), R1=(0,0,0,0), zeta2=zeta1, eta2=eta1, R2=R1, tracking_method=Symplectic6DMap(), kwargs...). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form Linear6DSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end

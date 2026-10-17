@@ -466,13 +466,19 @@ end
 	x, px, y, py, z, pz, S,
 	moments, kbb, xo, yo, pxo, pyo, ppxo, ppyo,
 )
-	xx = x - xo + pxo * S - 0.5 * ppxo * S * S
-	yy = y - yo + pyo * S - 0.5 * ppyo * S * S
+	# The literal in the drift's working type (`oftype(S, 0.5)`), as the CPU
+	# twin: the Float64 `0.5` of the original code whenever the element or the
+	# beam is Float64, a Float32 one only when both are -- the bare literal
+	# promoted a Float32 kick to Float64, so the kernel's branches returned
+	# tuples of two types and a Float32 strong beam failed device compile (fix
+	# H, 2026-10-16).
+	xx = x - xo + pxo * S - oftype(S, 0.5) * ppxo * S * S
+	yy = y - yo + pyo * S - oftype(S, 0.5) * ppyo * S * S
 	px0, py0 = px, py
 	x, px, y, py, z, pz, density = _cuda_cp_covariance_kick(
 		moments, kbb, S, xx, yy, x, px, y, py, z, pz)
-	pz += 0.5 * ((px - px0) * (pxo - ppxo * S) +
-	             (py - py0) * (pyo - ppyo * S))
+	pz += oftype(S, 0.5) * ((px - px0) * (pxo - ppxo * S) +
+	                        (py - py0) * (pyo - ppyo * S))
 	return x, px, y, py, z, pz, density
 end
 
@@ -483,11 +489,11 @@ end
 	sigx, sigy = sqrt(a), sqrt(d)
 	Kx, Ky, Hxx, Hyy =
 		_cuda_gaussian_beambeam_kick_response(kbb, sigx, sigy, xx, yy)
-	expterm = exp(-0.5 * (xx * xx / a + yy * yy / d))
+	expterm = exp(-T(0.5) * (xx * xx / a + yy * yy / d))
 	px += kbb * Kx
 	py += kbb * Ky
-	pz += 0.25 * (Hxx * au + Hyy * du)
-	return x, px, y, py, z, pz, expterm / (TWOPI * sigx * sigy)
+	pz += T(0.25) * (Hxx * au + Hyy * du)
+	return x, px, y, py, z, pz, expterm / (T(TWOPI) * sigx * sigy)
 end
 
 @inline function _cuda_cp_covariance_kick(m::StrongTransverseMoments{T,true}, kbb,
@@ -500,15 +506,15 @@ end
 	if D == zero(D)
 		sigma = sqrt((a + d) / 2)
 		Kx, Ky = _cuda_gaussian_beambeam_kick(sigma, sigma, xx, yy)
-		expterm = exp(-0.5 * (xx * xx + yy * yy) / (sigma * sigma))
+		expterm = exp(-T(0.5) * (xx * xx + yy * yy) / (sigma * sigma))
 		Fx, Fy = kbb * Kx, kbb * Ky
 		Hxx, Hxy, Hyy = _round_gaussian_hessian(kbb, sigma, xx, yy, expterm)
 		px += Fx
 		py += Fy
-		pz += 0.25 * (Hxx * au + 2 * Hxy * bu + Hyy * du)
-		return x, px, y, py, z, pz, expterm / (TWOPI * sigma * sigma)
+		pz += T(0.25) * (Hxx * au + 2 * Hxy * bu + Hyy * du)
+		return x, px, y, py, z, pz, expterm / (T(TWOPI) * sigma * sigma)
 	end
-	theta = 0.5 * atan(2 * b, a - d)
+	theta = T(0.5) * atan(2 * b, a - d)
 	c, s = cos(theta), sin(theta)
 	lambda1 = (a + d + D) / 2
 	lambda2 = (a + d - D) / 2
@@ -525,16 +531,16 @@ end
 			_cuda_gaussian_beambeam_kick_response_principal(
 				kbb, sig1, sig2, xh, yh)
 	end
-	expterm = exp(-0.5 * (xh * xh / lambda1 + yh * yh / lambda2))
+	expterm = exp(-T(0.5) * (xh * xh / lambda1 + yh * yh / lambda2))
 	Fxh, Fyh = kbb * Kxh, kbb * Kyh
 	px += c * Fxh - s * Fyh
 	py += s * Fxh + c * Fyh
 	Du = (adiff * (au - du) + 4 * b * bu) / D
 	traceu = au + du
-	pz += 0.125 * ((H11 + H22) * traceu + (H11 - H22) * Du)
+	pz += T(0.125) * ((H11 + H22) * traceu + (H11 - H22) * Du)
 	rotation_projection = (adiff * bu - b * (au - du)) / D
-	pz -= 0.5 * kbb * rotation_projection * L_over_D
-	return x, px, y, py, z, pz, expterm / (TWOPI * sig1 * sig2)
+	pz -= T(0.5) * kbb * rotation_projection * L_over_D
+	return x, px, y, py, z, pz, expterm / (T(TWOPI) * sig1 * sig2)
 end
 
 @inline function _cuda_elliptic_gaussian_kick_principal(sig1, sig2, x, y)

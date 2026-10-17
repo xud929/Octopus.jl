@@ -130,29 +130,43 @@ phase-space storage. A supplied policy selects execution for that storage; it
 does not migrate arrays. Storage/backend and CUDA-device mismatches are rejected
 before tracking mutates the beam.
 
-Precision. Elements compile in the type their parameters promote to over a
-`Float64` floor (`numeric_type(spec)`, or `_linear_map_eltype` in the untyped
-friendly constructors), so integers and `Float32` inputs give a `Float64`
-element and nothing is narrowed; the kinds with a `Spec{T}` form
-(`Linear6DSpec`, the three linear maps, `ChromaticityKickSpec`,
-`ThinStrongBeamSpec`, `LumpedRadSpec`, `ThinCrabCavitySpec{N,T}`) store and
-compile `T` as given. A `Float64` element tracking a `Float32` beam promotes
-the arithmetic to `Float64` and narrows on store: measured 2026-10-16 over all
-31 registered kinds, every kind does so on the CPU and 19 on CUDA, while 12
-fail at device compile with an `InvalidIRError` because a kernel branch on a
-runtime flag returns a tuple of the beam's type on one side and of the
-element's on the other (the thick-magnet family, both strong beams, the
-accelerating cavity, the RF cavity, the radiation element, and `:line`
-through its drift). The two modulated cavities and the radiation element are
-refused a mismatched beam BY NAME when a task compiles the line, on both
-backends and in either direction (`_required_beam_eltype`, `src/track/Track.jl`;
-the check in `_runtime_entries` and its strong-strong twin; fix D of the
-crab-cavity noise neighbour audit): a `Float32` beam goes through
-`ThinCrabCavitySpec{N,Float32}` and `LumpedRadSpec{Float32}`, and not through
-an RF cavity, which has no typed form. Every other kind keeps the promoting
-behaviour, device failures included; whether the refusal becomes the general
-rule is an open point for the owner, raised by fix D of the 2026-10-16
-crab-cavity noise neighbour audit.
+Precision: ONE rule for every element kind (owner decision 2026-10-16; fix H
+of the crab-cavity noise neighbour audit). Every runtime compiles in
+`numeric_type(spec)`: the untyped friendly constructor stores its inputs as
+given and that is the promotion of the stored parameters over a `Float64`
+floor, so integers and `Float32` inputs give a `Float64` element, a dual or
+complex input widens it, and nothing is narrowed; every kind has a typed form
+`Spec{T}(; ...)` (also `Spec(; numeric_type=T, ...)` by keyword, the route
+reflection uses) that stores `numeric_type = T` and its floating-point inputs
+as `T`, so `Spec{Float32}` is the `Float32` element of every kind (the crab
+cavity's is `ThinCrabCavitySpec{N,T}`; `:line` has none, its members carry the
+type). The placement and design-roll wraps are built in the type of what they
+enclose, a misaligned line in its members' common type. A beam whose element
+type differs from an element's is refused BY NAME when a task compiles the
+line, on both backends and in either direction, with the remedy naming the
+kind's typed form (`_required_beam_eltype`, `src/track/Track.jl`, derived from
+the runtime's numeric type parameter; the check in `_runtime_entries` and its
+strong-strong twin): a `Float32` beam needs `Float32` elements everywhere. Only
+the marker, which has no numeric parameter, takes a beam of either type.
+Measured 2026-10-16 over all 31 registered kinds, and re-derived by the suite's
+"One precision rule" testset on every run (both backends when CUDA is active):
+with the `Float64` registry example on a `Float32` beam, 30 kinds refuse by
+name on the CPU and on CUDA and the marker runs; with the kind's `Float32`
+typed form on a `Float32` beam, 31 of 31 run on both backends with `Float32`
+coordinates; no `InvalidIRError` anywhere (the two strong beams needed the
+literals of their kick and virtual drifts written in the kick's working type,
+`oftype(S, 0.5)` and `T(0.5)` -- the same Float64 operations wherever anything
+is Float64, Float32 only when everything is -- to compile in `Float32`; the
+strong-strong solvers pass their working type to the drift explicitly, so a
+Float32 beam under the Float64 soft-Gaussian solver tracks bit-identically on
+both backends as before). Before the rule (the same probe on fix D's tree): every kind ran on the CPU with the
+coordinates narrowed on store, and on CUDA 19 ran narrowed and 12 failed at
+device compile with an `InvalidIRError`, because a kernel branch on a runtime
+flag returned a tuple of the beam's type on one side and of the element's on
+the other (the thick-magnet family, both strong beams, the accelerating cavity,
+the RF cavity, the radiation element, and `:line` through its drift); fix D put
+the two modulated cavities and the radiation element behind the refusal, the
+owner's decision put every kind.
 
 Use `CPUThreadsExecutionPolicy(threads=:auto)` for CPU storage. An explicit
 integer is an Octopus logical-worker limit within Julia's default thread pool

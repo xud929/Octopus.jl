@@ -443,10 +443,22 @@ ApertureSpec(alive=(x, px, y, py, z, pz) -> abs(z) < 0.1, name="Z_SCRAPER")
 
 Loss position is resolved only to where you place these. A particle that leaves
 the acceptance inside a magnet is not caught until the next aperture downstream.
-"""
-abstract type ApertureSpec end
 
-ApertureSpec(; kwargs...) = ElementSpec{:aperture}(_spec_params(; kwargs...))
+`ApertureSpec{T}(; ...)` is the typed form: `T` is the number type the limits
+compile in (`numeric_type`; `Float32` for a Float32 line).
+"""
+abstract type ApertureSpec{T} end
+
+# Untyped: stored as given, compiled in `numeric_type(spec)` (the Float64-floor
+# promotion, so Float32 limits give a Float64 aperture); `numeric_type=T` by
+# keyword routes to the typed form, which stores `numeric_type = T` and the
+# floating-point inputs as `T` (one precision rule for every kind, owner
+# decision 2026-10-16).
+function ApertureSpec(; numeric_type=nothing, kwargs...)
+    numeric_type === nothing || return ApertureSpec{numeric_type}(; kwargs...)
+    return ElementSpec{:aperture}(_spec_params(; kwargs...))
+end
+(::Type{ApertureSpec{T}})(; kwargs...) where {T} = ElementSpec{:aperture}(_typed_spec_params(T; kwargs...))
 
 # An aperture is a projection, not a map: it discards part of phase space, so it
 # cannot be symplectic and must not inherit the global `Symplectic6DMap` default.
@@ -460,7 +472,11 @@ function Aperture(spec::ElementSpec,
     y_limit = getparam(spec, :y_limit, Inf)
     dx = getparam(spec, :dx, 0)
     dy = getparam(spec, :dy, 0)
-    T = float(promote_type(typeof(x_limit), typeof(y_limit), typeof(dx), typeof(dy)))
+    # `numeric_type(spec)`: the stored type of an `ApertureSpec{T}`, else the
+    # Float64-floor promotion of the stored parameters (one rule, 2026-10-16;
+    # before it the limits' own types decided, so Float32 limits made a
+    # Float32 aperture silently).
+    T = numeric_type(spec)
     if alive === nothing
         haskey(_APERTURE_SHAPE_CODES, shape_name) || throw(ArgumentError(
             "unknown aperture shape $(repr(shape_name)); expected one of " *
@@ -528,7 +544,7 @@ end
         name=ParamMeta(default="", meaning="label carried into the loss log so a record names a collimator rather than an index"),
     )
     example = ApertureSpec(shape=:rectellipse, x_limit=2.0e-2, y_limit=5.0e-3, name="COLL_H")
-    construction_help = "Friendly constructor: ApertureSpec(; shape=:rectangle, x_limit, y_limit, dx=0, dy=0, alive=nothing, name=\"\", tracking_method=NonSymplectic6DMap()). Regular shapes are :rectangle, :ellipse and :rectellipse; anything else goes through `alive`, a pure scalar predicate on all six coordinates. Killed particles become NaN in every coordinate. Loss position resolves only to where you place apertures, so guard both faces of a magnet with two of them. The task supplies element_id and loss_record when it builds the lattice; set neither by hand. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: ApertureSpec(; shape=:rectangle, x_limit, y_limit, dx=0, dy=0, alive=nothing, name=\"\", tracking_method=NonSymplectic6DMap()). Regular shapes are :rectangle, :ellipse and :rectellipse; anything else goes through `alive`, a pure scalar predicate on all six coordinates. Killed particles become NaN in every coordinate. Loss position resolves only to where you place apertures, so guard both faces of a magnet with two of them. The task supplies element_id and loss_record when it builds the lattice; set neither by hand. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ApertureSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 const LOSS_RECORD_COLUMNS =

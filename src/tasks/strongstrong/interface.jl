@@ -2647,10 +2647,10 @@ function _execute_strong_strong_task!(
     # naming the beam whose line holds the table (U4-2).
     _check_strong_strong_turn_window(_strong_strong_physics_line(blocks1), 1, first_turn, turns)
     _check_strong_strong_turn_window(_strong_strong_physics_line(blocks2), 2, first_turn, turns)
-    # A beam whose element type differs from a declaring element's (the two
-    # modulated cavities, the radiation element) is refused HERE by name, per
-    # line, as the TrackingTask twin refuses in `_runtime_entries` (fix D,
-    # 2026-10-16).
+    # A beam whose element type differs from any element's in its line (one
+    # precision rule for every kind, owner decision 2026-10-16) is refused
+    # HERE by name, per line, as the TrackingTask twin refuses in
+    # `_runtime_entries` (fix D put three kinds behind it, fix H every kind).
     _check_strong_strong_beam_eltype(_strong_strong_physics_line(blocks1), 1, beam1.rep)
     _check_strong_strong_beam_eltype(_strong_strong_physics_line(blocks2), 2, beam2.rep)
     # A spectral table resolved at compile keeps the seed it was synthesised

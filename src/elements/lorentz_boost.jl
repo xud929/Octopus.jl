@@ -1,7 +1,7 @@
 export LorentzBoostSpec, RevLorentzBoostSpec, LorentzBoost, RevLorentzBoost
 
-abstract type LorentzBoostSpec end
-abstract type RevLorentzBoostSpec end
+abstract type LorentzBoostSpec{T} end
+abstract type RevLorentzBoostSpec{T} end
 
 # Raw flexible specs inherit the same method default as the friendly
 # constructors, so metadata-driven and direct ElementSpec construction agree.
@@ -10,32 +10,57 @@ default_method(::Type{ElementSpec{:rev_lorentz_boost}}) = NonSymplectic6DMap()
 
 """
     LorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...)
+    LorentzBoostSpec{T}(angle; kwargs...)
 
 Create an `ElementSpec{:lorentz_boost}` for a zero-length Lorentz boost
 coordinate transformation. `angle` is in radians. Extra keyword arguments are
 stored as descriptive spec metadata.
+
+Numeric type: the untyped form compiles in `numeric_type(spec)`, the promotion
+of the stored parameters over a `Float64` floor, so a `Float32` angle gives a
+`Float64` boost and a dual or complex angle widens it (until 2026-10-16 the
+boost's type followed `typeof(float(angle))` alone, the crab cavity's old rule,
+so a `Float32` angle made a `Float32` boost silently); `LorentzBoostSpec{Float32}`
+is the Float32 boost, the typed form every kind has (one precision rule, owner
+decision 2026-10-16). A beam whose element type differs from the boost's is
+refused by name when a task compiles the line.
 """
-LorentzBoostSpec(angle::Number; tracking_method=NonSymplectic6DMap(), kwargs...) =
-    ElementSpec{:lorentz_boost}(_spec_params(; angle=float(angle), tracking_method=tracking_method, kwargs...))
+function LorentzBoostSpec(angle::Number; numeric_type=nothing, tracking_method=NonSymplectic6DMap(), kwargs...)
+    numeric_type === nothing ||
+        return LorentzBoostSpec{numeric_type}(angle; tracking_method=tracking_method, kwargs...)
+    return ElementSpec{:lorentz_boost}(_spec_params(; angle=float(angle), tracking_method=tracking_method, kwargs...))
+end
+(::Type{LorentzBoostSpec{T}})(angle::Number; tracking_method=NonSymplectic6DMap(), kwargs...) where {T} =
+    ElementSpec{:lorentz_boost}(_typed_spec_params(T; angle=float(angle), tracking_method=tracking_method, kwargs...))
 
 # Keyword form: reflection builds every kind by keyword alone, and a spec
 # rebuilt from `parameter_schema` must round trip — this kind's probe
 # baseline threw as a silent skip until the parameter contract learned to
 # report broken kinds (2026-08-05 audit, U3-7).
 LorentzBoostSpec(; angle, kwargs...) = LorentzBoostSpec(angle; kwargs...)
+(::Type{LorentzBoostSpec{T}})(; angle, kwargs...) where {T} = LorentzBoostSpec{T}(angle; kwargs...)
 
 """
     RevLorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...)
+    RevLorentzBoostSpec{T}(angle; kwargs...)
 
 Create an `ElementSpec{:rev_lorentz_boost}` for the reverse zero-length Lorentz
 boost coordinate transformation. `angle` is in radians. Extra keyword arguments
-are stored as descriptive spec metadata.
+are stored as descriptive spec metadata. Numeric type as for `LorentzBoostSpec`:
+the untyped form compiles in `numeric_type(spec)` (a `Float64` floor),
+`RevLorentzBoostSpec{Float32}` is the Float32 boost.
 """
-RevLorentzBoostSpec(angle::Number; tracking_method=NonSymplectic6DMap(), kwargs...) =
-    ElementSpec{:rev_lorentz_boost}(_spec_params(; angle=float(angle), tracking_method=tracking_method, kwargs...))
+function RevLorentzBoostSpec(angle::Number; numeric_type=nothing, tracking_method=NonSymplectic6DMap(), kwargs...)
+    numeric_type === nothing ||
+        return RevLorentzBoostSpec{numeric_type}(angle; tracking_method=tracking_method, kwargs...)
+    return ElementSpec{:rev_lorentz_boost}(_spec_params(; angle=float(angle), tracking_method=tracking_method, kwargs...))
+end
+(::Type{RevLorentzBoostSpec{T}})(angle::Number; tracking_method=NonSymplectic6DMap(), kwargs...) where {T} =
+    ElementSpec{:rev_lorentz_boost}(_typed_spec_params(T; angle=float(angle), tracking_method=tracking_method, kwargs...))
 
 # Keyword form — same round-trip rule as LorentzBoostSpec above.
 RevLorentzBoostSpec(; angle, kwargs...) = RevLorentzBoostSpec(angle; kwargs...)
+(::Type{RevLorentzBoostSpec{T}})(; angle, kwargs...) where {T} = RevLorentzBoostSpec{T}(angle; kwargs...)
 
 # `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
 # truncated power series is `<:Number`, so the tighter bound refuses a parameter
@@ -73,7 +98,7 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = LorentzBoostSpec(0.03)
-    construction_help = "Friendly constructor: LorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...), where angle is in radians. Equivalent flexible form: ElementSpec{:lorentz_boost}(; angle=angle, tracking_method=tracking_method, kwargs...). This quasi-symplectic coordinate transform supports NonSymplectic6DMap only. Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: LorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...), where angle is in radians. Equivalent flexible form: ElementSpec{:lorentz_boost}(; angle=angle, tracking_method=tracking_method, kwargs...). This quasi-symplectic coordinate transform supports NonSymplectic6DMap only. Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form LorentzBoostSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 # `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
@@ -111,19 +136,22 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = RevLorentzBoostSpec(0.03)
-    construction_help = "Friendly constructor: RevLorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...), where angle is in radians. Equivalent flexible form: ElementSpec{:rev_lorentz_boost}(; angle=angle, tracking_method=tracking_method, kwargs...). This quasi-symplectic coordinate transform supports NonSymplectic6DMap only. Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: RevLorentzBoostSpec(angle; tracking_method=NonSymplectic6DMap(), kwargs...), where angle is in radians. Equivalent flexible form: ElementSpec{:rev_lorentz_boost}(; angle=angle, tracking_method=tracking_method, kwargs...). This quasi-symplectic coordinate transform supports NonSymplectic6DMap only. Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form RevLorentzBoostSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
-LorentzBoost(angle::Number) = _lorentz_boost(LorentzBoost, angle, NonSymplectic6DMap())
-RevLorentzBoost(angle::Number) = _lorentz_boost(RevLorentzBoost, angle, NonSymplectic6DMap())
+# The direct runtime forms promote the angle over a Float64 floor, as the crab
+# cavity's direct form does (`_linear_map_eltype`); a compiled spec builds in
+# `numeric_type(spec)`; the inverse keeps its boost's type.
+LorentzBoost(angle::Number) = _lorentz_boost(LorentzBoost, _linear_map_eltype(angle), angle, NonSymplectic6DMap())
+RevLorentzBoost(angle::Number) = _lorentz_boost(RevLorentzBoost, _linear_map_eltype(angle), angle, NonSymplectic6DMap())
 
 LorentzBoost(spec::ElementSpec{:lorentz_boost}, method::AbstractTrackingMethod=tracking_method(spec)) =
-    _lorentz_boost(LorentzBoost, param(spec, :angle), method)
+    _lorentz_boost(LorentzBoost, numeric_type(spec), param(spec, :angle), method)
 RevLorentzBoost(spec::ElementSpec{:rev_lorentz_boost}, method::AbstractTrackingMethod=tracking_method(spec)) =
-    _lorentz_boost(RevLorentzBoost, param(spec, :angle), method)
+    _lorentz_boost(RevLorentzBoost, numeric_type(spec), param(spec, :angle), method)
 
-inverse_boost(boost::LorentzBoost) = RevLorentzBoost(boost.angle)
-inverse_boost(boost::RevLorentzBoost) = LorentzBoost(boost.angle)
+inverse_boost(boost::LorentzBoost{M,T}) where {M,T} = _lorentz_boost(RevLorentzBoost, T, boost.angle, boost.method)
+inverse_boost(boost::RevLorentzBoost{M,T}) where {M,T} = _lorentz_boost(LorentzBoost, T, boost.angle, boost.method)
 
 @inline function track_particle(::NonSymplectic6DMap, boost::LorentzBoost, x0, px0, y0, py0, z0, pz0)
     ps0 = sqrt((one(pz0) + pz0)^2 - px0^2 - py0^2)
@@ -164,9 +192,11 @@ end
     track_particle(boost.method, boost, x0, px0, y0, py0, z0, pz0)
 
 # `Number`, not `Real`: a crossing angle is a legitimate thing to differentiate
-# with respect to, and a dual number or a complex step is not a `Real`.
-function _lorentz_boost(::Type{B}, angle::Number, method::AbstractTrackingMethod) where {B}
-    T = typeof(float(angle))
+# with respect to, and a dual number or a complex step is not a `Real`. `T` is
+# the caller's: `numeric_type(spec)` from a spec, the floor promotion from the
+# direct form (until 2026-10-16 it was `typeof(float(angle))` here, so a
+# Float32 angle narrowed the boost to Float32 silently).
+function _lorentz_boost(::Type{B}, ::Type{T}, angle::Number, method::AbstractTrackingMethod) where {B,T}
     θ = T(angle)
     c = cos(θ)
     s = sin(θ)

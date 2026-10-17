@@ -241,6 +241,24 @@ struct MisalignedElement{E,T<:Number} <: AbstractTrackOp
     qout::NTuple{9,T}; oout::NTuple{3,T}
 end
 
+# The beam element type a wrapper requires is its subject's (`_required_beam_eltype`,
+# src/track/Track.jl): the wrap is built in that type (`_wrap_numeric_type`),
+# so its own `T` agrees, and the task's walk (`_check_beam_eltype`) descends to
+# name the subject.
+_required_beam_eltype(elem::MisalignedElement) = _required_beam_eltype(elem.inner)
+
+"""
+    _wrap_numeric_type(spec, inner) -> Type
+
+The number type a placement wrap (misalignment, design roll) is built in: the
+type of the element it encloses -- `numeric_type(spec)` for a single element,
+the members' common type for a misaligned line, so a girder of Float32 magnets
+gets Float32 frame changes -- and only around an element with no numeric type
+(a marker, a line of markers) the spec's own promotion. One precision rule, the
+wrappers included (owner decision 2026-10-16, fix H).
+"""
+_wrap_numeric_type(spec, inner) = something(_required_beam_eltype(inner), numeric_type(spec))
+
 @inline function track_particle(method::AbstractTrackingMethod, elem::MisalignedElement,
                                 x, px, y, py, z, pz)
     x, px, y, py, z, pz = _frame_change(elem.qin, elem.oin, x, px, y, py, z, pz)
@@ -335,7 +353,7 @@ function _misalignment_wrap(spec, inner; design=nothing)
     # is one arc and uses the closed form below; a misaligned BEAM LINE passes
     # its composed floor-plan frames here, so a curved girder's faces are
     # exact (U15-2 closed, 2026-08-16).
-    T = numeric_type(spec)
+    T = _wrap_numeric_type(spec, inner)
     dx = T(getparam(spec, :x_offset, zero(T)))
     dy = T(getparam(spec, :y_offset, zero(T)))
     dz = T(getparam(spec, :z_offset, zero(T)))

@@ -1384,6 +1384,11 @@ function TurnModulated(base, rule)
     return TurnModulated(base, base, rule)
 end
 
+# The wrapper's NOMINAL element decides the beam element type it requires
+# (`_required_beam_eltype`, src/track/Track.jl): `inner` is rebuilt from `base`
+# every turn by `realize` with exactly `base`'s type, so the two agree.
+_required_beam_eltype(w::TurnModulated) = _required_beam_eltype(w.base)
+
 # The forwards MisalignedElement defines, plus the context-aware call whose
 # absence on that wrapper once dropped the context of a wrapped stochastic
 # element (F13, 2026-08-05 audit), defined from the start.

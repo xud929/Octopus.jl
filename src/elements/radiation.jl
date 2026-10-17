@@ -16,13 +16,15 @@ excitation element. `Radiation6DMap()` permits both components,
 excitation only. `is_damping` and `is_excitation` enable or disable the
 component permitted by the selected method.
 
-Numeric type: `T` (default `Float64`) is stored and compiled as given, so
-`LumpedRadSpec{Float32}` is the Float32 element. A beam whose element type
-differs from the element's is refused by name when a task compiles the line
-(`_required_beam_eltype`, `src/track/Track.jl`; fix D, 2026-10-16): track a
-`Float32` beam through `LumpedRadSpec{Float32}` and a `Float64` beam through
-the default. Before, a `Float32` beam through the `Float64` element narrowed
-every coordinate on the CPU and failed at CUDA device compile.
+Numeric type: `T` (default `Float64`) is stored as `numeric_type` and compiled
+as given, so `LumpedRadSpec{Float32}` is the Float32 element -- the typed form
+every kind has (one precision rule, owner decision 2026-10-16). A beam whose
+element type differs from the element's is refused by name when a task
+compiles the line (`_required_beam_eltype`, `src/track/Track.jl`; fix D,
+2026-10-16): track a `Float32` beam through `LumpedRadSpec{Float32}` and a
+`Float64` beam through the default. Before, a `Float32` beam through the
+`Float64` element narrowed every coordinate on the CPU and failed at CUDA
+device compile.
 
 `rng_id = 0` (the default) assigns the excitation's counter-RNG stream HERE,
 at construction, with `next_rng_id!`; an explicit id is claimed with
@@ -35,7 +37,8 @@ raw `ElementSpec{:lumped_radiation}` built without the key, or a placement
 override `rng_id = 0` -- is therefore refused there by name rather than
 drawing on stream 0 (2026-10-16 neighbour audit S1-2).
 """
-LumpedRadSpec(; kwargs...) = LumpedRadSpec{Float64}(; kwargs...)
+LumpedRadSpec(; numeric_type=nothing, kwargs...) =
+    _floor_form(LumpedRadSpec{something(numeric_type, Float64)}(; kwargs...), numeric_type)
 function (::Type{LumpedRadSpec{T}})(;
                                     damping_turns,
                                     beta=(one(T), one(T), one(T)),
@@ -52,7 +55,7 @@ function (::Type{LumpedRadSpec{T}})(;
     stream_id = UInt64(rng_id)
     stream_id = stream_id == 0 ? next_rng_id!(consumer=:lumped_radiation) :
                                  claim_rng_id!(stream_id; consumer=:lumped_radiation)
-    return ElementSpec{:lumped_radiation}(
+    return ElementSpec{:lumped_radiation}(_stamp_numeric_type!(
         _spec_params(;
             damping_turns=_fixed_tuple(damping_turns, 3, T),
             beta=_fixed_tuple(beta, 3, T),
@@ -66,7 +69,7 @@ function (::Type{LumpedRadSpec{T}})(;
             tracking_method=tracking_method,
             rng_id=stream_id,
             kwargs...,
-        ),
+        ), T),
     )
 end
 
@@ -101,17 +104,13 @@ struct LumpedRad{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
 end
 
 # A mismatched beam is refused at compile by name (`_required_beam_eltype`,
-# src/track/Track.jl; the check in src/tasks/Tasks.jl). The context-aware
-# kernel returns the input tuple untouched when `is_excitation` is false and
-# the damped-and-excited tuple otherwise, so a Float32 beam through a Float64
-# element returns tuples of two types: the CPU narrowed every coordinate on
-# store, CUDA failed at device compile (`InvalidIRError`, `jl_f_tuple` in
-# `fusedTrack`; 2026-10-16 neighbour audit, S1-9). The remedy names the typed
-# form, `LumpedRadSpec{T}`, which compiles to `LumpedRad{M,T}`.
-_required_beam_eltype(::LumpedRad{M,T}) where {M,T} = T
-_beam_eltype_remedy(::LumpedRad{M,T}, ::Type{B}) where {M,T,B} =
-    "build the element in the beam's type, LumpedRadSpec{$(B)}(; ...), or the " *
-    "beam in $(T) (Beam(n, policy, $(T)))"
+# src/track/Track.jl, derived from the `T` parameter above; the check in
+# src/tasks/Tasks.jl). The context-aware kernel returns the input tuple
+# untouched when `is_excitation` is false and the damped-and-excited tuple
+# otherwise, so a Float32 beam through a Float64 element returns tuples of two
+# types: the CPU narrowed every coordinate on store, CUDA failed at device
+# compile (`InvalidIRError`, `jl_f_tuple` in `fusedTrack`; 2026-10-16 neighbour
+# audit, S1-9). The registry-derived remedy names `LumpedRadSpec{B}(; ...)`.
 
 function LumpedRad(spec::ElementSpec{:lumped_radiation},
                    method::AbstractTrackingMethod=tracking_method(spec))
@@ -122,9 +121,10 @@ function LumpedRad(spec::ElementSpec{:lumped_radiation},
     zeta = param(spec, :zeta)
     eta = param(spec, :eta)
     R = param(spec, :R)
-    T = float(promote_type(
-        map(typeof, (turns..., beta..., alpha..., sigma..., zeta..., eta..., R...))...,
-    ))
+    # `numeric_type(spec)`, the one rule of every kind: the stored type of a
+    # `LumpedRadSpec{T}`, else the Float64-floor promotion of the stored
+    # parameters.
+    T = numeric_type(spec)
     T <: AbstractFloat ||
         throw(ArgumentError("lumped radiation parameters must be real floating-point values"))
     turns_t = _fixed_tuple(turns, 3, T)
@@ -370,8 +370,8 @@ end
         rng_id=ParamMeta(default=0, meaning="counter-RNG stream id for stochastic excitation; 0 (the default) makes LumpedRadSpec assign a fresh stream at construction, an explicit id is claimed in the process registry (which warns on sharing with another class or an auto-assigned consumer), and a spec still carrying 0 at compile is refused by name"),
         _PLACEMENT_PARAMS...,
     )
-    example = LumpedRadSpec{Float64}(damping_turns=(1000.0, 1000.0, 500.0), rng_id=1)
-    construction_help = "Friendly constructor: LumpedRadSpec{T}(; damping_turns, beta=(1,1,1), alpha=(0,0,0), sigma=(-1,-1,-1), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), is_damping=true, is_excitation=true, tracking_method=Radiation6DMap(), rng_id=0, kwargs...). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    example = LumpedRadSpec(damping_turns=(1000.0, 1000.0, 500.0), rng_id=1)
+    construction_help = "Friendly constructor: LumpedRadSpec{T}(; damping_turns, beta=(1,1,1), alpha=(0,0,0), sigma=(-1,-1,-1), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), is_damping=true, is_excitation=true, tracking_method=Radiation6DMap(), rng_id=0, kwargs...). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form LumpedRadSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 default_method(::Type{ElementSpec{:lumped_radiation}}) = Radiation6DMap()

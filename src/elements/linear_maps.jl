@@ -9,8 +9,11 @@ function _spec_params(; kwargs...)
     return Dict{Symbol,Any}(Symbol(k) => v for (k, v) in pairs(kwargs))
 end
 
+# The named parameters in `numeric_type(spec)`, the one rule of every kind: the
+# stored type of a `Spec{T}` form, else the Float64-floor promotion of the
+# stored parameters (until 2026-10-16 the stored values' own float types).
 function _float_params(spec::ElementSpec, keys::Symbol...)
-    T = promote_type(map(k -> typeof(float(param(spec, k))), keys)...)
+    T = numeric_type(spec)
     return map(k -> T(param(spec, k)), keys)
 end
 
@@ -61,16 +64,16 @@ audit, U9-6). Integers, rationals and `Float32` still land on `Float64`;
 narrowing stays behind the explicit `{T}` form. Extra keyword arguments are
 descriptive metadata and take no part in the promotion.
 """
-CrabDispersionSpec(; zeta1=0, zeta2=0, zeta3=0, zeta4=0, kwargs...) =
-    CrabDispersionSpec{_linear_map_eltype(zeta1, zeta2, zeta3, zeta4)}(;
-        zeta1=zeta1, zeta2=zeta2, zeta3=zeta3, zeta4=zeta4, kwargs...)
+CrabDispersionSpec(; zeta1=0, zeta2=0, zeta3=0, zeta4=0, numeric_type=nothing, kwargs...) =
+    _floor_form(CrabDispersionSpec{something(numeric_type, _linear_map_eltype(zeta1, zeta2, zeta3, zeta4))}(;
+        zeta1=zeta1, zeta2=zeta2, zeta3=zeta3, zeta4=zeta4, kwargs...), numeric_type)
 function (::Type{CrabDispersionSpec{T}})(; zeta1=zero(T), zeta2=zero(T),
                                         zeta3=zero(T), zeta4=zero(T),
                                         tracking_method=Symplectic6DMap(),
                                         kwargs...) where {T}
-    return ElementSpec{:crab_dispersion}(
+    return ElementSpec{:crab_dispersion}(_stamp_numeric_type!(
         _spec_params(; zeta1=T(zeta1), zeta2=T(zeta2), zeta3=T(zeta3), zeta4=T(zeta4),
-                     tracking_method=tracking_method, kwargs...),
+                     tracking_method=tracking_method, kwargs...), T),
     )
 end
 
@@ -115,8 +118,8 @@ CrabDispersion{T}(zeta1, zeta2, zeta3, zeta4) where {T<:Number} =
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
-    example = CrabDispersionSpec{Float64}(zeta1=0.1)
-    construction_help = "Friendly constructor: CrabDispersionSpec{T}(; zeta1, zeta2, zeta3, zeta4, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:crab_dispersion}(; zeta1=zeta1, zeta2=zeta2, zeta3=zeta3, zeta4=zeta4, tracking_method=tracking_method, kwargs...). Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    example = CrabDispersionSpec(zeta1=0.1)
+    construction_help = "Friendly constructor: CrabDispersionSpec{T}(; zeta1, zeta2, zeta3, zeta4, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:crab_dispersion}(; zeta1=zeta1, zeta2=zeta2, zeta3=zeta3, zeta4=zeta4, tracking_method=tracking_method, kwargs...). Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form CrabDispersionSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 CrabDispersion(spec::ElementSpec{:crab_dispersion}, method::AbstractTrackingMethod=tracking_method(spec)) =
@@ -149,16 +152,16 @@ audit, U9-6). Integers, rationals and `Float32` still land on `Float64`;
 narrowing stays behind the explicit `{T}` form. Extra keyword arguments are
 descriptive metadata and take no part in the promotion.
 """
-MomentumDispersionSpec(; eta1=0, eta2=0, eta3=0, eta4=0, kwargs...) =
-    MomentumDispersionSpec{_linear_map_eltype(eta1, eta2, eta3, eta4)}(;
-        eta1=eta1, eta2=eta2, eta3=eta3, eta4=eta4, kwargs...)
+MomentumDispersionSpec(; eta1=0, eta2=0, eta3=0, eta4=0, numeric_type=nothing, kwargs...) =
+    _floor_form(MomentumDispersionSpec{something(numeric_type, _linear_map_eltype(eta1, eta2, eta3, eta4))}(;
+        eta1=eta1, eta2=eta2, eta3=eta3, eta4=eta4, kwargs...), numeric_type)
 function (::Type{MomentumDispersionSpec{T}})(; eta1=zero(T), eta2=zero(T),
                                             eta3=zero(T), eta4=zero(T),
                                             tracking_method=Symplectic6DMap(),
                                             kwargs...) where {T}
-    return ElementSpec{:momentum_dispersion}(
+    return ElementSpec{:momentum_dispersion}(_stamp_numeric_type!(
         _spec_params(; eta1=T(eta1), eta2=T(eta2), eta3=T(eta3), eta4=T(eta4),
-                     tracking_method=tracking_method, kwargs...),
+                     tracking_method=tracking_method, kwargs...), T),
     )
 end
 
@@ -203,8 +206,8 @@ MomentumDispersion{T}(eta1, eta2, eta3, eta4) where {T<:Number} =
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
-    example = MomentumDispersionSpec{Float64}(eta1=0.2)
-    construction_help = "Friendly constructor: MomentumDispersionSpec{T}(; eta1, eta2, eta3, eta4, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:momentum_dispersion}(; eta1=eta1, eta2=eta2, eta3=eta3, eta4=eta4, tracking_method=tracking_method, kwargs...). Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    example = MomentumDispersionSpec(eta1=0.2)
+    construction_help = "Friendly constructor: MomentumDispersionSpec{T}(; eta1, eta2, eta3, eta4, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:momentum_dispersion}(; eta1=eta1, eta2=eta2, eta3=eta3, eta4=eta4, tracking_method=tracking_method, kwargs...). Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form MomentumDispersionSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 MomentumDispersion(spec::ElementSpec{:momentum_dispersion}, method::AbstractTrackingMethod=tracking_method(spec)) =
@@ -251,16 +254,16 @@ audit, U9-6). Integers, rationals and `Float32` still land on `Float64`;
 narrowing stays behind the explicit `{T}` form. Extra keyword arguments are
 descriptive metadata and take no part in the promotion.
 """
-XYCouplingSpec(; r1=0, r2=0, r3=0, r4=0, kwargs...) =
-    XYCouplingSpec{_linear_map_eltype(r1, r2, r3, r4)}(;
-        r1=r1, r2=r2, r3=r3, r4=r4, kwargs...)
+XYCouplingSpec(; r1=0, r2=0, r3=0, r4=0, numeric_type=nothing, kwargs...) =
+    _floor_form(XYCouplingSpec{something(numeric_type, _linear_map_eltype(r1, r2, r3, r4))}(;
+        r1=r1, r2=r2, r3=r3, r4=r4, kwargs...), numeric_type)
 function (::Type{XYCouplingSpec{T}})(; r1=zero(T), r2=zero(T), r3=zero(T),
                                     r4=zero(T), mode::XYCouplingMode=XY_MODEA,
                                     tracking_method=Symplectic6DMap(),
                                     kwargs...) where {T}
-    return ElementSpec{:xy_coupling}(
+    return ElementSpec{:xy_coupling}(_stamp_numeric_type!(
         _spec_params(; r1=T(r1), r2=T(r2), r3=T(r3), r4=T(r4), mode=mode,
-                     tracking_method=tracking_method, kwargs...),
+                     tracking_method=tracking_method, kwargs...), T),
     )
 end
 
@@ -327,8 +330,8 @@ end
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
-    example = XYCouplingSpec{Float64}(r1=0.01)
-    construction_help = "Friendly constructor: XYCouplingSpec{T}(; r1, r2, r3, r4, mode=XY_MODEA, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:xy_coupling}(; r1=r1, r2=r2, r3=r3, r4=r4, mode=mode, tracking_method=tracking_method, kwargs...). Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    example = XYCouplingSpec(r1=0.01)
+    construction_help = "Friendly constructor: XYCouplingSpec{T}(; r1, r2, r3, r4, mode=XY_MODEA, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:xy_coupling}(; r1=r1, r2=r2, r3=r3, r4=r4, mode=mode, tracking_method=tracking_method, kwargs...). Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form XYCouplingSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 # Restored explicitly: defining an inner constructor above removes Julia's

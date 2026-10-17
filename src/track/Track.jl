@@ -62,44 +62,93 @@ abstract type AbstractTrackOp end
 """
     _required_beam_eltype(op) -> Union{Nothing,Type}
 
-The coordinate element type a runtime element requires of the beam it tracks,
-or `nothing` (the generic answer) for an element that promotes with the beam.
+The coordinate element type a runtime element requires of the beam it tracks:
+its numeric type parameter, the `T<:Number` every runtime struct with numeric
+parameters carries (`LatticeMagnet{M,T,...}`, `ThinMultipole{M,T,N}`,
+`Aperture{F,M,R,T}`, ...), derived from `typeof(op)` by
+`_numeric_type_parameter`; `nothing` for an element with no numeric parameter
+(`Marker`). The wrappers and `CompositeLine` answer with the type of what they
+hold (their methods sit beside their structs), which is also the type the
+placement wraps are built in.
 
-The standing behaviour of a plain element is promotion: a `Float64` element
-tracking a `Float32` beam computes in `Float64` and the store narrows the
-result, on the CPU for every registered kind and on CUDA for the kinds whose
-kernels return one tuple type (measured over all 31 kinds on 2026-10-16, fix D
-of the crab-cavity noise neighbour audit: 31 of 31 run on the CPU, 19 on
-CUDA; the thick-magnet family, both strong beams, the accelerating cavity,
-the RF cavity and the radiation element fail at device compile with an
-`InvalidIRError`, because a kernel branch on a runtime flag -- `_has_survey`,
-`iszero(strength)`, `is_excitation` -- returns a tuple of the beam's type on
-one side and of the element's on the other).
+ONE precision rule for every kind (owner decision 2026-10-16, fix H of the
+crab-cavity noise neighbour audit): a beam whose element type differs from an
+element's is refused BY NAME when a task compiles its line (`_check_beam_eltype`,
+`src/tasks/Tasks.jl`, and the strong-strong twin), in either direction, on both
+backends, with the remedy from `_beam_eltype_remedy`; a `Float32` beam needs
+`Float32` elements everywhere, built with each kind's `Spec{Float32}` form.
+Before it (measured 2026-10-16 over all 31 kinds, fix D) a `Float64` element on
+a `Float32` beam promoted and narrowed every coordinate on store on the CPU,
+and on CUDA 12 kinds failed at device compile with an `InvalidIRError` (a
+kernel branch on a runtime flag -- `_has_survey`, `iszero(strength)`,
+`is_excitation` -- returning the beam's tuple type on one side and the
+element's on the other) while 19 narrowed silently; the by-name refusal
+covered the two modulated cavities and the radiation element only.
 
-A kind that declares its own `T` here is refused a mismatched beam BY NAME
-when a task compiles its line (`_check_beam_eltype`, `src/tasks/Tasks.jl`,
-and the strong-strong twin), in either direction, on both backends, with the
-remedy from `_beam_eltype_remedy`. The owner's policy (2026-10-16, fix D) puts
-the two modulated cavities and the radiation element behind it: `ThinRFCavity`
-and `LumpedRad` because their device kernels do not compile and their CPU
-kernels narrow silently, `ThinCrabCavity` so that the two modulated kinds
-agree on what a `Float32` line is (its own kernel promotes on both backends).
-Every other kind keeps the promoting behaviour; the suite derives the
-declaring set from this function's method table and pins the CPU behaviour of
-the rest.
+The suite derives the set of kinds answering a type from the registry (every
+kind but `:marker` and `:line`) and pins it both ways; a runtime struct with two
+distinct numeric type parameters is refused here so the derivation never
+guesses.
 """
+_required_beam_eltype(op::AbstractTrackOp) = _numeric_type_parameter(typeof(op))
 _required_beam_eltype(op) = nothing
+
+"""
+    _numeric_type_parameter(T::Type) -> Union{Nothing,Type}
+
+The one type parameter of the concrete type `T` that is a `Number` type, or
+`nothing`; two distinct ones are refused rather than guessed between.
+"""
+function _numeric_type_parameter(::Type{T}) where {T}
+    found = nothing
+    for p in T.parameters
+        (p isa Type && p <: Number) || continue
+        (found === nothing || p === found) || throw(ArgumentError(
+            "$(nameof(T)) carries two numeric type parameters, $(found) and $(p), so " *
+            "the beam element type it requires cannot be derived; the kind must " *
+            "declare _required_beam_eltype itself"))
+        found = p
+    end
+    return found
+end
 
 """
     _beam_eltype_remedy(op, B) -> String
 
-The remedy `_check_beam_eltype` names for a beam of element type `B` refused
-by `op`; a declaring kind owns a method naming its typed constructor where
-it has one. The generic text names the two moves every mismatch has.
+The remedy `_check_beam_eltype` names for a beam of element type `B` refused by
+`op`: the typed forms of the kinds the registry maps to `op`'s runtime type,
+DERIVED from `ELEMENT_META_BY_KIND` (`_typed_form_names`) and spelled in the
+keyword form every kind has (`QuadrupoleSpec{Float32}(; ...)`), or the beam in
+the element's type. A kind whose typed form takes a positional argument the
+keyword spelling would hide owns its own method (the crab cavity's `{N,T}`).
 """
-_beam_eltype_remedy(op, ::Type{B}) where {B} =
-    "build the element in the beam's type, $(B), or the beam in the element's " *
-    "($(_required_beam_eltype(op))), Beam(n, policy, $(_required_beam_eltype(op)))"
+function _beam_eltype_remedy(op, ::Type{B}) where {B}
+    T = _required_beam_eltype(op)
+    forms = _typed_form_names(op)
+    element = isempty(forms) ? "the kind's Spec{$(B)}(; ...) form" :
+                               join(("$(f){$(B)}(; ...)" for f in forms), " or ")
+    return "build the element in the beam's type, $(element), or the beam in $(T) " *
+           "(Beam(n, policy, $(T)))"
+end
+
+"""
+    _typed_form_names(op) -> Vector{String}
+
+The friendly constructor names of every registered kind whose runtime type is
+`op`'s (the type's wrapper, `_compiled_matches_runtime`'s rule), sorted: a
+`LatticeMagnet` is six kinds' runtime, a `ThinMultipole` seven's.
+"""
+function _typed_form_names(op)
+    W = typeof(op).name.wrapper
+    names = String[]
+    for meta in values(ELEMENT_META_BY_KIND)
+        meta.friendly_constructor === nothing && continue
+        any(rt -> rt isa Type && Base.unwrap_unionall(rt).name.wrapper === W,
+            values(meta.runtime_types)) || continue
+        push!(names, string(nameof(meta.friendly_constructor)))
+    end
+    return sort!(unique!(names))
+end
 
 """
     track_particle(tracking_method, op, x, px, y, py, z, pz)

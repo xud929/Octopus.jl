@@ -211,8 +211,17 @@ end
         z = rep.z[i]; pz = rep.pz[i]
     end
     drift = _soft_gaussian_drift(virtual_drift, longitudinal_kick)
+    # The drift's WORKING type is the solver's scalars' (U3-4: the solver's
+    # explicit scalar type governs, on both backends), passed explicitly with
+    # the centre in the beam's type: the arithmetic the drift's Float64 literal
+    # gave a Float32 beam by accident before fix H (2026-10-16), now stated --
+    # a Float32 difference, then Float64 -- which the CUDA twins
+    # (`_cuda_slice_kick_kernel!`, the fused kernel) state the same way, so the
+    # backends stay bit-identical ("Slice geometry is bit-identical across
+    # backends").
+    W = promote_type(typeof(kbb_slice), typeof(min_sigma))
     x, px, y, py, z, pz, S = _forward_virtual_drift(
-        drift, x, px, y, py, z, pz, center2)
+        drift, x, px, y, py, z, pz, center2, W)
     xx = x - moments2.mx + moments2.mpx * S
     yy = y - moments2.my + moments2.mpy * S
     px0, py0, pz0 = px, py, pz
@@ -226,7 +235,7 @@ end
         pz = pz0
     end
     x, px, y, py, z, pz = _reverse_virtual_drift(
-        drift, x, px, y, py, z, pz, center2)
+        drift, x, px, y, py, z, pz, center2, W)
     @inbounds begin
         rep.x[i] = x; rep.px[i] = px
         rep.y[i] = y; rep.py[i] = py

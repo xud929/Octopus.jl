@@ -62,19 +62,32 @@ docstrings of public objects.
    `track_particle(TrackingMethod, runtime_element, coords...)`. Every branch
    reachable from a CUDA kernel must compile as device IR, throws included, so
    their messages stay static.
-   - Numeric type: an untyped friendly constructor promotes its named numeric
-     parameters over a `Float64` floor (`_linear_map_eltype`, or
-     `numeric_type(spec)` at compile) and never narrows -- a `Float32` input
-     gives a `Float64` element, a dual or complex input widens it; a `Spec{T}`
-     form, where the kind offers one, stores and compiles `T` as given. A
-     `Float64` element tracking a `Float32` beam promotes and narrows on store
-     (the standing behaviour, `../current_runtime.md` "Current Backends"). If
-     the kernel branches on a runtime flag and returns the beam's type on one
-     side and the element's on the other, it does not compile as device IR
-     for a mismatched beam: declare `_required_beam_eltype`
-     (`src/track/Track.jl`) so the task refuses such a beam at compile by
-     name, as the two modulated cavities and the radiation element do; the
-     suite derives the declaring set from the method table.
+   - Numeric type, ONE rule for every kind (owner decision 2026-10-16): the
+     compile constructor builds the runtime in `numeric_type(spec)`. The
+     untyped friendly constructor stores its inputs as given, so that is the
+     promotion of the stored parameters over a `Float64` floor -- a `Float32`
+     input gives a `Float64` element, a dual or complex input widens it,
+     nothing narrows. Every kind has a typed form: `abstract type MySpec{T}`,
+     the untyped method `MySpec(; numeric_type=nothing, kwargs...)` routing
+     `numeric_type=T` to `(::Type{MySpec{T}})(; kwargs...)`, which stores
+     `_typed_spec_params(T; kwargs...)` (the floating-point inputs as `T` and
+     `numeric_type = T`; the `@element_spec` docstring shows the pair); the
+     untyped form stores no type -- one that builds through its typed form
+     drops the stored type again (`_floor_form`), so a dual or BigFloat placed
+     later by a knob or a placement override still widens the element. Splice
+     `_PLACEMENT_PARAMS...` into the schema (or `numeric_type=
+     _PLACEMENT_PARAMS.numeric_type`) and mention `numeric_type` in the
+     `construction_help`; `validate_element_metadata` checks both. The runtime
+     struct carries `T<:Number` as its ONE numeric type parameter: that is
+     what `_required_beam_eltype` (`src/track/Track.jl`) derives, so a task
+     refuses a beam of another element type by name, with the remedy naming
+     the kind's typed form from the registry (`_typed_form_names`); a kind
+     whose typed form the keyword spelling would hide owns a
+     `_beam_eltype_remedy` method (the crab cavity's `{N,T}`). The suite's
+     "One precision rule" testset pins the derived set against the registry
+     both ways and runs every kind's `Float32` form on both backends; a new
+     kind that departs from the pattern fails there by name
+     (`../current_runtime.md` "Current Backends" carries the measurement).
 7. Confirm `element_help(MyElementSpec)` and `element_help(:my_element)` give a
    useful summary, and run `validate_element_metadata()`.
 8. Add a testset in `test/runtests.jl` (the suite is a single file; element

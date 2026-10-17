@@ -14,7 +14,8 @@ longitudinal coordinate `z` by the chromatic transverse actions.
 element uses only their horizontal and vertical components. Legacy
 two-component tuples remain accepted.
 """
-ChromaticityKickSpec(; kwargs...) = ChromaticityKickSpec{Float64}(; kwargs...)
+ChromaticityKickSpec(; numeric_type=nothing, kwargs...) =
+    _floor_form(ChromaticityKickSpec{something(numeric_type, Float64)}(; kwargs...), numeric_type)
 function (::Type{ChromaticityKickSpec{T}})(;
                                           xi,
                                           beta,
@@ -24,7 +25,7 @@ function (::Type{ChromaticityKickSpec{T}})(;
                                           R=(zero(T), zero(T), zero(T), zero(T)),
                                           tracking_method=Symplectic6DMap(),
                                           kwargs...) where {T}
-    return ElementSpec{:chromaticity_kick}(
+    return ElementSpec{:chromaticity_kick}(_stamp_numeric_type!(
         _spec_params(;
             xi=_pair_tuple(xi, T),
             beta=_transverse_optics_tuple(beta, T, :beta),
@@ -34,7 +35,7 @@ function (::Type{ChromaticityKickSpec{T}})(;
             R=_quad_tuple(R, T),
             tracking_method=tracking_method,
             kwargs...,
-        ),
+        ), T),
     )
 end
 
@@ -76,10 +77,12 @@ function ChromaticityKick(spec::ElementSpec{:chromaticity_kick},
     xi = param(spec, :xi)
     beta = param(spec, :beta)
     alpha = param(spec, :alpha)
-    # `float` so integer tuples through the flexible spec form promote to a
-    # tracking type instead of dying in a Float64-vs-Int64 conversion
+    # `numeric_type(spec)`, the one rule of every kind: the stored type of a
+    # `ChromaticityKickSpec{T}`, else the Float64-floor promotion of the stored
+    # parameters, so integer tuples through the flexible spec form promote to
+    # a tracking type instead of dying in a Float64-vs-Int64 conversion
     # (2026-08-05 audit, U12-5).
-    T = float(promote_type(map(typeof, (xi..., beta..., alpha...))...))
+    T = numeric_type(spec)
     betx, bety = T(beta[1]), T(beta[2])
     alfx, alfy = T(alpha[1]), T(alpha[2])
     return ChromaticityKick(
@@ -214,6 +217,6 @@ end
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
-    example = ChromaticityKickSpec{Float64}(xi=(1.0, 1.0), beta=(1.0, 1.0))
-    construction_help = "Friendly constructor: ChromaticityKickSpec{T}(; xi, beta, alpha=(0,0,0), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), tracking_method=Symplectic6DMap(), kwargs...). beta and alpha accept two or three values; only the transverse pair is used. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    example = ChromaticityKickSpec(xi=(1.0, 1.0), beta=(1.0, 1.0))
+    construction_help = "Friendly constructor: ChromaticityKickSpec{T}(; xi, beta, alpha=(0,0,0), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), tracking_method=Symplectic6DMap(), kwargs...). beta and alpha accept two or three values; only the transverse pair is used. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ChromaticityKickSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
