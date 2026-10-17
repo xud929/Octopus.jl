@@ -277,9 +277,11 @@ it under the current seed; 2026-10-16). The offline table claims no stream,
 so `rng_id = 0` is refused there; its sharing checks are the task
 constructor's equal-digest warning (two tables of one `(seed, rng_id, slot)`
 over one band are the same noise) and, once per compilation of the line, the
-equal-digest check over the RESOLVED line, which also names a `SpectralNoise`
-beside its offline twin and one spec placed twice, on both task kinds
-(2026-10-16):
+equal-digest check over the RESOLVED line, which names what the constructor
+could not see -- a `SpectralNoise` beside its offline twin -- and skips what
+it already named (one spec placed twice, two offline copies of one table, two
+rules on one explicit id), one warning per cause, on both task kinds; a
+custom spectrum labelled with a preset's name is refused (2026-10-16):
 
 ```julia
 set_global_rng!(seed = 42); rule = SpectralNoise(1.0e-5, (1.0e-4, 1.0e-2), :pink; rng_id = 7, turns = 2^20)

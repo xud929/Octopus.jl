@@ -563,6 +563,11 @@ Before the first turn of every `execute!` window the task checks
 `first_turn + turns <= length(offsets)` and throws otherwise, so a run never
 runs out mid-window and never wraps: a wrapped sequence is periodic in the
 table length and would correlate turn `t` with turn `t - N` silently.
+(2026-10-16, neighbour audit U1-8: `offsets` is the table's own copy of the
+vector handed in, and since the digest and the name are frozen at
+construction, the compile step `_resolve_turn_rule` recomputes the digest
+once per compile and refuses by name a table whose entries were written to
+after construction; the struct also carries `resolved_seed`, fix B.)
 `realize` returns `base` with `offsets[ctx.turn + 1]` applied to the nominal
 value (added to a phase; on a strength the factor `1 + offsets[ctx.turn + 1]`
 on both planes, since 2026-10-15), and the rule unchanged.
@@ -722,7 +727,18 @@ Tests the implementation owes, each shown to fail without its feature:
    placed twice or for two distinct elements, on both task kinds. A resolved
    spectral table also carries the global seed it was synthesised under, and
    every `execute!` warns while the global seed has moved away from it, the
-   table staying as synthesised: `spectral_turn_table.md`, D11.)
+   table staying as synthesised: `spectral_turn_table.md`, D11. Fix group F
+   of the same audit, 2026-10-16: one cause, one warning. The constructor's
+   two checks word one spec object placed twice as placements -- "N
+   placements of one element spec share an rng_id" / "carry tables of the
+   same digest" -- and distinct specs as distinct elements, one warning per
+   cause, where both said "on different elements" before (U8-16); and the
+   task keeps what they named (`ReportedSharing`: the ids and the digests),
+   so the resolved-line check skips a digest group whose every site the
+   constructor covered -- the table's digest, or the `rng_id` of the
+   `SpectralNoise` it resolved from -- and names only what the spec layer
+   could not see: a rule beside its offline twin, a rule added after
+   construction.)
 6. **CPU/CUDA identity.** The realised sequence and the tracked coordinates
    agree between backends to the existing near-identity tolerance, and the
    kernel's element type is the bare cavity (the section 4.3 verification).

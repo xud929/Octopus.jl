@@ -8218,7 +8218,7 @@ end
     # an auto-assigned consumer or another class holds (fix group C,
     # 2026-10-16), which a small literal in a strict silence pin would be.
     @test_logs TrackingTask((noisy(), DriftSpec(L=1.0),
-                             cavity(phase_noise=(WhiteNoise(1.0e-2; rng_id=Octopus.next_rng_id!() + 1_000_000),))))
+                             cavity(phase_noise=(WhiteNoise(1.0e-2; rng_id=Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)),))))
     @test_logs TrackingTask((ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), phase=(0.0, 0.0),
                                                     phase_noise=(WhiteNoise(1.0e-2; rng_id=7),
                                                                  WhiteNoise(1.0e-2; rng_id=7))),))
@@ -10165,18 +10165,23 @@ end
     @test_throws ArgumentError WhiteNoise(NaN)
     # The stream id follows the radiation convention (U14-2): 0, the default,
     # assigns a fresh id and two defaults differ; an explicit id is CLAIMED so
-    # the auto-assign counter never reissues it; a refused rule claims none.
+    # the automatic sequence steps over it instead of reissuing it (since fix
+    # group F, 2026-10-16, a claim no longer raises the counter past its id:
+    # the sequence continues below the claim); a refused rule claims none.
     fresh_white, fresh_pink = WhiteNoise(1.0e-2), PinkNoise(1.0e-2)
     @test fresh_white.rng_id > 0 && fresh_pink.rng_id > 0 && fresh_white.rng_id != fresh_pink.rng_id
-    claimed = Octopus.next_rng_id!() + 1000
+    claimed = Octopus.next_rng_id!() + 1
     @test WhiteNoise(1.0e-2; rng_id=claimed).rng_id == claimed
-    @test Octopus.next_rng_id!() == claimed + 1
-    @test PinkNoise(1.0e-2; rng_id=claimed + 500).rng_id == claimed + 500
-    @test Octopus.next_rng_id!() == claimed + 501
+    @test Octopus._rng_id_held(claimed)
+    after_claim = Octopus.next_rng_id!()
+    @test after_claim != claimed && after_claim > claimed        # stepped over, never reissued
+    far = claimed + 500
+    @test PinkNoise(1.0e-2; rng_id=far).rng_id == far
+    @test Octopus._rng_id_held(far) && Octopus.next_rng_id!() < far   # a far claim leaves the sequence where it was
     before_refused = Octopus.next_rng_id!()
     @test_throws ArgumentError WhiteNoise(-1.0; rng_id=before_refused + 100)
     @test_throws ArgumentError PinkNoise(1.0; rng_id=before_refused + 100, octaves=0)
-    @test Octopus.next_rng_id!() == before_refused + 1
+    @test !Octopus._rng_id_held(before_refused + 100)                 # a refused rule claims none
     # The stream id must be a non-negative integer, refused with an
     # ArgumentError naming the keyword and the value (2026-10-13 neighbour
     # audit, U7-6: a negative id died with an InexactError in `UInt64`, a
@@ -10193,8 +10198,8 @@ end
         @test err_id isa ArgumentError && occursin("rng_id", err_id.msg) && occursin(string(bad), err_id.msg)
         @test_throws ArgumentError PinkNoise(1.0e-3; rng_id=bad)
     end
-    @test Octopus.next_rng_id!() == before_refused + 2
-    @test WhiteNoise(1.0e-3; rng_id=0).rng_id == before_refused + 3
+    @test !Octopus._rng_id_held(before_refused + 100)
+    @test WhiteNoise(1.0e-3; rng_id=0).rng_id > before_refused         # 0 still assigns a fresh one
     # The window check names an unnamed table as such, not as "".
     err_unnamed = try
         Octopus._check_rule_window(TurnTable([0.1]), Int64(0), 2, "ThinCrabCavity phase_noise[1]")
@@ -11271,22 +11276,22 @@ end
     # fresh stream, an explicit id is claimed so the counter never reissues
     # it), a refused rule claiming no stream; its fields carry the band in
     # tunes, the label, the shape, `turns`, `amplitudes` and `f_rev`.
+    sp_refused_id = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)   # handed to every refused rule below; must stay unheld
     rule_refusals = [
         ("turns < 2", () -> SpectralNoise(sp_sigma, (0.1, 0.5), :flat; rng_id=1, turns=1), ["turns", "got 1"]),
-        ("no bin", () -> SpectralNoise(sp_sigma, (1.0e-3, 2.0e-3), :flat; rng_id=1, turns=64), ["0.001", "0.002", "64", "0.015625"]),
-        ("lb = 0", () -> SpectralNoise(sp_sigma, (0.0, 0.2), :flat; rng_id=1, turns=64), ["lower edge", "lb = 0.0"]),
-        ("lb > ub", () -> SpectralNoise(sp_sigma, (0.3, 0.2), :flat; rng_id=1, turns=64), ["lb = 0.3", "ub = 0.2"]),
-        ("ub > 1/2", () -> SpectralNoise(sp_sigma, (0.1, 0.6), :flat; rng_id=1, turns=64), ["Nyquist", "ub = 0.6"]),
-        ("S < 0", () -> SpectralNoise(sp_sigma, (0.1, 0.5), "neg" => f -> -1.0; rng_id=1, turns=64), ["bin k = 7", "-1.0"]),
-        ("S vanishes", () -> SpectralNoise(sp_sigma, (0.1, 0.5), "zero" => f -> 0.0; rng_id=1, turns=64), ["vanishes"]),
-        ("sigma < 0", () -> SpectralNoise(-sp_sigma, (0.1, 0.5), :flat; rng_id=1, turns=64), ["sigma", "non-negative"]),
-        ("sigma NaN", () -> SpectralNoise(NaN, (0.1, 0.5), :flat; rng_id=1, turns=64), ["sigma", "finite"]),
-        ("empty label", () -> SpectralNoise(sp_sigma, (0.1, 0.5), "" => f -> 1.0; rng_id=1, turns=64), ["label"]),
-        ("unknown preset", () -> SpectralNoise(sp_sigma, (0.1, 0.5), :brown; rng_id=1, turns=64), [":brown", Octopus._spectral_preset_names()]),
-        ("amplitudes", () -> SpectralNoise(sp_sigma, (0.1, 0.5), :flat; rng_id=1, turns=64, amplitudes=:gaussian), [":gaussian", ":fixed", ":rayleigh"]),
-        ("f_rev = 0", () -> SpectralNoise(sp_sigma, (0.1, 0.5), :flat; rng_id=1, turns=64, f_rev=0.0), ["f_rev", "0.0"]),
+        ("no bin", () -> SpectralNoise(sp_sigma, (1.0e-3, 2.0e-3), :flat; rng_id=sp_refused_id, turns=64), ["0.001", "0.002", "64", "0.015625"]),
+        ("lb = 0", () -> SpectralNoise(sp_sigma, (0.0, 0.2), :flat; rng_id=sp_refused_id, turns=64), ["lower edge", "lb = 0.0"]),
+        ("lb > ub", () -> SpectralNoise(sp_sigma, (0.3, 0.2), :flat; rng_id=sp_refused_id, turns=64), ["lb = 0.3", "ub = 0.2"]),
+        ("ub > 1/2", () -> SpectralNoise(sp_sigma, (0.1, 0.6), :flat; rng_id=sp_refused_id, turns=64), ["Nyquist", "ub = 0.6"]),
+        ("S < 0", () -> SpectralNoise(sp_sigma, (0.1, 0.5), "neg" => f -> -1.0; rng_id=sp_refused_id, turns=64), ["bin k = 7", "-1.0"]),
+        ("S vanishes", () -> SpectralNoise(sp_sigma, (0.1, 0.5), "zero" => f -> 0.0; rng_id=sp_refused_id, turns=64), ["vanishes"]),
+        ("sigma < 0", () -> SpectralNoise(-sp_sigma, (0.1, 0.5), :flat; rng_id=sp_refused_id, turns=64), ["sigma", "non-negative"]),
+        ("sigma NaN", () -> SpectralNoise(NaN, (0.1, 0.5), :flat; rng_id=sp_refused_id, turns=64), ["sigma", "finite"]),
+        ("empty label", () -> SpectralNoise(sp_sigma, (0.1, 0.5), "" => f -> 1.0; rng_id=sp_refused_id, turns=64), ["label"]),
+        ("unknown preset", () -> SpectralNoise(sp_sigma, (0.1, 0.5), :brown; rng_id=sp_refused_id, turns=64), [":brown", Octopus._spectral_preset_names()]),
+        ("amplitudes", () -> SpectralNoise(sp_sigma, (0.1, 0.5), :flat; rng_id=sp_refused_id, turns=64, amplitudes=:gaussian), [":gaussian", ":fixed", ":rayleigh"]),
+        ("f_rev = 0", () -> SpectralNoise(sp_sigma, (0.1, 0.5), :flat; rng_id=sp_refused_id, turns=64, f_rev=0.0), ["f_rev", "0.0"]),
     ]
-    counter_before = Octopus.next_rng_id!()
     for (label, f, needles) in rule_refusals
         err = Test.collect_test_logs(() -> sp_err(f))[2]
         msg = sp_msg(err)
@@ -11298,17 +11303,17 @@ end
             end
         end
     end
-    @test Octopus.next_rng_id!() == counter_before + 1                 # no refused rule claimed a stream
+    @test !Octopus._rng_id_held(sp_refused_id)                         # no refused rule claimed a stream
     err_id = sp_err(() -> SpectralNoise(sp_sigma, (1 / 64, 0.5), :flat; rng_id=-1, turns=64))
     @test err_id isa ArgumentError && occursin("rng_id", sp_msg(err_id)) && occursin("-1", sp_msg(err_id))
     @test_throws UndefKeywordError SpectralNoise(sp_sigma, (1 / 64, 0.5), :flat; rng_id=1)   # turns is mandatory
     @test_logs (:warn, r"only 10 bin") match_mode = :any SpectralNoise(sp_sigma, (0.1, 0.11), :flat; rng_id=1, turns=1024)
     r_auto1 = SpectralNoise(sp_sigma, (1 / 64, 0.5), :flat; turns=64)
     r_auto2 = SpectralNoise(sp_sigma, (1 / 64, 0.5), :flat; turns=64)
-    @test r_auto1.rng_id != r_auto2.rng_id && r_auto1.rng_id > 0 && r_auto2.rng_id == r_auto1.rng_id + 1
+    @test r_auto1.rng_id != r_auto2.rng_id && r_auto1.rng_id > 0 && r_auto2.rng_id > r_auto1.rng_id
     r_explicit = SpectralNoise(sp_sigma, (1 / 64, 0.5), :pink; rng_id=r_auto2.rng_id + 1000, turns=64, amplitudes=:rayleigh)
     @test r_explicit.rng_id == r_auto2.rng_id + 1000
-    @test Octopus.next_rng_id!() > r_explicit.rng_id                    # the explicit id was claimed
+    @test Octopus._rng_id_held(r_explicit.rng_id) && Octopus.next_rng_id!() != r_explicit.rng_id   # claimed: held, never reissued
     @test r_explicit isa SpectralNoise && r_explicit isa Octopus.AbstractTurnRule
     @test (r_explicit.sigma, r_explicit.lb, r_explicit.ub, r_explicit.label, r_explicit.turns, r_explicit.amplitudes, r_explicit.f_rev) ==
           (sp_sigma, 1 / 64, 0.5, "pink", 64, :rayleigh, nothing)
@@ -11583,7 +11588,7 @@ end
     @test_logs (:warn, r"share an rng_id") match_mode = :any TrackingTask(
         (sc_crab(SpectralNoise(sigma7, (1 / 64, 0.5), :flat; rng_id=41, turns=64)), DriftSpec(L=1.0),
          sc_crab(SpectralNoise(sigma7, (1 / 64, 0.5), :flat; rng_id=41, turns=64))))
-    sc_fresh = Octopus.next_rng_id!() + 1_000_000   # above the counter and every literal id (fix group C, 2026-10-16)
+    sc_fresh = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)   # above the counter, every literal id and every other test's claim (fix groups C and F, 2026-10-16)
     @test_logs TrackingTask(
         (sc_crab(SpectralNoise(sigma7, (1 / 64, 0.5), :flat; rng_id=sc_fresh, turns=64)), DriftSpec(L=1.0),
          sc_crab(SpectralNoise(sigma7, (1 / 64, 0.5), :flat; rng_id=sc_fresh + 1, turns=64))))
@@ -12135,7 +12140,7 @@ end
     # of the suite: the registry warns once when a class first claims an id
     # an auto-assigned consumer or another class holds (fix group C,
     # 2026-10-16), which a small literal in a strict silence pin would be.
-    rf_fresh = Octopus.next_rng_id!() + 1_000_000
+    rf_fresh = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
     @test_logs TrackingTask((crab_id(25), DriftSpec(L=1.0), rf(phase_noise=WhiteNoise(1.0e-2; rng_id=rf_fresh))))
     @test_logs TrackingTask((rf(phase_noise=WhiteNoise(1.0e-2; rng_id=rf_fresh + 1),
                                 strength_noise=PinkNoise(1.0e-7; rng_id=rf_fresh + 1)),))
@@ -17112,7 +17117,7 @@ end
         # 2026-10-16), so a small literal id in a strict silence pin meets
         # the memory of whatever ran before, and an id merely above the
         # counter meets a later testset's literal in a short process.
-        rad_base = Octopus.next_rng_id!() + 1_000_000
+        rad_base = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
         rad(id) = LumpedRadSpec(damping_turns=(20.0, 25.0, 30.0), beta=(0.7, 0.9, 1.1),
                                 alpha=(0.2, -0.1, 0.05), sigma=(1.2e-3, 0.8e-3, 2.0e-3), rng_id=id)
         @test_logs (:warn, r"share an rng_id") match_mode = :any StrongStrongTask(
@@ -17450,19 +17455,21 @@ end
         t4c = TrackingTask((ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), phase=(0.0, 0.0),
                                                   phase_noise=(off, off)), disp))
         @test isempty(warns(() -> execute!(t4c, mkp(); turns=2), r"same digest"))
-        # (e) One spec object placed twice is worded as a placement, for a
-        # `SpectralNoise` spec (the constructor's shared-id warning precedes
-        # it) and for a table spec (the constructor's digest warning precedes).
-        t5 = @test_logs (:warn, r"share an rng_id") match_mode = :any TrackingTask((specA, disp, specA))
-        logs5 = warns(() -> execute!(t5, mkp(); turns=2), placed_re)
-        @test length(logs5) == 1
-        if length(logs5) == 1
-            msg = string(logs5[1].message)
-            @test occursin("modulated element 1", msg) && occursin("modulated element 2", msg) && !occursin(dup_re, msg)
-            @test occursin("own rng_id", msg)
-        end
-        t5b = @test_logs (:warn, r"same digest") match_mode = :any TrackingTask((specB, disp, specB))
-        @test length(warns(() -> execute!(t5b, mkp(); turns=2), placed_re)) == 1
+        # (e) One spec object placed twice is ONE cause: the constructor names
+        # it as placements (fix group F, 2026-10-16: "2 placements of one
+        # element spec share an rng_id" for the `SpectralNoise` spec, "... carry
+        # turn-modulation tables of the same digest" for the table spec), and
+        # the resolved check, reading the task's `reported_sharing`, stays
+        # silent for it -- until then it named the pair again, worded as
+        # placements, two warnings for one cause (fix B's open point). The
+        # placement wording of the resolved check remains for a rule added
+        # after construction (the fix-F testset pins it).
+        t5 = @test_logs (:warn, r"placements of one element spec share an rng_id") match_mode = :any TrackingTask(
+            (specA, disp, specA))
+        @test isempty(warns(() -> execute!(t5, mkp(); turns=2), r"same digest"))
+        t5b = @test_logs (:warn, r"placements of one element spec carry turn-modulation tables of the same digest") match_mode = :any TrackingTask(
+            (specB, disp, specB))
+        @test isempty(warns(() -> execute!(t5b, mkp(); turns=2), r"same digest"))
         # (f) Both lines of a StrongStrongTask are one resolved line for the
         # check: the rule in beam 1's line and its twin in beam 2's warn once,
         # naming both lines.
@@ -17549,7 +17556,11 @@ end
     @test length(w_auto) == 1 && occursin(string(auto_id), w_auto[1]) && occursin("auto-assigned", w_auto[1]) &&
           occursin("beam", w_auto[1]) && occursin("lumped_radiation", w_auto[1]) && occursin("rng_id = 0", w_auto[1])
     @test isempty(rng_warns(() -> Beam(8, CPUThreadsExecutionPolicy(); rng_id=peek + 50)))
-    @test getparam(LumpedRadSpec(; rad_kw...), :rng_id) == peek + 51   # the fresh id lands above the claim
+    # The fresh id continues the automatic sequence (peek + 1 was the Beam's);
+    # the claim of peek + 50 is stepped over when the sequence reaches it.
+    # Until fix group F (2026-10-16) the claim raised the counter and the fresh
+    # id landed at peek + 51.
+    @test getparam(LumpedRadSpec(; rad_kw...), :rng_id) == peek + 2
     # (d) S1-5: a Beam and a SpectralNoise on one explicit id warn, naming
     # both classes; row 38: radiation and a BPM on one explicit id warn.
     id5 = peek + 100
@@ -17576,16 +17587,22 @@ end
     @test err0 isa ArgumentError && occursin("fresh stream", msg0) && occursin("next_rng_id!", msg0)
     # (e) S1-7: ids are UInt64 end to end. `typemax(Int64)` is accepted and
     # the next auto-assigned BPM works (it used to overflow the Int field);
-    # `typemax(UInt64)` is accepted (it used to be an InexactError), after
-    # which the exhausted counter refuses by name instead of wrapping to 0.
+    # `typemax(UInt64)` is accepted (it used to be an InexactError). Since fix
+    # group F (2026-10-16) a claim no longer raises the counter: the automatic
+    # sequence continues below the claims (it used to jump to typemax(Int64)
+    # + 1, and an explicit typemax(UInt64) exhausted it), and the exhausted
+    # counter refuses by name only at its own top, instead of wrapping to 0.
     before_max = Octopus.next_rng_id!()
     @test BPMObserver("m"; rng_id=typemax(Int64)).rng_id === UInt64(typemax(Int64))
-    @test BPMObserver("n").rng_id === UInt64(typemax(Int64)) + 1
+    @test BPMObserver("n").rng_id === before_max + 1
     @test BPMObserver("u"; rng_id=typemax(UInt64)).rng_id === typemax(UInt64)
+    @test BPMObserver("v").rng_id === before_max + 2
+    Octopus.reset_rng_id_counter!(typemax(UInt64) - 1)
+    @test Octopus.next_rng_id!() == typemax(UInt64)
     err_x, msg_x = refusal(() -> Octopus.next_rng_id!())
     @test err_x isa ArgumentError && occursin("exhausted", msg_x) && occursin("typemax(UInt64)", msg_x)
-    Octopus.reset_rng_id_counter!(before_max)
-    @test Octopus.next_rng_id!() == before_max + 1
+    Octopus.reset_rng_id_counter!(before_max + 2)
+    @test Octopus.next_rng_id!() == before_max + 3
     # (f) The tripwire: every claim site in src/ (outside the registry file)
     # names its consumer class, and the classes are exactly the four this
     # block exercised by name above -- a fifth consumer fails here by name.
@@ -17609,6 +17626,404 @@ end
                         for m in eachmatch(r"consumer\s*=\s*:([a-z_]+)", s[3]))
     @test claim_classes == Set([:beam, :lumped_radiation, :turn_rule, :bpm_observer])
     set_global_rng!(seed=0x5eed, method=:philox)
+end
+
+@testset "Tasks and turn modulation follow-ups: receipts after the refusals, one warning per cause, apertures inside a bare line, frozen tables and preset names, once-per-execute! walks, the stream registry's bounds" begin
+    # 2026-10-16 crab-cavity noise neighbour audit, fix group F: leads U3-6
+    # (the two per-run receipts were recorded before three refusals), U8-16
+    # and fix B's open point (the sharing warnings said "on different
+    # elements" for one spec placed twice, and a pair the constructor named
+    # was named again at compile), S3-1 (an aperture inside a bare `BeamLine`
+    # placed in a task tuple warned nothing and its kill read as "nothing was
+    # collimating"), U1-7 and U1-8 (a custom spectrum under a preset's label
+    # took the preset's canonical name; a `TurnTable` whose `offsets` field
+    # was written to ran under a stale digest), U9-4 (every once-per-execute!
+    # walk boxed the heterogeneous entries tuple per element, 1.25 MB and
+    # 1.82 MB per `execute!` on an eight-type line of 40 elements), fix C's
+    # open points and todo row 40 (the registry kept one Dict entry per
+    # automatic assignment, an explicit `typemax(UInt64)` exhausted the
+    # counter, a negative id was an `InexactError`). Each pin failed on
+    # ac3fbb2 for its defect's reason (fixes/F/probe_F_RED_ac3fbb2.log).
+    warns(f, re=r"") = [l for l in Test.collect_test_logs(f)[1]
+                        if l.level == Base.CoreLogging.Warn && occursin(re, string(l.message))]
+    rcpts(audit, c) = filter(r -> r.consumer === c, execution_receipts(audit))
+    function attempt(f)
+        audit = ExecutionAudit()
+        err = Ref{Any}(nothing)
+        with_execution_audit(audit) do
+            try; f(); catch e; err[] = e; end
+        end
+        return audit, err[]
+    end
+    refusal(f) = begin
+        err = try; f(); nothing catch e; e end
+        (err, err === nothing ? "" : sprint(showerror, err))
+    end
+    crab(; kw...) = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,), kw...)
+    disp = CrabDispersionSpec{Float64}(zeta1=0.1)
+    mkp() = Phase6DRep([1.0e-4], [0.0], [3.0e-5], [0.0], [1.0e-2], [0.0])
+    ip = StrongStrongCollision(:ip)
+    mkb(rng_id, charge, mc2, E0; policy=CPUThreadsExecutionPolicy()) = Beam(64, policy, Float64;
+        beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3),
+        cutoff=5.0, rng_id=rng_id, charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+    # The suite's fresh-explicit-id convention: above the counter, above every
+    # literal id, and clear of what another test claimed in the same band.
+    fresh() = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
+    tbl5 = TurnTable([0.001, 0.002, 0.003, 0.004, 0.005]; name="five")
+    set_global_rng!(seed=0x5eed, method=:philox)
+    try
+        band = (1 / 64, 1 / 4)
+        sig = 1.0e-4
+        b1, b2 = mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9)
+        @testset "(f) the stream registry: negative ids, skipped claims, typemax, bounded memory" begin
+            # (f) The stream registry (fix C's open points, todo row 40), first,
+            # outside the artifact directory the other sections share. A negative
+            # id is refused by name at the registry and at every consumer that
+            # converts there; an explicit claim leaves the automatic sequence where
+            # it was and the sequence steps over the claimed id when it reaches it,
+            # so `typemax(UInt64)` is claimable and only the counter's own top
+            # exhausts it; the explicit-after-auto warning names the holder's class
+            # within the 2^16-assignment window and still warns beyond it; and the
+            # registry's memory does not grow with automatic assignments. The
+        # holders are forgotten first (the counter stays) so the consecutive
+        # ids below are not stepped over by a literal an earlier testset claimed.
+            Octopus.reset_rng_id_counter!(Octopus.next_rng_id!())
+            rad_kw = (damping_turns=(100.0, 100.0, 50.0), beta=(1.0, 1.0, 1.0), alpha=(0.0, 0.0, 0.0),
+                      sigma=(1.0e-3, 1.0e-3, 1.0e-3))
+            for (label, f) in (("claim_rng_id!", () -> Octopus.claim_rng_id!(-1; consumer=:beam)),
+                               ("LumpedRadSpec", () -> LumpedRadSpec(; rad_kw..., rng_id=-1)),
+                               ("BPMObserver", () -> BPMObserver("b"; rng_id=-1)),
+                               ("Beam", () -> Beam(8, CPUThreadsExecutionPolicy(); rng_id=-1)))
+                err, msg = refusal(f)
+                @testset let consumer = label
+                    @test err isa ArgumentError
+                    @test occursin("-1", msg) && occursin("negative", msg) && occursin("non-negative integer", msg)
+                end
+            end
+            c0 = Octopus.next_rng_id!()
+            Octopus.claim_rng_id!(c0 + 2; consumer=:beam)
+            @test Octopus.next_rng_id!() == c0 + 1
+            @test Octopus.next_rng_id!() == c0 + 3                      # c0 + 2 is stepped over
+            Octopus.claim_rng_id!(c0 + 1000; consumer=:beam)
+            @test Octopus.next_rng_id!() == c0 + 4                      # a far claim moves nothing (it used to jump the counter to 1000)
+            @test Octopus.claim_rng_id!(typemax(UInt64); consumer=:bpm_observer) === typemax(UInt64)
+            @test Octopus.next_rng_id!() == c0 + 5                      # the sequence continues (it used to be exhausted)
+            Octopus.reset_rng_id_counter!(typemax(UInt64) - 2)
+            @test Octopus.next_rng_id!() == typemax(UInt64) - 1
+            Octopus.claim_rng_id!(typemax(UInt64); consumer=:beam)
+            err_x, msg_x = refusal(() -> Octopus.next_rng_id!())
+            @test err_x isa ArgumentError && occursin("exhausted", msg_x) && occursin("reset_rng_id_counter!", msg_x)
+            Octopus.reset_rng_id_counter!(c0 + 5)
+            peek = Octopus.next_rng_id!()
+            Beam(8, CPUThreadsExecutionPolicy())                        # auto-assigned peek + 1, class :beam
+            wa = warns(() -> LumpedRadSpec(; rad_kw..., rng_id=peek + 1))
+            @test length(wa) == 1 && occursin("beam consumer (auto-assigned", string(wa[1].message))
+            old_auto = Octopus.next_rng_id!(consumer=:turn_rule)
+            for _ in 1:Octopus._RNG_ID_CLASS_WINDOW
+                Octopus.next_rng_id!(consumer=:beam)
+            end
+            wo = warns(() -> Octopus.claim_rng_id!(old_auto; consumer=:lumped_radiation))
+            @test length(wo) == 1 && occursin("no longer retained", string(wo[1].message)) &&
+                  !occursin("turn_rule", string(wo[1].message))
+            GC.gc()
+            s0 = Base.summarysize(Octopus._RNG_ID_REGISTRY)
+            for _ in 1:(1 << 17)
+                Octopus.next_rng_id!(consumer=:beam)
+            end
+            GC.gc()
+            s1 = Base.summarysize(Octopus._RNG_ID_REGISTRY)
+            # 132.6 B per automatic assignment on ac3fbb2 (13.3 MB per 100,000).
+            @testset let registry_bytes_before = s0, registry_bytes_after = s1
+                @test s1 - s0 <= 1024
+                @test s1 < 200_000
+            end
+        end
+        mktempdir() do dir
+            @testset "(a) receipts after the refusals" begin
+                # (a) U3-6: a run refused before its first turn leaves neither the
+                # `:tracking_turn_timing` nor the `:turn_modulation` receipt -- the
+                # hidden-strong-beam refusal, the artifact's label mismatch and a
+                # duplicate probe name on the weak-strong task, a duplicate probe
+                # name on the strong-strong task -- while a run that tracks records
+                # exactly one of each, on the general loop and on the fast loop.
+                # Before, both receipts were recorded in `execute!` ahead of every
+                # refusal but the divided-run one (1 of each on every refused run).
+                sb_hidden = ThinStrongBeamSpec(; kbb=1.0e-4, beta=(1.0, 1.0), sigma=(1.0e-3, 1.0e-3), x_offset=1.0e-4)
+                sb = ThinStrongBeamSpec(; kbb=1.0e-4, beta=(1.0, 1.0), sigma=(1.0e-3, 1.0e-3))
+                dup_probe() = (ScheduledObserver(MomentObserver(; name="m", orders=1)),
+                               ScheduledObserver(MomentObserver(; name="m", orders=1)))
+                p_lab = joinpath(dir, "labels.h5")
+                execute!(TrackingTask((crab(phase_noise=(tbl5,)), sb, disp); artifact=RunArtifact(p_lab; append=true)),
+                         mkp(); turns=2)
+                refused = (("hidden strong beam",
+                            TrackingTask((crab(phase_noise=(tbl5,)), sb_hidden, disp);
+                                         artifact=RunArtifact(joinpath(dir, "hidden.h5"); record_turn_modulation=true)),
+                            r"hidden behind a wrapper"),
+                           ("artifact label mismatch",
+                            TrackingTask((crab(phase_noise=(tbl5,)), disp); artifact=RunArtifact(p_lab; append=true)),
+                            r"do not match this task's collision labels"),
+                           ("duplicate probe name",
+                            TrackingTask((crab(phase_noise=(tbl5,)), dup_probe()...);
+                                         artifact=RunArtifact(joinpath(dir, "dup.h5"))),
+                            r"duplicate probe name"))
+                for (label, task, re) in refused
+                    audit, err = attempt(() -> execute!(task, mkp(); turns=3))
+                    @testset let refusal = label
+                        @test err isa ArgumentError && occursin(re, sprint(showerror, err))
+                        @test isempty(rcpts(audit, :turn_modulation))
+                        @test isempty(rcpts(audit, :tracking_turn_timing))
+                        @test task.next_turn[] == 0
+                    end
+                end
+                if CUDA_TESTS_ACTIVE
+                    tcu = TrackingTask((crab(phase_noise=(tbl5,)), sb, disp);
+                                       artifact=RunArtifact(joinpath(dir, "fused_cuda.h5")),
+                                       luminosity_tracking=:fused, policy=CUDAExecutionPolicy())
+                    bcu = mkb(0, -1.0, EMASS_EV, 10.0e9; policy=CUDAExecutionPolicy())
+                    audit_cu, err_cu = attempt(() -> execute!(tcu, bcu; turns=3))
+                    @test err_cu isa ArgumentError && occursin("CPU threads backend only", sprint(showerror, err_cu))
+                    @test isempty(rcpts(audit_cu, :turn_modulation)) && isempty(rcpts(audit_cu, :tracking_turn_timing))
+                else
+                    @test_skip "CUDA inactive: the :fused-on-CUDA refusal leaves no receipt (not exercised)"
+                end
+                ok = TrackingTask((crab(phase_noise=(tbl5,)), sb, disp);
+                                  artifact=RunArtifact(joinpath(dir, "ok.h5"); record_turn_modulation=true))
+                audit_ok, err_ok = attempt(() -> execute!(ok, mkp(); turns=3))
+                @test err_ok === nothing
+                @test length(rcpts(audit_ok, :turn_modulation)) == 1 && length(rcpts(audit_ok, :tracking_turn_timing)) == 1
+                @test only(rcpts(audit_ok, :turn_modulation)).values.turns == 3
+                @test only(rcpts(audit_ok, :tracking_turn_timing)).values.fast_path == false
+                fast = TrackingTask((crab(phase_noise=(tbl5,)), disp))
+                audit_f, err_f = attempt(() -> execute!(fast, mkp(); turns=2))
+                @test err_f === nothing && length(rcpts(audit_f, :turn_modulation)) == 1
+                @test only(rcpts(audit_f, :tracking_turn_timing)).values.fast_path == true
+                tss = StrongStrongTask((ip, crab(phase_noise=(tbl5,)), dup_probe()...), (ip, DriftSpec(L=0.1));
+                                       artifact=RunArtifact(joinpath(dir, "dup_ss.h5"); record_turn_modulation=true))
+                audit_ss, err_ss = attempt(() -> execute!(tss, b1, b2; turns=2))
+                @test err_ss isa ArgumentError && occursin("duplicate probe name", sprint(showerror, err_ss))
+                @test isempty(rcpts(audit_ss, :turn_modulation))
+                @test tss.artifact.file === nothing
+                ss_ok = StrongStrongTask((ip, crab(phase_noise=(tbl5,))), (ip, DriftSpec(L=0.1)))
+                audit_sso, err_sso = attempt(() -> execute!(ss_ok, b1, b2; turns=2))
+                @test err_sso === nothing && length(rcpts(audit_sso, :turn_modulation)) == 1
+
+            end
+            @testset "(b) one warning per cause" begin
+                # (b) U8-16 and fix B's open point: one cause, one warning. The
+                # constructor's stream and table checks word one spec object placed
+                # twice as placements (kwargs `placements`) and distinct specs as
+                # distinct elements, noting a mixture; the resolved-line check is
+                # silent for what the constructor named (a SpectralNoise spec placed
+                # twice, a table spec placed twice, two offline copies of one table,
+                # two SpectralNoise rules on one explicit id, on both task kinds) and
+                # names what the spec layer could not see -- the rule beside its
+                # offline twin, exactly once; a rule added after construction -- the
+                # memo being the task's `reported_sharing`.
+                set_global_rng!(seed=1001, method=:philox)
+                idW = fresh()
+                w = crab(phase_noise=(WhiteNoise(sig; rng_id=idW),))
+                w2 = crab(phase_noise=(WhiteNoise(sig; rng_id=idW),))
+                lw = warns(() -> TrackingTask((w, disp, w)), r"share an rng_id")
+                @test length(lw) == 1
+                if length(lw) == 1
+                    @test occursin("2 placements of one element spec", string(lw[1].message))
+                    @test !occursin("different elements", string(lw[1].message)) && occursin("second spec", string(lw[1].message))
+                    @test lw[1].kwargs[:rng_ids] == [idW] && lw[1].kwargs[:placements] == [2]
+                end
+                ld = warns(() -> TrackingTask((w, disp, w2)), r"share an rng_id")
+                @test length(ld) == 1 && occursin("distinct elements", string(ld[1].message)) &&
+                      !occursin("placements of one", string(ld[1].message)) && ld[1].kwargs[:rng_ids] == [idW]
+                lm = warns(() -> TrackingTask((w, disp, w2, w)), r"share an rng_id")
+                @test length(lm) == 1 && occursin("distinct elements", string(lm[1].message)) &&
+                      occursin("placements of one spec object", string(lm[1].message))
+                idA = fresh()
+                specA = crab(phase_noise=(SpectralNoise(sig, band, :flat; rng_id=idA, turns=256),))
+                off = spectral_turn_table(:flat, sig, band; turns=256, seed=1001, rng_id=idA, slot=1)
+                specB = crab(phase_noise=(off,))
+                specB2 = crab(phase_noise=(off,))
+                lt = warns(() -> TrackingTask((specB, disp, specB)), r"same digest")
+                @test length(lt) == 1
+                if length(lt) == 1
+                    @test occursin("2 placements of one element spec", string(lt[1].message)) &&
+                          !occursin("different elements", string(lt[1].message))
+                    @test lt[1].kwargs[:digests] == [off.digest] && length(lt[1].kwargs[:tables]) == 2
+                end
+                lt2 = warns(() -> TrackingTask((specB, disp, specB2)), r"same digest")
+                @test length(lt2) == 1 && occursin("distinct elements", string(lt2[1].message)) &&
+                      lt2[1].kwargs[:digests] == [off.digest]
+                for (label, specs) in (("SpectralNoise spec placed twice", (specA, disp, specA)),
+                                       ("table spec placed twice", (specB, disp, specB)),
+                                       ("two offline copies of one table", (specB, disp, specB2)))
+                    t = Test.collect_test_logs(() -> TrackingTask(specs))[2]
+                    @testset let case = label
+                        @test isempty(warns(() -> execute!(t, mkp(); turns=2), r"same digest"))
+                    end
+                end
+                idD = fresh()
+                specD1 = crab(phase_noise=(SpectralNoise(sig, band, :flat; rng_id=idD, turns=256),))
+                specD2 = crab(phase_noise=(SpectralNoise(sig, band, :flat; rng_id=idD, turns=256),))
+                tD = @test_logs (:warn, r"distinct elements share an rng_id") match_mode = :any TrackingTask((specD1, disp, specD2))
+                @test isempty(warns(() -> execute!(tD, mkp(); turns=2), r"same digest"))
+                table_of(task, k) = Octopus._slot_rules(Octopus._physics_line(Octopus._runtime_entries(task))[k].rule)[1][2]
+                @test table_of(tD, 1).digest == table_of(tD, 3).digest     # equal indeed; the constructor covered it
+                @test tD.reported_sharing.rng_ids == Set([idD]) && isempty(tD.reported_sharing.digests)
+                t6 = @test_logs TrackingTask((specA, disp, specB))
+                @test isempty(t6.reported_sharing.rng_ids) && isempty(t6.reported_sharing.digests)
+                l6 = warns(() -> execute!(t6, mkp(); turns=2), r"same digest")
+                @test length(l6) == 1 && occursin("slots of the compiled line", string(l6[1].message))
+                @test isempty(warns(() -> execute!(t6, mkp(); turns=2), r"same digest"))
+                late = crab()
+                t7 = @test_logs TrackingTask((late, disp, late))
+                set_param!(late, :phase_noise, (SpectralNoise(sig, band, :flat; rng_id=fresh(), turns=256),))
+                l7 = warns(() -> execute!(t7, mkp(); turns=2), r"same digest")
+                @test length(l7) == 1 && occursin("placements of one element spec hold", string(l7[1].message))
+                ss_p = @test_logs (:warn, r"placements of one element spec carry") match_mode = :any StrongStrongTask(
+                    (ip, specB), (ip, DriftSpec(L=0.2), specB))
+                @test isempty(warns(() -> execute!(ss_p, b1, b2; turns=1), r"same digest"))
+                set_global_rng!(seed=0x5eed, method=:philox)
+
+            end
+            @testset "(c) apertures inside a bare line placed in a tuple" begin
+                # (c) S3-1: an aperture inside a bare `BeamLine` placed in a task
+                # tuple compiles into a `CompositeLine` and warns at construction,
+                # as an own-state line always did; its kill is the unattributed one
+                # the warning announces. The line handed directly dissolves and
+                # attributes; an aperture at task level is silent.
+                line = (DriftSpec(L=1.0), BeamLine("A", ApertureSpec(x_limit=2.0e-3, name="COLL_A"), DriftSpec(L=1.0)))
+                @test Octopus._collect_hidden_apertures!(Symbol[], line, false) == [:COLL_A]
+                lh = warns(() -> TrackingTask(line), r"outside loss accounting")
+                @test length(lh) == 1
+                if length(lh) == 1
+                    @test lh[1].kwargs[:apertures] == [:COLL_A] && occursin("compiles whole", string(lh[1].message))
+                    @test occursin("Hand the line to the task directly", string(lh[1].message))
+                end
+                tA = Test.collect_test_logs(() -> TrackingTask(line))[2]
+                rA = Phase6DRep([5.0e-3, 1.0e-4], zeros(2), zeros(2), zeros(2), zeros(2), zeros(2))
+                @test [nameof(typeof(e)) for e in Octopus._physics_line(Octopus._runtime_entries(tA, rA))] ==
+                      [:LatticeMagnet, :CompositeLine]
+                la = warns(() -> allow_lost_particles(() -> execute!(tA, rA; turns=1); enabled=true),
+                           r"no aperture responsible")
+                @test length(la) == 1 && la[1].kwargs[:unattributed] == 1
+                @test loss_record(tA) === nothing
+                tDir = @test_logs TrackingTask(BeamLine("A", ApertureSpec(x_limit=2.0e-3, name="COLL_A"), DriftSpec(L=1.0)))
+                rDir = Phase6DRep([5.0e-3, 1.0e-4], zeros(2), zeros(2), zeros(2), zeros(2), zeros(2))
+                @test_logs allow_lost_particles(() -> execute!(tDir, rDir; turns=1); enabled=true)
+                @test loss_counts(loss_record(tDir)) == [1] && loss_summary(rDir, tDir).unattributed == 0
+                @test_logs (:warn, r"outside loss accounting") match_mode = :any TrackingTask(
+                    (DriftSpec(L=1.0), BeamLine("A", ApertureSpec(x_limit=2.0e-3, name="COLL_A"), DriftSpec(L=1.0); x_offset=0.0)))
+                @test_logs TrackingTask((ApertureSpec(x_limit=1.0e-3, name="OPEN"), DriftSpec(L=1.0)))
+
+            end
+            @testset "(d) preset names and frozen tables" begin
+                # (d) U1-7: a custom spectrum under a preset's name is refused by
+                # name on the factory and on the rule (case and blank padding do
+                # not make it distinct); a label of its own passes, and the
+                # preset's own shape under its own label passes (the resolution
+                # path). U1-8: `offsets` is the table's own copy; an entry written
+                # into the field after construction is refused at compile by name,
+                # with both digests, directly and through the task.
+                for (label, f) in (("factory", () -> spectral_turn_table("flat" => f -> 1 / f, sig, band; turns=64, seed=1, rng_id=fresh())),
+                                   ("rule", () -> SpectralNoise(sig, band, "Pink " => f -> 1.0; rng_id=0, turns=64)))
+                    err, msg = refusal(f)
+                    @testset let case = label
+                        @test err isa ArgumentError
+                        @test occursin("preset", msg) && occursin("label", msg) && occursin("digest", msg) && occursin("_custom", msg)
+                    end
+                end
+                idP = fresh()
+                @test spectral_turn_table("flat_custom" => f -> 1 / f, sig, band; turns=64, seed=1, rng_id=idP) isa TurnTable
+                @test spectral_turn_table(:flat, sig, band; turns=64, seed=1, rng_id=idP).name ==
+                      spectral_turn_table("flat" => Octopus._spectral_flat, sig, band; turns=64, seed=1, rng_id=idP).name
+                @test compile_runtime(crab(phase_noise=(SpectralNoise(sig, band, :pink; rng_id=fresh(), turns=64),))) isa TurnModulated
+                v = [0.001, 0.002, 0.003]
+                tv = TurnTable(v; name="own")
+                v[1] = 9.0
+                @test tv.offsets == [0.001, 0.002, 0.003] && tv.digest == TurnTable([0.001, 0.002, 0.003]).digest
+                @test compile_runtime(crab(phase_noise=(tv,))) isa TurnModulated
+                tv.offsets[2] = 5.0
+                err_m, msg_m = refusal(() -> compile_runtime(crab(phase_noise=(tv,))))
+                @test err_m isa ArgumentError
+                @test occursin("\"own\"", msg_m) && occursin("changed after construction", msg_m) && occursin("slot 1", msg_m)
+                @test occursin(repr(tv.digest), msg_m) && occursin(repr(Octopus._fnv1a64(reinterpret(UInt8, tv.offsets))), msg_m)
+                @test_throws ArgumentError execute!(TrackingTask((crab(phase_noise=(tv,)), disp)), mkp(); turns=1)
+
+            end
+            @testset "(e) once-per-execute! walks" begin
+                # (e) U9-4: the once-per-execute! walks no longer box the entries
+                # tuple per element. Measured on ac3fbb2 at 4 threads, eight-type
+                # line of 40 crab cavities: 1,245,392 B per `execute!(turns = 1)` on
+                # the fast path and 1,820,560 B on the general one, each walk about
+                # 185-206 kB; fixed, 97,792 B and 103,632 B (the turn's own chunk
+                # tasks), each walk 0-32 B. The bound is four times the fixed
+                # value and a third of the defect; the per-walk bound 256 B.
+                crabN(N) = ThinCrabCavitySpec{N}(394.0e6; strengthX=ntuple(_ -> 2.0e-3, N),
+                                                strengthY=ntuple(_ -> 5.0e-4, N), phase=ntuple(_ -> 0.1, N))
+                hetero = Tuple(crabN(mod1(i, 8)) for i in 1:40)
+                rep4() = Phase6DRep(collect(range(-1.0e-3, 1.0e-3; length=4)), zeros(4), zeros(4), zeros(4),
+                                    zeros(4), zeros(4))
+                task_f = TrackingTask(hetero)
+                task_g = TrackingTask(hetero; observers=(BPMObserver("walks"),))   # any observer leaves the fast loop
+                rf, rg = rep4(), rep4()
+                for _ in 1:3
+                    execute!(task_f, rf; turns=1)
+                    execute!(task_g, rg; turns=1)
+                end
+                a_fast = @allocated execute!(task_f, rf; turns=1)
+                a_gen = @allocated execute!(task_g, rg; turns=1)
+                @testset let fast_path_bytes = a_fast, general_path_bytes = a_gen
+                    @test a_fast < 400_000
+                    @test a_gen < 400_000
+                end
+                entries = Octopus._runtime_entries(task_f, rf)
+                elems = Octopus._physics_line(entries)
+                f_pl(e) = @allocated Octopus._physics_line(e)
+                f_sb(e) = @allocated Octopus._strong_beams_of(e)
+                f_hs(e) = @allocated Octopus._count_hidden_strong_beams(e)
+                f_tw(e) = @allocated Octopus._check_turn_window(e, Int64(0), 1)
+                f_te(e) = @allocated Octopus._turn_modulation_entries(e, 1)
+                f_tc(e) = @allocated Octopus._turn_modulation_columns!(Any[], e)
+                f_em(e) = @allocated Octopus._each_modulated(w -> nothing, e)
+                f_be(e) = @allocated Octopus._check_beam_eltype(e, Float64)
+                f_po(e) = @allocated Octopus.prepare_line_observers!(e; turns=1, first_turn=0)
+                f_fo(e) = @allocated Octopus._finalize_line_observers!(e)
+                f_hk(e) = @allocated Octopus._line_hook_entries(e)
+                walks = (("_physics_line", () -> f_pl(entries)), ("_strong_beams_of", () -> f_sb(elems)),
+                         ("_count_hidden_strong_beams", () -> f_hs(elems)), ("_check_turn_window", () -> f_tw(elems)),
+                         ("_turn_modulation_entries", () -> f_te(elems)), ("_turn_modulation_columns!", () -> f_tc(elems)),
+                         ("_each_modulated", () -> f_em(elems)), ("_check_beam_eltype", () -> f_be(elems)),
+                         ("prepare_line_observers!", () -> f_po(entries)), ("_finalize_line_observers!", () -> f_fo(entries)),
+                         ("_line_hook_entries", () -> f_hk(entries)))
+                for (name, f) in walks
+                    f(); f()
+                    @testset let walk = name, bytes = f()
+                        @test bytes <= 256
+                    end
+                end
+                l6a = Linear6DSpec{Float64}(; beta1=(0.55, 0.056, 12.7), beta2=(0.55, 0.056, 12.7),
+                                            alpha1=(0.0, 0.0, 0.0), alpha2=(0.0, 0.0, 0.0), dmu=2pi .* (0.08, 0.14, -0.069))
+                ss_h = StrongStrongTask((ip, hetero..., l6a), (ip, hetero..., l6a))
+                blocks = Octopus._strong_strong_runtime_blocks(ss_h, 1)
+                f_sp(b) = @allocated Octopus._strong_strong_physics_line(b)
+                f_lo(b) = @allocated Octopus._line_observers(b)
+                for _ in 1:2
+                    f_sp(blocks); f_lo(blocks)
+                end
+                # 38,736 B and 26,704 B on ac3fbb2 (two blocks of 41 elements);
+                # fixed, 12,064 B -- the 42 elements boxed into the result vector
+                # and the result tuple itself (4,928 B), bounded at three times the
+                # tuple plus 2 kB, under half the defect -- and 32 B (the vector).
+                res_sp = Octopus._strong_strong_physics_line(blocks)
+                @testset let strong_strong_physics_line_bytes = f_sp(blocks), line_observers_bytes = f_lo(blocks),
+                             result_tuple_bytes = sizeof(typeof(res_sp))
+                    @test strong_strong_physics_line_bytes <= 3 * result_tuple_bytes + 2048
+                    @test line_observers_bytes <= 256
+                end
+            end
+        end
+
+    finally
+        set_global_rng!(seed=0x5eed, method=:philox)
+    end
 end
 
 @testset "The run artifact records the realised turn modulation" begin

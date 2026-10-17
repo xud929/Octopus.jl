@@ -263,6 +263,16 @@ and throws otherwise, so a run never runs out mid-window and never wraps
 (a wrapped sequence is periodic in the table length and would correlate
 turn `t` with turn `t - N` silently).
 
+`offsets` is the table's OWN copy of the vector handed in (`collect`), so a
+caller's vector may be reused or overwritten after construction without
+touching the table. The field itself is a `Vector`, and `digest` and `name`
+are frozen when the table is built: an entry written into `offsets` after
+construction would run under provenance describing other data, so the
+compile step (`_resolve_turn_rule`, reached by both cavities'
+`_turn_modulation_wrap`) recomputes the digest once per compile and refuses
+a table whose entries no longer match it, by name (2026-10-16 neighbour
+audit, U1-8). Build a new table from changed data instead.
+
 The fourth field, `resolved_seed`, is provenance the constructor never sets:
 `nothing` on every table built here (a measured record, an offline
 `spectral_turn_table`); on a table that `_resolve_turn_rule` synthesised
@@ -350,6 +360,23 @@ function _spectral_shape(who::String, spectrum::Pair{<:AbstractString,<:Any})
     isempty(strip(label)) && throw(ArgumentError(
         "$(who): a custom spectrum needs a non-empty label (it names the spectrum in the " *
         "table's canonical name and the run's provenance); got \"\" => S"))
+    # A preset's name on a custom shape is refused (2026-10-16 neighbour audit,
+    # U1-7): the canonical name records the label and not `S`, so
+    # `"flat" => f -> 1/f` named its table `spectral(flat; ...)`, byte for byte
+    # the preset's, and only the digest told them apart. The preset's own
+    # shape under its own label passes: that is how a resolved rule re-enters
+    # (`_resolve_turn_rule` hands `rule.label => rule.S`). Case and blank
+    # padding do not make a label distinct.
+    key = Symbol(lowercase(strip(label)))
+    if haskey(_SPECTRAL_PRESETS, key) && last(spectrum) !== _SPECTRAL_PRESETS[key].S
+        throw(ArgumentError(
+            "$(who): the custom spectrum label $(repr(label)) is the name of the preset " *
+            ":$(key), whose shape is $(_SPECTRAL_PRESETS[key].formula); a custom S under a " *
+            "preset's label would be named spectral($(label); ...) in the receipt and the " *
+            "artifact, exactly as the preset's table is, and only the digest would tell the " *
+            "two apart. Pass the preset :$(key) for the preset's shape, or give the custom " *
+            "spectrum a label of its own (for example $(repr(label * "_custom")))"))
+    end
     return label, last(spectrum)
 end
 _spectral_shape(who::String, spectrum) = throw(ArgumentError(
@@ -687,7 +714,9 @@ a band with no bin (the message states `lb`, `ub`, `N` and the first bin
 `1/N`); `lb <= 0`, `lb >= ub`, `ub > 1/2`; a negative, infinite or NaN
 `S(f_k)` on any bin (the bin and its frequency named); a spectrum that
 vanishes on every bin with `sigma > 0`; non-finite or negative `sigma`; a
-custom spectrum with an empty label or whose `S` is not callable on a
+custom spectrum with an empty label, or labelled with a preset's name
+(`"flat" => S` with `S` not the preset's own shape: the name would read as
+the preset's, 2026-10-16), or whose `S` is not callable on a
 frequency; an unknown preset; `amplitudes` other than `:fixed` or
 `:rayleigh`; a `T` that is not an `AbstractFloat`; a negative or non-integer
 `seed`, `rng_id`, `slot` or `turns`; `rng_id = 0`; a non-positive `f_rev`.
@@ -807,7 +836,9 @@ and an offline `spectral_turn_table` of the same three numbers on two
 elements are one table; the constructor's checks cannot see that (the rule
 has no digest before it resolves), so each task walks its compiled line once
 per compilation and warns on equal digests across modulated elements
-(`_warn_resolved_duplicate_tables`, src/tasks/Tasks.jl).
+(`_warn_resolved_duplicate_tables`, src/tasks/Tasks.jl) -- skipping what the
+constructor already named through a shared `rng_id` or an equal digest, so
+one cause gets one warning (2026-10-16, fix group F).
 
 ```julia
 set_global_rng!(seed = 42)
@@ -865,6 +896,21 @@ beyond an offline one: `resolved_seed`, the global seed read here, which
 built with it).
 """
 _resolve_turn_rule(rule, slot::Integer, ::Type{T}) where {T} = rule
+# A table whose entries no longer match the digest frozen at construction is
+# refused here, once per compile (one FNV-1a pass over the entries, about a
+# millisecond per 2^20 turns), rather than run under a receipt describing other
+# data: `offsets` is the table's own copy, but a `Vector` field can be written
+# to (2026-10-16 neighbour audit, U1-8).
+function _resolve_turn_rule(rule::TurnTable, slot::Integer, ::Type{T}) where {T}
+    digest = _fnv1a64(reinterpret(UInt8, rule.offsets))
+    digest == rule.digest || throw(ArgumentError(
+        "TurnTable $(repr(rule.name)) on slot $(slot): the offsets were changed after " *
+        "construction (digest $(repr(rule.digest)) was recorded when the table was built, " *
+        "the entries now digest to $(repr(digest))). A table's digest and name are provenance " *
+        "frozen at construction, so a changed field would run under a receipt describing " *
+        "other data; build a new TurnTable from the changed data instead of editing offsets"))
+    return rule
+end
 function _resolve_turn_rule(rule::SpectralNoise, slot::Integer, ::Type{T}) where {T}
     seed = global_rng_seed()
     table = _spectral_table("SpectralNoise", rule.label => rule.S, rule.sigma, rule.band, rule.turns,
@@ -1468,6 +1514,32 @@ end
 @inline _update_entry(e::Tuple, ctx::TrackingContext, sink) = update_line(e, ctx, sink)
 @inline _update_entry(e, ctx::TrackingContext, sink) = update(e, ctx, sink)
 
+"""
+    _foreach_unrolled(f, entries::Tuple) -> nothing
+
+`foreach(f, entries)` with LITERAL indices: one statically typed call
+`f(entries[i])` per position, generated from the tuple's type. The walk every
+once-per-`execute!` traversal of a compiled line takes -- the physics-line
+extraction, the window check, the provenance and columns walks, the strong-beam
+and hidden-beam scans, the beam-eltype check, the line observers' prepare and
+finalize, the hook extraction, and the strong-strong twins -- because `for e in
+entries` and `foreach` over an isbits tuple of mixed element types box the
+WHOLE tuple at every step (the runtime-index `getindex` returns the element
+boxed, and for a mixed tuple the box is a copy of the tuple): about 185 kB per
+walk on a 40-element line of eight types, 1.25 MB per `execute!` on the fast
+path and 1.82 MB on the general one, measured (2026-10-16 neighbour audit,
+U9-4). `_update_line_unrolled` above is the per-turn precedent; this is the
+same unroll for a walk that returns nothing or pushes into a vector, and
+inference alone -- not constant propagation -- makes each call concrete (the
+`_slot_draws` lesson, `docs/experiences.md`). A closure handed in may capture
+a vector it pushes into; it must not rebind a captured variable (the suite's
+`Core.Box` sweep).
+"""
+@generated function _foreach_unrolled(f, entries::Tuple)
+    calls = [:(f(entries[$i])) for i in 1:length(entries.parameters)]
+    return Expr(:block, calls..., :(return nothing))
+end
+
 # ---------------------------------------------------------------------------
 # The walks a wrapper joins. The window check and the stream collector are
 # new walks; they descend the same three wrappers, the kept-whole line and the
@@ -1484,7 +1556,7 @@ a no-op.
 """
 _check_turn_window(elem, first_turn::Int64, nturns::Int) = nothing
 _check_turn_window(elems::Tuple, first_turn::Int64, nturns::Int) =
-    (foreach(e -> _check_turn_window(e, first_turn, nturns), elems); nothing)
+    _foreach_unrolled(e -> _check_turn_window(e, first_turn, nturns), elems)
 # The wrapper forwards to the container-level check, generic over the
 # container's `_slot_rules`, which names the element and slot in `where`
 # ("ThinCrabCavity phase_noise[i]", "ThinRFCavity strength_noise").
@@ -1508,7 +1580,7 @@ seed-drift collector `_resolved_seed_drift` and the slot table
 container's `_slot_rules` like every other slot walk here.
 """
 _each_modulated(f, elem) = nothing
-_each_modulated(f, elems::Tuple) = (foreach(e -> _each_modulated(f, e), elems); nothing)
+_each_modulated(f, elems::Tuple) = _foreach_unrolled(e -> _each_modulated(f, e), elems)
 _each_modulated(f, w::TurnModulated) = (f(w); nothing)
 _each_modulated(f, elem::Union{MisalignedElement,RefTilted}) = _each_modulated(f, elem.inner)
 _each_modulated(f, elem::CompositeLine) = _each_modulated(f, elem.ops)
@@ -1544,7 +1616,9 @@ end
 
 One entry `(element, slots)` per modulated element of a compiled line, in
 line order, `slots` the vector of its ACTIVE table slots as
-`(slot, digest, name)` (the live rules carry no digest and are skipped; an
+`(slot, index, digest, name)` -- `slot` the container's label, `index` its
+position in `_slot_rules`, which is the position in the spec's
+`_turn_rule_values` (the live rules carry no digest and are skipped; an
 element whose active slots are all live contributes an entry with an empty
 vector, so the entry index is the modulated-element index of the provenance
 receipt). The resolved-line side of the equal-digest check
@@ -1555,9 +1629,9 @@ function _resolved_table_slots(elems)
     out = NamedTuple[]
     _each_modulated(elems) do w
         slots = NamedTuple[]
-        for (label, rule) in _slot_rules(w.rule)
+        for (k, (label, rule)) in enumerate(_slot_rules(w.rule))
             rule isa TurnTable || continue
-            push!(slots, (slot = label, digest = rule.digest, name = rule.name))
+            push!(slots, (slot = label, index = k, digest = rule.digest, name = rule.name))
         end
         push!(out, (element = string(nameof(typeof(w.base))), slots = slots))
     end
@@ -1609,6 +1683,7 @@ _each_turn_rule_spec(f, element::ElementSpec{:line}) =
 _each_turn_rule_spec(f, spec::ElementSpec) = (f(spec); nothing)
 
 """
+    _collect_turn_modulation_streams!(streams::Vector, element) -> streams
     _collect_turn_modulation_ids!(ids::Vector{UInt64}, element) -> ids
 
 Collect the `rng_id` of every stochastic turn-modulation rule declared on the
@@ -1616,20 +1691,33 @@ SPECS of a line (the walk of `_each_turn_rule_spec`), one entry per distinct
 id per element, so `_warn_duplicate_turn_modulation_streams` can warn when two
 elements share a stream. Each spec's rule objects are read through the kind's
 `_turn_rule_values`, and each DISTINCT `rng_id` among them (every rule
-carrying an `rng_id` field; `WhiteNoise` and `PinkNoise` today) is pushed
-once: one id shared by every slot of one element contributes one entry (the
-slots keep the draws independent) and does not warn; the same id on two
-elements contributes two and does. Kinds that declare rule parameters add a
-`_turn_rule_values` method, not a collector method.
+carrying an `rng_id` field: `WhiteNoise`, `PinkNoise` and `SpectralNoise`) is
+pushed once: one id shared by every slot of one element contributes one entry
+(the slots keep the draws independent) and does not warn; the same id on two
+elements contributes two and does. The streams form pushes `(rng_id, spec)`,
+`spec` the spec object the walk visited, so the warning can tell two
+placements of ONE spec object (the same object visited twice; `===`) from two
+distinct specs (2026-10-16 neighbour audit, U8-16); the ids form is the same
+walk reduced to its ids. A placement with overrides is visited as its merged
+spec, a fresh object per placement, so such placements read as distinct
+elements. Kinds that declare rule parameters add a `_turn_rule_values` method,
+not a collector method.
 """
-function _collect_turn_modulation_ids!(ids::Vector{UInt64}, element)
+function _collect_turn_modulation_streams!(streams::Vector, element)
     _each_turn_rule_spec(element) do spec
         seen = UInt64[]
         for rule in _turn_rule_values(spec)
             hasfield(typeof(rule), :rng_id) || continue
-            rule.rng_id in seen || push!(seen, rule.rng_id)
+            rule.rng_id in seen && continue
+            push!(seen, rule.rng_id)
+            push!(streams, (rng_id = rule.rng_id, spec = spec))
         end
-        append!(ids, seen)
+    end
+    return streams
+end
+function _collect_turn_modulation_ids!(ids::Vector{UInt64}, element)
+    for s in _collect_turn_modulation_streams!(Any[], element)
+        push!(ids, s.rng_id)
     end
     return ids
 end
@@ -1638,14 +1726,16 @@ end
     _collect_turn_tables!(tables::Vector, element) -> tables
 
 The table sibling of `_collect_turn_modulation_ids!`, over the same walk: one
-entry `(digest, element, slot, name)` per DISTINCT table digest per element
-(every rule carrying a `digest` field; `TurnTable` today), `element` the
-spec's kind symbol and `slot` the position in the kind's `_turn_rule_values`
-(the container's slot number: `1:2N` on a crab cavity, 1-2 on an RF cavity),
-so `_warn_duplicate_turn_tables` (src/tasks/Tasks.jl) can warn when two
-elements carry tables of equal digest -- identical per-turn offsets -- while
-one table on two slots of a single element contributes one entry and does not
-warn (design `docs/design/spectral_turn_table.md`, D4).
+entry `(digest, element, slot, name, spec)` per DISTINCT table digest per
+element (every rule carrying a `digest` field; `TurnTable` today), `element`
+the spec's kind symbol, `slot` the position in the kind's `_turn_rule_values`
+(the container's slot number: `1:2N` on a crab cavity, 1-2 on an RF cavity)
+and `spec` the spec object visited (two entries whose `spec` is one object
+are two placements of one spec, U8-16), so `_warn_duplicate_turn_tables`
+(src/tasks/Tasks.jl) can warn when two elements carry tables of equal digest
+-- identical per-turn offsets -- while one table on two slots of a single
+element contributes one entry and does not warn (design
+`docs/design/spectral_turn_table.md`, D4).
 """
 function _collect_turn_tables!(tables::Vector, element)
     _each_turn_rule_spec(element) do spec
@@ -1656,7 +1746,7 @@ function _collect_turn_tables!(tables::Vector, element)
             rule.digest in seen && continue
             push!(seen, rule.digest)
             push!(tables, (digest = rule.digest, element = kind, slot = slot,
-                           name = String(rule.name)))
+                           name = String(rule.name), spec = spec))
         end
     end
     return tables
@@ -1721,7 +1811,7 @@ element-specific rule container contributes its slots through
 """
 _turn_modulation_provenance!(out::Vector, elem) = out
 _turn_modulation_provenance!(out::Vector, elems::Tuple) =
-    (foreach(e -> _turn_modulation_provenance!(out, e), elems); out)
+    (_foreach_unrolled(e -> _turn_modulation_provenance!(out, e), elems); out)
 _turn_modulation_provenance!(out::Vector, w::TurnModulated) =
     (push!(out, (element = string(nameof(typeof(w.inner))),
                  slots = _turn_modulation_slots(w.rule))); out)
@@ -1750,7 +1840,7 @@ misaligned.
 """
 _turn_modulation_columns!(out::Vector, elem) = out
 _turn_modulation_columns!(out::Vector, elems::Tuple) =
-    (foreach(e -> _turn_modulation_columns!(out, e), elems); out)
+    (_foreach_unrolled(e -> _turn_modulation_columns!(out, e), elems); out)
 function _turn_modulation_columns!(out::Vector, w::TurnModulated)
     slots = _slot_rules(w.rule)
     nominals = _slot_nominals(w.rule, w.base)

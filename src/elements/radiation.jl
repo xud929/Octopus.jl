@@ -49,9 +49,14 @@ function (::Type{LumpedRadSpec{T}})(;
                                     tracking_method=Radiation6DMap(),
                                     rng_id=zero(UInt64),
                                     kwargs...) where {T}
-    stream_id = UInt64(rng_id)
-    stream_id = stream_id == 0 ? next_rng_id!(consumer=:lumped_radiation) :
-                                 claim_rng_id!(stream_id; consumer=:lumped_radiation)
+    # The registry refuses a negative id by name (todo row 40; the `UInt64`
+    # conversion here died with an `InexactError` before fix group F,
+    # 2026-10-16); a non-integer is refused here, by name, for the same reason.
+    rng_id isa Integer || throw(ArgumentError(
+        "lumped_radiation: rng_id must be a non-negative integer (0 assigns a fresh " *
+        "stream at construction, an explicit id is claimed); got $(repr(rng_id))"))
+    stream_id = rng_id == 0 ? next_rng_id!(consumer=:lumped_radiation) :
+                              claim_rng_id!(rng_id; consumer=:lumped_radiation)
     return ElementSpec{:lumped_radiation}(
         _spec_params(;
             damping_turns=_fixed_tuple(damping_turns, 3, T),

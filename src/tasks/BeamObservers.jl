@@ -284,13 +284,16 @@ prepare_observer!(observer::AbstractBeamObserver, runtime_elems, schedule, turns
     prepare_line_observers!(entries::Tuple; turns=nothing, first_turn=0)
 
 Call `prepare_line_observer!` for every in-line observer entry. `execute!`
-runs this next to `prepare_observers!`, before the turn loop.
+runs this next to `prepare_observers!`, before the turn loop. The walk over
+the heterogeneous entries tuple is unrolled (`_foreach_unrolled`,
+src/elements/turn_modulated.jl): a `for` over it boxed the whole tuple per
+element, about 190 kB per call on a 40-element line of eight types
+(2026-10-16 neighbour audit, U9-4).
 """
 function prepare_line_observers!(entries::Tuple; turns=nothing, first_turn=0)
-    for entry in entries
-        if entry isa LineObserverEntry
-            prepare_line_observer!(entry.observer, turns, first_turn)
-        end
+    _foreach_unrolled(entries) do entry
+        entry isa LineObserverEntry && prepare_line_observer!(entry.observer, turns, first_turn)
+        nothing
     end
     return nothing
 end
