@@ -826,7 +826,8 @@ end
 # by the slot label (`.../<k>/phase_noise[1]`, attrs `index`, `kind`, `rng_id`,
 # `digest`, `name`, `length`, and the slot's nominal parameters as
 # `nominal_<name>`; HDF5 link names admit the brackets). Written at
-# prepare from the receipt the task records (`_turn_modulation_entries`), so
+# prepare from the provenance entries the task computes (`_turn_modulation_entries`;
+# it records them as its `:turn_modulation` receipt after this prepare), so
 # the artifact and the `:turn_modulation` receipt derive from the one walk;
 # never rewritten or deleted, so a continued file keeps every generation.
 #
