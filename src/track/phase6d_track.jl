@@ -111,6 +111,28 @@ _requires_cuda_elementwise(elem, ctx::TrackingContext) = _requires_cuda_elementw
 _requires_cuda_elementwise(elems::Tuple, ctx::TrackingContext) =
 	any(elem -> _requires_cuda_elementwise(elem, ctx), elems)
 
+# The four wrappers answer for what they hold, in BOTH forms -- the contextless
+# one and the context-taking one, which `LumpedRad` answers differently (true
+# contextless, so a context gets built and the counter RNG is keyed by the
+# turn; false with one, so it fuses). Without these a strong beam behind a
+# misalignment, a design roll, a turn-modulation wrap or a kept-whole sub-line
+# answered the generic `false`, was never lifted out of the fused launch, and
+# reached it as a kernel argument: the MUTABLE element inside the wrapper
+# failed the launch with `KernelError: passing non-bitstype argument` through
+# bare `track!` and through `execute!` alike, while the bare beam beside it
+# tracked (found 2026-10-12 in the turn-modulation review; measured on every
+# wrapped shape 2026-10-18, fix M). The lifted wrapper is tracked by
+# `_track_cuda_elementwise!` below. Defined here, outside the CUDA block, so a
+# CPU-only machine and the suite's wrapper-walk tripwire ("Turn modulation:
+# rules, wrapper and the pure hook", test 7) see the methods the launch reaches.
+_requires_cuda_elementwise(w::Union{MisalignedElement,RefTilted,TurnModulated}) =
+	_requires_cuda_elementwise(w.inner)
+_requires_cuda_elementwise(w::Union{MisalignedElement,RefTilted,TurnModulated}, ctx::TrackingContext) =
+	_requires_cuda_elementwise(w.inner, ctx)
+_requires_cuda_elementwise(c::CompositeLine) = _requires_cuda_elementwise(c.ops)
+_requires_cuda_elementwise(c::CompositeLine, ctx::TrackingContext) =
+	_requires_cuda_elementwise(c.ops, ctx)
+
 function _track_line_elementwise!(rep, elems::Tuple, backend)
 	fused = Any[]
 	_track_line_elementwise!(rep, elems, backend, fused)
@@ -362,7 +384,7 @@ if _HAS_CUDA
 					_track_cuda_policy_elementwise!(rep, elem, policy, ctx, stream)
 				elseif _requires_cuda_elementwise(elem, ctx)
 					_flush_cuda_policy_segment!(rep, fused, policy, ctx, stream)
-					track!(rep, elem, 1, policy; stream=stream)
+					_track_cuda_elementwise!(rep, elem, policy, ctx, stream)
 				else
 					push!(fused, elem)
 				end
@@ -370,6 +392,42 @@ if _HAS_CUDA
 			_flush_cuda_policy_segment!(rep, fused, policy, ctx, stream)
 			return nothing
 		end
+
+		# A single element handed to the policy `track!` methods above (not a
+		# tuple) that requires the elementwise route: a one-element line. A
+		# bare strong beam reaches this only through the context-taking
+		# `track!` (its own method is the contextless one); a wrapper holding
+		# one reaches it through both, and until fix M (2026-10-18) the
+		# contextless form had no method for it at all.
+		_track_cuda_policy_elementwise!(rep, elem, policy, ctx, stream) =
+			_track_cuda_policy_elementwise!(rep, (elem,), policy, ctx, stream)
+
+		"""
+		    _track_cuda_elementwise!(rep, elem, policy, ctx, stream)
+
+		Track the one element the elementwise walker lifted out of a fused
+		segment, for one turn, under the turn's `ctx`. Every element that
+		answers `_requires_cuda_elementwise(elem, ctx) == true` owns a method:
+		the strong beams forward to their own per-element `track!`
+		(src/track/strong_beam_track.jl), a `CompositeLine` is walked like the
+		nested tuple it is, with the SAME context (re-entering `track!` would
+		rebuild one at turn 0 and re-key every turn-dependent member), and a
+		frame or turn-modulation wrapper holding a strong beam launches the
+		wrapped-strong-beam kernel (`_track_cuda_wrapped_strong_beam!`). The
+		fallback throws by name rather than re-entering the policy `track!`,
+		which for an element without a per-element method would recurse into
+		this walker without end.
+		"""
+		_track_cuda_elementwise!(rep, elem, policy, ctx, stream) = throw(ArgumentError(
+			"$(nameof(typeof(elem))) requires the elementwise CUDA route " *
+			"(`_requires_cuda_elementwise`) but owns no `_track_cuda_elementwise!` " *
+			"method: every element lifted out of the fused CUDA launch must say how " *
+			"it is tracked alone (src/track/phase6d_track.jl)"))
+		_track_cuda_elementwise!(rep, c::CompositeLine, policy, ctx, stream) =
+			_track_cuda_policy_elementwise!(rep, c.ops, policy, ctx, stream)
+		_track_cuda_elementwise!(rep, w::Union{MisalignedElement,RefTilted,TurnModulated},
+								 policy, ctx, stream) =
+			_track_cuda_wrapped_strong_beam!(rep, w, policy, ctx, stream)
 
 		function track!(rep, elems, turns, policy::ResolvedCUDAExecutionPolicy;
 						stream=nothing)

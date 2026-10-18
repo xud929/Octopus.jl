@@ -10454,6 +10454,12 @@ end
                         (Octopus._turn_modulation_columns!, 2), (Octopus._each_modulated, 2),
                         (Octopus._check_beam_eltype, 1), (Octopus._required_beam_eltype, 1),
                         (Octopus._cross_backend_rounding, 1),
+                        # The CUDA elementwise predicate (fix M, 2026-10-18): a wrapper
+                        # without it hands a strong beam inside it to the fused launch as
+                        # a kernel argument, which the mutable element fails; the sibling
+                        # context-taking form shares the methods and is pinned by "CUDA
+                        # tracks a wrapped strong beam elementwise ...".
+                        (Octopus._requires_cuda_elementwise, 1),
                         (Octopus.track_luminous, 1), (Octopus.track_particle, 2)]
     # The device conversion (design D8): `cudaconvert` recurses through the
     # fused tuple with `Adapt.adapt_structure`, so a wrapper without its own
@@ -14932,6 +14938,218 @@ end
         end
     else
         @test_broken false      # visible in the summary, unlike a silent skip
+    end
+end
+
+@testset "CUDA tracks a wrapped strong beam elementwise and matches CPU within its declared rounding class" begin
+    # Fix M, 2026-10-18, the todo row "Misaligned strong beam on CUDA is a
+    # `KernelError`" (found 2026-10-12 in the turn-modulation review). A strong
+    # beam is lifted out of the fused CUDA launch by `_requires_cuda_elementwise`
+    # because the MUTABLE element cannot cross to the device; the predicate had
+    # no wrapper method, so a beam behind a misalignment, a design roll, a
+    # turn-modulation wrap or a kept-whole sub-line answered the generic
+    # `false`, reached the fused launch as a kernel argument and failed it
+    # (`KernelError: passing non-bitstype argument`) through bare `track!` and
+    # through `execute!` alike -- on every wrapped shape below, while the bare
+    # beam beside it tracked (measured on the unfixed tree 2026-10-18). Now the
+    # four wrappers forward the predicate in both of its forms, a lifted
+    # `CompositeLine` is walked member by member under the same context, and a
+    # lifted frame or turn-modulation wrapper launches the whole wrapper with
+    # the beams inside it as isbits device views
+    # (`_track_cuda_wrapped_strong_beam!`, src/track/strong_beam_track.jl).
+    # WHAT THE PIN MAY CLAIM IS DERIVED, not observed: each shape's
+    # cross-backend rounding class (`_cross_backend_rounding`, src/track/Track.jl)
+    # is the bound its CPU/CUDA comparison is held to, exactly as the per-kind
+    # arm of validation/tracking_backend_consistency.jl and part (d) of
+    # "Cross-backend rounding classes declared per kind and checked by
+    # measurement" hold theirs. The elliptic beam between drifts over three
+    # turns exceeds the LINE rule's bound on the flat line too (3007 ulps of
+    # px's scale against 2048, bitwise identical to the sub-line's CUDA result
+    # on the pre-existing path), the kick's gradient amplifying the libm and
+    # FMA differences turn over turn, so the kept-whole sub-line pin uses the
+    # round beam (class 8, measured 2-3) and the elliptic beam rides the
+    # misaligned shapes, which hold (66-630 ulps); see the fix M report.
+    eye = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    elliptic(; kw...) = ThinStrongBeamSpec(kbb=1.0e-8, klum=1.0, beta=(0.82, 0.075),
+                                           alpha=(0.01, -0.02), sigma=(110.0e-6, 12.0e-6); kw...)
+    round_beam(; kw...) = ThinStrongBeamSpec(kbb=1.0e-8, klum=1.0, beta=(1.0, 1.0),
+                                             sigma=(1.0e-4, 1.0e-4); kw...)
+    sliced(; kw...) = GaussianStrongBeamSpec(thin=elliptic(), ns=3, sigz=7.0e-3,
+                                             slice_method=:equal_area; kw...)
+    ctx0 = Octopus.TrackingContext()
+    beam = compile_runtime(elliptic())
+    drift = compile_runtime(DriftSpec(L=0.5))
+    rad = compile_runtime(LumpedRadSpec(damping_turns=(1000.0, 1000.0, 500.0),
+                                        sigma=(1.0e-4, 8.0e-5, 1.0e-2)))
+    # (a) The predicate forwards through every wrapper, by name, in BOTH forms.
+    # The two forms differ for `LumpedRad` (true contextless, so a context is
+    # built; false with one, so it fuses), and a wrapper must carry that
+    # asymmetry rather than answer the contextless form for both.
+    @test Octopus._requires_cuda_elementwise(rad) && !Octopus._requires_cuda_elementwise(rad, ctx0)
+    wraps = (("MisalignedElement", inner -> Octopus.MisalignedElement(inner, eye, (0.0, 0.0, 0.0), eye, (0.0, 0.0, 0.0))),
+             ("RefTilted", inner -> Octopus.RefTilted(inner, 1.0, 0.0)),
+             ("TurnModulated", inner -> Octopus.TurnModulated(inner, Octopus.RFCavityNoise(nothing, nothing))),
+             ("CompositeLine", inner -> Octopus.CompositeLine((drift, inner, drift))))
+    for (name, wrap) in wraps
+        @testset let wrapper = name
+            @test Octopus._requires_cuda_elementwise(wrap(beam))
+            @test Octopus._requires_cuda_elementwise(wrap(beam), ctx0)
+            @test !Octopus._requires_cuda_elementwise(wrap(drift))
+            @test !Octopus._requires_cuda_elementwise(wrap(drift), ctx0)
+            @test Octopus._requires_cuda_elementwise(wrap(rad))
+            @test !Octopus._requires_cuda_elementwise(wrap(rad), ctx0)
+            @test Octopus._requires_cuda_elementwise(wrap(wrap(beam)), ctx0)      # nested
+        end
+    end
+    # The walk is in the wrapper-walk tripwire's single source ("Turn
+    # modulation: rules, wrapper and the pure hook", test 7), so a fifth wrapper
+    # without a forward fails there by name.
+    @test occursin("(Octopus._requires_cuda_elementwise, 1)",
+                   read(joinpath(pkgdir(Octopus), "test", "runtests.jl"), String))
+    if CUDA_TESTS_ACTIVE
+        CU = Octopus.CUDA
+        base = Octopus._contract_default_initial_rep(400, Float64)
+        hostrep() = Phase6DRep((copy(a) for a in coordinate_arrays(base))...)
+        devrep() = Phase6DRep((CU.CuArray(copy(a)) for a in coordinate_arrays(base))...)
+        coords(rep) = Tuple(Array(a) for a in coordinate_arrays(rep))
+        bitwise(ra, rb) = all(all(a .=== b) for (a, b) in zip(coords(ra), coords(rb)))
+        function tracked(spec, policy, turns)
+            rep = policy isa CUDAExecutionPolicy ? devrep() : hostrep()
+            audit = ExecutionAudit()
+            with_execution_audit(audit) do
+                execute!(TrackingTask((spec,); policy=policy), rep; turns=turns)
+            end
+            CU.synchronize()
+            return rep, audit
+        end
+        # (b) The defect: every wrapped shape launches through bare `track!`
+        # (the call that threw) and through `execute!`, and three turns on
+        # both backends from the same state agree within the shape's declared
+        # class. The receipt names the route the run took: the wrapped kernel
+        # per turn, with the wrapper and its beam count, for a frame wrapper;
+        # the bare thin launch for the sub-line walked member by member.
+        shapes = (("misaligned thin", elliptic(x_offset=1.0e-4), Octopus.MisalignedElement),
+                  ("misaligned sliced", sliced(x_offset=1.0e-4), Octopus.MisalignedElement),
+                  ("ref-tilted thin", elliptic(ref_tilt=0.3), Octopus.RefTilted),
+                  ("sub-line, round beam between drifts",
+                   BeamLine("ip", DriftSpec(L=0.5), round_beam(), DriftSpec(L=0.5)), Octopus.CompositeLine),
+                  ("misaligned sub-line, elliptic beam between drifts",
+                   BeamLine("ipm", DriftSpec(L=0.5), elliptic(), DriftSpec(L=0.5); x_offset=1.0e-4), Octopus.MisalignedElement))
+        println("wrapped strong beams on CUDA, 400 particles, 3 turns, CPU against CUDA (measured B or ulps of scale / declared):")
+        for (label, spec, W) in shapes
+            elem = compile_runtime(spec)
+            class = Octopus._cross_backend_rounding(elem)
+            dev1 = devrep()
+            track!(dev1, (elem,), 1; policy=CUDAExecutionPolicy())
+            CU.synchronize()
+            host, _ = tracked(spec, CPUThreadsExecutionPolicy(), 3)
+            dev, audit = tracked(spec, CUDAExecutionPolicy(), 3)
+            agreement = Octopus._cross_backend_agreement(host, dev)
+            println("    ", rpad(label, 52), Octopus._cross_backend_summary(class, agreement))
+            launches = filter(r -> r.consumer === :cuda_weak_strong_launch, execution_receipts(audit))
+            @testset let case = label, violations = Octopus._cross_backend_violations(class, agreement; label=label)
+                @test elem isa W
+                @test Octopus._requires_cuda_elementwise(elem) && Octopus._requires_cuda_elementwise(elem, ctx0)
+                @test all(all(isfinite, a) for a in coords(dev1))
+                @test any(any(a .!= b) for (a, b) in zip(coords(dev1), coords(base)))     # the kick happened
+                @test isempty(violations)
+                @test length(launches) == 3
+                if W === Octopus.CompositeLine
+                    @test all(r -> r.values.element === :thin, launches)
+                else
+                    @test all(r -> r.values.element === :wrapped && r.values.wrapper === nameof(W) &&
+                                   r.values.strong_beams == 1, launches)
+                end
+            end
+        end
+        # (c) MEASURED, not assumed: a wrapper that does not move the beam gives
+        # the bare launch's numbers to the bit -- coordinates and
+        # `last_luminosity` -- for the thin and the sliced beam, through every
+        # wrapper and a nested pair: the wrapped kernel's per-particle body is
+        # the bare kernels' with the same arguments in the same order, and the
+        # fold is the same device sum.
+        identity_wraps = (("MisalignedElement(identity)", inner -> Octopus.MisalignedElement(inner, eye, (0.0, 0.0, 0.0), eye, (0.0, 0.0, 0.0))),
+                          ("RefTilted(1, 0)", inner -> Octopus.RefTilted(inner, 1.0, 0.0)),
+                          ("TurnModulated(inactive)", inner -> Octopus.TurnModulated(inner, Octopus.RFCavityNoise(nothing, nothing))),
+                          ("CompositeLine((beam,))", inner -> Octopus.CompositeLine((inner,))),
+                          ("MisalignedElement(RefTilted(beam))",
+                           inner -> Octopus.MisalignedElement(Octopus.RefTilted(inner, 1.0, 0.0), eye, (0.0, 0.0, 0.0), eye, (0.0, 0.0, 0.0))))
+        for (label, mkspec) in (("thin", elliptic), ("sliced", sliced))
+            bare = compile_runtime(mkspec())
+            rb = devrep()
+            track!(rb, (bare,), 1; policy=CUDAExecutionPolicy())
+            CU.synchronize()
+            @test bare.last_luminosity > 0.0
+            for (name, wrap) in identity_wraps
+                inner = compile_runtime(mkspec())
+                rw = devrep()
+                track!(rw, (wrap(inner),), 1; policy=CUDAExecutionPolicy())
+                CU.synchronize()
+                @testset let beam_kind = label, wrapper = name
+                    @test bitwise(rb, rw)
+                    @test inner.last_luminosity === bare.last_luminosity
+                end
+            end
+        end
+        # (d) ATTRIBUTION: two beams in one misaligned sub-line keep separate
+        # numbers in LINE ORDER (the collector's order is `fusedTrackLuminous`'
+        # accumulator order, so a crossed order would put beam 2's number on
+        # beam 1), and each agrees with the CPU fused route
+        # (`luminosity_tracking = :fused`, the CPU-only task route that carries
+        # luminosity through wrappers) at physics level: the two folds differ
+        # in order (the host chunk fold against the device sum) and the second
+        # beam reads ulp-class coordinates, so rtol = 1e-12 (measured 1.3e-16
+        # and 1.2e-14). The first beam sees the translated, untouched bunch, so
+        # its number is the lone misaligned beam's to the bit.
+        two = BeamLine("two", elliptic(), DriftSpec(L=0.3), elliptic(kbb=2.0e-8); x_offset=1.0e-4)
+        elem2 = compile_runtime(two)
+        rep2 = devrep()
+        track!(rep2, (elem2,), 1; policy=CUDAExecutionPolicy())
+        CU.synchronize()
+        beams2 = Octopus._collect_strong_beams!(Any[], elem2)
+        lone = compile_runtime(elliptic(x_offset=1.0e-4))
+        repl = devrep()
+        track!(repl, (lone,), 1; policy=CUDAExecutionPolicy())
+        CU.synchronize()
+        @test length(beams2) == 2 && all(b -> b.last_luminosity > 0.0, beams2)
+        @test beams2[1].last_luminosity != beams2[2].last_luminosity
+        @test beams2[1].last_luminosity === only(Octopus._collect_strong_beams!(Any[], lone)).last_luminosity
+        task2 = TrackingTask((two,); artifact=RunArtifact(joinpath(mktempdir(), "wrapped_cuda.h5")),
+                             luminosity_tracking=:fused)
+        hrep2 = hostrep()
+        execute!(task2, hrep2; turns=1)
+        cpu_beams = Octopus._strong_beams_of(Octopus._physics_line(Octopus._runtime_entries(task2, hrep2)))
+        @test length(cpu_beams) == 2
+        for k in 1:2
+            @test isapprox(beams2[k].last_luminosity, cpu_beams[k].last_luminosity; rtol=1.0e-12)
+        end
+        @testset let violations = Octopus._cross_backend_violations(
+                         Octopus._cross_backend_rounding(elem2),
+                         Octopus._cross_backend_agreement(hrep2, rep2); label="two beams, one misaligned sub-line")
+            @test isempty(violations)
+        end
+        # (e) The sibling the single-element entry closes: a bare beam NOT in a
+        # tuple through the keyword `track!` (the context-taking policy method)
+        # was a MethodError on CUDA; it is the one-element line now.
+        rk = devrep()
+        track!(rk, compile_runtime(elliptic()), 1; policy=CUDAExecutionPolicy())
+        rt = devrep()
+        track!(rt, (compile_runtime(elliptic()),), 1; policy=CUDAExecutionPolicy())
+        CU.synchronize()
+        @test bitwise(rk, rt)
+        # (f) The fallback is loud: an element lifted out without a route of
+        # its own throws by name instead of re-entering `track!`.
+        policy = Octopus._resolve_execution_policy(CUDAExecutionPolicy(), rk)
+        err = try
+            Octopus._track_cuda_elementwise!(rk, drift, policy, ctx0, nothing)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin("LatticeMagnet", sprint(showerror, err)) &&
+              occursin("_track_cuda_elementwise!", sprint(showerror, err))
+    else
+        @test_skip "CUDA not active: wrapped strong beams on CUDA are not tracked"
     end
 end
 

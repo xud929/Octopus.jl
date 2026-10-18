@@ -145,6 +145,23 @@ line = (
         sigz=7.0e-3,
         slice_method=:equal_area,
     ),
+    # The misaligned thin strong beam (fix M, 2026-10-18): a strong beam behind
+    # a `MisalignedElement` reached the fused CUDA launch as a kernel argument
+    # and failed it (`KernelError: passing non-bitstype argument`); it is now
+    # lifted out through the wrapper and tracked by the wrapped-strong-beam
+    # kernel (`_track_cuda_wrapped_strong_beam!`, src/track/strong_beam_track.jl),
+    # which this instance exercises in the line and alone (the per-kind arm
+    # below, tagged "(misaligned)"). The bare instance above, translated.
+    ThinStrongBeamSpec{Float64}(;
+        kbb=1.0e-8,
+        klum=1.0,
+        beta=(0.82, 0.075),
+        alpha=(0.01, -0.02),
+        sigma=(110.0e-6, 12.0e-6),
+        center=(2.0e-6, -1.0e-6, 0.0),
+        angle=(0.0, 0.0, 0.0),
+        x_offset=1.0e-4,
+    ),
     LumpedRadSpec{Float64}(;
         damping_turns=(4000.0, 4000.0, 2000.0),
         beta=(0.8, 0.072, 90.0),
@@ -402,7 +419,10 @@ println("  per coordinate: measured B (bitwise) or ulps of the coordinate's scal
 let violations = String[],
     cases = Tuple{String,Any,Int}[]
     for spec in line
-        push!(cases, (string(Octopus.kind(spec)) * (compile_runtime(spec) isa Octopus.TurnModulated ? " (modulated)" : ""), spec, turns))
+        runtime = compile_runtime(spec)
+        tag = runtime isa Octopus.TurnModulated ? " (modulated)" :
+              runtime isa Octopus.MisalignedElement ? " (misaligned)" : ""
+        push!(cases, (string(Octopus.kind(spec)) * tag, spec, turns))
     end
     for spec in single_pass_line
         push!(cases, (string(Octopus.kind(spec)) * " (single pass)", spec, 1))
