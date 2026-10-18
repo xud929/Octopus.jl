@@ -8927,10 +8927,17 @@ end
         covariance6, Float64)
     conditional_delta_variance = longitudinal[2, 2] -
         longitudinal[1, 2]^2 / longitudinal[1, 1]
-    expected_slope = collect(crab) .+
-        collect(momentum) .* longitudinal[1, 2] / longitudinal[1, 1]
+    # `momentum` is the canonical eta (owner decision 2026-10-18, one convention
+    # within Octopus); the covariance is physical, so the slicing sees the
+    # slope eta / h with h = 1 - zeta' S_4 eta -- 0.957 here, the pair sitting
+    # in conjugate components -- written out as an independent witness of the
+    # builder's conversion. Until 2026-10-18 the parameter was the slope.
+    h = 1 - (crab[1] * momentum[2] - crab[2] * momentum[1] +
+             crab[3] * momentum[4] - crab[4] * momentum[3])
+    slope_eta = collect(momentum) ./ h
+    expected_slope = collect(crab) .+ slope_eta .* longitudinal[1, 2] / longitudinal[1, 1]
     expected_conditional = transverse +
-        collect(momentum) * transpose(collect(momentum)) * conditional_delta_variance
+        slope_eta * transpose(slope_eta) * conditional_delta_variance
     @test collect(slope) ≈ expected_slope
     @test conditional ≈ expected_conditional rtol=2.0e-13 atol=1.0e-15
 
@@ -8976,6 +8983,76 @@ end
 
     # Turn modulation is workflow state, not part of the collision element.
     @test !isdefined(Octopus, :LinearTurnSignal)
+end
+
+@testset "The strong beam's momentum dispersion is canonical: the builder forms the physical slope by (D7) and agrees with the Twiss analysis" begin
+    # Owner decision 2026-10-18 (the todo row "Strong-beam `momentum_dispersion`
+    # is a slope, not canonical η", retired to the archive): one convention
+    # within Octopus. `gaussian_strong_beam_covariance` takes the canonical pair
+    # (zeta, eta) as `TwissDispersionAnalysis` reports it and forms the physical
+    # graph [zeta, eta / h], h = 1 - zeta' S_4 eta ((D7)-(D8) of
+    # docs/theory/twiss_dispersion.md), through the analysis's own
+    # `_dispersion_graph`. Until then the parameter WAS the slope, so a pair in
+    # conjugate components (zeta' S_4 eta != 0) built a different covariance;
+    # the first pins fail on that tree for that reason.
+    S4 = [0.0 1.0 0.0 0.0; -1.0 0.0 0.0 0.0; 0.0 0.0 0.0 1.0; 0.0 0.0 -1.0 0.0]
+    transverse = transverse_covariance(;
+        beta=(0.7, 0.9), alpha=(0.1, -0.2), sigma=(1.2e-3, 0.8e-3))
+    longitudinal = [4.0e-4 3.0e-5; 3.0e-5 9.0e-6]
+    zeta = [0.12, -0.03, 0.04, 0.02]
+    eta = [0.5, 0.1, -0.2, 0.3]
+    h = 1 - dot(zeta, S4 * eta)                                  # conjugate components: 0.957
+    @test h ≈ 0.957
+    cov6 = gaussian_strong_beam_covariance(transverse, longitudinal;
+        crab_dispersion=Tuple(zeta), momentum_dispersion=Tuple(eta))
+    graph = cov6[1:4, 5:6] / cov6[5:6, 5:6]                      # the regression of r on (z, pz)
+    @test graph ≈ hcat(zeta, eta ./ h) rtol=1.0e-12
+    @test !isapprox(graph[:, 2], eta; rtol=1.0e-3)               # the slope form it had until 2026-10-18
+    @test cov6[1:4, 1:4] ≈ transverse + hcat(zeta, eta ./ h) * longitudinal * transpose(hcat(zeta, eta ./ h)) rtol=1.0e-12
+    # (D8) inverts the builder's (D7): the graph gives back the canonical pair.
+    area = 1 + dot(graph[:, 1], S4 * graph[:, 2])
+    @test 1 / area ≈ h rtol=1.0e-12
+    @test graph[:, 2] ./ area ≈ eta rtol=1.0e-12
+    # The pure limits, and a pair in one coordinate, are unchanged bit for bit:
+    # h is exactly one and eta / 1.0 is eta.
+    for (z0, e0) in ((zeros(4), eta), (zeta, zeros(4)), ([0.12, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]))
+        g = Octopus._dispersion_graph(z0, e0)
+        @test g.h === 1.0 && g.graph[:, 1] == z0 && g.graph[:, 2] == e0
+    end
+    pure = gaussian_strong_beam_covariance(transverse, longitudinal; momentum_dispersion=Tuple(eta))
+    @test pure[1:4, 5:6] == hcat(zeros(4), eta) * longitudinal
+    # Agreement with the analysis: a decoupled ring dressed with the canonical
+    # pair by the (D3) transformation has exactly (zeta, eta, h) as its
+    # synchrotron-mode dispersions. The analysis recovers them, its physical
+    # graph is the builder's, and the builder fed the analysis's own pair
+    # reproduces that graph: the two layers cannot drift apart unnoticed.
+    rot(mu) = [cos(mu) sin(mu); -sin(mu) cos(mu)]
+    M0 = cat(rot(2pi * 0.28), rot(2pi * 0.31), rot(2pi * 0.012); dims=(1, 2))
+    Tcal = Octopus._dispersion_transformation(zeta, eta)
+    @test Tcal.h ≈ h
+    M = Tcal.M_cal * M0 * Octopus._dispersion_transformation_inverse(zeta, eta, Tcal.h)
+    r = analyze(TwissDispersionAnalysis(strict=false), M)
+    # `r.physical` holds the unscaled quantities (`r.separation` is in the
+    # analysis's reciprocal-scaled coordinates).
+    @test r.physical.zeta.value ≈ zeta rtol=1.0e-9
+    @test r.physical.eta.value ≈ eta rtol=1.0e-9
+    @test r.physical.h.value ≈ h rtol=1.0e-9
+    @test r.physical.graph.value ≈ hcat(zeta, eta ./ h) rtol=1.0e-9
+    from_analysis = gaussian_strong_beam_covariance(transverse, longitudinal;
+        crab_dispersion=Tuple(r.physical.zeta.value), momentum_dispersion=Tuple(r.physical.eta.value))
+    @test from_analysis[1:4, 5:6] / from_analysis[5:6, 5:6] ≈ r.physical.graph.value rtol=1.0e-9
+    # h = 0 (zeta' S_4 eta = 1) is the isotropic graph: refused by name.
+    err = try
+        gaussian_strong_beam_covariance(transverse, longitudinal;
+            crab_dispersion=(1.0, 0.0, 0.0, 0.0), momentum_dispersion=(0.0, 1.0, 0.0, 0.0))
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError && occursin("h = 0", sprint(showerror, err)) &&
+          occursin("isotropic", sprint(showerror, err))
+    @test_throws ArgumentError Octopus._dispersion_graph(zeros(3), zeros(4))
+    @test_throws ArgumentError Octopus._dispersion_graph([NaN, 0.0, 0.0, 0.0], zeros(4))
 end
 
 @testset "Gaussian longitudinal slicing rules" begin

@@ -1360,8 +1360,23 @@ end
                                     momentum_dispersion=(0,0,0,0))
 
 Construct a `6 x 6` Gaussian covariance in `(x, px, y, py, z, pz)` order from
-an intrinsic transverse covariance, a `2 x 2` longitudinal covariance, and
-linear relations `w = w_beta + crab_dispersion*z + momentum_dispersion*pz`.
+an intrinsic transverse covariance, a `2 x 2` longitudinal covariance in the
+physical `(z, pz)`, and the canonical dispersions of the synchrotron mode as
+`TwissDispersionAnalysis` reports them: `crab_dispersion` is `zeta` and
+`momentum_dispersion` is the canonical `eta` of the theory note
+`docs/theory/twiss_dispersion.md`, (D6)-(D8). The covariance is physical, so
+the builder forms the physical longitudinal graph itself,
+`w = w_beta + zeta z + (eta / h) pz` with `h = 1 - zeta' S_4 eta`
+(`_dispersion_graph`): `eta / h` is the slope `d w / d pz` on the synchrotron
+plane, equal to `eta` when `zeta' S_4 eta = 0`, in particular with no crab
+dispersion or no momentum dispersion, where this builder is unchanged bit for
+bit from the slope form it had until 2026-10-18. `h = 0` is refused by name.
+
+One convention within Octopus (owner decision 2026-10-18): a dispersion
+parameter means what the analysis reports. Xsuite's `dx, dpx, dy, dpy` and
+MAD-X's `deltap` dispersion are the slope `eta / h`, not `eta`: convert them
+by (D8), `h = 1 / (1 + zeta' S_4 slope)`, `eta = h slope`, before passing them
+here. `zeta` is the same in both conventions.
 """
 function gaussian_strong_beam_covariance(transverse, longitudinal;
         crab_dispersion=(0, 0, 0, 0), momentum_dispersion=(0, 0, 0, 0))
@@ -1371,7 +1386,9 @@ function gaussian_strong_beam_covariance(transverse, longitudinal;
     longitudinal2 = _validated_covariance(longitudinal, 2, T)
     zeta = collect(_strong_tuple(crab_dispersion, 4, T))
     eta = collect(_strong_tuple(momentum_dispersion, 4, T))
-    dispersion = hcat(zeta, eta)
+    # The inputs are the canonical pair and the covariance is physical: the
+    # graph (D7) is formed here, once, through the analysis's own conversion.
+    dispersion = Matrix{T}(_dispersion_graph(zeta, eta).graph)
     cov6 = zeros(T, 6, 6)
     cov6[1:4, 1:4] .= transverse4 .+ dispersion * longitudinal2 * transpose(dispersion)
     cov6[1:4, 5:6] .= dispersion * longitudinal2

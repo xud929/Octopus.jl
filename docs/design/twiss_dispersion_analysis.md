@@ -605,7 +605,11 @@ reserves the fields the later stages need. One lead goes to the todo ledger rath
 strong-beam covariance builder treats its `momentum_dispersion` parameter as
 the slope `η/h` on the physical longitudinal plane, which equals the canonical
 `η` of (D8) only when `ζᵀS₄η = 0`; the analysis, once landed, is the canonical
-source to compare against.
+source to compare against. (Resolved 2026-10-18 by the owner's decision: the
+parameter IS the canonical `η` the analysis reports, and the builder forms the
+physical graph (D7) itself through the analysis's `_dispersion_graph`, so the
+two layers share one convention and one conversion; `docs/experiences.md`,
+"One quantity, one convention".)
 
 ### Provenance
 

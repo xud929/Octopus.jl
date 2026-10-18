@@ -1188,6 +1188,14 @@ $$
 
 This follows by substituting $\boldsymbol\eta=h\mathscr D_{:2}$ into the definition of $h$ in (D3). The momentum derivative on the physical plane is $\partial\mathbf r/\partial p_z=\boldsymbol\eta/h$. It equals $\boldsymbol\eta$ when $\boldsymbol\zeta^TS_4\boldsymbol\eta=0$, including the limits of pure momentum dispersion and pure crab dispersion. Away from this plane, the transverse companion term in (D3) also contributes to $z$.
 
+*Convention within Octopus (owner decision, 2026-10-18).* A dispersion parameter
+means the canonical pair of (D6)–(D8), as `TwissDispersionAnalysis` reports it;
+a consumer that needs the physical graph forms (D7) itself. The strong-beam
+covariance builder `gaussian_strong_beam_covariance` takes $(\boldsymbol\zeta,\boldsymbol\eta)$
+and converts through `_dispersion_graph` ($h=1-\boldsymbol\zeta^TS_4\boldsymbol\eta$).
+Xsuite's `dx, dpx, ...` and MAD-X's `deltap` dispersion are the slope $\boldsymbol\eta/h$ of
+(X2) and must be converted by (D8) before they are handed to Octopus as $\boldsymbol\eta$.
+
 ### 8.3 Extraction from the longitudinal eigenvector
 
 Let $\mathbf u_s$ be the longitudinal eigenvector of $M_6$, selected and normalized by the 6D counterpart of Section 3:

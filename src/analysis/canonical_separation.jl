@@ -266,8 +266,44 @@ eta' S_4`, the (3,3) entry `h`).
 """
 function _dispersion_transformation(zeta::AbstractVector{<:Real}, eta::AbstractVector{<:Real})
     f = _dispersion_factors(zeta, eta)
-    h = 1 - dot(zeta, _symplectic_form(4) * Vector{Float64}(eta))
-    return (M_cal=f.M_zeta * f.M_eta, h=h)
+    return (M_cal=f.M_zeta * f.M_eta, h=_longitudinal_factor(zeta, eta))
+end
+
+"""
+    _longitudinal_factor(zeta, eta) -> h
+
+`h = 1 - zeta' S_4 eta`: the (3,3) entry of (D3), the reciprocal of the
+canonical area `1 + D[:, 1]' S_4 D[:, 2]` of the graph (D8). The one place the
+formula is written; `_dispersion_transformation` and `_dispersion_graph` read it.
+"""
+_longitudinal_factor(zeta::AbstractVector{<:Real}, eta::AbstractVector{<:Real}) =
+    1 - dot(zeta, _symplectic_form(4) * Vector{Float64}(eta))
+
+"""
+    _dispersion_graph(zeta, eta) -> (graph, h)
+
+(D7) from the canonical pair: the physical longitudinal graph
+`graph = [zeta  eta / h]` (4 x 2) with `h = _longitudinal_factor(zeta, eta)`,
+the inverse of (D8). `eta / h` is the slope `d r / d pz` on the synchrotron
+plane; it equals `eta` when `zeta' S_4 eta = 0`, in particular with no crab
+dispersion or no momentum dispersion. The strong-beam covariance builder
+(`gaussian_strong_beam_covariance`) takes the canonical pair the analysis
+reports and converts through this function, so the analysis and its consumers
+share one convention and one source for the conversion (owner decision
+2026-10-18, `docs/experiences.md`). `h = 0` is the isotropic graph of the
+note's 8.2, where no canonical normalization exists and the slope does not,
+and is refused by name; non-finite inputs are refused.
+"""
+function _dispersion_graph(zeta::AbstractVector{<:Real}, eta::AbstractVector{<:Real})
+    (length(zeta) == 4 && length(eta) == 4) || throw(ArgumentError(
+        "_dispersion_graph takes two 4-vectors (the crab dispersion zeta and the canonical " *
+        "momentum dispersion eta), got lengths $(length(zeta)) and $(length(eta))"))
+    (all(isfinite, zeta) && all(isfinite, eta)) || throw(ArgumentError("_dispersion_graph needs finite inputs"))
+    h = _longitudinal_factor(zeta, eta)
+    iszero(h) && throw(ArgumentError(
+        "the canonical dispersions have zeta' S_4 eta = 1, so h = 0: the longitudinal graph is " *
+        "isotropic and the physical slope eta / h does not exist (theory note twiss_dispersion.md, 8.2)"))
+    return (graph=hcat(Vector{Float64}(zeta), Vector{Float64}(eta) ./ h), h=h)
 end
 
 """
