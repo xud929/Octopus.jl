@@ -1,3 +1,33 @@
+"""
+    _collect_strong_beams!(acc, elem) -> acc
+
+Every strong beam reachable through `elem`, in LINE ORDER, descending through the
+four wrappers that hide one (`CompositeLine`, `MisalignedElement`, `RefTilted`,
+`TurnModulated`).
+
+The order matters as much as the membership: `fusedTrackLuminous` concatenates
+its per-element accumulators depth-first in the same order, so this walk and that
+expansion must agree or the artifact's channels get crossed -- beam 1's number
+written to beam 2's dataset, with nothing to notice it. Two consumers read it:
+the task layer's wrapper-aware beam list (`_strong_beams_of`,
+src/tasks/Tasks.jl) and the CUDA wrapped-strong-beam launch below
+(`_track_cuda_wrapped_strong_beam!`), which hands each beam the luminosity the
+kernel accumulated for it in that order.
+"""
+_collect_strong_beams!(acc, elem) =
+	elem isa Union{ThinStrongBeam,GaussianStrongBeam} ?
+		(push!(acc, elem); acc) : _descend_strong_beams!(acc, elem)
+
+_descend_strong_beams!(acc, elem) = acc
+_descend_strong_beams!(acc, elem::Union{MisalignedElement,RefTilted,TurnModulated}) =
+	_collect_strong_beams!(acc, elem.inner)
+function _descend_strong_beams!(acc, elem::CompositeLine)
+	for op in elem.ops
+		_collect_strong_beams!(acc, op)
+	end
+	return acc
+end
+
 function track!(rep, elem::ThinStrongBeam, turns, ::Type{CPUThreadsBackend})
 	Base.depwarn("backend-tag track! is deprecated; pass policy=CPUThreadsExecutionPolicy()", :track!)
 	policy = ResolvedCPUExecutionPolicy(Threads.nthreads(:default))
@@ -267,6 +297,190 @@ if _HAS_CUDA
 		@inline _cuda_slice_transverse_angles(
 			::Val{true}, pxo, pyo, slice_pxoffset, slice_pyoffset, i) =
 			(pxo + slice_pxoffset[i], pyo + slice_pyoffset[i])
+
+		# The lifted bare strong beams keep their own per-element launch
+		# (`_track_cuda_elementwise!`, src/track/phase6d_track.jl): the
+		# context is not consulted, the kick has no turn or particle dependence.
+		_track_cuda_elementwise!(rep, elem::Union{ThinStrongBeam,GaussianStrongBeam},
+								 policy, ctx, stream) =
+			track!(rep, elem, 1, policy; stream=stream)
+
+		"""
+		    cuda_track_wrapped_strong_beam_kernel!(rep, lums, elem, mask, ctx)
+
+		One turn of a frame- or turn-modulation-wrapped strong beam, the whole
+		wrapper on the device with its frames intact and the beam(s) inside it
+		as device views (`ThinStrongBeamDeviceView`, `GaussianStrongBeamDeviceView`):
+		`track_luminous` threads the coordinates through the wrapper exactly as
+		the CPU fused route does and hands back one luminosity per strong beam
+		inside, in line order, which the kernel writes to the matching entry of
+		`lums` (one per-particle buffer per beam, the elements' reused
+		workspaces). The host folds each buffer into its beam's `last_luminosity`
+		(`_track_cuda_wrapped_strong_beam!`). A beam count the collector and
+		`fusedTrackLuminous` disagree on leaves `_store_luminosities!` without a
+		method and fails the device compile by name.
+		"""
+		function cuda_track_wrapped_strong_beam_kernel!(rep, lums, elem, mask, ctx)
+			start_index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+			stride = CUDA.gridDim().x * CUDA.blockDim().x
+			index = start_index
+			while index <= length(rep)
+				@inbounds begin
+					coords, contributions = track_luminous(
+						elem, mask, ctx, ctx.index_offset + index, rep[index]...)
+					rep[index] = coords
+					_store_luminosities!(lums, contributions, index)
+				end
+				index += stride
+			end
+			return nothing
+		end
+
+		@inline _store_luminosities!(::Tuple{}, ::Tuple{}, index) = nothing
+		@inline function _store_luminosities!(lums::Tuple, contributions::Tuple, index)
+			@inbounds first(lums)[index] = first(contributions)
+			return _store_luminosities!(Base.tail(lums), Base.tail(contributions), index)
+		end
+	end
+end
+
+# ---------------------------------------------------------------------------
+# The wrapped strong beam on CUDA (fix M, 2026-10-18). A wrapper cannot be
+# taken apart to launch the beam inside it alone -- the frame change around a
+# misaligned beam is the physics -- and the bare launches cannot take it
+# whole: they unpack the MUTABLE element's fields as scalar kernel arguments,
+# and a wrapper holding the element is not a bitstype. So the whole wrapper
+# goes to the device with every strong beam inside it replaced by an isbits
+# device view, and the kernel above threads the coordinates through it with
+# `track_luminous`, the wrappers' own forwarding methods.
+# ---------------------------------------------------------------------------
+
+"""
+    ThinStrongBeamDeviceView
+
+The device view of a `ThinStrongBeam`: the thirteen fields the CUDA kick chain
+reads (`_cuda_thin_strong_beam_track`), immutable and isbits, with no
+`last_luminosity` (written on the host from the kernel's per-particle
+luminosities). It is what a frame or turn-modulation wrapper holds when the
+wrapper itself is the kernel argument. Built by `Adapt.adapt` under
+`_StrongBeamDeviceViews`, never placed in a line; not an `AbstractTrackOp`, so
+the registry snapshot, the rounding-class declarations and the wrapper walks
+never meet it, as for `ThinStrongBeamSlice`.
+"""
+struct ThinStrongBeamDeviceView{T<:Number,P<:StrongTransverseMoments,D<:AbstractVirtualDrift}
+	moments::P
+	kbb::T
+	klum::T
+	xo::T
+	yo::T
+	zo::T
+	pxo::T
+	pyo::T
+	pzo::T
+	ppxo::T
+	ppyo::T
+	ppzo::T
+	virtual_drift::D
+end
+
+_thin_strong_beam_device_view(e::ThinStrongBeam) = ThinStrongBeamDeviceView(
+	e.moments, e.kbb, e.klum, e.xo, e.yo, e.zo, e.pxo, e.pyo, e.pzo,
+	e.ppxo, e.ppyo, e.ppzo, e.virtual_drift)
+
+"""
+    GaussianStrongBeamDeviceView
+
+The device view of a `GaussianStrongBeam`: the slice count, the slice vectors
+as the element's reused DEVICE buffers (`_weak_strong_cuda_workspace`;
+`CuVector`s on the host side of the launch, `CuDeviceVector`s inside the
+kernel through `Adapt.@adapt_structure`), the slice-angle flag as a `Val` field
+so the implicit constructor infers it, and the thin view of `elem.thin`.
+`slice_pxoffset` and `slice_pyoffset` are `nothing` without slice angles, as in
+the workspace.
+"""
+struct GaussianStrongBeamDeviceView{T<:Number,P<:StrongTransverseMoments,
+                                    D<:AbstractVirtualDrift,A,V,W}
+	ns::Int
+	slice_center::V
+	slice_weight::V
+	slice_hoffset::V
+	slice_voffset::V
+	slice_pxoffset::W
+	slice_pyoffset::W
+	has_slice_angles::Val{A}
+	thin::ThinStrongBeamDeviceView{T,P,D}
+end
+
+# The luminosity-carrying track of the device views: the per-particle bodies
+# of the two bare kernels above, written against the view's fields -- the same
+# `_cuda_thin_strong_beam_track` chain with the same arguments in the same
+# order, so a wrapper that does not move the beam (identity frames) gives the
+# bare launch's coordinates to the bit (pinned by the suite). The mask is
+# applied HERE, at the element's position, the CPU fused route's rule
+# (`track_luminous`, src/track/Track.jl), not in the reduction as the bare
+# launches apply it: the host fold of this route is a plain `sum`.
+@inline function track_luminous(e::ThinStrongBeamDeviceView, mask, ctx::TrackingContext,
+                                particle_id, x, px, y, py, z, pz)
+	x1, px1, y1, py1, z1, pz1, l = _cuda_thin_strong_beam_track(
+		x, px, y, py, z, pz,
+		e.moments, e.kbb, e.klum, e.xo, e.yo, e.zo, e.pxo, e.pyo, e.pzo,
+		e.ppxo, e.ppyo, e.ppzo, e.virtual_drift)
+	contribution = _add_luminosity(mask, zero(l), l, x1, px1, y1, py1, z1, pz1)
+	return ((x1, px1, y1, py1, z1, pz1), (contribution,))
+end
+
+@inline function track_luminous(e::GaussianStrongBeamDeviceView, mask, ctx::TrackingContext,
+                                particle_id, x, px, y, py, z, pz)
+	t = e.thin
+	lum = zero(x)
+	for i in e.ns:-1:1
+		slice_pxo, slice_pyo = _cuda_slice_transverse_angles(
+			e.has_slice_angles, t.pxo, t.pyo, e.slice_pxoffset, e.slice_pyoffset, i)
+		x, px, y, py, z, pz, l = _cuda_thin_strong_beam_track(
+			x, px, y, py, z, pz,
+			t.moments,
+			t.kbb * e.slice_weight[i], t.klum,
+			t.xo + e.slice_hoffset[i], t.yo + e.slice_voffset[i], t.zo + e.slice_center[i],
+			slice_pxo, slice_pyo, t.pzo,
+			t.ppxo, t.ppyo, t.ppzo, t.virtual_drift)
+		lum += l * e.slice_weight[i]
+	end
+	contribution = _add_luminosity(mask, zero(lum), lum, x, px, y, py, z, pz)
+	return ((x, px, y, py, z, pz), (contribution,))
+end
+
+"""
+    _StrongBeamDeviceViews{T}(N)
+
+The adaptor of the wrapped-strong-beam launch (`_track_cuda_wrapped_strong_beam!`):
+`Adapt.adapt(_StrongBeamDeviceViews{T}(N), w)` on the HOST, before `@cuda`,
+descends the wrappers by their own `adapt_structure` methods
+(src/track/phase6d_track.jl) and replaces every mutable strong beam at the
+leaves with its device view -- the thin one from the element's scalars, the
+Gaussian one holding the element's reused device slice buffers
+(`_weak_strong_cuda_workspace(elem, T, N)`, refreshed from the host vectors
+here as the bare launch refreshes them). `T` and `N` are the beam's element
+type and particle count, the workspace's key. Everything else passes through,
+so the launch's own kernel adaptor then meets only isbits views and the
+`CuVector`s it converts. Host-side only; never on a kernel path.
+"""
+struct _StrongBeamDeviceViews{T}
+	N::Int
+end
+
+if _HAS_ADAPT
+	@eval begin
+		Adapt.adapt_storage(::_StrongBeamDeviceViews, e::ThinStrongBeam) =
+			_thin_strong_beam_device_view(e)
+		function Adapt.adapt_storage(a::_StrongBeamDeviceViews{T}, e::GaussianStrongBeam) where {T}
+			ws = _weak_strong_cuda_workspace(e, T, a.N)
+			_refresh_gaussian_slice_buffers!(ws, e)
+			return GaussianStrongBeamDeviceView(
+				e.ns, ws.slice_center, ws.slice_weight, ws.slice_hoffset, ws.slice_voffset,
+				ws.slice_pxoffset, ws.slice_pyoffset, Val(_has_slice_angles(e)),
+				_thin_strong_beam_device_view(e.thin))
+		end
+		Adapt.@adapt_structure GaussianStrongBeamDeviceView
 	end
 end
 
@@ -443,6 +657,67 @@ function track!(rep, elem::GaussianStrongBeam, turns, policy::ResolvedCUDAExecut
 		 element=:gaussian, stream=stream === nothing ? :default : :explicit))
 	return track!(rep, elem, turns, CUDABackend;
 		threads=policy.threads, blocks=blocks, stream=stream)
+end
+
+"""
+    _track_cuda_wrapped_strong_beam!(rep, w, policy, ctx, stream)
+
+One turn of a strong beam behind a frame or turn-modulation wrapper on CUDA, the
+route `_track_cuda_elementwise!` (src/track/phase6d_track.jl) takes for a lifted
+`MisalignedElement`, `RefTilted` or `TurnModulated` whose contents require it
+(a `CompositeLine` is walked member by member instead). The whole wrapper goes
+to the device with every strong beam inside it replaced by its isbits device
+view (`Adapt.adapt` under `_StrongBeamDeviceViews`), the kernel
+`cuda_track_wrapped_strong_beam_kernel!` threads the coordinates through the
+wrapper with `track_luminous`, and the host folds each beam's per-particle
+luminosities into its `last_luminosity`, the beams collected in line order by
+`_collect_strong_beams!` -- the order `fusedTrackLuminous` emits them in, so
+each number lands on its own element, a misaligned sub-line with several beams
+included.
+
+Liveness is judged in the kernel at the element's position (the CPU fused
+route's rule), so the fold is a plain device `sum` rather than the bare
+launches' post-kernel mask (`_cuda_luminosity_total`): with losses disallowed
+the two agree, with losses allowed this one counts a particle alive at the beam
+and lost later in the same wrapper, as the CPU does. The per-particle buffers
+are the elements' reused workspaces (`_weak_strong_cuda_workspace`), so a
+wrapped beam allocates no more per turn than a bare one; the Gaussian slice
+vectors are re-uploaded per launch as the bare launch re-uploads them. The
+receipt is the bare launches' `:cuda_weak_strong_launch` with
+`element = :wrapped`, the wrapper's name and the beam count.
+"""
+function _track_cuda_wrapped_strong_beam!(rep, w, policy::ResolvedCUDAExecutionPolicy,
+                                          ctx::TrackingContext, stream)
+	_HAS_CUDA || error("CUDABackend requires CUDA.jl to be available.")
+	N = length(rep)
+	T = eltype(rep.x)
+	blocks = policy.blocks isa Int ? policy.blocks : min(cld(N, policy.threads), 256)
+	blocks == 0 && return nothing
+	beams = _collect_strong_beams!(Any[], w)
+	isempty(beams) && throw(ArgumentError(
+		"$(nameof(typeof(w))) was lifted out of the fused CUDA launch as a wrapped " *
+		"strong beam, but no strong beam is reachable inside it: " *
+		"`_requires_cuda_elementwise` and `_collect_strong_beams!` disagree about " *
+		"what the wrapper holds"))
+	lums = Tuple(_weak_strong_cuda_workspace(beam, T, N).lum for beam in beams)
+	view = Adapt.adapt(_StrongBeamDeviceViews{T}(N), w)
+	mask = active_live_mask()
+	_record_execution!(:cuda_weak_strong_launch, CUDABackend,
+		(threads=policy.threads, blocks=blocks, requested_blocks=policy.blocks,
+		 element=:wrapped, wrapper=Symbol(nameof(typeof(w))), strong_beams=length(beams),
+		 stream=stream === nothing ? :default : :explicit))
+	if stream === nothing
+		CUDA.@cuda threads=policy.threads blocks=blocks cuda_track_wrapped_strong_beam_kernel!(
+			rep, lums, view, mask, ctx)
+	else
+		CUDA.@cuda threads=policy.threads blocks=blocks stream=stream cuda_track_wrapped_strong_beam_kernel!(
+			rep, lums, view, mask, ctx)
+		CUDA.synchronize(stream)
+	end
+	for (beam, lum) in zip(beams, lums)
+		beam.last_luminosity = sum(lum)
+	end
+	return nothing
 end
 
 @inline function _cuda_thin_strong_beam_track(

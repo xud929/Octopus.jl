@@ -2250,31 +2250,11 @@ function _flush_fused_segment!(segments, fused, task_diagnostics::Bool=false,
     return nothing
 end
 
-"""
-    _collect_strong_beams!(acc, elem) -> acc
-
-Every strong beam reachable through `elem`, in LINE ORDER, descending through the
-four wrappers that hide one (`CompositeLine`, `MisalignedElement`, `RefTilted`,
-`TurnModulated`).
-
-The order matters as much as the membership: `fusedTrackLuminous` concatenates
-its per-element accumulators depth-first in the same order, so this walk and that
-expansion must agree or the artifact's channels get crossed -- beam 1's number
-written to beam 2's dataset, with nothing to notice it.
-"""
-_collect_strong_beams!(acc, elem) =
-    elem isa Union{ThinStrongBeam,GaussianStrongBeam} ?
-        (push!(acc, elem); acc) : _descend_strong_beams!(acc, elem)
-
-_descend_strong_beams!(acc, elem) = acc
-_descend_strong_beams!(acc, elem::Union{MisalignedElement,RefTilted,TurnModulated}) =
-    _collect_strong_beams!(acc, elem.inner)
-function _descend_strong_beams!(acc, elem::CompositeLine)
-    for op in elem.ops
-        _collect_strong_beams!(acc, op)
-    end
-    return acc
-end
+# `_collect_strong_beams!` / `_descend_strong_beams!`, the wrapper-aware
+# collector this walk and the hidden count are built on, live in
+# src/track/strong_beam_track.jl since fix M (2026-10-18): the CUDA
+# wrapped-strong-beam launch there needs the same line-ordered walk to hand
+# each beam its luminosity, and the track layer must not reach into this one.
 
 """Strong beams in `elems`, wrapper-aware, in line order (the walk over the
 heterogeneous tuple unrolled, `_foreach_unrolled`: a `for` boxed it per

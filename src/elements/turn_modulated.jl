@@ -74,11 +74,14 @@ export TurnModulated, WhiteNoise, PinkNoise, TurnTable, SpectralNoise, spectral_
 #     segments hold their tuple in a `Base.RefValue`, `execute!` runs the
 #     window check before the first turn and records the provenance receipt,
 #     the task constructor warns on duplicate modulation streams, and the
-#     wrapper joins `_survey_rebind`, `_descend_strong_beams!`,
-#     `_hidden_strong_beam_count`;
+#     wrapper joins `_survey_rebind`, `_hidden_strong_beam_count`
+#     (`_descend_strong_beams!`, the strong-beam collector, lives in
+#     `src/track/strong_beam_track.jl` since fix M, 2026-10-18);
 #   - `src/track/phase6d_track.jl`: the device conversion drops the wrapper
 #     to its realised element (`Adapt.adapt_structure`), so the fused tuple
-#     handed to CUDA never carries a rule;
+#     handed to CUDA never carries a rule; `_requires_cuda_elementwise`
+#     forwards through the wrapper, so a strong beam inside it is lifted out
+#     of the fused launch (`_track_cuda_wrapped_strong_beam!`, fix M);
 #   - `src/registry/Registry.jl`: the wrapper is a runtime object of the
 #     snapshot; `src/elements/aperture.jl`: `_requires_tracking_context`.
 # ---------------------------------------------------------------------------
