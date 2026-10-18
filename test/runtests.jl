@@ -10761,6 +10761,10 @@ end
                         # context-taking form shares the methods and is pinned by "CUDA
                         # tracks a wrapped strong beam elementwise ...".
                         (Octopus._requires_cuda_elementwise, 1),
+                        # The aperture binder's walk (fix N, 2026-10-18): the twin of
+                        # `_survey_rebind`; a wrapper without it leaves the aperture inside
+                        # unbound and the task refused by the count check.
+                        (Octopus._aperture_rebind, 1),
                         (Octopus.track_luminous, 1), (Octopus.track_particle, 2)]
     # The device conversion (design D8): `cudaconvert` recurses through the
     # fused tuple with `Adapt.adapt_structure`, so a wrapper without its own
