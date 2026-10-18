@@ -587,6 +587,12 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   drift, the bend and the solenoid (the owner widened the batch to that row),
   with unit I's classes re-measured after them; two pins re-derived, their
   derivations recorded.
+- [`beam_beam_fixes_2026_10_18.md`](history/beam_beam_fixes_2026_10_18.md) —
+  the beam-beam fix batch: the strong beam's `momentum_dispersion` made the
+  canonical dispersion the Twiss analysis reports (owner decision: one
+  convention within Octopus), the wrapped strong beam routed to the CUDA
+  elementwise path, the aperture rebind descending the wrappers; three rows
+  retired.
 - [`twiss_dispersion_degeneracy_theory_2026_09_11.md`](history/twiss_dispersion_degeneracy_theory_2026_09_11.md) —
   derivation record for theory Section 13 (mode degeneracy) and the analysis
   design note: provenance of the ported working notes and the convention key,

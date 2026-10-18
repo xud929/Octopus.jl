@@ -700,6 +700,37 @@ And a measurement rule from the same unit: when an output can cross zero,
 state its error in ulps of `max(|input|, |excess|)`, not of the output. Ulps
 of a `z` passing through zero said nothing about the kernel.
 
+## One quantity, one convention: the analysis owns the meaning of an optics parameter
+
+The strong beam's `momentum_dispersion` (a 2026-09-11 lead, closed 2026-10-18)
+was the slope `eta / h` of the physical longitudinal graph, while
+`TwissDispersionAnalysis` reports the canonical `eta` of (D8); the two agree
+only when `zeta' S_4 eta = 0`, and on the suite's own fixture they differed by
+4.5 %. Both readings had arguments: Xsuite and MAD-X report the slope, a
+fitted beam exhibits the slope, and the conversion is one scalar either way.
+The owner decided on the principle, not the convenience: within Octopus a
+parameter that carries the name of an optics quantity means what the analysis
+reports, and a consumer that needs another form converts inside, through the
+analysis's own function, with the derivation cited. Two layers that read one
+name two ways are a defect waiting for the first user who feeds one into the
+other.
+
+How to apply:
+
+- Before adding or renaming a parameter named for an optics quantity
+  (dispersion, Twiss functions, emittances, tunes), read what the analysis
+  reports under that name and use that meaning. If the kernel wants another
+  form, convert in the consumer -- `_dispersion_graph` in
+  `src/analysis/canonical_separation.jl` is the pattern -- and say so in the
+  docstring.
+- State in the docstring how the external codes' quantities map onto the
+  parameter, with the conversion (Xsuite's `dx` is `eta / h`; (D8) recovers
+  `eta`), so a user copying numbers from another code is told what to do.
+- Tie the consumer to the analysis with a test that runs the analysis on a
+  fixture with a known canonical triple and feeds its output straight into
+  the consumer (the strong-beam testset of 2026-10-18 is the pattern): then
+  the two layers cannot drift apart unnoticed.
+
 ## The attractive uniformity is sometimes the wrong one
 
 - Making a reduction uniform across rank counts looked strictly good: fold the
