@@ -285,3 +285,11 @@ green (`fast_lane_audit_fastG.log`). Not verified: CI (CPU only) runs on the pus
   skipping counter).
 - The batch 1 record and the frozen stage 0 record carry their addenda; their
   bodies are unchanged.
+
+---
+
+**Added after the push (2026-10-17).** Pushed as c061088 (origin/main, on the
+owner's word); CI run 461 (GitHub Actions, the CPU full lane) completed green
+at 13:09 EDT. The owner then opened batch 3 for the four follow-up rows; its
+record is
+[`crab_cavity_noise_audit_fixes_batch3_2026_10_17.md`](crab_cavity_noise_audit_fixes_batch3_2026_10_17.md).

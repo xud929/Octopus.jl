@@ -660,6 +660,46 @@ the two agree by construction rather than by luck about codegen.
   changes), then bisect by dumping the intermediate the two paths share -- the
   raw sums matched, which localised the flip to the finalize in one step.
 
+## An exact kernel breaks the pins that leaned on its rounding
+
+The 2026-10-17 longitudinal rewrite of the curved drift, the bend and the
+solenoid (crab-cavity noise audit, fix batch 3 unit K) made the bend exact on
+its design orbit: a sector bend on its axis exits with `px === 0.0` where it
+used to exit with the rounding of `s - b0 C1`. Two pins moved, neither because
+the physics did.
+
+- The b0 -> 0 slope pin resolved a 1e-15 change of a momentum of order 0.2
+  against a widening rtol table (1e-3 at 1e-13, 0.05 at 1e-15) that was an
+  absolute floor of two to four ulp in disguise. The design-orbit form costs
+  two more roundings at that scale -- 2.8 ulp measured, 0.4 before -- and the
+  table failed at 6.6% against 5%. The floor is now written as what it is:
+  `atol` in ulps of the quantity that carries the rounding, derived from the
+  count of roundings, with the relative law stated separately.
+- The lattice-magnets pin held the bend's complex-step Jacobian bitwise equal
+  with and without the perpendicular-face fringe. That fringe is second order,
+  so its only trace is the step's own square (1e-60) in entries that are
+  exactly zero otherwise; the old bend swamped the trace in a 1e-17 rounding
+  residual at the design orbit and the exact bend keeps it (5.7e-64). The pin
+  was bitwise because of garbage. It is now a bound far below roundoff, where
+  a linear effect would be of order one.
+
+Three things follow:
+
+- **A bitwise pin between two routes is a pin on their shared rounding garbage**
+  unless both routes are exact. Before making a kernel exact, grep the suite
+  for `==` on its outputs and read what each equality rests on.
+- **A tolerance table that widens as a parameter shrinks is an absolute floor
+  in disguise.** Write the floor as a floor, in ulps of the carrier quantity,
+  and derive the count; a widening rtol hides both the mechanism and the margin.
+- **The owning file's testset belongs in every targeted list.** Unit K's
+  targeted run covered 24 neighbour testsets and missed "Lattice magnets", the
+  testset of the file it changed; the first fast lane found it six minutes in,
+  at the price of a lane.
+
+And a measurement rule from the same unit: when an output can cross zero,
+state its error in ulps of `max(|input|, |excess|)`, not of the output. Ulps
+of a `z` passing through zero said nothing about the kernel.
+
 ## The attractive uniformity is sometimes the wrong one
 
 - Making a reduction uniform across rank counts looked strictly good: fold the

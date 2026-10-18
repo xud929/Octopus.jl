@@ -579,6 +579,14 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   precision rule for every element kind) and the seventeen small rows the
   audit priced, with the first batch's follow-ups, as four units; what each
   reproduced and landed, the gate, and the rows retired.
+- [`crab_cavity_noise_audit_fixes_batch3_2026_10_17.md`](history/crab_cavity_noise_audit_fixes_batch3_2026_10_17.md) —
+  the third batch on the neighbour audit's ledger: the cross-backend rounding
+  classes declared per kind and checked by measurement, the marker completing
+  the one precision rule, the strong-strong physics line cached per
+  compilation, and the cancellation-free longitudinal updates of the curved
+  drift, the bend and the solenoid (the owner widened the batch to that row),
+  with unit I's classes re-measured after them; two pins re-derived, their
+  derivations recorded.
 - [`twiss_dispersion_degeneracy_theory_2026_09_11.md`](history/twiss_dispersion_degeneracy_theory_2026_09_11.md) —
   derivation record for theory Section 13 (mode degeneracy) and the analysis
   design note: provenance of the ported working notes and the convention key,
