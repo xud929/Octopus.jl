@@ -255,7 +255,6 @@ function TrackingTask(elements;
         "set_global_rng!(seed=$(seed)) before constructing the task"))
     _warn_duplicate_radiation_streams(element_tuple)
     reported_sharing = _warn_duplicate_turn_modulation_streams(element_tuple)
-    _warn_hidden_apertures(element_tuple)
     action_tuple, observer_tuple = classify_task_hooks(hooks, actions, observers)
     art = artifact === nothing ? nothing :
           artifact isa RunArtifact ? artifact : RunArtifact(String(artifact))
@@ -391,12 +390,12 @@ performs through `_merged_params` before compiling, and the entry's own spec
 object when it carries no overrides (or is not an `ElementSpec` -- an in-line
 observer placed in a line, which compile routes elsewhere). Every spec-level
 walk over a line's placements reads THIS, never `getfield(entry, :spec)`: the
-five `LineEntry` collectors (`_collect_hidden_apertures!`,
-`_collect_radiation_ids!`, `_collect_aperture_specs!`, `_collect_declared!`
-here, `_collect_turn_modulation_ids!` in src/elements/turn_modulated.jl) read
-the raw spec, so a rule, a radiation stream, an aperture or a kept-whole
-alignment given only through a placement override was invisible to every
-pre-tracking walk while the compiled line carried it -- measured as two
+four `LineEntry` collectors (`_collect_radiation_ids!`,
+`_collect_aperture_specs!`, `_collect_declared!` here,
+`_collect_turn_modulation_ids!` in src/elements/turn_modulated.jl) read
+the raw spec, so a rule, a radiation stream or an aperture given only through
+a placement override was invisible to every pre-tracking walk while the
+compiled line carried it -- measured as two
 override-only rules sharing `rng_id` 7 with no warning against a receipt of
 `rng_ids: [7, 7]` (2026-10-13 neighbour audit, U1-2). Building the merged
 spec is cheap (one `Dict` merge) and side-effect free apart from the
@@ -407,54 +406,6 @@ function _effective_spec(entry::LineEntry)
     (isempty(getfield(entry, :overrides)) || !(spec isa ElementSpec)) && return spec
     return ElementSpec{kind(spec)}(_merged_params(entry))
 end
-
-"""
-Warn when an aperture sits inside a sub-line that compiles whole.
-
-Every line spec this walk meets -- an element of the task's tuple, an item of
-a nested vector, a placement's spec -- compiles to ONE `CompositeLine`
-whatever its own state (`_append_runtime_line!` ->
-`compile_runtime(::ElementSpec{:line})`): the only dissolutions happen before
-the walk, in `_element_tuple` for the line handed to the constructor directly
-and at a parent `BeamLine`'s construction for a bare line nested in it. The
-aperture binder cannot reach an aperture inside a composite, so the kill
-still happens, but with no element id, no counts row, and no name -- the loss
-surfaces only as the unattributed warning (2026-08-05 audit, U11-8). Until
-the binder learns to thread ids through composite lines, the honest behavior
-is to say so at construction. Until the 2026-10-16 neighbour audit (S3-1) the
-walk marked a line's contents hidden only for an own-state line -- the rule
-by which a line dissolves at the top or inside a parent, not the rule by
-which it compiles -- so a bare `BeamLine` placed inside a task tuple warned
-nothing and its aperture's kill was reported as "nothing was collimating".
-"""
-function _warn_hidden_apertures(elements::Tuple)
-    hidden = Symbol[]
-    _collect_hidden_apertures!(hidden, elements, false)
-    isempty(hidden) || @warn "aperture(s) inside a sub-line that compiles whole are " *
-        "outside loss accounting: they still kill particles, but the losses " *
-        "surface only as unattributed. A BeamLine placed inside the task's element " *
-        "tuple compiles to one CompositeLine whatever its own state, as does one " *
-        "carrying state of its own (a misalignment, a tracking method) wherever it " *
-        "sits. Hand the line to the task directly so it dissolves into its placements, " *
-        "or place the aperture at task level, for per-aperture attribution." apertures = hidden
-    return nothing
-end
-_collect_hidden_apertures!(out, elements::Tuple, inside) =
-    (foreach(e -> _collect_hidden_apertures!(out, e, inside), elements); out)
-_collect_hidden_apertures!(out, elements::AbstractVector, inside) =
-    (foreach(e -> _collect_hidden_apertures!(out, e, inside), elements); out)
-_collect_hidden_apertures!(out, entry::LineEntry, inside) =
-    _collect_hidden_apertures!(out, _effective_spec(entry), inside)
-function _collect_hidden_apertures!(out, element::ElementSpec{:line}, inside)
-    # Entering a line this walk meets: everything below compiles to one op,
-    # own state or not (S3-1; `_element_tuple` dissolved the top-level bare
-    # line before the walk, and a parent BeamLine dissolved a nested bare one).
-    foreach(e -> _collect_hidden_apertures!(out, e, true), line_entries(element))
-    return out
-end
-_collect_hidden_apertures!(out, element::ElementSpec{:aperture}, inside) =
-    (inside && push!(out, Symbol(getparam(element, :name, :unnamed))); out)
-_collect_hidden_apertures!(out, element, inside) = out
 
 """
 Warn when two radiation placements in a line share an RNG stream.
@@ -764,6 +715,17 @@ end
 Aperture specs in the line, in lattice order. Their position **is** their
 identity: Octopus element specs carry no id of their own, so `element_id` is the
 index of the aperture in the compiled line, assigned here.
+
+A line spec met on the way -- a kept-whole (own-state) line in the task
+tuple, a bare `BeamLine` placed inside one, an own-state line inside a parent
+-- compiles to ONE `CompositeLine` (`_append_runtime_line!` ->
+`compile_runtime(::ElementSpec{:line})`), and the aperture binder descends it
+(`_aperture_rebind`), so this walk descends its entries in the same order.
+Until 2026-10-18 (U2-5) the collector stopped at a line spec: an aperture
+inside one was sized out of the record and its kill surfaced only as
+unattributed, which a construction-time warning announced (2026-08-05 audit,
+U11-8; widened to the bare placed line by the 2026-10-16 audit, S3-1). The
+warning retired with the limitation it announced.
 """
 function _aperture_specs(elements::Tuple)
     out = ElementSpec{:aperture}[]
@@ -773,13 +735,17 @@ end
 
 _collect_aperture_specs!(out, elements::Tuple) =
     (foreach(e -> _collect_aperture_specs!(out, e), elements); out)
-# Every container `_append_runtime_line!` walks must be walked here identically:
-# this collector sizes the loss record's `counts` while `_bind_apertures`
-# assigns an id to every runtime aperture, and a container seen by one walker
-# and not the other leaves `counts` undersized under an unchecked
-# `counts[id] += 1` (audit part 7, T3).
+# Every container `_append_runtime_line!` walks must be walked here identically,
+# and every runtime container `_aperture_rebind` descends must have its spec
+# descended here: this collector sizes the loss record's `counts` while
+# `_bind_apertures` assigns an id to every runtime aperture, and a container
+# seen by one walker and not the other leaves `counts` undersized under an
+# unchecked `counts[id] += 1` (audit part 7, T3) -- caught since by the count
+# check in `_bind_apertures`, which refuses the line instead.
 _collect_aperture_specs!(out, elements::AbstractVector) =
     (foreach(e -> _collect_aperture_specs!(out, e), elements); out)
+_collect_aperture_specs!(out, element::ElementSpec{:line}) =
+    (foreach(e -> _collect_aperture_specs!(out, e), line_entries(element)); out)
 _collect_aperture_specs!(out, element::ElementSpec{:aperture}) = (push!(out, element); out)
 _collect_aperture_specs!(out, entry::LineEntry) =
     _collect_aperture_specs!(out, _effective_spec(entry))
@@ -813,14 +779,23 @@ end
 # other and with `s_positions(line)`, so there is exactly one traversal
 # (U11-1, and the T3 two-walker lesson). Pushes `(s_entry, placement_length)`
 # for each spec of kind `K`, advances by `_placement_length` for everything,
-# and does not descend into a kept-whole (own-state) line spec — it advances
-# by that line's total length instead, exactly as the compiled runtime treats
-# it as one `CompositeLine` op. The accumulator's final value is the total
-# arc length of the walked elements.
+# and DESCENDS a line spec it meets -- a kept-whole (own-state) line in the
+# task tuple, a bare line placed inside one, an own-state placement inside a
+# parent -- entry by entry: that line compiles to one `CompositeLine` whose
+# ops every runtime rebind (`_aperture_rebind`, `_survey_rebind`) descends,
+# and the two sides must find the same elements in the same order (2026-10-18,
+# U2-5; until then the walker advanced by the line's total length and an
+# aperture or cavity inside was unseen on this side, so the aperture had no
+# arc position and the cavity was refused by the survey's count check). The
+# accumulated arc is unchanged, a line's length being its contents' (U11-1).
+# The accumulator's final value is the total arc length of the walked
+# elements.
 _collect_spec_s!(out, elements::Tuple, s, K::Val) =
     (foreach(e -> _collect_spec_s!(out, e, s, K), elements); out)
 _collect_spec_s!(out, elements::AbstractVector, s, K::Val) =
     (foreach(e -> _collect_spec_s!(out, e, s, K), elements); out)
+_collect_spec_s!(out, element::ElementSpec{:line}, s, K::Val) =
+    (foreach(e -> _collect_spec_s!(out, e, s, K), line_entries(element)); out)
 # `K` may be one kind or a tuple of kinds; a tuple-matched walk keeps LINE
 # ORDER for zero-length elements at the same arc position, where an s-sort of
 # two single-kind walks interleaves ties arbitrarily (caught by the cavity
@@ -840,13 +815,20 @@ function _collect_spec_s!(out, element::ElementSpec{EK}, s, ::Val{K}) where {EK,
     s[] += _placement_length(element)
     return out
 end
-function _collect_spec_s!(out, entry::LineEntry, s, ::Val{K}) where {K}
+function _collect_spec_s!(out, entry::LineEntry, s, Kv::Val{K}) where {K}
     spec = getfield(entry, :spec)
+    if spec isa ElementSpec{:line}
+        # A line placement descends like a line (above), through the spec it
+        # compiles. `_placement_length` first, for its refusal of an `L`
+        # override on the placement (U15-8): this walk honours it exactly as
+        # `total_length` does, or the two would disagree again (U15-6).
+        _placement_length(entry)
+        return _collect_spec_s!(out, _effective_spec(entry), s, Kv)
+    end
     spec isa AbstractElementSpec && spec isa ElementSpec &&
         _kind_matches(kind(spec), K) &&
         push!(out, (s[], _placement_length(entry), entry))
-    # `_placement_length`, not a raw `:L` read: a nested own-state line
-    # counted as zero length here, shifting every later aperture_s (U11-1).
+    # `_placement_length`, not a raw `:L` read (U11-1).
     s[] += _placement_length(entry)
     return out
 end
@@ -1811,16 +1793,51 @@ function _bind_apertures(entries::Tuple, record)
     # walkers ever disagree again on what a container is, fail here on the
     # host, loudly -- the alternative is an unchecked `counts[id]` write past
     # the end of the vector inside the tracking kernel (audit part 7, T3).
+    # What still reaches this: a runtime aperture or container handed to the
+    # task directly rather than as a spec (the spec walk cannot see it), or a
+    # container type one walk descends and the other does not.
     id[] == length(record.counts) || error(
         "loss record sized for $(length(record.counts)) apertures but the " *
         "compiled line contains $(id[]); an element container is being walked " *
-        "by _append_runtime_line! but not by _aperture_specs")
+        "by _append_runtime_line! and _aperture_rebind but not by " *
+        "_aperture_specs -- a runtime element handed to the task directly " *
+        "instead of its spec, or a container type the spec walk does not " *
+        "descend. Hand the task specs, or teach both walks the container.")
     return bound
 end
 
-_bind_aperture_entry(entry::PhysicsEntry{<:Aperture}, record, id) =
-    PhysicsEntry(_attach_loss_record(entry.element, record, id[] += 1))
+_bind_aperture_entry(entry::PhysicsEntry, record, id) =
+    PhysicsEntry(_aperture_rebind(entry.element, record, id))
 _bind_aperture_entry(entry, record, id) = entry
+
+# The aperture rebind walk, the binder's twin of `_survey_rebind`. An aperture
+# compiled with a placement parameter sits inside a frame wrapper (`x_offset`
+# -> `MisalignedElement`, `ref_tilt` -> `RefTilted`), and one inside a line
+# that compiles whole sits inside a `CompositeLine`; until 2026-10-18 the
+# binder matched `PhysicsEntry{<:Aperture}` only, so every wrapped aperture
+# fell to the identity fallback while `_aperture_specs` had counted its spec:
+# `execute!` on `(Drift, ApertureSpec(...; x_offset=1e-4), Drift)` was refused
+# by the count check above with the two-walker message, and an aperture inside
+# a `BeamLine` placed in the task tuple was sized out of the record and killed
+# unattributed (U2-5, the turn-modulation audit's unit 2; measured 129 of 200
+# attributed to "A" without the offset, refused with it). Walks the four
+# containers the other wrapper walks do, in op order, so the ids follow
+# lattice order through any nesting. `TurnModulated` wraps cavities and holds
+# no aperture today; its method keeps the walk structural and, like
+# `_survey_rebind`, rebinds the NOMINAL element once and restarts the wrapper
+# from it.
+_aperture_rebind(op, record, id) = op
+_aperture_rebind(op::Aperture, record, id) = _attach_loss_record(op, record, id[] += 1)
+_aperture_rebind(op::CompositeLine, record, id) =
+    CompositeLine(map(o -> _aperture_rebind(o, record, id), op.ops))
+_aperture_rebind(op::MisalignedElement, record, id) =
+    MisalignedElement(_aperture_rebind(op.inner, record, id), op.qin, op.oin, op.qout, op.oout)
+_aperture_rebind(op::RefTilted, record, id) =
+    RefTilted(_aperture_rebind(op.inner, record, id), op.c, op.s)
+function _aperture_rebind(op::TurnModulated, record, id)
+    base = _aperture_rebind(op.base, record, id)
+    return TurnModulated(base, base, op.rule)
+end
 
 """
 Bind survey values to every runtime cavity in the compiled line
@@ -1833,10 +1850,12 @@ previous kick, wrapping the turn — is what the slip-corrected kick consumes,
 so no `turn·C`-sized number is ever formed. Lines without a cavity return
 untouched, so no other task pays anything.
 
-The count check mirrors `_bind_apertures`: the spec walk does not descend a
-kept-whole (own-state) line, so a cavity inside one is found by the runtime
-rebind but not by the survey — refused loudly here rather than silently left
-at the s = 0 boundary.
+The count check mirrors `_bind_apertures`. Both sides descend a line that
+compiles whole (the spec walk since 2026-10-18, U2-5; until then it stopped
+at a kept-whole line and a cavity inside one was refused here), so what the
+check still catches is a runtime cavity or container handed to the task
+directly, which the spec walk cannot see — refused loudly here rather than
+silently left at the s = 0 boundary.
 """
 function _bind_survey(entries::Tuple, elements)
     pairs = Tuple{Float64,Float64,Any}[]
@@ -1846,9 +1865,10 @@ function _bind_survey(entries::Tuple, elements)
     kicks = [p[1] + p[2] / 2 for p in pairs]
     n = length(kicks)
     # No early return on n == 0: the rebind must still walk the runtime side,
-    # because a cavity hidden in a kept-whole sub-line is found there and
-    # nowhere else -- with an early return it would silently keep the s = 0
-    # boundary, which is the exact silence this count check exists to refuse.
+    # because a cavity handed to the task as a runtime object is found there
+    # and nowhere else -- with an early return it would silently keep the
+    # s = 0 boundary, which is the exact silence this count check exists to
+    # refuse.
     ds = similar(kicks)
     for i in 2:n
         ds[i] = kicks[i] - kicks[i-1]
@@ -1864,23 +1884,23 @@ function _bind_survey(entries::Tuple, elements)
                 entries)
     id[] == n || error(
         "the survey walk found $(n) thin_rf_cavity spec(s) but the compiled " *
-        "line contains $(id[]); the cavity sits inside a sub-line the spec walk " *
-        "does not descend -- a kept-whole (own-state) line, or a bare line " *
-        "nested inside a task tuple. Flatten it or place the cavity at the " *
-        "task level.")
+        "line contains $(id[]); a cavity reached the compiled line without its " *
+        "spec being walked -- a runtime cavity or container handed to the task " *
+        "directly instead of its spec, or a container type the spec walk does " *
+        "not descend. Hand the task specs, or teach both walks the container.")
     # The same tripwire for the accelerating kind: the chain validation and
-    # the single-pass refusal both walk SPECS, so an accelerating cavity
-    # hidden in a kept-whole sub-line would evade both and run multi-turn
-    # against a stale reference, silently (2026-08-14 neighbour audit -- the
-    # rf-kind check above existed, its sibling did not).
+    # the single-pass refusal both walk SPECS, so an accelerating cavity the
+    # spec walk cannot see would evade both and run multi-turn against a
+    # stale reference, silently (2026-08-14 neighbour audit -- the rf-kind
+    # check above existed, its sibling did not).
     acc_id[] == length(accs) || error(
         "the survey walk found $(length(accs)) thin_accelerating_cavity " *
         "spec(s) but the compiled line contains $(acc_id[]); an accelerating " *
-        "cavity sits inside a sub-line the spec walk does not descend -- a " *
-        "kept-whole (own-state) line, or a bare line nested inside a task " *
-        "tuple -- where the reference-chain validation and the single-pass " *
-        "refusal cannot see it. Flatten it or place the cavity at the task " *
-        "level.")
+        "cavity reached the compiled line without its spec being walked -- a " *
+        "runtime cavity or container handed to the task directly instead of " *
+        "its spec, or a container type the spec walk does not descend -- where " *
+        "the reference-chain validation and the single-pass refusal cannot see " *
+        "it. Hand the task specs, or teach both walks the container.")
     return bound
 end
 
