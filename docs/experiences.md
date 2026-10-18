@@ -1719,6 +1719,11 @@ Closed with reasons; reopen only if the stated condition changes.
   the archive.
 - **Node-solve caching / the ~1e-4 interpolation floor** — closed negative,
   twice: it introduces more error than it removes.
+- **Deriving the beam-beam-mediated vertical response ratio** (0.205 of the
+  horizontal emittance growth rate under horizontal crab phase noise; the
+  crab-cavity noise theory note, section 4.5) — owner decision 2026-10-18: a
+  physics research problem, not Octopus development. The validation keeps the
+  measured ratio as an explicit input; the row is in the archive.
 - **Nightly scheduled jobs on the shared 128-thread box** — the 2026-08-07
   system-manager directive stands; benchmark and nightly scripts ship inert
   and opt-in per machine, and nothing unattended writes to shared history.

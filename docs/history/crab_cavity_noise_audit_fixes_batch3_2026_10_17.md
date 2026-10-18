@@ -1,8 +1,7 @@
 # Crab-cavity noise neighbour audit: fix batch 3 (2026-10-17)
 
-**Status:** complete 2026-10-17: the three units merged, the integration fix
-committed, both CPU arms of the full gate green with CUDA active on ef5d20f;
-push pending the owner's word (an addendum records the push and its CI run).
+**Status:** complete 2026-10-17; pushed 2026-10-18 as abc7e38, CI run 462
+green (the addendum).
 
 **Scope.** The owner's follow-up on the four rows fix batch 2 left open
 ([batch 2](crab_cavity_noise_audit_fixes_batch2_2026_10_16.md), pushed as
@@ -236,3 +235,15 @@ Committed on `crab-noise-audit` as ef5d20f.
   batches'.
 - The batch 2 record carries its addendum (pushed as c061088, CI run 461
   green, batch 3 opened); its body is unchanged.
+
+## Addendum (2026-10-18)
+
+Pushed 2026-10-18 as abc7e38 (the record commit; the batch is 36b8652, the
+merge 58fc8c6, the integration fix ef5d20f and the record, c061088..abc7e38).
+CI run 462 green: the CPU full lane on a znver4 runner, 45 min (04:10 to
+04:55 UTC), the identity-pin notices 6 of 6 and 5 of 6 by their two tables;
+CUDA testsets skipped there as always (the GPU arms ran here). The same day
+the owner closed the remaining theory row of the campaign -- deriving the
+beam-beam-mediated vertical response ratio is a physics research problem, not
+Octopus development -- so it left `docs/todo.md` for the archive with that
+decision; nothing in the code changed.

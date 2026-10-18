@@ -407,7 +407,11 @@ $\varepsilon_c$ grows at the full rate with no centroid motion. With the
 strong beam on, both rules grow $\varepsilon_c$ at the raw rate after
 $\tau_d$. Section 7 builds the control into the sweep.
 
-### 4.5 The vertical response through the beam–beam force (measured; derivation open)
+### 4.5 The vertical response through the beam–beam force (measured, not derived here)
+
+The derivation of this ratio is not an Octopus task (owner decision
+2026-10-18: a physics research problem, not framework development); the
+measured ratio stands as the validation's explicit input, `ref_y_over_x_phase`.
 
 The treatment above carries no vertical response to horizontal offset
 noise: the offset $d$ enters $F_x$ only. The validation sweep (the record,
@@ -743,7 +747,9 @@ backend beyond tolerance.
 6. **The vertical response ratio $R$ is measured, not derived** (4.5):
    0.205 of the horizontal rate under phase noise at the production point,
    falling with the amplitude and larger for pink. Deriving it from
-   $\partial_x F_y$ of the flat strong beam is the open theory item.
+   $\partial_x F_y$ of the flat strong beam would be the theory item; by the
+   owner's decision of 2026-10-18 it is not an Octopus task, and the measured
+   ratio stands as the validation's input.
 
 ## References
 
