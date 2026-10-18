@@ -9744,6 +9744,230 @@ end
     end
 end
 
+@testset "Aperture ids thread through the frame wrappers and kept-whole lines" begin
+    # 2026-10-18, todo row "Unbound aperture: `_bind_aperture_entry` neither
+    # descends wrappers nor records losses" (U2-5 of the 2026-10-13
+    # turn-modulation audit; pre-existing since 6f708bb). The binder matched
+    # `PhysicsEntry{<:Aperture}` only, so an aperture compiled with a
+    # placement parameter -- `x_offset` wraps it in `MisalignedElement`,
+    # `ref_tilt` in `RefTilted` -- fell to the identity fallback while
+    # `_aperture_specs` had counted its spec, and `execute!` was refused with
+    # "loss record sized for 1 apertures but the compiled line contains 0";
+    # an aperture inside a `BeamLine` placed in the task tuple (kept whole as
+    # one `CompositeLine`) was sized OUT of the record by both walks and
+    # killed unattributed, announced by a construction warning. Now
+    # `_aperture_rebind` descends the four containers like `_survey_rebind`,
+    # and the spec-side collector and the arc walker descend a line spec the
+    # same way. Each pin below fails on 3a04d90 for the row's reason
+    # (result/beam_beam_fixes_2026_10_18/N/red_3a04d90.log).
+    #
+    # Fixture: 200 particles, 129 at |x| in [2.01e-3, 3.29e-3] and 71 at
+    # |x| <= 7.1e-5 against x_limit = 1e-3, every coordinate clear of the
+    # boundary by more than the 1e-4 offset and than the cos(0.3) roll
+    # shrinks it, so the aligned, the shifted and the rolled aperture kill
+    # the same 129 -- the row's number, reproduced by construction rather
+    # than by the audit's random beam.
+    mkrep() = begin
+        xs = zeros(200)
+        for i in 1:129; xs[i] = (isodd(i) ? 1 : -1) * (2.0e-3 + 1.0e-5 * i); end
+        for i in 130:200; xs[i] = (isodd(i) ? 1 : -1) * 1.0e-6 * (i - 129); end
+        Phase6DRep(xs, zeros(200), zeros(200), zeros(200), zeros(200), zeros(200))
+    end
+    ap(; kw...) = ApertureSpec(shape=:rectangle, x_limit=1.0e-3, y_limit=1.0, name="A"; kw...)
+    # The refusal is returned, not thrown, so each pin fails on its own with
+    # the message in view (unfixed: `names` is the two-walker error text).
+    attributed(line) = try
+        task = TrackingTask(line)
+        rep = mkrep()
+        execute!(task, rep; turns=1)
+        s = loss_summary(rep, task)
+        (names=aperture_names(loss_record(task)), counts=Int.(loss_counts(loss_record(task))),
+         dead=s.dead, unattributed=s.unattributed,
+         types=[nameof(typeof(e)) for e in Octopus._physics_line(Octopus._runtime_entries(task, rep))])
+    catch e
+        (names=sprint(showerror, e), counts=Int[], dead=-1, unattributed=-1, types=Symbol[])
+    end
+    # The control, the row's measurement: 129 of 200 to "A".
+    control = attributed((DriftSpec(L=1.0), ap(), DriftSpec(L=1.0)))
+    @test control.names == ["A"] && control.counts == [129] && control.dead == 129 && control.unattributed == 0
+    # (a) The misaligned aperture runs and attributes the same 129 by name.
+    mis = attributed((DriftSpec(L=1.0), ap(x_offset=1.0e-4), DriftSpec(L=1.0)))
+    @test mis.types == [:LatticeMagnet, :MisalignedElement, :LatticeMagnet]
+    @test mis.names == ["A"]
+    @test mis.counts == [129] && mis.dead == 129 && mis.unattributed == 0
+    # (b) Through `RefTilted`.
+    rolled = attributed((DriftSpec(L=1.0), ap(ref_tilt=0.3), DriftSpec(L=1.0)))
+    @test rolled.types == [:LatticeMagnet, :RefTilted, :LatticeMagnet]
+    @test rolled.names == ["A"]
+    @test rolled.counts == [129] && rolled.dead == 129 && rolled.unattributed == 0
+    # (c) A `BeamLine` inside the task tuple stays whole as one `CompositeLine`
+    # (`_element_tuple(::Tuple)` is the identity); its aperture is now sized
+    # in and attributed, with no construction warning (the retired "outside
+    # loss accounting" one), bare and misaligned alike
+    # (`MisalignedElement{CompositeLine}`).
+    inner = BeamLine("l", DriftSpec(L=1.0), ap(), DriftSpec(L=1.0))
+    @test_logs TrackingTask((inner,))
+    @test length(Octopus._aperture_specs((inner,))) == 1
+    comp = attributed((inner,))
+    @test comp.types == [:CompositeLine]
+    @test comp.names == ["A"] && comp.counts == [129] && comp.unattributed == 0
+    miscomp = attributed((BeamLine("l", DriftSpec(L=1.0), ap(), DriftSpec(L=1.0); x_offset=1.0e-4),))
+    @test miscomp.types == [:MisalignedElement]
+    @test miscomp.names == ["A"] && miscomp.counts == [129] && miscomp.unattributed == 0
+    # (d) Wrapped and bare in one line: the record is sized for both, in
+    # lattice order; "B" downstream sees only the 129 already dead.
+    both = attributed((ap(x_offset=1.0e-4), DriftSpec(L=1.0), ap(name="B")))
+    @test both.names == ["A", "B"] && both.counts == [129, 0] && both.unattributed == 0
+    # (e) The compiled wrapper holds the BOUND aperture: this task's record
+    # and the lattice-order id.
+    let task = TrackingTask((DriftSpec(L=1.0), ap(x_offset=1.0e-4), DriftSpec(L=1.0))), rep = mkrep()
+        wrapped = try
+            Octopus._physics_line(Octopus._runtime_entries(task, rep))[2]
+        catch e
+            e
+        end
+        @test wrapped isa Octopus.MisalignedElement
+        @test wrapped isa Octopus.MisalignedElement && wrapped.inner.record === loss_record(task) &&
+              wrapped.inner.element_id == 1
+    end
+    # (f) The arc walker descends the same lines, so `aperture_s` stays
+    # aligned entry for entry with `aperture_names` in the artifact: 1.0
+    # inside the placed line (after its drift); for an own-state line C
+    # inside a bare parent P (P dissolves, C stays whole and misaligned),
+    # "A" at 2.0 + 1.0 inside C and "B" at 2.0 + total_length(C) = 3.5
+    # after it.
+    # (unfixed, the artifact carries no /losses group at all: the read is
+    # caught so the later pins still run and report their own reasons.)
+    losses_of(path) = try
+        read(TaskOutput(path), :losses)
+    catch e
+        sprint(showerror, e)
+    end
+    let path = tempname() * ".h5"
+        try
+            execute!(TrackingTask((inner,); artifact=path), mkrep(); turns=1)
+        catch
+        end
+        l = losses_of(path)
+        @test !(l isa AbstractString) && l.aperture_s == [1.0] && l.aperture_names == ["A"] &&
+              l.aperture_counts == [129]
+        rm(path; force=true)
+    end
+    let path = tempname() * ".h5",
+        parent = BeamLine("P", DriftSpec(L=2.0),
+                          BeamLine("C", DriftSpec(L=1.0), ap(), DriftSpec(L=0.5); x_offset=1.0e-4),
+                          ap(name="B"))
+        @test s_positions(parent) == [0.0, 2.0, 3.5]
+        try
+            execute!(TrackingTask(parent; artifact=path), mkrep(); turns=1)
+        catch
+        end
+        l = losses_of(path)
+        @test !(l isa AbstractString) && l.aperture_s == [3.0, 3.5] && l.aperture_names == ["A", "B"] &&
+              l.aperture_counts == [129, 0]
+        rm(path; force=true)
+    end
+    # (g) The count check stays loud for what the spec walk still cannot see:
+    # a RUNTIME container handed to the task directly (the specs count one
+    # aperture, the rebind finds two).
+    let raw = Octopus.CompositeLine((compile_runtime(DriftSpec(L=1.0)), compile_runtime(ap(name="R")))),
+        task = TrackingTask((ap(name="S"), raw))
+        @test length(Octopus._aperture_specs(task.elements)) == 1
+        err = try
+            execute!(task, mkrep(); turns=1)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ErrorException
+        @test err isa ErrorException &&
+              occursin("loss record sized for 1 apertures but the compiled line contains 2", err.msg) &&
+              occursin("_aperture_specs", err.msg)
+    end
+    # (h) The walk owns a method for every wrapper (derived by the `inner`
+    # field rule, which the wrapper-walk tripwire pins against the forwarding
+    # rule) and for `CompositeLine`, so a wrapper falling to the generic
+    # fallback fails here by name. The tripwire's `wrapper_walks` list is the
+    # single source of the walks a wrapper joins; this walk belongs in it.
+    let ops = Octopus._concrete_octopus_subtypes(Octopus.AbstractTrackOp),
+        wrappers = Any[T for T in ops if :inner in fieldnames(Base.unwrap_unionall(T))]
+        @test Set(nameof.(wrappers)) == Set([:MisalignedElement, :RefTilted, :TurnModulated])
+        owns(f, W) = any(methods(f)) do m
+            P = Base.unwrap_unionall(m.sig).parameters
+            length(P) > 1 || return false
+            S = Base.rewrap_unionall(P[2], m.sig)
+            !(Octopus.AbstractTrackOp <: S) && W <: S
+        end
+        @test isdefined(Octopus, :_aperture_rebind)
+        for W in (wrappers..., Octopus.CompositeLine)
+            @testset let wrapper = nameof(W)
+                @test isdefined(Octopus, :_aperture_rebind) && owns(Octopus._aperture_rebind, W)
+            end
+        end
+    end
+    # (i) The arc walker's descent reaches the survey too: an RF cavity inside
+    # a kept-whole line is now found by the spec walk as `_survey_rebind`
+    # finds it on the runtime side, and binds to the flat placement's
+    # `ds_turn` (10 m across the wrap-around, 5 m between the two), where the
+    # survey's count check refused it before.
+    let cav(nm) = ThinRFCavitySpec(400.0e6; voltage=1.0e6, e0=10.0e9, mc2=PMASS_EV, name=nm),
+        ds_of(line) = try
+            task = TrackingTask(line)
+            out = Float64[]
+            visit(e) = e isa Octopus.ThinRFCavity ? push!(out, e.ds_turn) :
+                       e isa Octopus.CompositeLine ? foreach(visit, e.ops) : nothing
+            foreach(visit, Octopus._physics_line(Octopus._runtime_entries(task, mkrep())))
+            out
+        catch e
+            sprint(showerror, e)
+        end
+        @test ds_of((DriftSpec(L=10.0), cav("C1"), DriftSpec(L=5.0), cav("C2"))) == [10.0, 5.0]
+        @test ds_of((DriftSpec(L=10.0), BeamLine("c", cav("C1"), DriftSpec(L=5.0); x_offset=0.0), cav("C2"))) == [10.0, 5.0]
+    end
+    # (j) The same placements through `execute!` on CUDA: the device record is
+    # bound through the wrappers and converted at launch, the counts agree,
+    # and the translation and composite cases are bitwise identical to the
+    # CPU (polynomial maps only); the roll fuses `c x + s y` on the device, so
+    # it is pinned on the counts and the dead set (measured max |dx| 1.4e-20
+    # on the RTX 4500 Ada, 2026-10-18).
+    if CUDA_TESTS_ACTIVE
+        device(h) = Phase6DRep((Octopus.CUDA.CuArray(a) for a in coordinate_arrays(h))...)
+        same_coords(a, b) = all(all(Array(x) .=== Array(y))
+                                for (x, y) in zip(coordinate_arrays(a), coordinate_arrays(b)))
+        for (label, line, bitwise) in (("misaligned", (DriftSpec(L=1.0), ap(x_offset=1.0e-4), DriftSpec(L=1.0)), true),
+                                       ("rolled", (DriftSpec(L=1.0), ap(ref_tilt=0.3), DriftSpec(L=1.0)), false),
+                                       ("BeamLine in tuple", (inner,), true),
+                                       ("misaligned BeamLine",
+                                        (BeamLine("l", DriftSpec(L=1.0), ap(), DriftSpec(L=1.0); x_offset=1.0e-4),), true))
+            @testset let placement = label
+                cpu = mkrep()
+                gpu = device(mkrep())
+                tc = TrackingTask(line)
+                tg = TrackingTask(line; policy=CUDAExecutionPolicy())
+                ran = try
+                    execute!(tc, cpu; turns=1)
+                    execute!(tg, gpu; turns=1)
+                    Octopus.CUDA.synchronize()
+                    true
+                catch e
+                    sprint(showerror, e)
+                end
+                @test ran === true
+                if ran === true
+                    @test loss_counts(loss_record(tg)) == loss_counts(loss_record(tc)) == Int32[129]
+                    @test loss_summary(gpu, tg).unattributed == 0
+                    @test isnan.(Array(gpu.x)) == isnan.(cpu.x)
+                    if bitwise
+                        @test same_coords(gpu, cpu)
+                    end
+                end
+            end
+        end
+    else
+        @test_skip "CUDA device not available: the wrapped-aperture record on the device is not checked"
+    end
+end
+
 @testset "The bend map is cancellation-free as b0 goes to zero" begin
     lb(h, b0, L, v) = collect(Octopus._lattice_bend(h, b0, L, v...))
     ld(h, L, v) = collect(Octopus._lattice_drift(h, L, v...))
@@ -14728,29 +14952,46 @@ end
                              Val(:thin_rf_cavity))
     @test length(pairs) == 1 && pairs[1][1] == s_positions(line)[5]
     @test acc[] == Octopus.total_length(line)
-    # A cavity inside a kept-whole line is refused loudly, never silently
-    # left at the s = 0 boundary (the walker does not descend own-state
-    # lines; the runtime rebind does -- the count check catches the gap).
+    # A cavity inside a kept-whole line is surveyed THROUGH the line (since
+    # 2026-10-18, U2-5: the arc walker descends a line spec exactly as the
+    # runtime rebind descends the `CompositeLine` it compiles to) and binds to
+    # the same `ds_turn` as the flat placement -- the whole 3.0 m turn for the
+    # single cavity -- where the survey's count check refused it before
+    # ("the walker does not descend own-state lines"). The check stays for
+    # what the spec walk still cannot see, a runtime cavity or container
+    # handed to the task directly, pinned for the aperture twin in "Aperture
+    # ids thread through the frame wrappers and kept-whole lines".
     inner = BeamLine("inner", DriftSpec(L=1.0), cavspec(); x_offset=1.0e-3)
     kept = TrackingTask((DriftSpec(L=2.0), inner))
-    @test_throws ErrorException Octopus._runtime_entries(kept)
-    # ...and the accelerating kind has the same tripwire: hidden there, it
-    # would evade the chain validation AND the single-pass refusal (both walk
-    # specs) and run multi-turn against a stale reference — silently, before
-    # the 2026-08-14 neighbour audit added the sibling count check.
+    kept_ents = Octopus._runtime_entries(kept)
+    @test kept_ents[2].element isa Octopus.MisalignedElement &&
+          kept_ents[2].element.inner isa Octopus.CompositeLine
+    kept_cav = kept_ents[2].element.inner.ops[2]
+    @test kept_cav isa Octopus.ThinRFCavity && Octopus._has_survey(kept_cav)
+    flat_cs = [e.element for e in Octopus._runtime_entries(TrackingTask((DriftSpec(L=2.0), DriftSpec(L=1.0), cavspec())))
+               if e isa Octopus.PhysicsEntry && e.element isa Octopus.ThinRFCavity]
+    @test length(flat_cs) == 1 && flat_cs[1].ds_turn == 3.0 && kept_cav.ds_turn == 3.0
+    # ...and the accelerating kind inside a kept-whole line is seen by the
+    # same spec walk, so the chain validation and the single-pass refusal
+    # (both walk specs) see it too: the compile agrees on the count and runs,
+    # and a second pass is refused BY NAME by the single-pass rule rather
+    # than by the survey's count check (the 2026-08-14 sibling tripwire,
+    # which stays for a runtime cavity handed to the task directly).
     inner_acc = BeamLine("inner_acc", DriftSpec(L=1.0),
                          ThinAcceleratingCavitySpec(1.3e9; voltage=25.0e6,
                                                     e0=1.0e9, mc2=EMASS_EV);
                          x_offset=1.0e-3)
     kept_acc = TrackingTask((DriftSpec(L=2.0), inner_acc))
+    @test Octopus._has_accelerating_cavity(kept_acc.elements)
+    @test Octopus._runtime_entries(kept_acc) isa Tuple
     err_acc = try
-        Octopus._runtime_entries(kept_acc)
+        execute!(kept_acc, Phase6DRep([1.0e-4], zeros(1), zeros(1), zeros(1), zeros(1), zeros(1)); turns=2)
         nothing
     catch e
         e
     end
-    @test err_acc isa ErrorException &&
-          occursin("accelerating", sprint(showerror, err_acc))
+    @test err_acc isa ArgumentError &&
+          occursin("SINGLE-PASS", sprint(showerror, err_acc))
 end
 
 @testset "Accelerating cavity changes the reference exactly (Scope B)" begin
@@ -18977,33 +19218,35 @@ end
 
             end
             @testset "(c) apertures inside a bare line placed in a tuple" begin
-                # (c) S3-1: an aperture inside a bare `BeamLine` placed in a task
-                # tuple compiles into a `CompositeLine` and warns at construction,
-                # as an own-state line always did; its kill is the unattributed one
-                # the warning announces. The line handed directly dissolves and
-                # attributes; an aperture at task level is silent.
+                # (c) S3-1 found that an aperture inside a bare `BeamLine` placed
+                # in a task tuple compiles into a `CompositeLine` the binder could
+                # not reach, and made the construction warning ("outside loss
+                # accounting") cover it. Since 2026-10-18 (U2-5) the aperture
+                # binder, the sizing collector and the arc walker all descend the
+                # line, so the aperture inside it is sized in and attributed by
+                # name exactly as the line handed directly is, and the warning
+                # retired with the limitation it announced: construction and
+                # `execute!` are both silent, bare and own-state alike. See
+                # "Aperture ids thread through the frame wrappers and kept-whole
+                # lines" for the full placement matrix.
                 line = (DriftSpec(L=1.0), BeamLine("A", ApertureSpec(x_limit=2.0e-3, name="COLL_A"), DriftSpec(L=1.0)))
-                @test Octopus._collect_hidden_apertures!(Symbol[], line, false) == [:COLL_A]
-                lh = warns(() -> TrackingTask(line), r"outside loss accounting")
-                @test length(lh) == 1
-                if length(lh) == 1
-                    @test lh[1].kwargs[:apertures] == [:COLL_A] && occursin("compiles whole", string(lh[1].message))
-                    @test occursin("Hand the line to the task directly", string(lh[1].message))
-                end
-                tA = Test.collect_test_logs(() -> TrackingTask(line))[2]
+                @test length(Octopus._aperture_specs(line)) == 1
+                tA = @test_logs TrackingTask(line)
                 rA = Phase6DRep([5.0e-3, 1.0e-4], zeros(2), zeros(2), zeros(2), zeros(2), zeros(2))
                 @test [nameof(typeof(e)) for e in Octopus._physics_line(Octopus._runtime_entries(tA, rA))] ==
                       [:LatticeMagnet, :CompositeLine]
-                la = warns(() -> allow_lost_particles(() -> execute!(tA, rA; turns=1); enabled=true),
-                           r"no aperture responsible")
-                @test length(la) == 1 && la[1].kwargs[:unattributed] == 1
-                @test loss_record(tA) === nothing
+                @test isempty(warns(() -> allow_lost_particles(() -> execute!(tA, rA; turns=1); enabled=true)))
+                @test loss_record(tA) !== nothing && aperture_names(loss_record(tA)) == ["COLL_A"]
+                @test loss_counts(loss_record(tA)) == [1] && loss_summary(rA, tA).unattributed == 0
                 tDir = @test_logs TrackingTask(BeamLine("A", ApertureSpec(x_limit=2.0e-3, name="COLL_A"), DriftSpec(L=1.0)))
                 rDir = Phase6DRep([5.0e-3, 1.0e-4], zeros(2), zeros(2), zeros(2), zeros(2), zeros(2))
                 @test_logs allow_lost_particles(() -> execute!(tDir, rDir; turns=1); enabled=true)
                 @test loss_counts(loss_record(tDir)) == [1] && loss_summary(rDir, tDir).unattributed == 0
-                @test_logs (:warn, r"outside loss accounting") match_mode = :any TrackingTask(
+                tOwn = @test_logs TrackingTask(
                     (DriftSpec(L=1.0), BeamLine("A", ApertureSpec(x_limit=2.0e-3, name="COLL_A"), DriftSpec(L=1.0); x_offset=0.0)))
+                rOwn = Phase6DRep([5.0e-3, 1.0e-4], zeros(2), zeros(2), zeros(2), zeros(2), zeros(2))
+                @test_logs allow_lost_particles(() -> execute!(tOwn, rOwn; turns=1); enabled=true)
+                @test loss_counts(loss_record(tOwn)) == [1] && loss_summary(rOwn, tOwn).unattributed == 0
                 @test_logs TrackingTask((ApertureSpec(x_limit=1.0e-3, name="OPEN"), DriftSpec(L=1.0)))
 
             end
@@ -21109,10 +21352,14 @@ end
     # An empty fold list is exempt from declaration (nothing is foldable).
     @test DriftSpec(L=1.0) isa ElementSpec
 
+    # An aperture inside an own-state (kept-whole) line used to warn at
+    # construction as "outside loss accounting"; since 2026-10-18 (U2-5) the
+    # aperture binder descends the compiled `CompositeLine` and the sizing
+    # collector the line spec, so the placement is silent and sized in.
     hidden = BeamLine("CRYO2", ApertureSpec(x_limit=1.0e-3, name="HIDDEN"),
                       DriftSpec(L=0.5); x_offset=1.0e-4)
-    @test_logs (:warn, r"outside loss accounting") match_mode = :any TrackingTask(
-        (hidden, DriftSpec(L=1.0)))
+    @test_logs TrackingTask((hidden, DriftSpec(L=1.0)))
+    @test length(Octopus._aperture_specs((hidden, DriftSpec(L=1.0)))) == 1
     @test_logs TrackingTask((ApertureSpec(x_limit=1.0e-3, name="OPEN"),
                              DriftSpec(L=1.0)))
 end

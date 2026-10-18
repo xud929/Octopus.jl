@@ -41,10 +41,14 @@ Two recorded caveats carry over from the aperture walker unchanged:
   containing one reports arc length that omits it — folding `dz` in would be
   wrong as often as right, because a patch displaces a frame in a direction
   that need not lie along the design orbit;
-- the walker does not descend a kept-whole (own-state) sub-line — it
-  advances by that line's `total_length`, exactly as the compiled runtime
-  treats it as one `CompositeLine` op. A cavity inside one is refused loudly
-  at bind time rather than silently left uncorrected.
+- the walker descends a kept-whole (own-state) sub-line entry by entry
+  (since 2026-10-18; before that it advanced by the line's `total_length`
+  and a cavity inside one was refused loudly at bind time), because the
+  compiled runtime treats the line as one `CompositeLine` op whose members
+  the survey rebind descends, and the two sides must find the same cavities
+  in the same order. The accumulated arc is the same either way, a line's
+  length being its contents'; a cavity inside a kept-whole line is bound
+  to the same `ds_turn` as the flat placement.
 
 The floor plan proper — global `(X, Y, Z, θ, φ, ψ)` per element, where
 curvature *does* rotate the frame — is the geometry layer

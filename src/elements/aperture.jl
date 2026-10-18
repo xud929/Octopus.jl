@@ -367,11 +367,13 @@ const _LOSS_COUNT_LOCK = Threads.SpinLock()
 
 @inline function _aperture_bump!(counts::Array, id)
     # An id outside 1:length(counts) means this aperture was never bound to a
-    # line placement (a raw compile_runtime aperture handed a shared record,
-    # or a placement the binder does not reach): there is no counts row to
-    # attribute the loss to, and the unguarded @inbounds write was silent
-    # memory corruption (2026-08-05 audit, F15). The kill itself stands, and
-    # the loss still surfaces through the dead-vs-logged unattributed warning.
+    # line placement (a raw compile_runtime aperture handed a shared record
+    # with no `element_id`, or one set by hand past the record's rows; the
+    # task's binder reaches every placement, wrapped or inside a kept-whole
+    # line, since 2026-10-18): there is no counts row to attribute the loss
+    # to, and the unguarded @inbounds write was silent memory corruption
+    # (2026-08-05 audit, F15). The kill itself stands, and the loss still
+    # surfaces through the dead-vs-logged unattributed warning.
     1 <= id <= length(counts) || return nothing
     lock(_LOSS_COUNT_LOCK)
     try
@@ -540,7 +542,7 @@ end
         dy=ParamMeta(default=0, meaning="vertical displacement of the aperture"),
         alive=ParamMeta(default=nothing, meaning="pure scalar predicate (x, px, y, py, z, pz) -> Bool evaluated in the aperture frame, for shapes the regular set cannot express. Must not capture an array, or it will not run on the device"),
         element_id=ParamMeta(default=0, meaning="identifier stamped into each loss record; assigned by the task from the aperture's position in the compiled line"),
-        loss_record=ParamMeta(default=nothing, meaning="per-beam loss record this aperture writes into; supplied by the task, `nothing` means kill and count without recording"),
+        loss_record=ParamMeta(default=nothing, meaning="per-beam loss record this aperture writes into; bound by the task at `execute!` for every aperture in its line, wrapped or inside a kept-whole line included. `nothing` means kill only -- no counter, no row, no name -- which is what a bare `track!` runs for every aperture"),
         tracking_method=ParamMeta(default=NonSymplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
         # After the splat, so this kind's more specific meaning wins over the
