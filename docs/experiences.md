@@ -1800,6 +1800,30 @@ and hold only because every fixture is coasting (F-143). State the
 convention in the ParamMeta of every parameter that carries it, and make the
 consumer that converts say which side of the (D8) factor it is on.
 
+## One suite at a time on one machine, whatever the worktree
+
+The sequential-arms rule (2026-10-15) was stated for one worktree's
+`result/<seed>/`. On 2026-10-19 two full suites in two different worktrees ran
+at once and the second one failed "The multi-process seam runs under an MPI
+launcher": the MPI seam child writes fixed names under the shared
+`tempdir()` (`octopus_mpi_seam_check_3c.h5` and siblings, F-223 of the
+comprehensive audit), so the two children overwrote each other's artifacts.
+Worktrees isolate the tree, not `/tmp`. Run one suite per machine; a
+diagnosis that needs parallel runs needs per-run `TMPDIR`s first.
+
+## A segfault without a trace needs a core before it needs a bisection
+
+The 2026-10-18 comprehensive audit's gate died with `signal 11` and nothing
+else, four times in twelve runs at one testset, never in the last six (F-244).
+Block-buffered stdout hid the site until the arm ran under a pseudo-terminal;
+two environment hypotheses (compiled caches, leftover files) each cost a
+full run to exclude; the site alone and its neighbours with forced GC were
+green; a bisection of 19,000 suite lines at four threads would have cost a
+day and, for an intermittent fault, proved nothing. The cheap instrument is a
+core: `ulimit -c unlimited` in the gate script, the core lands in the test
+process's cwd (`<worktree>/test/`), and `gdb -batch -ex "thread apply all bt"`
+names the library. Arm it first; bisect only with a backtrace in hand.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

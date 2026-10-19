@@ -2022,3 +2022,59 @@ every finding as a row so the fixing campaign can be cut from it.
   that CI cannot run must be run by the gate's CUDA arm or it rots (A-4,
   F-200); a convention stated once must be stated at every consumer (F-99,
   F-133, F-143).
+
+## Addendum 2026-10-19 (fix campaign, step 2): F-244, the gate's CUDA-arm segfault
+
+Written after the record closed, at the owner's word ("hold the push and
+start second step"). Nothing above this heading was changed. Every run below
+is the full native arm (`Pkg.test`, CUDA active, four threads) on 24e8683 in
+a clean worktree; from gateAudit3 on, under a pseudo-terminal so the crash
+site prints (logs under `result/gates/turnmod/`, the run table is also in the
+auditor's scratch `addendum_draft.md`).
+
+| run | start | compiled caches | files directly under the worktree's `result/` | other load | result |
+|---|---|---|---|---|---|
+| gateAudit | 23:54 (10-18) | pre-audit set | 5 Phase-10 TSVs (written 00:08-00:12, during the run) | ten reading agents | signal 11 at 34 min |
+| gateAudit2 | 02:07 | same | same | none | signal 11 at 32 min |
+| pty gateAudit3 | 02:48 | same | same | the CPU-only lane in the main checkout | signal 11 at 32 min; site: inside "One rng_id policy ..." (`runtests.jl:19046`), no native trace |
+| gateAudit4 | 08:40 | cleared (Octopus, its extensions, the CUDA family moved aside; 35 packages recompiled) | none (moved to scratch) | none | PASS, exit 0, 351 summaries |
+| gateAudit5 | 09:48 | the old set restored | none | none | PASS, exit 0 |
+| gateAudit6 | 10:49 | old set | the 5 TSVs copied back | none | signal 11 at 32 min, same site |
+| core1 (canon-A) | 11:31 | old set | 5 TSVs | half1 concurrently | passed the site; FAILED later in "The multi-process seam runs under an MPI launcher": the two concurrent suites' MPI children collided on the fixed names under the shared `tempdir()` (F-223 / U53-6, measured live) |
+| half1 (bisect-B) | 11:31 | old set | 3 TSVs | core1 concurrently | PASS, exit 0 |
+| loopA_1 .. loopA_4 (canon-A, core dumps armed) | 12:14, 13:12, 14:10, 15:08 | old set | 5 TSVs | none | all four passed the site; all four PASS, exit 0, no core |
+| AVX2 arm gateAudit7 (canon-A, `OPENBLAS_CORETYPE=Haswell`, `-C haswell`) | 16:05 | old set | 5 TSVs | none | PASS, exit 0, 351 summaries (17:12) |
+
+What the runs say. The crash is intermittent: four of twelve native-arm runs
+died, every one at the same testset, the last at 11:22, none in the six
+runs since; the CPU-only full lane passed twice (02:48 run, CI 464). The two
+hypotheses the record named are both excluded as THE cause: the compiled
+caches (gateAudit5 passed with the old set) and the leftover `result/` files
+(six passes with them present; they remain a weak correlate, no crash
+occurred without them, but no run without them crashed either because none
+was attempted before 08:40). Excluded by reading: a plain data race on the
+counter-RNG registry the testset mutates (`counter_rng.jl:100`, every path
+under `_RNG_ID_REGISTRY_LOCK`). Excluded by a probe: the suite's `@eval`
+redefinition of `observer_option_schema(::Type{BPMObserver})` that precedes
+the site (`probes/auditor/f244/redef_repro.jl`, steps 0-5 clean). The crash
+site alone is green in a fresh process; the five artifact and turn-modulation
+testsets before it, run in one process with a forced full GC between blocks,
+are green. No core was captured: the four capture runs (`ulimit -c unlimited`,
+`core_pattern = core`, 12:14 to 16:05) all passed.
+
+Disposition: F-244 stays open as an intermittent fault of unknown mechanism
+with a fixed site. Mitigations in force from this step: (1) the gate scripts
+run with core dumps enabled and under a pseudo-terminal
+(`run_full_gate_native_pty_wt.sh`, `f244_core_loop.sh`, `f244_gdb_core.sh` in
+`result/gates/turnmod/`), so the next occurrence yields a native backtrace;
+(2) one suite at a time on one machine, whatever the worktree (the MPI seam
+child's fixed `tempdir()` names, F-223, now measured to fail a concurrent
+suite); (3) a signal-11 gate is re-run once before anything else is
+concluded, and the re-run's pseudo-terminal log is kept. The guide carries the
+procedure. Phase 8 for 24e8683: the native arm is green six times since
+08:40 (eight runs passed the crash site) and the AVX2 arm is green (gateAudit7,
+exit 0): the two-arm gate stands for 24e8683, with F-244 open as the
+intermittent fault it is. The record commit 2f5acfd and this addendum are
+markdown-only; the fast lane on the final tree is their gate: GREEN
+(`result/gates/turnmod/fast_lane_auditB_audit2.log`, 17:12 to 17:38, exit 0,
+336 testset summaries, 16 `LANE SKIP` lines).

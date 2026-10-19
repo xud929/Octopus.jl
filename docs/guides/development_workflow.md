@@ -112,6 +112,17 @@ classes, each paid for by a recorded incident, are the matrix in
 `../design/testing_lanes.md`, section 3; `AGENTS.md` carries the compact
 form.
 
+When a full gate dies with `received signal: 11` and no Julia stack trace,
+do three things before concluding anything (F-244, 2026-10-19: four such
+deaths in twelve runs at one testset, none in the last six): re-run the arm once; run it under
+a pseudo-terminal (`script -q -e -c "julia ..." <log>`) so the block-buffered
+testset summaries survive the crash and the site prints; and run it with
+`ulimit -c unlimited`, so the next death leaves `core.<pid>` in
+`<worktree>/test/` for `gdb -batch -ex "thread apply all bt" julia core.<pid>`.
+Never run two suites at once on one machine, in any two worktrees: the MPI
+seam child writes fixed names under the shared `tempdir()`, and the second
+suite fails its MPI testset.
+
 ## Where output goes
 
 - `result/` is git-ignored scratch for run output (summary tables, per-run
