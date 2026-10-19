@@ -432,6 +432,7 @@ exists fails the suite, so these cannot rot silently.
 <!-- indexed-wholesale: history/comprehensive_audit_2026_08_05_unit_reports -->
 <!-- indexed-wholesale: history/comprehensive_audit_2026_08_05_b_unit_reports -->
 <!-- indexed-wholesale: history/audit_crab_cavity_noise_neighbours_2026_10_16_unit_reports -->
+<!-- indexed-wholesale: history/comprehensive_audit_2026_10_18_unit_reports -->
 
 Dated records of implemented work — optimization campaigns, benchmark decisions,
 and audits. The source code is the authority; these preserve the rationale.
@@ -587,6 +588,26 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   drift, the bend and the solenoid (the owner widened the batch to that row),
   with unit I's classes re-measured after them; two pins re-derived, their
   derivations recorded.
+- [`comprehensive_audit_2026_10_18.md`](history/comprehensive_audit_2026_10_18.md) —
+  the third full re-read of the repository, at `24e8683`, run to the protocol
+  of `comprehensive_audit.md` with 55 reading units (every `src/`, `test/`,
+  `validation/`, `examples/`, `profiling/`, `ext/` and `docs/` file read line
+  by line by an agent, the seams by the auditor) whose verbatim reports sit in
+  [`comprehensive_audit_2026_10_18_unit_reports/`](history/comprehensive_audit_2026_10_18_unit_reports/INDEX.md):
+  about 520 leads, every one reproduced or read by the auditor, 243 confirmed
+  findings plus six auditor-direct items, 13 of them Major (a CUDA bounds
+  reduction fed a thread count that is not a warp multiple, a legal
+  `threads=1024` crashing the default PIC route, a `:standard` Green kernel
+  diverging CPU/CUDA under the default cache, strong-strong lines compiled
+  without survey, aperture or reference-chain binding, four artifact
+  data-loss paths under `append=true` and on the crash path, a zero-voltage
+  cavity dropping its velocity slip, a Float32 loss record never reused, the
+  canonical eigenvalue index swapped in resolved clusters, three committed
+  scripts dead on a two-month-old constructor retirement, an MPI seam check
+  that cannot fail). No fix was applied (the pass was authorized to audit);
+  every finding is a priced row in `todo.md`, the 41 inherited rows are
+  dispositioned, the Phase 7 contracts and Phase 10 scripts were executed,
+  and the two-arm gate's result is in its section 6.
 - [`beam_beam_fixes_2026_10_18.md`](history/beam_beam_fixes_2026_10_18.md) —
   the beam-beam fix batch: the strong beam's `momentum_dispersion` made the
   canonical dispersion the Twiss analysis reports (owner decision: one

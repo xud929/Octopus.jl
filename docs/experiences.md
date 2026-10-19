@@ -1738,6 +1738,68 @@ analysis and linearization derivations do, and treat the stage runner's green
 as what it is: one block in one process. Only the lane runs the suite as the
 one process it is.
 
+## A fix's neighbours include the walker and the twin that did not change
+
+The 2026-10-18 comprehensive audit found the three largest correctness
+defects exactly one step from a closed fix: the strong-strong line compile
+never calls the three binding steps (`_bind_apertures`, `_bind_survey`,
+`_validate_reference_chain`) the TrackingTask compile gained one by one
+(F-4; a cavity in a `StrongStrongTask` line tracks `ds_turn = NaN`, max|dz|
+0.199 at sigma_z 1e-2); the F16 closure added the survey z-shift to `_rf_kick`
+BELOW the older `iszero(strength) && return`, so a switched-off cavity drops
+its slip share (F-91, nu_s off by 31 % and 63 %); the `BeamLine` probe walk
+never reached the `LineEntry` arm the 2026-10-18 batch taught the aperture
+walk (F-75). Each fix had a neighbour audit that re-read the file it changed
+and not the twin that consumes the same object. Re-walk the other task type,
+the other container form and the early returns above the new branch.
+
+## A contract whose override and fallback coincide verifies nothing
+
+The public-configuration contract built its CUDA PIC launch-family overrides
+and the policy's own launch config from one `contract.cuda_threads`, so the
+receipts read the same number whether the override reached the consumer or
+the fallback did; the predicate was true with no override at all (F-10). The
+Twiss effectiveness contract's `longitudinal_mode` alternative equalled the
+heuristic's own choice on its fixture (F-140). A contract's alternative must
+differ from every value the code could have used instead, and the contract
+should prove it by showing the fallback value fail.
+
+## A cursor keyed on a value cannot see a torn tail of fill values
+
+`_ra_truncate_probe!` keys the artifact's torn-tail rule on the turn VALUE
+(`searchsortedlast(turns, keep_through)`), so a tail of HDF5 fill rows (turn
+0) survives and a continuation appends after it: `[0,1,2,3,4,5,0,0,6,7]`
+(F-74); `observe!(::MomentObserver)` increments the row count before the row
+exists, so a mid-row exception leaves the garbage row that the cursor then
+stamps (F-73; the retry of a chunked run destroyed chunk 1). Protocols that
+promise "rows beyond the cursor are a torn tail" must key the cursor on the
+row index they own, and must write a row only after it exists.
+
+## A validation script CI cannot run must be run by the gate's CUDA arm or it rots
+
+Three committed scripts died on the 2026-08-18 retirement of the standalone
+`MomentObserver(path)` writer and nothing executing noticed for two months:
+`validation/moment_observer_backend_consistency.jl` (A-4, the README still
+presents it as live; the check it wraps passes through the current
+constructor), `profiling/benchmark_strong_strong_pic.jl` (F-200) and
+`validation/coherent_beam_beam_modes.jl` (F-236, the "community-standard
+physics acceptance test"). CI has no GPU and the gate's heavyweight sections
+do not include them. A constructor's acceptance change has a blast radius
+across `validation/` and `profiling/` (invariant 2), and a script only the
+GPU machine can run belongs in that machine's gate.
+
+## A convention stated once must be stated at every consumer
+
+The 2026-10-18 lesson "one quantity, one convention" was paid for again
+before it was a day old: the canonical-dispersion convention is stated on the
+strong-beam builder and in the analysis, and nowhere on the element kinds
+whose `zeta`/`eta`/`eta1..eta4` are the same canonical pair (F-99); a String
+`convention` on a patch is read as `:bmad` by the survey and as `:madx` by the
+tracked map (F-133); the MAD-X TOL-B rows compare canonical eta with a slope
+and hold only because every fixture is coasting (F-143). State the
+convention in the ParamMeta of every parameter that carries it, and make the
+consumer that converts say which side of the (D8) factor it is on.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.
