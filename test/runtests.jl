@@ -13702,6 +13702,11 @@ end
         @test mark(class_of(SBendSpec(L=1.1, angle=0.05, e1=0.02))) == "uuuuu-" && class_of(SBendSpec(L=1.1, angle=0.05, e1=0.02)).ulp_bound == 8192   # the pole-face maps
         @test mark(class_of(ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV, L=0.5))) == "u-u-uu"
         @test mark(class_of(ThinRFCavitySpec(400.8e6; voltage=0.0, e0=275.0e9, mc2=PMASS_EV))) == "------"
+        # A SURVEYED cavity at zero voltage is its slip alone (F-91, fix batch 2026-10-19): z is written by
+        # `z + ds_turn g(pz)`, the one thing the dead cavity owes the ring, and nothing else is. The instance decides.
+        rf_off(ds; kw...) = Octopus._attach_survey(compile_runtime(ThinRFCavitySpec(400.8e6; voltage=0.0, e0=275.0e9, mc2=PMASS_EV, kw...)), ds)
+        @test mark(Octopus._cross_backend_rounding(rf_off(100.0))) == "----u-"
+        @test mark(Octopus._cross_backend_rounding(rf_off(0.5; L=0.5))) == "u-u-u-"
         @test mark(class_of(Linear6DSpec(matrix=zpz_map))) == "----u-"                         # one coupled row
         @test mark(class_of(LumpedRadSpec(damping_turns=(1000.0, 1000.0, 500.0), sigma=(1.0e-4, 8.0e-5, 1.0e-2)))) == "uuuuuu"
         @test mark(class_of(LumpedRadSpec(damping_turns=(1000.0, 1000.0, 500.0), is_damping=false, is_excitation=false))) == "------"
@@ -13809,6 +13814,34 @@ end
             @test !bend.x.bitwise
             killed = measure("aperture killing (anti-vacuity)", ApertureSpec(shape=:ellipse, x_limit=7.0e-5, y_limit=5.6e-5))
             @test killed.x.compared < 400 && killed.x.lost_one_backend == 0
+            # The surveyed cavity at ZERO voltage (F-91, fix batch 2026-10-19), whose kick is the slip
+            # shift alone. A task line binds a lone thin cavity to ds_turn = 0 (its own length), so
+            # `measure` cannot show the shift; it is tracked as the precision testset tracks its
+            # hand-bound fixture, through the bare `track!` on `_attach_survey(op, 100 m)`, at 2.5 GeV
+            # where the shift (0.14 C pz) is comparable to z's scale and the class can fail. The
+            # anti-vacuity half: z moved from the input on every particle, on both backends.
+            function tracked_op(op, policy)
+                rep = policy isa CUDAExecutionPolicy ?
+                    Phase6DRep((Octopus.CUDA.CuArray(copy(a)) for a in coordinate_arrays(base))...) :
+                    Phase6DRep((copy(a) for a in coordinate_arrays(base))...)
+                track!(rep, (op,), 3; policy=policy)
+                Octopus.CUDA.synchronize()
+                return rep
+            end
+            for (label, L) in (("rf surveyed, zero voltage, thin", 0.0), ("rf surveyed, zero voltage, thick", 0.5))
+                op_off = Octopus._attach_survey(compile_runtime(ThinRFCavitySpec(400.8e6; voltage=0.0, e0=2.5e9, mc2=PMASS_EV, L=L)), 100.0)
+                class_off = Octopus._cross_backend_rounding(op_off)
+                host_off = tracked_op(op_off, cpu)
+                device_off = tracked_op(op_off, CUDAExecutionPolicy())
+                agreement_off = Octopus._cross_backend_agreement(host_off, device_off)
+                println("    ", rpad(label, 34), "turns=3 ", Octopus._cross_backend_summary(class_off, agreement_off))
+                @testset let case = label, violations = Octopus._cross_backend_violations(class_off, agreement_off; label=label),
+                             moved = count(a != b for (a, b) in zip(Array(host_off.z), base.z))
+                    @test isempty(violations)
+                    @test class_off.z === :ulp && class_off.pz === :untouched
+                    @test moved == 400 && all(Array(device_off.z) .!= base.z)
+                end
+            end
         end
     else
         @test_skip "CUDA inactive: the measurement of the declared classes (31 registry examples and 25 mixed fixtures) is not exercised"
@@ -14719,6 +14752,29 @@ end
     # drift into two halves -- a few ulp on a z of 0.2, not a physics difference.
     @test maximum(abs, collect(cav(voltage=0.0, L=2.0)(u...)) .-
                        collect(compile_runtime(DriftSpec(L=2.0))(u...))) < 1.0e-15
+    # A SURVEY-BOUND switched-off cavity is NOT the identity (F-91, fix batch
+    # 2026-10-19): `_bind_survey` partitions the turn's arc over every compiled
+    # cavity whatever its voltage, so the slip share bound to a dead cavity
+    # enters at its kick or nowhere. The shift is the only thing it does: z
+    # advances by `ds_turn * g(delta)` formed as the kernel forms it (one
+    # multiply, one add -- the same IEEE operations, so the equality is exact
+    # on the host), the other five coordinates return bit for bit, and on
+    # momentum (delta = 0, g = 0 exactly) nothing moves. Unfixed, the
+    # zero-voltage return sat above the survey branch and `off(u...)` was `u`.
+    let bgc = reference_beta_gamma(275e9, PMASS_EV), offc = Octopus._attach_survey(cav(voltage=0.0), 37.5)
+        @test Octopus._has_survey(offc) && iszero(offc.strength)
+        o = offc(u...)
+        slipz = 37.5 * Octopus._velocity_slip_g(u[6], Octopus._pt_from_delta(u[6], bgc[1], bgc[2]), bgc[1], bgc[2])
+        @test slipz != 0 && o[5] == u[5] + slipz
+        @test (o[1], o[2], o[3], o[4], o[6]) === (u[1], u[2], u[3], u[4], u[6])
+        @test collect(offc(u[1], u[2], u[3], u[4], u[5], 0.0)) == [u[1], u[2], u[3], u[4], u[5], 0.0]
+        # ...and with a length it is the slip-shifted drift: the two halves
+        # around the shift against the drift plus the same shift, to the
+        # round-off of the split (the pin above's 1e-15, on the same u).
+        thickc = Octopus._attach_survey(cav(voltage=0.0, L=2.0), 37.5)(u...)
+        drc = compile_runtime(DriftSpec(L=2.0))(u...)
+        @test maximum(abs, collect(thickc) .- collect(drc) .- [0.0, 0.0, 0.0, 0.0, slipz, 0.0]) < 1.0e-15
+    end
 
     # thin is the exact L -> 0 limit of drift-kick-drift, converging linearly
     let thin = collect(cav(voltage=12e6)(u...))
@@ -14952,6 +15008,47 @@ end
     @test length(cs) == 2 && cs[1].ds_turn == 30.0 && cs[2].ds_turn == 70.0
     # A bare compile carries no survey and keeps the documented boundary.
     @test isnan(Octopus.ThinRFCavity(cavspec()).ds_turn)
+    # ...and every share is applied WHATEVER the cavity's voltage (F-91, fix
+    # batch 2026-10-19). The partition above does not read the strength, so a
+    # surveyed cavity at zero voltage that skipped its shift dropped its share
+    # and nothing else supplied it: the ring closed with eta = alpha_c -
+    # (ds_live/C)/gamma0^2. Red on the unfixed tree for exactly that reason
+    # (the audit's probe B, re-run as this block): (S, 0) measured
+    # nu_s/nu_s(eta_full) = 1.633 and (0, S) 1.309, the predictions for the
+    # slip fractions 0.3 and 0.7 the dead cavity owned, while the (S/2, S/2)
+    # control read 0.9996. Two instruments, the first cheap and exact:
+    #   * the one-turn z advance of a delta = 1e-3 particle at strengths
+    #     (0, 0), (1e-12, 0), (0, 1e-12), (1e-12, 1e-12): the z-shears compose
+    #     to exactly C g(delta) - alpha_c C delta = -eta_full C delta, the
+    #     dead cavity's shift included, to 1e-13 absolute on a 5.9e-3 advance
+    #     (a 1e-12 kick moves pt by 3e-16 and the R56 row turns that into
+    #     6e-15 of z; the conversion round trip costs 4e-16). Unfixed,
+    #     (1e-12, 0) read -1.578e-2 and (0, 1e-12) -1.015e-2;
+    #   * nu_s of the two-cavity ring with one cavity off, against the full
+    #     eta at the F16 tolerance (5e-3, the linearized formula's regime at
+    #     200 kV; the control measures 4e-4 off at 8192 turns). Consecutive
+    #     z-shears commute and add, so the linearized one-turn map is the
+    #     single cavity's whatever the split, and nu_of(eta_full) is the
+    #     prediction for every split.
+    cav_s(s) = ThinRFCavitySpec(freq; strength=s, beta0=b0, gamma0=g0)
+    r56 = ringspecs(alpha_c)[2]
+    two_ring(s1, s2) = (DriftSpec(L=30.0), cav_s(s1), DriftSpec(L=70.0), r56, cav_s(s2))
+    d1 = 1.0e-3
+    dz_full = -alpha_c * C * d1 +
+              C * Octopus._velocity_slip_g(d1, Octopus._pt_from_delta(d1, b0, g0), b0, g0)
+    for (s1, s2) in ((0.0, 0.0), (1.0e-12, 0.0), (0.0, 1.0e-12), (1.0e-12, 1.0e-12))
+        rep1 = Phase6DRep([0.0], [0.0], [0.0], [0.0], [0.0], [d1])
+        execute!(TrackingTask(two_ring(s1, s2)), rep1; turns=1)
+        @testset let strengths = (s1, s2), dz = rep1.z[1], expected = dz_full
+            @test isapprox(dz, expected; atol=1.0e-13)
+        end
+    end
+    for (s1, s2) in ((strength, 0.0), (0.0, strength), (strength / 2, strength / 2))
+        nu2 = tune(track_z(two_ring(s1, s2); turns=8192, corrected=true))
+        @testset let strengths = (s1, s2), ratio = nu2 / nu_of(eta_full)
+            @test isapprox(ratio, 1.0; rtol=5e-3)
+        end
+    end
     # The survey walker is the aperture walker: one traversal, one truth.
     line = BeamLine("curved", DriftSpec(L=1.0), SBendSpec(L=2.2, angle=0.5),
                     DriftSpec(L=0.5), SBendSpec(L=2.2, angle=0.5), cavspec(),
@@ -15233,7 +15330,7 @@ end
         line_class = Octopus._cross_backend_rounding(map(compile_runtime, specs))
         @test line_class.z === :ulp && line_class.pz === :ulp
         @test line_class.ulp_bound >= 4
-        function zrun(arr)
+        function zrun(arr, specs)
             t = TrackingTask(specs)
             rep = Phase6DRep(arr([0.0]), arr([0.0]), arr([0.0]), arr([0.0]),
                              arr([1.0e-3]), arr([0.0]))
@@ -15245,8 +15342,8 @@ end
             return first, (Array(rep.z)[1], Array(rep.pz)[1])
         end
         ulps(a, b) = abs(a - b) / eps(max(abs(a), abs(b)))
-        first_cpu, run_cpu = zrun(identity)
-        first_gpu, run_gpu = zrun(Octopus.CUDA.CuArray)
+        first_cpu, run_cpu = zrun(identity, specs)
+        first_gpu, run_gpu = zrun(Octopus.CUDA.CuArray, specs)
         # One pass: within the line's declared class (z and pz are of the ulp
         # class, so `===` is not a claim the class supports).
         @testset let first_z_ulp = ulps(first_cpu[1], first_gpu[1]),
@@ -15255,6 +15352,39 @@ end
             @test first_pz_ulp <= bound
         end
         @testset let z_ulp = ulps(run_cpu[1], run_gpu[1]), pz_ulp = ulps(run_cpu[2], run_gpu[2])
+            @test z_ulp <= 16
+            @test pz_ulp <= 16
+        end
+        # The surveyed cavity at ZERO voltage (F-91, fix batch 2026-10-19): the
+        # same ring with its voltage on a cavity at s = 30 m and a dead one at
+        # s = 100 m, so the second compiles survey-bound (ds_turn = 70) and its
+        # kick is the slip shift alone -- the branch order the fix changed,
+        # compiled here as device IR (the fused launch refuses an InvalidIRError)
+        # and held to the LINE's derived class on one pass and to the live
+        # ring's 64-turn bound: the dead cavity writes z once more per turn, by
+        # an ulp of a shift (70 m x 0.14 x 2e-6 of momentum amplitude, 2e-5)
+        # that is a few per cent of z's ulp, so the random walk's 16 stands.
+        # The dead cavity's class and
+        # the line's are read off the task-compiled line, not the bare one.
+        specs_off = (DriftSpec(L=30.0),
+                     ThinRFCavitySpec(2.99792458e6; voltage=1.0e6, e0=2.5e9, mc2=PMASS_EV),
+                     DriftSpec(L=70.0), Linear6DSpec(matrix=m),
+                     ThinRFCavitySpec(2.99792458e6; voltage=0.0, e0=2.5e9, mc2=PMASS_EV))
+        line_off = Octopus._physics_line(Octopus._runtime_entries(TrackingTask(specs_off)))
+        cav_off = line_off[end]
+        @test cav_off isa Octopus.ThinRFCavity && iszero(cav_off.strength) && cav_off.ds_turn == 70.0
+        cav_off_class = Octopus._cross_backend_rounding(cav_off)
+        @test cav_off_class.z === :ulp && cav_off_class.pz === :untouched && cav_off_class.x === :untouched
+        line_off_class = Octopus._cross_backend_rounding(line_off)
+        @test line_off_class.z === :ulp && line_off_class.pz === :ulp
+        first_cpu_off, run_cpu_off = zrun(identity, specs_off)
+        first_gpu_off, run_gpu_off = zrun(Octopus.CUDA.CuArray, specs_off)
+        @testset let first_z_ulp = ulps(first_cpu_off[1], first_gpu_off[1]),
+                     first_pz_ulp = ulps(first_cpu_off[2], first_gpu_off[2]), bound = line_off_class.ulp_bound
+            @test first_z_ulp <= bound
+            @test first_pz_ulp <= bound
+        end
+        @testset let z_ulp = ulps(run_cpu_off[1], run_gpu_off[1]), pz_ulp = ulps(run_cpu_off[2], run_gpu_off[2])
             @test z_ulp <= 16
             @test pz_ulp <= 16
         end

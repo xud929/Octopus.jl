@@ -259,8 +259,11 @@ The 6x6 one-turn matrix at the origin of the TASK compile: the same specs
 through `TrackingTask`, whose survey binding gives the cavity ds_turn = C and
 the velocity slip z += ds_turn g(delta), i.e. (5,6) += C/gamma0^2. A cell
 without a cavity gets the marker cavity (strength TASK_MARKER_STRENGTH)
-appended, because a zero-strength cavity is bypassed and a task-compiled
-drift alone carries no slip (p4 S2). Accepts the compiled cell or its specs.
+appended, because a task-compiled drift alone carries no slip (p4 S2). The
+marker is not a cavity at strength 0 because until the 2026-10-19 fix batch
+(F-91) a zero-strength cavity was bypassed entirely, slip included; it is the
+slip alone since, and the nonzero marker stays so the committed reference's
+fixture does not move. Accepts the compiled cell or its specs.
 """
 function task_map(cell::Tuple; marker_strength=TASK_MARKER_STRENGTH)
     specs = all(s -> s isa ElementSpec, cell) ? cell : cell_specs(cell)
