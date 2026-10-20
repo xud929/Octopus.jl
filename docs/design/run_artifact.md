@@ -94,7 +94,12 @@ One group per producer, position and provenance as attributes:
     /snapshot/injection      coordinate blocks attrs: name, s
     /bpm/BPM_07              readings          attrs: name, s
     /losses                  the write_loss_record layout (names, counts,
-                             aperture_s, per-loss rows, summary)
+                             aperture_s, per-loss rows, summary); a
+                             TrackingTask's one beam
+    /losses/beam_1           a StrongStrongTask's: one subgroup per beam
+    /losses/beam_2           whose line carries an aperture, each in the
+                             layout above (2026-10-19; the reader returns
+                             them keyed by beam)
     /turn_modulation/3/1/phase_noise[1]   attrs only: element_count on the
                              execution slot (/3 = ledger row 3); element, beam,
                              slot_count per element; index, kind, rng_id,

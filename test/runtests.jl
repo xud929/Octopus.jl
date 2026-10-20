@@ -18429,6 +18429,232 @@ end
     foreach(x -> rm(x; force=true), (pa, pm, pa2))
 end
 
+@testset "Strong-strong lines bind the survey, the apertures and the reference chain as a TrackingTask line does" begin
+    # 2026-10-19 fix batch, unit R: comprehensive audit 2026-10-18, F-4 (U6-1,
+    # U6-2, U6-3). `_split_strong_strong_line` compiled every element straight
+    # through `_append_runtime_line!` and never ran the three binding steps the
+    # TrackingTask compile performs (`_bind_apertures`, `_bind_survey`,
+    # `_validate_reference_chain`); the two compiles now share ONE
+    # `_bind_line_entries` (src/tasks/Tasks.jl), each strong-strong line
+    # surveyed against its own arc length (a collision marker has none).
+    # Measured unfixed (result/comprehensive_audit_2026_10_18/probes/U6): a
+    # ThinRFCavity in a strong-strong line tracked `ds_turn = NaN`, max|dz| =
+    # 0.1986 against the TrackingTask twin at sigma_z = 1e-2 while the
+    # cavity-free control was bitwise; the two-E0 lattice the TrackingTask
+    # refuses was accepted and tracked; an aperture killed with no record, no
+    # count, no /losses group, `loss_summary(rep, task)` threw a MethodError,
+    # and the collision's refusal blamed "the beam particles".
+    cpu = CPUThreadsExecutionPolicy(threads=1)
+    refusal(f) = try f(); nothing catch e; e end
+    function capture_stdout(f)   # drained on a task: a full pipe cannot deadlock the capture
+        original = stdout
+        rd, wr = redirect_stdout()
+        reader = @async read(rd, String)
+        try
+            f()
+        finally
+            redirect_stdout(original)
+            close(wr)
+        end
+        return fetch(reader)
+    end
+    rid = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
+    # A zero-strength soft-Gaussian kick adds exactly 0.0 to every coordinate,
+    # so the collision is a bitwise no-op and the twins below compare the
+    # LINES' compiles and nothing else (asserted by the control arm).
+    null = GaussianPoissonSolver(kbb1=0.0, kbb2=0.0)
+    ip = StrongStrongCollision(:ip; poisson_solver=null)
+    set_global_rng!(seed=11, method=:philox)
+    coords(b) = Tuple(Array(getproperty(b.rep, c)) for c in (:x, :px, :y, :py, :z, :pz))
+
+    # (1) The RF cavity twin. 1 GeV protons (beta0 = 0.346, 1/gamma0^2 = 0.88):
+    # the velocity slip `ds_turn (beta/beta0 - 1)` the survey binds is of the
+    # order of sigma_z here, so an unbound cavity is a different model.
+    E0 = 1.0e9
+    cav() = ThinRFCavitySpec(400.8e6; voltage=1.0e6, e0=E0, mc2=PMASS_EV)
+    dr = DriftSpec(L=100.0)
+    mk(id) = Beam(64, cpu, Float64; charge=1.0, mc2=PMASS_EV, E0=E0, r0=RE * ME0 / PMASS_EV,
+                  npart=1.0e11, rng_id=id, beta=(1.0, 1.0, 1.0e-2 / 1.0e-3),
+                  alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-4, 1.0e-2), cutoff=3.0)
+    blocks = Octopus._strong_strong_runtime_blocks(StrongStrongTask((ip, dr, cav()), (ip, dr, cav())), 1)
+    cav_ss = only(e for e in Octopus._strong_strong_physics_line(blocks) if e isa Octopus.ThinRFCavity)
+    cav_tt = only(e.element for e in Octopus._runtime_entries(TrackingTask((dr, cav())))
+                  if e isa Octopus.PhysicsEntry && e.element isa Octopus.ThinRFCavity)
+    @test cav_tt.ds_turn == 100.0
+    @test cav_ss.ds_turn == cav_tt.ds_turn          # was NaN: the one-cavity line's whole 100 m turn
+    # What the compile bound, carried by the blocks: one cavity, the line's own
+    # arc length as its circumference, no aperture, no record.
+    @test blocks.binding == (apertures=0, loss_record=false, loss_rows=false,
+                             rf_cavities=1, accelerating_cavities=0, circumference=100.0)
+    # Control: the cavity-free line is bitwise through both task kinds.
+    a = mk(rid + 1); execute!(TrackingTask((dr,); policy=cpu), a; turns=1)
+    b1 = mk(rid + 1); b2 = mk(rid + 2)
+    execute!(StrongStrongTask((ip, dr), (ip, dr); policy=cpu), b1, b2; turns=1)
+    @test coords(a) == coords(b1)
+    # The cavity line: the same bound op through the same fused kernel, bitwise.
+    a = mk(rid + 1); execute!(TrackingTask((dr, cav()); policy=cpu), a; turns=1)
+    b1 = mk(rid + 1); b2 = mk(rid + 2)
+    execute!(StrongStrongTask((ip, dr, cav()), (ip, dr, cav()); policy=cpu), b1, b2; turns=1)
+    @test coords(a) == coords(b1)                   # was max|dz| = 0.1986
+    # The premise, so the equality cannot hold vacuously: the bare cavity (no
+    # survey, `ds_turn = NaN`, the documented s = 0 boundary) tracks a model
+    # more than one sigma_z (1e-2) away from the bound one at this working point.
+    bare = mk(rid + 1)
+    track!(bare.rep, (compile_runtime(dr), compile_runtime(cav())), 1; policy=cpu)
+    @test isnan(compile_runtime(cav()).ds_turn)
+    @test maximum(abs.(a.rep.z .- bare.rep.z)) > 1.0e-2
+    # The harmon form resolves its frequency against the line's circumference
+    # through the strong-strong compile too; it refused outright before,
+    # naming the TrackingTask as the only way.
+    hc = ThinRFCavitySpec(; harmon=134, voltage=1.0e6, e0=E0, mc2=PMASS_EV)
+    hblocks = Octopus._strong_strong_runtime_blocks(StrongStrongTask((ip, dr, hc), (ip, dr, hc)), 1)
+    cav_h = only(e for e in Octopus._strong_strong_physics_line(hblocks) if e isa Octopus.ThinRFCavity)
+    @test isfinite(cav_h.k) && cav_h.k ≈ 2 * pi * 134 * cav_h.beta0 / 100.0
+    b1 = mk(rid + 1); b2 = mk(rid + 2)
+    execute!(StrongStrongTask((ip, dr, hc), (ip, dr, hc); policy=cpu), b1, b2; turns=1)
+    @test all(isfinite, b1.rep.z)
+
+    # (2) The two-E0 lattice (two ring cavities declaring different reference
+    # energies in one line): refused by both task kinds with the chain message.
+    c1 = ThinRFCavitySpec(400.8e6; voltage=1.0e6, e0=1.0e9, mc2=PMASS_EV)
+    c2 = ThinRFCavitySpec(400.8e6; voltage=1.0e6, e0=2.0e9, mc2=PMASS_EV)
+    err_tt = refusal(() -> execute!(TrackingTask((dr, c1, dr, c2); policy=cpu), mk(rid + 1); turns=1))
+    err_ss = refusal(() -> execute!(StrongStrongTask((ip, dr, c1, dr, c2), (ip, dr, c1, dr, c2); policy=cpu),
+                                    mk(rid + 1), mk(rid + 2); turns=1))
+    @test err_tt isa ArgumentError && occursin("cavity reference chain broken", err_tt.msg)
+    @test err_ss isa ArgumentError && occursin("cavity reference chain broken", err_ss.msg)   # was ACCEPTED
+
+    # (3) An aperture in a strong-strong line: two of eight particles outside
+    # |x| < 2 mm in beam 1; beam 2's line has no aperture.
+    ap = ApertureSpec(x_limit=2.0e-3, name="COLL_A")
+    mk8(id) = Beam(8, cpu, Float64; charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV,
+                   npart=1.0e11, rng_id=id, beta=(0.8, 0.072, 6.0e-2 / 6.6e-4),
+                   alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0)
+    outside!(b) = (b.rep.x[1] = 5.0e-3; b.rep.x[2] = -3.0e-3; b)
+    line1 = (ap, ip)
+    line2 = (DriftSpec(L=1.0), ip)
+    # (3a) Without allow_lost_particles the collision refuses the NaN corpses,
+    # and the refusal names the aperture that made them, the beam and the
+    # remedy, in front of the collision's own message.
+    err = refusal(() -> execute!(StrongStrongTask(line1, line2; policy=cpu),
+                                 outside!(mk8(rid + 1)), mk8(rid + 2); turns=1))
+    @test err isa ArgumentError
+    @test occursin("COLL_A", err.msg) && occursin("killed 2", err.msg) && occursin("beam 1", err.msg)
+    @test occursin("allow_lost_particles", err.msg) && occursin("non-finite particle coordinate(s)", err.msg)
+    # ... and with an artifact the refused run still delivers /losses/beam_1,
+    # written by the crash flush from what the rank saw, unfolded (the
+    # TrackingTask's rule: a crashed run flushes the losses recorded so far).
+    pcrash = tempname() * ".h5"
+    err_art = refusal(() -> execute!(StrongStrongTask(line1, line2; policy=cpu, artifact=pcrash),
+                                     outside!(mk8(rid + 1)), mk8(rid + 2); turns=1))
+    @test err_art isa ArgumentError && occursin("COLL_A killed 2", err_art.msg)
+    lcr = read(TaskOutput(pcrash), :losses)
+    @test propertynames(lcr) == (:beam_1,) && lcr.beam_1.aperture_counts == [2] &&
+          lcr.beam_1.particle_id == [1, 2]
+    @test lcr.beam_1.summary == (particles=8, live=6, dead=2, logged=2, folded=false, unattributed=0)
+    rm(pcrash; force=true)
+    # (3b) With the flag: a record per beam, counts by name, a summary that
+    # identifies the beam by its storage, nothing for the aperture-free line.
+    task = StrongStrongTask(line1, line2; policy=cpu)
+    b1 = outside!(mk8(rid + 1)); b2 = mk8(rid + 2)
+    out = capture_stdout() do
+        allow_lost_particles() do; execute!(task, b1, b2; turns=1); end
+    end
+    @test count(isnan, b1.rep.x) == 2 && count(isnan, b2.rep.x) == 0
+    @test loss_counts(loss_record(task, 1)) == [2]          # the record was never bound before
+    @test loss_record(task, 2) === nothing
+    @test_throws ArgumentError loss_record(task)             # two beams: say which
+    s1 = loss_summary(b1.rep, task)                          # was a MethodError (no loss_counts method)
+    @test s1 == (particles=8, live=6, dead=2, logged=2, unattributed=0, by_aperture=[2], names=["COLL_A"])
+    @test loss_summary(b1, task) == s1 == loss_summary(b1.rep, task, 1) == loss_summary(b1, task, 1)
+    @test loss_summary(b2.rep, task) == (particles=8, live=8, dead=0, logged=0, unattributed=0,
+                                         by_aperture=Int[], names=String[])
+    @test_throws ArgumentError loss_summary(mk8(rid + 3).rep, task)   # neither beam the task ran
+    # No artifact: the summary goes to stdout, per beam and per collimator.
+    @test occursin("beam 1", out) && occursin("2 of 8 particles lost", out) && occursin("COLL_A", out)
+    # Stepping the same beam again accumulates on the same record (the
+    # TrackingTask's rule); nothing new dies.
+    rec1 = loss_record(task, 1)
+    again = capture_stdout() do
+        allow_lost_particles() do; execute!(task, b1, b2; turns=1); end
+    end
+    @test loss_record(task, 1) === rec1 && loss_counts(rec1) == [2]
+    @test occursin("2 of 8 particles lost", again)   # cumulative, reported again
+    # (3c) The artifact: /losses/beam_1 equal, field for field, to the /losses
+    # the TrackingTask writes for the same beam through the same aperture; no
+    # group for the aperture-free line 2; the console quiet; the readers serve
+    # the per-beam layout.
+    pss = tempname() * ".h5"
+    ptt = tempname() * ".h5"
+    b1 = outside!(mk8(rid + 1)); b2 = mk8(rid + 2); a = outside!(mk8(rid + 1))
+    task_art = StrongStrongTask(line1, line2; policy=cpu, artifact=pss)
+    audit = ExecutionAudit()
+    quiet = capture_stdout() do
+        allow_lost_particles() do
+            with_execution_audit(audit) do; execute!(task_art, b1, b2; turns=1); end
+            execute!(TrackingTask((ap,); policy=cpu, artifact=ptt), a; turns=1)
+        end
+    end
+    @test isempty(quiet)
+    lss = read(TaskOutput(pss), :losses)
+    ltt = read(TaskOutput(ptt), :losses)
+    @test propertynames(lss) == (:beam_1,)
+    @test lss.beam_1 == ltt
+    @test ltt.summary == (particles=8, live=6, dead=2, logged=2, folded=true, unattributed=0)
+    @test lss.beam_1.aperture_names == ["COLL_A"] && lss.beam_1.aperture_counts == [2] &&
+          lss.beam_1.particle_id == [1, 2] && lss.beam_1.aperture_s == [0.0]
+    @test Octopus.HDF5.h5open(f -> sort(String.(keys(f))), pss) == ["execution", "losses", "luminosity"]
+    @test read(TaskOutput(pss))["losses"].beam_1.apertures == ["COLL_A"]
+    @test read(TaskOutput(pss), :all).losses == lss
+    # The receipts say what each line's compile bound, per beam, with the
+    # record decided at execute!; the report states the spec-level half.
+    rs = execution_receipts(audit)
+    bind = [r.values for r in rs if r.consumer === :strong_strong_line_binding]
+    @test length(bind) == 2
+    @test bind[1] == (beam=1, apertures=1, loss_record=true, loss_rows=true,
+                      rf_cavities=0, accelerating_cavities=0, circumference=0.0)
+    @test bind[2] == (beam=2, apertures=0, loss_record=false, loss_rows=false,
+                      rf_cavities=0, accelerating_cavities=0, circumference=1.0)
+    rep = configuration_report(task_art, b1, b2)
+    @test rep.binding == (beam1=(apertures=1, rf_cavities=0, accelerating_cavities=0, circumference=0.0),
+                          beam2=(apertures=0, rf_cavities=0, accelerating_cavities=0, circumference=1.0))
+    rm(pss; force=true); rm(ptt; force=true)
+
+    # (4) The CUDA twin of (1) and (3b), small: the same bound line on the
+    # device, the record on the beam's device. CPU against CUDA is not pinned
+    # (libdevice `sin` is a few ulps off `Base.sin`); the two task kinds on
+    # ONE backend run the same fused kernel over the same bound op.
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        gpu = CUDAExecutionPolicy()
+        mkg(id) = Beam(64, gpu, Float64; charge=1.0, mc2=PMASS_EV, E0=E0, r0=RE * ME0 / PMASS_EV,
+                       npart=1.0e11, rng_id=id, beta=(1.0, 1.0, 1.0e-2 / 1.0e-3),
+                       alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-4, 1.0e-2), cutoff=3.0)
+        ag = mkg(rid + 1); execute!(TrackingTask((dr, cav()); policy=gpu), ag; turns=1)
+        g1 = mkg(rid + 1); g2 = mkg(rid + 2)
+        execute!(StrongStrongTask((ip, dr, cav()), (ip, dr, cav()); policy=gpu), g1, g2; turns=1)
+        @test coords(ag) == coords(g1)
+        mk8g(id) = Beam(8, gpu, Float64; charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV,
+                        npart=1.0e11, rng_id=id, beta=(0.8, 0.072, 6.0e-2 / 6.6e-4),
+                        alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0)
+        g1 = mk8g(rid + 1)
+        Octopus.CUDA.@allowscalar begin
+            g1.rep.x[1] = 5.0e-3
+            g1.rep.x[2] = -3.0e-3
+        end
+        g2 = mk8g(rid + 2)
+        tg = StrongStrongTask(line1, line2; policy=gpu)
+        outg = capture_stdout() do
+            allow_lost_particles() do; execute!(tg, g1, g2; turns=1); end
+        end
+        @test occursin("beam 1", outg) && occursin("2 of 8 particles lost", outg)
+        @test loss_counts(loss_record(tg, 1)) == [2] && !(loss_record(tg, 1).counts isa Array)
+        @test loss_summary(g1.rep, tg) == s1
+    else
+        @test_skip "CUDA device not available: the strong-strong binding's CUDA twin is not checked"
+    end
+    set_global_rng!(seed=0x5eed, method=:philox)
+end
+
 @testset "The run artifact records turn-modulation provenance" begin
     # docs/design/turn_modulation.md, D7 (owner, 2026-10-12): the table rule
     # owns its provenance in the run artifact. /turn_modulation/<slot> holds,

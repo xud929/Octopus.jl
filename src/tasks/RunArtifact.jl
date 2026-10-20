@@ -1156,8 +1156,11 @@ This rank's loss rows, in global particle order, gathered onto rank 0.
 Returns `nothing` when the record keeps counters only, so the caller writes no
 `/data`. The rows carry the GLOBAL particle id: the slot they came from is
 this rank's, and the offset turns it back into the particle it names.
+`gather=false` skips the gather (a collective) and returns this rank's own
+rows: the strong-strong crash path, which runs INSIDE the execution scope
+while an exception is in flight and the ranks may not agree on having thrown.
 """
-function _ra_gathered_loss_rows(record, shard_offset::Integer)
+function _ra_gathered_loss_rows(record, shard_offset::Integer; gather::Bool=true)
     record === nothing && return nothing
     record.slots === nothing && return nothing
     r = loss_records(record; offset=shard_offset)
@@ -1166,7 +1169,28 @@ function _ra_gathered_loss_rows(record, shard_offset::Integer)
     for (j, col) in enumerate(LOSS_RECORD_COLUMNS)
         rows[:, j] = Float64.(getproperty(r, Symbol(col)))
     end
-    return _mp_gather_rows(rows)
+    return gather ? _mp_gather_rows(rows) : rows
+end
+
+# The group a loss record is written into. A `TrackingTask` (one beam) owns
+# `/losses` itself, as it always has; a `StrongStrongTask` (2026-10-19, unit R)
+# writes one subgroup per beam whose line carries an aperture,
+# `/losses/beam_<i>`, each in the one-beam layout, so a beam's group is
+# field-for-field what the TrackingTask writes for the same beam. Either way
+# the group written is REPLACED whole (the idempotent rewrite rule below); a
+# one-beam `/losses` met by a per-beam write -- a file another task kind wrote
+# before -- is replaced too rather than nested into.
+function _ra_losses_group!(file, ::Nothing)
+    haskey(file, "losses") && HDF5.delete_object(file, "losses")
+    return HDF5.create_group(file, "losses")
+end
+function _ra_losses_group!(file, beam::Integer)
+    haskey(file, "losses") && haskey(file["losses"], "aperture_names") &&
+        HDF5.delete_object(file, "losses")
+    parent = haskey(file, "losses") ? file["losses"] : HDF5.create_group(file, "losses")
+    name = "beam_$(beam)"
+    haskey(parent, name) && HDF5.delete_object(parent, name)
+    return HDF5.create_group(parent, name)
 end
 
 """
@@ -1178,17 +1202,20 @@ cumulative and a particle is lost at most once, so the rewrite is
 idempotent, exactly the loss-log rule. A task with no loss record (no
 aperture in the line) writes nothing; a counters-only record (no log
 slots requested) writes the per-aperture accounting without rows.
+`beam = i` writes beam `i` of a `StrongStrongTask` into `/losses/beam_i`
+(`_ra_losses_group!`); `gather = false` writes this rank's rows without the
+gather collective (the strong-strong crash path, see `_ra_gathered_loss_rows`).
 """
 function _ra_write_losses!(art::RunArtifact, record, s_positions, summary,
-                           shard_offset::Integer=0; folded::Bool=false)
+                           shard_offset::Integer=0; folded::Bool=false,
+                           beam::Union{Nothing,Integer}=nothing, gather::Bool=true)
     # Every rank builds and gathers its rows -- the gather is a collective, so
     # a rank that returned early would hang the rest -- and only rank 0, which
     # holds the file, writes them.
-    gathered = _ra_gathered_loss_rows(record, shard_offset)
+    gathered = _ra_gathered_loss_rows(record, shard_offset; gather=gather)
     art.file === nothing && return nothing
     record === nothing && return nothing
-    haskey(art.file, "losses") && HDF5.delete_object(art.file, "losses")
-    g = HDF5.create_group(art.file, "losses")
+    g = _ra_losses_group!(art.file, beam)
     g["aperture_names"] = aperture_names(record)
     # The GLOBAL attribution, not this rank's. `loss_counts(record)` is the
     # rank-local `LossRecord.counts`, bumped only by this rank's own kills, and
@@ -1508,7 +1535,10 @@ end
 # The artifact's product groups, ONE table: every top-level group a producer
 # writes, with its shape -- `:named` (a group of named groups: the luminosity
 # channels and the three probe kinds, which `_ra_bind_probe!` refuses to bind
-# under any other name), `:single` (one group: the losses, the ledger) and
+# under any other name), `:single` (one group: the losses, the ledger; a
+# strong-strong artifact nests one `beam_<i>` subgroup per beam inside the
+# single losses group, `_ra_losses_group!`, which its readers return keyed by
+# beam) and
 # `:slotted` (one group per execution slot: the provenance). `_RA_KINDS` and
 # `_RA_NAMED_KINDS` derive from it, and the suite pins the table against a run
 # of every producer (2026-10-16 neighbour audit, S4-8: the hand list was
@@ -1561,8 +1591,16 @@ function _ra_select_column(rows::NamedTuple, column, what)
     return rows[key]
 end
 
-# `g` is the /losses group, handed over by `_ra_require_group` (U5-7).
+# `g` is the /losses group, handed over by `_ra_require_group` (U5-7). A
+# `TrackingTask` wrote the one-beam layout into the group itself; a
+# `StrongStrongTask` wrote one subgroup per beam whose line carries an
+# aperture (`_ra_losses_group!`), returned here keyed by beam (`beam_1`,
+# `beam_2`), each entry the one-beam shape.
 function _ra_losses(g)
+    if !haskey(g, "aperture_names")
+        beams = sort([String(k) for k in keys(g) if g[k] isa HDF5.Group])
+        return (; (Symbol(b) => _ra_losses(g[b]) for b in beams)...)
+    end
     a = HDF5.attributes(g)
     rows = if haskey(g, "data")
         names = String.(read(g["column_names"]))
@@ -1588,6 +1626,19 @@ function _ra_losses(g)
            aperture_counts=Int.(read(g["aperture_counts"])),
            aperture_s=haskey(g, "aperture_s") ? read(g["aperture_s"]) : nothing,
            summary=summary))
+end
+
+# The table-of-contents entry of a /losses group (`read(::TaskOutput)`): the
+# one-beam layout's columns, row count and aperture names, or, for a
+# strong-strong artifact, that entry per beam subgroup keyed by beam.
+function _ra_losses_toc(obj)
+    haskey(obj, "aperture_names") ||
+        return (; (Symbol(String(k)) => _ra_losses_toc(obj[k])
+                   for k in keys(obj) if obj[k] isa HDF5.Group)...)
+    return (columns=haskey(obj, "column_names") ?
+                String.(read(obj["column_names"])) : String[],
+            rows=haskey(obj, "data") ? size(obj["data"], 1) : 0,
+            apertures=String.(read(obj["aperture_names"])))
 end
 
 # `ex` is the /execution group, handed over by `_ra_require_group` (U5-7). One
@@ -1931,7 +1982,9 @@ beside the columns (`nothing` for task-hook probes and pre-attribute files).
 
 `:losses` returns the per-loss rows as column vectors (pre-kill coordinates),
 the per-aperture names/counts/arc positions, and the reconciliation summary
-when the run recorded one (`nothing` otherwise). `:execution` returns the
+when the run recorded one (`nothing` otherwise); for a `StrongStrongTask`
+artifact, that shape per beam whose line carries an aperture, keyed `beam_1`,
+`beam_2` (the artifact's `/losses/beam_<i>` subgroups). `:execution` returns the
 ledger -- one entry per `execute!`: `start_turn`, `turns`,
 `current_turn`/`elapsed` updated at every flush of every channel (luminosity,
 probe rows, turn-modulation series) and at finalize, and `rng_seed`/
@@ -2038,10 +2091,7 @@ function Base.read(out::TaskOutput)
                 toc[k] = (columns=cols,
                           rows=isempty(cols) ? 0 : length(obj[first(cols)]))
             elseif k == "losses"
-                toc[k] = (columns=haskey(obj, "column_names") ?
-                              String.(read(obj["column_names"])) : String[],
-                          rows=haskey(obj, "data") ? size(obj["data"], 1) : 0,
-                          apertures=String.(read(obj["aperture_names"])))
+                toc[k] = _ra_losses_toc(obj)
             elseif k == "turn_modulation"
                 # The provenance IS the metadata; a recorded series is read as
                 # its row count here, not as data.

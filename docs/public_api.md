@@ -494,7 +494,13 @@ where you place apertures, so guard both faces of a magnet with two of them.
 `loss_summary` reports the beam-wide dead count and the aperture-attributed total
 separately. The gap between them is particles that went non-finite with no
 aperture responsible, which is the diagnostic that keeps a numerical blowup
-distinguishable from collimation.
+distinguishable from collimation. A `TrackingTask` holds one loss record
+(`loss_record(task)`, `loss_summary(beam, task)`); a `StrongStrongTask` holds
+one per beam (`loss_record(task, 1)`, `loss_record(task, 2)`;
+`loss_summary(beam, task)` reconciles the beam it is handed, identified by its
+storage, or `loss_summary(beam, task, which)`), and writes each beam's
+accounting into its artifact's `/losses/beam_<i>` group
+(`read(TaskOutput(path), :losses).beam_1`).
 
 ```julia
 ?ApertureSpec

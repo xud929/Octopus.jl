@@ -437,7 +437,15 @@ explicit reproducibility contract before replacing the current default.
 contain matching `StrongStrongCollision` markers. Internally, each line is split
 at those markers so ordinary elements before, between, and after collisions can
 still use fused tracking plans. Task output is the run artifact described in
-`docs/design/run_artifact.md`.
+`docs/design/run_artifact.md`. Each line compiles and binds exactly as a
+`TrackingTask` line does, through the one `_bind_line_entries` (2026-10-19):
+its RF cavities are surveyed against that line's own arc length (`ds_turn`,
+a `harmon=` frequency), its apertures are bound to that beam's loss record
+(`loss_record(task, 1)`, `loss_record(task, 2)`; `loss_summary(beam, task)`;
+the artifact's `/losses/beam_<i>` groups), and a reference chain that does not
+compose is refused with the TrackingTask's message. A collision that meets the
+particles an aperture killed without `allow_lost_particles` refuses naming the
+aperture, the beam and the remedy.
 
 On CUDA, matching non-collision line segments for beam 1 and beam 2 are launched
 on separate CUDA streams and synchronized before the next

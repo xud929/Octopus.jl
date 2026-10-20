@@ -92,6 +92,21 @@ is a property of its placement in a line, not of its physics meaning, so per
 the two-layer rule it belongs on the compiled runtime object, assigned by the
 line walk — never a user-facing spec field that could disagree with the line.
 
+**Both task kinds, one binder (2026-10-19).** The survey pass is one of the
+three binding steps a task compile performs on a compiled line
+(`_bind_line_entries` in `src/tasks/Tasks.jl`: apertures onto the loss
+record, cavities onto the survey, the reference chain validated), and both
+`TrackingTask` (`_runtime_entries`) and `StrongStrongTask`
+(`_split_strong_strong_line`, per line, before the line is cut into its
+collision blocks) route through that one function. A strong-strong line is
+surveyed against its OWN total arc length — two lines, two circumferences,
+the collision markers having no length — so a cavity's `ds_turn` there is
+exactly what the same line gives through a `TrackingTask`. Until the
+2026-10-19 fix batch the strong-strong compile ran none of the three steps
+(comprehensive audit 2026-10-18, F-4): a cavity in a strong-strong line kept
+the bare compile's `ds_turn = NaN` and tracked the s = 0 model, max|dz| =
+0.1986 at sigma_z = 1e-2 against its TrackingTask twin.
+
 ### 3b. Dynamic half: `TrackingContext`, and loud refusal
 
 `TrackingContext` (`src/track/Track.jl`) already carries `turn::Int64`, is
