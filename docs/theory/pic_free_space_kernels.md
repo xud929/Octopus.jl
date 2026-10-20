@@ -377,6 +377,33 @@ construction.
 > bypasses the cache. Fixed by `_pic_realign_expanded_grids`; the parity and
 > alignment invariants are now both tested.
 
+> **Correction (2026-10-19; comprehensive audit 2026-10-18, F-3).** The
+> realignment carried the sibling defect for `:standard`.
+> `_pic_align_grid_origins` chooses between the two half-cell separations
+> nearest the origins' separation by the *sign* of the fractional separation,
+> and after the expansion a `k + 1/2`-cell separation becomes `(k + 1/2)/1.25`
+> cells — an integer whenever `k ≡ 2 (mod 5)`, exactly half-way between the two
+> candidates. There the sign was rounding noise: the device fuses the slice
+> bounds' `x + p_x s` into one FMA where the host rounds twice (18373 of 100000
+> drifted coordinates differ between the two), so CPU and CUDA chose opposite
+> half cells and solved on grids a whole cell apart. Measured (2 turns, 5
+> slices, grid 32, N = 4000 per beam, the default cache): coordinates differed
+> by 7.8e-3 of their scale between the backends and by 1.8e-3 to 1e-2 between
+> two CUDA runs (the deposit's atomic-order noise, amplified by the same tie),
+> per-pair luminosity by 1.4e-4; `:integrated` and `:lattice` agree to 1e-13 on
+> the same route, as does `:standard` with `green_cache = :none`, and GaussianPIC
+> with `:standard` showed the same 9.2e-3. The tie is now resolved by rule —
+> toward the larger separation — inside a band of `_PIC_ALIGN_TIE_TOLERANCE`
+> = 1e-6 cells (the inputs' rounding noise is below 1e-10 cells; the smallest
+> non-tie residual at the default growth is 0.2 cells); outside the band the
+> arithmetic is the old one, bit for bit (199999 of 199999 random non-tie
+> inputs), so no other grid moved. After the fix `:standard` agrees at the
+> controls' class: 5.8e-14 between the backends and 1.3e-14 between two CUDA
+> runs on the same route (grid 64: 9.8e-14 and 3.9e-14; GaussianPIC 5.8e-14),
+> with identical cache histories. Either half-cell offset keeps every node off
+> the kernel's singularity, so the choice carries no physics; what it must be
+> is the same on every backend and every run.
+
 **The caching argument in Section 3.4 was wrong in practice, and measuring it is
 what showed that.** The claim was that because $G$ depends only on the grid and
 the aspect ratio $\rho=h_x/h_y$, one table per $(\text{grid},\rho)$ would serve every

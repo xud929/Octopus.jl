@@ -2092,7 +2092,13 @@ relative to each other:
   source displaced by the rounding residual — measured 0.400 cells.
 - `:standard` relies on the deliberate half-cell offset to stay off its own
   singularity; the expansion maps `k + 1/2` to `0.8k + 0.4`, which is an integer
-  whenever `k ≡ 2 (mod 5)`, putting a node exactly on `r = 0`.
+  whenever `k ≡ 2 (mod 5)`, putting a node exactly on `r = 0`. That integer
+  separation is also the tie between the two half-cell separations
+  `_pic_align_grid_origins` can move to, which it resolves by rule (toward the
+  larger separation) rather than by the sign of a rounding residual -- the
+  2026-10-18 audit's F-3, where the device's fused slice bounds and the host's
+  twice-rounded ones fell on opposite sides and the backends solved on grids a
+  whole cell apart.
 
 `:integrated` evaluates its kernel at real coordinates and does not depend on the
 alignment, so it is deliberately left untouched: re-aligning it would move the
@@ -2126,12 +2132,51 @@ function _pic_report_green_cache(cache)
     return nothing
 end
 
+# The tie band of `_pic_align_grid_origins` for `:standard`, in cells of
+# fractional origin separation. A separation within this distance of a whole
+# number of cells sits half-way between the two half-cell separations the
+# alignment can choose, and the choice is made by rule there, not by the sign
+# of the residual. Measured bounds on the two sides (2026-10-19, unit Q of the
+# fix batch): the residual's rounding noise is ulps of `origin / h`, below
+# 1e-10 cells for every grid the solvers build; the smallest non-tie residual
+# the Green cache's expansion produces at the default growth of 0.25 is 0.2
+# cells (`(k + 1/2) / 1.25` has fractional parts in {0, 0.2, 0.4, 0.6, 0.8}),
+# and for any rational growth it is a fixed fraction far above the band. The
+# suite pins the band between those two bounds.
+const _PIC_ALIGN_TIE_TOLERANCE = 1e-6
+
 function _pic_align_grid_origins(green_type, source0, field0, h)
     f1 = source0 / h - floor(source0 / h)
     f2 = field0 / h - floor(field0 / h)
-    t = (f2 - f1) / 2
+    r = f2 - f1
+    t = r / 2
     if Symbol(green_type) == :standard
-        t += t > 0 ? -0.25 : 0.25
+        # `r` is the origins' fractional separation in cells, in [-1, 1] (the
+        # end points through the floor's wrap, see the branch below). The two
+        # half-cell separations nearest the origins sit at r = +1/2 and -1/2
+        # (mod 1), and the point half-way between them is r = 0, equivalently
+        # +-1: a separation that is already a whole number of cells. There the
+        # sign test on `t` decided which half cell to move to, and the Green
+        # cache's expansion puts the origins exactly there: `_pic_expand_grid_by`
+        # maps a (k + 1/2)-cell separation to (k + 1/2)/(1 + growth) cells, an
+        # integer whenever k = 2 (mod 5) at the default growth of 0.25. The sign
+        # was then rounding noise -- the device fuses the slice bounds'
+        # `x + px*s` into one FMA where the host rounds twice -- so CPU and CUDA
+        # chose opposite half cells and solved on grids a whole cell apart.
+        # Measured (2026-10-18 comprehensive audit, F-3; unit Q of the fix
+        # batch): 7.8e-3 relative coordinate divergence between the backends,
+        # 1.8e-3 to 1e-2 between two CUDA runs (atomic-order noise through the
+        # same tie), where :integrated and :lattice agree to 1e-13. Resolved by
+        # rule inside the band: toward the larger separation, the noise
+        # absorbed so the new separation is that integer plus one half. Either
+        # half-cell offset keeps every node off the kernel's singularity; what
+        # matters is that every backend and every run makes the same choice.
+        # Outside the band the arithmetic below is the old one, bit for bit.
+        if abs(r - round(r)) <= _PIC_ALIGN_TIE_TOLERANCE
+            t = (r - round(r)) / 2 - 0.25
+        else
+            t += t > 0 ? -0.25 : 0.25
+        end
     else
         # Defensive, and unreachable as written (2026-08-05_b audit, U6-9).
         # `f1` and `f2` are `v/h - floor(v/h)`, so each lies in [0, 1] -- note
