@@ -608,6 +608,18 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   every finding is a priced row in `todo.md`, the 41 inherited rows are
   dispositioned, the Phase 7 contracts and Phase 10 scripts were executed,
   and the two-arm gate's result is in its section 6.
+- [`comprehensive_audit_fixes_2026_10_19.md`](history/comprehensive_audit_fixes_2026_10_19.md) —
+  the comprehensive audit's fix batch 1, the thirteen Major rows through ten
+  units (sub-agents proposing, the integrator verifying each red on the
+  unfixed tree and green after the merge): the masked warp reduction and the
+  capped bounds launches of the CUDA PIC route, the `:standard` kernel's
+  alignment tie resolved by rule, strong-strong lines bound like TrackingTask
+  lines with one loss record per beam, the run artifact validating before it
+  mutates with `/losses` under the replay rule and a row-indexed cursor every
+  reader applies, the zero-voltage cavity's slip, the Float32 loss record,
+  the cluster mode index matched by eigenvalue, three dead scripts ported
+  with a retired-spelling tripwire, the MPI seam child's arms that fail by
+  name; two integration joins with their own test; thirteen rows retired.
 - [`beam_beam_fixes_2026_10_18.md`](history/beam_beam_fixes_2026_10_18.md) —
   the beam-beam fix batch: the strong beam's `momentum_dispersion` made the
   canonical dispersion the Twiss analysis reports (owner decision: one

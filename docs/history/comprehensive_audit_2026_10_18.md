@@ -2078,3 +2078,11 @@ intermittent fault it is. The record commit 2f5acfd and this addendum are
 markdown-only; the fast lane on the final tree is their gate: GREEN
 (`result/gates/turnmod/fast_lane_auditB_audit2.log`, 17:12 to 17:38, exit 0,
 336 testset summaries, 16 `LANE SKIP` lines).
+
+## Addendum 2026-10-20 (fix campaign, batch 1)
+
+The thirteen Major rows of section 7b were closed by the fix batch recorded in
+[`comprehensive_audit_fixes_2026_10_19.md`](comprehensive_audit_fixes_2026_10_19.md) (ten units P to Y, merged and gated on the
+integrated tree); their closings are in the ledger archive, and the pointer row
+of `todo.md` carries what that batch left for the owner. The Moderate and
+Minor rows of 7b stay open for the next batches.

@@ -1824,6 +1824,69 @@ core: `ulimit -c unlimited` in the gate script, the core lands in the test
 process's cwd (`<worktree>/test/`), and `gdb -batch -ex "thread apply all bt"`
 names the library. Arm it first; bisect only with a backtrace in hand.
 
+## Two fixes that are each green alone can leave a seam between them
+
+The 2026-10-19 fix batch's units R (one loss record per strong-strong beam,
+`/losses/beam_<i>`) and S (the artifact's `/losses` under the replay rule)
+each passed their regression tests on their own branch; merged, S's merge read
+the earlier rows from `/losses` while R wrote `/losses/beam_1`, and the
+prepare's new aperture check did not know the per-beam layout. Neither unit's
+tests could see it. When two units touch one function, the integration is a
+unit of its own: read both diffs against each other before the merge, write
+the joined behaviour's test (block 3d of unit R's testset), and run both
+units' tests on the merged tree, not one after the other on their branches.
+
+## A same-anchor merge can take a shared `end` as context
+
+Two branches that each append a testset at the same place conflict as two
+insertions whose last line, `end`, git treats as common context; keeping both
+sides verbatim leaves the first testset unclosed. `Meta.parseall` returned no
+`:error` for the file, because a premature end of input is an `:incomplete`
+expression, and the stage runner's cut by title exposed it as a `ParseError`
+at 0.0 s. Check for `:incomplete` as well as `:error` after every hand-resolved
+conflict in a test file, and treat the title cut as the structural tripwire it
+is.
+
+## A tie decided by a rounding residual is decided by the backend
+
+`_pic_align_grid_origins` chose a half-cell offset by the sign of a fractional
+separation that the slice-pair cache's expansion put exactly on zero for every
+`k = 2 (mod 5)`; the device's fused `x + px s` and the host's two roundings
+fell on opposite sides and the `:standard` kernel solved on grids a whole cell
+apart (F-3, 7.8e-3 CPU/CUDA, 1e-2 run to run). Fix I's fusion rule (match the
+device's arithmetic) would have kept the knife edge for atomic-order noise;
+unit Q resolved the tie by rule inside a band whose two bounds were measured
+(noise below 1e-10 cells, the nearest non-tie residual 0.2) and left every
+non-tie input bit-identical. A decision that physics does not care about must
+still be the same on every backend and every run, and a sign test on a
+representable boundary never is.
+
+## The suite compiles kernels with bounds checks on, so it measures a stricter ceiling
+
+The fix batch's launch-site tripwire passed in every plain process (the
+unit's census, the stage runner) and failed on the first full gate:
+`_cuda_gaussian_build_moments_kernel!` compiles to 56 and 64 registers
+(uncoupled, coupled) and launches 1024 threads in a production process, but
+`Pkg.test` runs the test process with `--check-bounds=yes`, `@inbounds` is
+void there, and the same kernel compiles to 66 and 76 registers with ceilings
+of 896 and 768, so a legal `threads = 1024` failed the raw launch on the gate
+and nowhere else. A device property measured in a plain process is not the
+property the suite asserts; measure it inside the suite (the tripwire's device
+half does), and treat the bounds-checked ceiling as the one to fit under, since
+a kernel that fits there fits without. The remedy was the same cap the batch
+already had.
+
+## Validate before you mutate, from one table
+
+Four by-name refusals of a continued run artifact fired after the replay
+truncation had already dropped rows, and each probe bind truncated its own
+group before the next bind could refuse (F-56, F-58). The shape of the fix is
+general: every refusal of a window runs first, from one derived table the
+suite reads (`_RA_PREPARE_CHECKS`, one byte-identity fixture per entry), and
+one commit applies every mutation after the last refusal; a row that arrives
+before the commit is refused by name. A refusal that follows a write is a
+partial write with an error message.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.
