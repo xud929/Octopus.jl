@@ -75,9 +75,18 @@ _mpi_check_shard_line(rep) =
 
 # --- step 3b fixtures: the scalar diagnostics ------------------------------
 
-"""The one output path every rank names, so "only rank 0 wrote it" is a
-statement about one file rather than about P different ones."""
-_mpi_check_artifact_path() = joinpath(tempdir(), "octopus_mpi_seam_check.h5")
+"""
+    _mpi_check_artifact_path(dir, step) -> String
+
+The one output path every rank names for a step's run artifact, so "only
+rank 0 wrote it" is a statement about one file rather than about P different
+ones. `dir` is the child's per-launch directory (`_ARTIFACT_DIR` in
+`mpi_seam_check.jl`): until the 2026-10-19 fix batch the five steps' files
+were FIXED names under the shared `tempdir()`, and two children on one
+machine overwrote each other's (F-223, measured when two suites ran at once).
+"""
+_mpi_check_artifact_path(dir::AbstractString, step::AbstractString) =
+    joinpath(dir, "octopus_mpi_seam_check_$(step).h5")
 
 """A beam with four particles deliberately poisoned, so the loss accounting
 has something to count and the moment reductions have something to mask."""
@@ -177,9 +186,6 @@ end
 
 # --- step 4b fixtures: the strong-strong task -------------------------------
 
-"""The one output path the strong-strong check names on every rank."""
-_mpi_check_ss_artifact_path() = joinpath(tempdir(), "octopus_mpi_seam_check_4b.h5")
-
 """
 Two beams of DIFFERENT sizes, both chunk-alignable at one and two ranks
 (64 | 256 and 64 | 192 whole chunks), because a run holding two beams is
@@ -251,8 +257,6 @@ end
 _mpi_check_ss_big_solver() = Octopus.GaussianPoissonSolver(
     kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
     slicing=Octopus.LongitudinalSlicing(nslices=3, method=:equal_area))
-
-_mpi_check_ss_big_artifact_path() = joinpath(tempdir(), "octopus_mpi_seam_check_4b_big.h5")
 
 """
 The spectral solver the step-4g checks run: a 16 x 16 mesh and three
@@ -489,8 +493,6 @@ function _mpi_check_pic_min_part(rep, slicing, nranks::Integer)
     return smallest
 end
 
-_mpi_check_pic_artifact_path() = joinpath(tempdir(), "octopus_mpi_seam_check_4c.h5")
-
 """
 A logger that keeps the mesh's dropped-particle count out of the warning the
 collide raises (`_pic_report_dropped`: the BEAM's count, warned once by rank
@@ -597,11 +599,36 @@ and the arm the child runs twice for fixed-rank repeatability."""
 _mpi_check_pic_skewed_slicing() =
     Octopus.LongitudinalSlicing(nslices=3, method=:specified, positions=[-1.5, 1.5])
 
-"""The strong-strong task with a line ACTION in line 1, the one thing left
-that a divided run refuses."""
-_mpi_check_ss_task_with_action(policy) = Octopus.StrongStrongTask(
-    (Octopus.BeamSwapAction(identity), _mpi_check_ss_line(1)...),
-    _mpi_check_ss_line(2); policy=policy)
+"""
+    _mpi_check_swap_provider(beam) -> (provider, calls)
+
+A `BeamSwapAction` provider that hands back `beam` -- built under the same
+policy as the beam being tracked, so it is the same shard on every rank --
+and counts its calls in `calls`, so the child's one-rank half can show the
+action RAN (once per tracked turn) and the divided half that the refusal
+fired before it could (zero). Zero-argument on purpose: `_call_provider`
+hands a provider that accepts the context the context itself, which is how
+`BeamSwapAction(identity)` came to swap a `TrackingContext` in for the beam
+and throw at one rank (F-222).
+"""
+function _mpi_check_swap_provider(beam)
+    calls = Ref(0)
+    provider = () -> (calls[] += 1; beam)
+    return provider, calls
+end
+
+"""
+The strong-strong task with a line ACTION in line 1, the one thing left that
+a divided run refuses; `provider` is the action's (see
+`_mpi_check_swap_provider`). No line observers and no artifact: a
+`MomentObserver` is an artifact view, and with the observers in and the
+artifact out this task threw the artifact-view `ArgumentError` at one rank,
+which the child's inline fold read as "ran" until the 2026-10-19 fix batch
+(F-222).
+"""
+_mpi_check_ss_task_with_action(policy, provider) = Octopus.StrongStrongTask(
+    (Octopus.BeamSwapAction(provider), _mpi_check_ss_line(1; observers=false)...),
+    _mpi_check_ss_line(2; observers=false); policy=policy)
 
 """Rank 0's view of what the strong-strong run recorded: the luminosity series
 and both line observers' last rows, at full precision."""

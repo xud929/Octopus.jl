@@ -23224,6 +23224,16 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                            first(tagged(out1, "MPI-LOSSSUM ")))
             @test length(split(first(tagged(out1, "MPI-SNAPIDS ")), ",")) == 24
 
+            # The task-action refusal, in both directions: at two ranks the
+            # task refuses before any turn and the action's provider is never
+            # called; at one rank the task RUNS and the provider is called
+            # once, before the one tracked turn. The call count is what makes
+            # the one-rank half a check -- until the 2026-10-19 fix batch the
+            # child's fixture crashed there and the arm read the crash as
+            # "ran" (F-222).
+            @test tagged(out1, "MPI-TRACKREFUSE ") == ["action=false action_calls=1"]
+            @test tagged(out2, "MPI-TRACKREFUSE ") == ["action=true action_calls=0"]
+
             # --- step 4a: the soft-Gaussian collide ----------------------
             #
             # Strong-strong is a different shape from tracking: both beams are
@@ -23349,8 +23359,12 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             # campaign had not divided (step 4g), and the whole TASK around it
             # runs at every rank count. The child asserts the direction itself
             # and prints what it saw; both counts must have reached that line.
-            @test tagged(out1, "MPI-SSREFUSE ") == ["spectral_ran=true action=false"]
-            @test tagged(out2, "MPI-SSREFUSE ") == ["spectral_ran=true action=true"]
+            # `action_calls` is the line action's provider count: one at one
+            # rank (the action RAN, in the one turn), zero at two (refused
+            # before any turn) -- the one-rank half was a crash read as "ran"
+            # until the 2026-10-19 fix batch (F-222).
+            @test tagged(out1, "MPI-SSREFUSE ") == ["spectral_ran=true action=false action_calls=1"]
+            @test tagged(out2, "MPI-SSREFUSE ") == ["spectral_ran=true action=true action_calls=0"]
             # The child prints this only when the spectral TASK threw; an empty
             # list is the claim, and a non-empty one carries the message.
             @test isempty(tagged(out1, "MPI-SPECTASKERR ")) &&

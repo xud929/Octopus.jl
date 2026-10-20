@@ -119,9 +119,13 @@ a pseudo-terminal (`script -q -e -c "julia ..." <log>`) so the block-buffered
 testset summaries survive the crash and the site prints; and run it with
 `ulimit -c unlimited`, so the next death leaves `core.<pid>` in
 `<worktree>/test/` for `gdb -batch -ex "thread apply all bt" julia core.<pid>`.
-Never run two suites at once on one machine, in any two worktrees: the MPI
-seam child writes fixed names under the shared `tempdir()`, and the second
-suite fails its MPI testset.
+Never run two suites at once on one machine, in any two worktrees: a gate, a
+launcher child and a rank scan get the depot to themselves
+(`../experiences.md`, "Nothing that recompiles may run while a gate or a
+launcher does"). Until the 2026-10-19 fix batch the MPI seam child also wrote
+its run artifacts under FIXED names in the shared `tempdir()`, and the second
+suite failed its MPI testset on the first's files; they now land in the
+per-launch receipt directory (F-223).
 
 ## Where output goes
 
