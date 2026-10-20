@@ -1118,20 +1118,24 @@ should not also chatter at the console.
 there is no collimator -- a numerical blowup, an imaginary square root -- and
 that should not be reachable only by opening an HDF5 file afterwards.
 """
-function _report_losses(task::TrackingTask, rep, summary, wrote_file::Bool)
+function _report_losses(task::AbstractTask, rep, summary, wrote_file::Bool;
+                        beam::Union{Nothing,Int}=nothing)
     summary === nothing && return nothing
     # One run, one report: every rank holds the same globalized summary, so a
     # rank that also printed it would print the same lines P times.
     _mp_is_root() || return nothing
+    # A `StrongStrongTask` reports per beam and says which (2026-10-19, unit
+    # R); a `TrackingTask` has one beam and no label, its lines unchanged.
+    label = beam === nothing ? "" : "beam $(beam): "
     if summary.unattributed != 0
-        @warn "particles were lost with no aperture responsible; a coordinate went \
-               non-finite where nothing was collimating" unattributed = summary.unattributed dead = summary.dead logged = summary.logged
+        @warn label * "particles were lost with no aperture responsible; a coordinate went " *
+              "non-finite where nothing was collimating" unattributed = summary.unattributed dead = summary.dead logged = summary.logged
     end
     # `loss_report` was already honoured upstream, by not computing `summary` at
     # all; reaching here with one means reporting was asked for.
     (wrote_file || summary.dead == 0) && return nothing
     io = stdout
-    println(io, "loss summary: ", summary.dead, " of ", summary.particles,
+    println(io, label, "loss summary: ", summary.dead, " of ", summary.particles,
             " particles lost (", summary.live, " live)")
     if !isempty(summary.names)
         for (name, count) in zip(summary.names, summary.by_aperture)
@@ -1663,9 +1667,10 @@ function _runtime_entries(task::TrackingTask, rep=nothing)
     kepoch = knob_epoch()
     sepoch = _spec_epoch()
     entries = _runtime_line_entries(task.elements)
-    entries = _bind_apertures(entries, record)
-    entries = _bind_survey(entries, task.elements)
-    _validate_reference_chain(task.elements)
+    # The three binding steps, in the one function both task kinds compile
+    # through (`_bind_line_entries`; the strong-strong compile ran none of
+    # them until the 2026-10-19 fix batch, unit R).
+    entries, _ = _bind_line_entries(entries, task.elements, record)
     task.runtime_entries_cache[] =
         (entries, _has_knob_parameters(task.elements), kepoch, sepoch, record)
     empty!(task.plan_cache)
@@ -1736,19 +1741,33 @@ function _refuse_beam_eltype(elem, ::Type{T}, ::Type{B}) where {T,B}
 end
 
 """
-Allocate the task's loss record on first use, or return the existing one.
+    _ensure_loss_record!(record_ref, owner, elements, rep, want_slots) -> LossRecord or nothing
+
+Allocate a line's loss record on first use, or return the existing one: the
+ONE allocation both task kinds share (2026-10-19 fix batch, unit R). A
+`TrackingTask` holds one record and calls this with its own refs; a
+`StrongStrongTask` holds one per beam and calls it per line
+(`_ensure_loss_record!(task, which, rep)`, src/tasks/strongstrong/interface.jl).
+`owner` is set to the representation's storage whenever a representation is
+handed in, with or without an aperture in the line, so a task can tell
+afterwards which beam a representation was (the strong-strong
+`loss_summary(rep, task)` reads it); it decides nothing else here.
 
 Reallocated when the representation changes shape or backend, because the
 per-particle slots are indexed by particle and live on the beam's device.
+`want_slots`: per-particle slots feed the artifact's /losses rows; without an
+artifact only the per-aperture counters are kept.
 """
-function _ensure_loss_record!(task::TrackingTask, rep)
-    rep === nothing && return task.loss_record[]
-    specs = _aperture_specs(task.elements)
-    isempty(specs) && return nothing
-    existing = task.loss_record[]
-    # Per-particle slots feed the artifact's /losses rows; without an artifact
-    # only the per-aperture counters are kept.
-    want_slots = task.artifact !== nothing
+function _ensure_loss_record!(record_ref::Base.RefValue{Any}, owner::Base.RefValue{WeakRef},
+                              elements::Tuple, rep, want_slots::Bool)
+    rep === nothing && return record_ref[]
+    storage = first(coordinate_arrays(rep))
+    specs = _aperture_specs(elements)
+    if isempty(specs)
+        owner[] = WeakRef(storage)
+        return nothing
+    end
+    existing = record_ref[]
     if existing !== nothing
         # Identity first: everything below only establishes that the record has
         # the right SHAPE for this rep, which a different beam of the same size
@@ -1766,7 +1785,7 @@ function _ensure_loss_record!(task::TrackingTask, rep)
         # with a warning) and recompiled the line, re-synthesising every
         # spectral table under the then-current seed (2026-10-16 neighbour
         # audit, S5-1). The arrays are what the user's beam holds.
-        fits = task.loss_owner[].value === first(coordinate_arrays(rep)) &&
+        fits = owner[].value === storage &&
                length(loss_counts(existing)) == length(specs) &&
                _loss_record_matches_rep(existing, rep) &&
                (existing.slots === nothing) == !want_slots &&
@@ -1778,9 +1797,51 @@ function _ensure_loss_record!(task::TrackingTask, rep)
         isempty(name) && (names[i] = "aperture_$(i)")
     end
     record = LossRecord(names, length(rep), rep; log=want_slots)
-    task.loss_record[] = record
-    task.loss_owner[] = WeakRef(first(coordinate_arrays(rep)))
+    record_ref[] = record
+    owner[] = WeakRef(storage)
     return record
+end
+
+_ensure_loss_record!(task::TrackingTask, rep) =
+    _ensure_loss_record!(task.loss_record, task.loss_owner, task.elements, rep,
+                         task.artifact !== nothing)
+
+"""
+    _bind_line_entries(entries::Tuple, elements, record) -> (entries, binding)
+
+The three binding steps every task compile performs on a compiled line, in
+one place for both task kinds: attach the loss `record` to every aperture
+(`_bind_apertures`), bind the survey to every cavity (`_bind_survey`: each
+cavity's `ds_turn`, a harmon cavity's frequency, against the arc length of
+THESE `elements`) and validate the declared reference chain
+(`_validate_reference_chain`). `_runtime_entries` calls it for a
+`TrackingTask`; `_split_strong_strong_line` calls it per line for a
+`StrongStrongTask`, which until the 2026-10-19 fix batch (unit R;
+comprehensive audit 2026-10-18, F-4) compiled its lines through
+`_append_runtime_line!` alone and ran none of the three -- a ThinRFCavity
+there tracked `ds_turn = NaN` (max|dz| 0.1986 at sigma_z 1e-2 against the
+same line through a TrackingTask), the two-E0 lattice was accepted, an
+aperture killed with no record.
+
+`binding` says what was bound, for the receipts and the reports: the number
+of aperture specs in the line and whether a record was attached to them
+(`record === nothing` leaves them kill-only, as a bare compile does) and
+whether that record keeps per-particle rows, the number of ring and
+accelerating cavities surveyed and the circumference the survey wrapped
+them around -- the total arc length of `elements`, which for a strong-strong
+line is that line's own (its collision markers have no length).
+"""
+function _bind_line_entries(entries::Tuple, elements, record)
+    entries = _bind_apertures(entries, record)
+    entries, survey = _bind_survey(entries, elements)
+    _validate_reference_chain(elements)
+    binding = (apertures=length(_aperture_specs(_element_tuple(elements))),
+               loss_record=record !== nothing,
+               loss_rows=record !== nothing && record.slots !== nothing,
+               rf_cavities=survey.rf_cavities,
+               accelerating_cavities=survey.accelerating_cavities,
+               circumference=survey.circumference)
+    return entries, binding
 end
 
 _bind_apertures(entries::Tuple, ::Nothing) = entries
@@ -1840,8 +1901,13 @@ function _aperture_rebind(op::TurnModulated, record, id)
 end
 
 """
+    _bind_survey(entries::Tuple, elements) -> (entries, survey)
+
 Bind survey values to every runtime cavity in the compiled line
-(docs/design/survey_and_reference_channel.md).
+(docs/design/survey_and_reference_channel.md), and return beside the bound
+entries what was surveyed: `(rf_cavities, accelerating_cavities,
+circumference)`, the circumference being the total arc length of `elements`
+that `ds_turn` wraps around (read by `_bind_line_entries` for the receipts).
 
 The spec-side walk (`_collect_spec_s!`, the same traversal the aperture arc
 positions use) yields each cavity's kick position `s_entry + L/2` and the
@@ -1901,7 +1967,7 @@ function _bind_survey(entries::Tuple, elements)
         "its spec, or a container type the spec walk does not descend -- where " *
         "the reference-chain validation and the single-pass refusal cannot see " *
         "it. Hand the task specs, or teach both walks the container.")
-    return bound
+    return bound, (rf_cavities=n, accelerating_cavities=length(accs), circumference=total)
 end
 
 _bind_survey_entry(entry::PhysicsEntry, kicks, ds, ents, total, id, acc_id) =

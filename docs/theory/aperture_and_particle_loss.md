@@ -366,6 +366,12 @@ Three caveats decide whether it is a good idea:
   since a particle is lost once. That makes it a property of the tracking task
   rather than of any aperture, so the element needs a handle to it -- the same
   question a `ScheduledObserver` already answers, and the place to copy from.
+  **As built:** the task owns it and binds it into every aperture when the
+  line compiles for a representation (`_bind_line_entries`,
+  `src/tasks/Tasks.jl`) -- one record on a `TrackingTask`, one per beam on a
+  `StrongStrongTask` (`loss_record(task, which)`), the strong-strong half
+  landing with the 2026-10-19 fix batch after the 2026-10-18 audit found its
+  lines compiled with no record at all (F-4).
 - **Where should the dead-versus-logged reconciliation be reported?** It belongs
   with whatever summarizes a run, not with the aperture, since no single aperture
   can know the total. The natural home is the task's own diagnostics.

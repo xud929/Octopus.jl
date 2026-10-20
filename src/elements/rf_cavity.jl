@@ -173,8 +173,8 @@ by construction (Section 2). The composition therefore is.
     iszero(elem.strength) && return (x, px, y, py, z, pz)
     # Static message, so the branch compiles as device IR (AGENTS.md rule).
     isnan(elem.k) && error("ThinRFCavitySpec(harmon=...) has no frequency until \
-a task line's circumference resolves it; compile through a TrackingTask, or \
-give frequency= for standalone use")
+a task line's circumference resolves it; compile through a task line \
+(TrackingTask or StrongStrongTask), or give frequency= for standalone use")
     z1, pt = convert_longitudinal(PATHLENGTH_DELTA => TIME_ENERGY, z, pz;
                                   beta0=elem.beta0, gamma0=elem.gamma0)
     pt += elem.strength * sin(elem.k * z1 + elem.phase)

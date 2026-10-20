@@ -1845,7 +1845,9 @@ strong_strong_task_option_schema() = (
     artifact=ConfigurationOptionMeta(Union{Nothing,RunArtifact}, nothing,
         "The run artifact (docs/design/run_artifact.md): one HDF5 file per " *
         "task carrying the per-collision luminosity channel on independent " *
-        "turn axes and the per-execution ledger; a bare path is constructor " *
+        "turn axes, the loss accounting of each beam whose line carries an " *
+        "aperture (/losses/beam_<i>, the TrackingTask's /losses layout per beam) " *
+        "and the per-execution ledger; a bare path is constructor " *
         "sugar. THE luminosity/loss/probe output since the 2026-08-18 " *
         "retirement of the standalone files (text .lum, per-observer h5, " *
         "loss log): read it back with read(TaskOutput(path), kind; ...) " *
@@ -2321,6 +2323,25 @@ Read it back with one handle -- `read(TaskOutput(path), kind; ...)` --
 and `MomentOutput(path; name=...)`. Design:
 docs/design/run_artifact.md.
 
+# Line binding and loss accounting
+
+Each line compiles exactly as a `TrackingTask` line does (one shared
+`_bind_line_entries`, since the 2026-10-19 fix batch): every `ThinRFCavitySpec`
+is surveyed against ITS line's own arc length (`ds_turn`, a `harmon=`
+frequency), every aperture is bound to that beam's loss record, and a
+reference chain that does not compose is refused with the same message. A
+`StrongStrongTask` therefore holds one loss record per beam:
+`loss_record(task, 1)`, `loss_record(task, 2)`, and `loss_summary(beam, task)`
+reconciles the beam it is handed (or `loss_summary(beam, task, which)`). For a
+beam whose line carries an aperture, every `execute!` reports the accounting
+-- into the artifact's `/losses/beam_<i>` group when one is attached (read back
+with `read(TaskOutput(path), :losses).beam_1`), on `stdout` otherwise, with a
+warning whenever particles went non-finite with no aperture responsible; a
+line with no aperture is not reconciled. Without `allow_lost_particles` a
+collision refuses the particles an aperture killed, naming the aperture, the
+beam and the remedy. The `:strong_strong_line_binding` receipt records, per
+beam, what the compile bound.
+
 Pass `diagnostics=StrongStrongDiagnostics(record_turn_times=true)` to
 synchronize once at each turn boundary and record complete-turn wall time.
 Retrieve structured results with `diagnostic_summary(task)`. The legacy
@@ -2350,6 +2371,15 @@ struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: Abstrac
     plan_cache1::Dict{Any,Any}
     plan_cache2::Dict{Any,Any}
     runtime_cache::Dict{Any,Any}
+    # One loss record per BEAM (a particle is lost once; the two beams are
+    # two populations), each allocated on first use for the representation
+    # that line runs and keyed on its storage exactly as the TrackingTask's
+    # `loss_record`/`loss_owner` pair is (`_ensure_loss_record!`, the shared
+    # allocation in src/tasks/Tasks.jl). Until the 2026-10-19 fix batch (unit
+    # R) the task had no record at all: an aperture in a strong-strong line
+    # killed with no count, no row and no /losses group.
+    loss_records::NTuple{2,Base.RefValue{Any}}
+    loss_owners::NTuple{2,Base.RefValue{WeakRef}}
     # What the constructor's sharing warnings named over both lines, read by
     # the resolved-line equal-digest check so one cause warns once
     # (`ReportedSharing`, src/tasks/Tasks.jl; 2026-10-16, fix group F).
@@ -2378,8 +2408,19 @@ function configuration_report(task::StrongStrongTask, beam1::Beam, beam2::Beam)
         diagnostics=configuration_report(task.diagnostics; backend=backend_type(policy)),
         solvers=Tuple(configuration_report(solver; policy=public_policy,
                                            backend=backend_type(policy)) for solver in solvers),
+        # What each line's compile binds (`_bind_line_entries`): the spec-level
+        # half -- aperture count, surveyed cavities, the circumference `ds_turn`
+        # wraps -- which a report can state before the run. Whether a loss
+        # record is attached is decided at execute!, per beam, and carried by
+        # the `:strong_strong_line_binding` receipt, not guessed here.
+        binding=(beam1=_binding_report(blocks1.binding),
+                 beam2=_binding_report(blocks2.binding)),
     )
 end
+
+_binding_report(binding::NamedTuple) =
+    (apertures=binding.apertures, rf_cavities=binding.rf_cavities,
+     accelerating_cavities=binding.accelerating_cavities, circumference=binding.circumference)
 
 required_contracts(::Type{<:StrongStrongTask}) =
     DataType[StrongStrongGaussianBackendConsistencyContract,
@@ -2452,6 +2493,8 @@ function StrongStrongTask(line1, line2;
         Dict{Any,Any}(),
         Dict{Any,Any}(),
         Dict{Any,Any}(),
+        (Ref{Any}(nothing), Ref{Any}(nothing)),
+        (Ref(WeakRef(nothing)), Ref(WeakRef(nothing))),
         reported_sharing,
     )
 end
@@ -2506,14 +2549,169 @@ function execute!(task::StrongStrongTask, beam1::Beam, beam2::Beam;
     # above the activation is an owner item (2026-10-13 neighbour audit,
     # U4-3; docs/todo.md). Not a hang risk: every rank reads the same window
     # and throws alike.
-    result = _with_execution_policy(policy) do
-        _with_beam_shards(beam1.rep, beam2.rep) do
-            _execute_strong_strong_task!(
-                task, beam1, beam2, nturns, first_turn, policy)
+    result = try
+        _with_execution_policy(policy) do
+            _with_beam_shards(beam1.rep, beam2.rep) do
+                _execute_strong_strong_task!(
+                    task, beam1, beam2, nturns, first_turn, policy)
+            end
         end
+    catch err
+        # A collision's non-finite refusal, when an aperture in a line of this
+        # task made the corpses it refuses, is re-thrown naming the aperture,
+        # the beam and the remedy (`_aperture_attributed_refusal`, 2026-10-19
+        # fix batch, unit R); every other error propagates unchanged.
+        attributed = _aperture_attributed_refusal(task, err)
+        attributed === nothing && rethrow()
+        throw(attributed)
     end
     task.next_turn[] = next_turn
     return result
+end
+
+"""
+    _ensure_loss_record!(task::StrongStrongTask, which, rep) -> LossRecord or nothing
+
+Beam `which`'s loss record, allocated on first use for `rep` or reused: the
+shared allocation of src/tasks/Tasks.jl with this task's per-beam refs and
+that beam's line. One record per beam, because a particle is lost once and
+the two beams are two populations. `rep === nothing` (a report, a bare
+compile) returns what the task holds.
+"""
+_ensure_loss_record!(task::StrongStrongTask, which::Integer, rep) =
+    _ensure_loss_record!(task.loss_records[which], task.loss_owners[which],
+                         which == 1 ? task.line1 : task.line2, rep, task.artifact !== nothing)
+
+"""
+    loss_record(task::StrongStrongTask, which) -> LossRecord or nothing
+
+Beam `which`'s (1 or 2) loss record, or `nothing` when that beam's line has
+no aperture or the task has not run yet: the strong-strong form of the
+TrackingTask accessor, one record per beam (2026-10-19 fix batch, unit R).
+The unindexed form refuses -- a strong-strong task holds two records, and an
+accessor guessing which was wanted would guess silently.
+"""
+function loss_record(task::StrongStrongTask, which::Integer)
+    which in (1, 2) || throw(ArgumentError(
+        "a StrongStrongTask has beams 1 and 2; got which = $(which)"))
+    return task.loss_records[which][]
+end
+loss_record(task::StrongStrongTask) = throw(ArgumentError(
+    "a StrongStrongTask holds one loss record per beam; pass which beam: " *
+    "loss_record(task, 1) or loss_record(task, 2)"))
+
+"""
+    loss_summary(rep_or_beam, task::StrongStrongTask[, which]) -> NamedTuple
+
+The loss reconciliation of one beam of a strong-strong task
+(`loss_summary(rep, record)`, src/elements/aperture.jl) against that beam's
+record. Without `which` the beam is identified by its STORAGE -- the task
+remembers which representation each line last ran (`_ensure_loss_record!`)
+-- and a representation that is neither beam is refused by name rather than
+reconciled against a guessed record. `loss_summary(rep, task)` was a
+`MethodError` before the 2026-10-19 fix batch (unit R): the generic method
+took the task for a record and asked it for `loss_counts`.
+"""
+function loss_summary(rep::Phase6DRep, task::StrongStrongTask, which::Integer)
+    which in (1, 2) || throw(ArgumentError(
+        "a StrongStrongTask has beams 1 and 2; got which = $(which)"))
+    return loss_summary(rep, task.loss_records[which][])
+end
+loss_summary(beam, task::StrongStrongTask, which::Integer) = loss_summary(beam.rep, task, which)
+function loss_summary(rep::Phase6DRep, task::StrongStrongTask)
+    storage = first(coordinate_arrays(rep))
+    matches = [which for which in 1:2 if task.loss_owners[which][].value === storage]
+    length(matches) == 1 || throw(ArgumentError(isempty(matches) ?
+        "this representation is not one of the two beams this StrongStrongTask " *
+        "last ran (or the task has not run yet); pass the beam explicitly: " *
+        "loss_summary(rep, task, 1) or loss_summary(rep, task, 2)" :
+        "this representation ran as both beams of this StrongStrongTask; pass the " *
+        "beam explicitly: loss_summary(rep, task, 1) or loss_summary(rep, task, 2)"))
+    return loss_summary(rep, task, only(matches))
+end
+loss_summary(beam::Beam, task::StrongStrongTask) = loss_summary(beam.rep, task)
+
+"""
+    _aperture_attributed_refusal(task::StrongStrongTask, err) -> ArgumentError or nothing
+
+The collision's non-finite refusal (`_nonfinite_coordinate_error`) names the
+beam whose particles are non-finite and not what made them so. When an
+aperture in a line of this task killed particles and `allow_lost_particles`
+is off -- the one way an aperture's corpses reach a collision -- the refusal
+is rebuilt to name the aperture, the beam, the count and the remedy in front
+of the collision's own message (2026-10-19 fix batch, unit R: the audit's
+probe read "non-finite particle coordinate(s) ... in the beam particles" for
+two particles COLL_A had killed). Anything else returns `nothing` and
+propagates unchanged: the refusal with no aperture kill behind it, its "all
+coordinates finite" variant, every other error. Failure path only: the
+counts come off the device here, never per turn.
+"""
+function _aperture_attributed_refusal(task::StrongStrongTask, err)
+    (err isa ArgumentError && occursin("non-finite particle coordinate(s)", err.msg) &&
+     !allow_lost_particles()) || return nothing
+    killed = String[]
+    for which in 1:2
+        record = task.loss_records[which][]
+        record === nothing && continue
+        for (name, count) in zip(aperture_names(record), loss_counts(record))
+            count > 0 && push!(killed, "beam $(which): $(name) killed $(count)")
+        end
+    end
+    isempty(killed) && return nothing
+    return ArgumentError(
+        "an aperture in this StrongStrongTask killed particles before a collision " *
+        "refused them (" * join(killed, "; ") * "). A killed particle is NaN in every " *
+        "coordinate, and without allow_lost_particles the collision treats a non-finite " *
+        "coordinate as a defect. Run inside `allow_lost_particles() do ... end` to track " *
+        "with losses: the dead are excluded from every reduction, counted per aperture by " *
+        "loss_record(task, beam) and reconciled by loss_summary(beam, task); with an " *
+        "artifact they land in its /losses/beam_<i> group. The collision's own refusal: " *
+        err.msg)
+end
+
+"""
+    _report_strong_strong_losses!(task::StrongStrongTask, beams; crashed) -> nothing
+
+The strong-strong end-of-run loss accounting, per beam, for the lines that
+carry an aperture (a record): the TrackingTask's rule applied twice. On the
+SUCCESS path the beam's summary is folded across the ranks
+(`_global_loss_summary`), reported (`_report_losses` labels the beam; stdout
+without an artifact, quiet with one, the `unattributed` warning either way)
+and written folded into the artifact's `/losses/beam_<i>`. On the CRASH path
+(`crashed = true`, from the turn loop's `finally`, while an exception is in
+flight and the artifact is still open) each rank writes what IT saw, unfolded
+and with NO collective -- no gather, no all-sum: the ranks may not agree on
+having thrown, which is why the TrackingTask runs its crash flush outside the
+scope -- and prints nothing, the refusal that stopped the run carrying the
+attribution (`_aperture_attributed_refusal`). A line with no aperture is not
+reconciled, so an aperture-free strong-strong run pays no reduction and
+prints nothing, exactly as before unit R; the TrackingTask reconciles every
+line, and a `loss_report`-style switch for this task is the owner's call.
+"""
+function _report_strong_strong_losses!(task::StrongStrongTask, beams::Tuple; crashed::Bool)
+    art = task.artifact
+    for which in 1:2
+        record = task.loss_records[which][]
+        record === nothing && continue
+        beam = beams[which]
+        line = which == 1 ? task.line1 : task.line2
+        offset = first(_mp_current_shard(beam.rep))
+        if crashed
+            summary = try
+                loss_summary(beam.rep, record)
+            catch
+                nothing
+            end
+            art === nothing || _ra_write_losses!(art, record, _aperture_s_positions(line), summary,
+                                                 offset; folded=false, beam=which, gather=false)
+        else
+            summary = _global_loss_summary(loss_summary(beam.rep, record))
+            _report_losses(task, beam.rep, summary, art !== nothing; beam=which)
+            art === nothing || _ra_write_losses!(art, record, _aperture_s_positions(line), summary,
+                                                 offset; folded=true, beam=which)
+        end
+    end
+    return nothing
 end
 
 """
@@ -2648,8 +2846,11 @@ function _execute_strong_strong_task!(
     # whether the line had anything to record (Measured Lesson 11). Those two
     # are the artifact's options and travel in the `:run_artifact_output`
     # receipt the prepare records with what it resolved.
-    blocks1 = _strong_strong_runtime_blocks(task, 1)
-    blocks2 = _strong_strong_runtime_blocks(task, 2)
+    # Compiled and BOUND for these beams: each line's apertures onto that
+    # beam's loss record, its cavities onto its own survey, its reference
+    # chain validated (`_split_strong_strong_line`; unit R, 2026-10-19).
+    blocks1 = _strong_strong_runtime_blocks(task, 1, beam1.rep)
+    blocks2 = _strong_strong_runtime_blocks(task, 2, beam2.rep)
     _validate_strong_strong_blocks(blocks1, blocks2)
     _reject_unsharded_strong_strong_features(blocks1, blocks2)
     # A turn table that cannot serve this window is refused HERE, before any
@@ -2743,7 +2944,16 @@ function _execute_strong_strong_task!(
         _record_execution!(:turn_modulation, backend_type(policy),
                            (elements = prov, first_turn = first_turn, turns = turns))
     end
+    # What each line's compile bound -- the aperture count and whether this
+    # beam's loss record (and its per-particle rows) is attached, the surveyed
+    # cavities and the circumference `ds_turn` wraps -- one receipt per beam,
+    # with the other per-run receipts after the last refusal (U3-6).
+    for (which, blocks) in ((1, blocks1), (2, blocks2))
+        _record_execution!(:strong_strong_line_binding, backend_type(policy),
+                           (; beam=which, blocks.binding...))
+    end
     line_observers_finalized = false
+    losses_written = false
     try
         ctx = TrackingContext()
         Base.ScopedValues.with(_ACTIVE_STRONG_STRONG_DIAGNOSTICS => task.diagnostics,
@@ -2762,6 +2972,12 @@ function _execute_strong_strong_task!(
         _finalize_strong_strong_line_observers!(blocks1)
         _finalize_strong_strong_line_observers!(blocks2)
         line_observers_finalized = true
+        # The loss accounting of each beam whose line carries an aperture,
+        # INSIDE the scope (its fold is a collective) and before the artifact
+        # closes: reported, and written folded into /losses/beam_<i>. A
+        # failure here is the failure, the task-observer rule.
+        _report_strong_strong_losses!(task, (beam1, beam2); crashed=false)
+        losses_written = true
         task.artifact === nothing || finalize_run_artifact!(task.artifact)
     finally
         # Failure path, same order best-effort: flush what the observers
@@ -2778,6 +2994,20 @@ function _execute_strong_strong_task!(
             end
         end
         if task.artifact !== nothing && task.artifact.file !== nothing
+            # A crashed run still flushes the loss accounting recorded so far
+            # into the still-open artifact (the TrackingTask's rule, audit part
+            # 7, T6): what THIS rank saw, unfolded, no collective. Best-effort,
+            # never replacing the error that stopped the run; skipped when the
+            # success path already wrote the folded groups and only the close
+            # failed.
+            if !losses_written
+                try
+                    _report_strong_strong_losses!(task, (beam1, beam2); crashed=true)
+                catch loss_error
+                    @warn "the crashed run's loss accounting could not be flushed; " *
+                          "the error that stopped the run is the one below" loss_error
+                end
+            end
             try
                 finalize_run_artifact!(task.artifact)
             catch finalize_error
@@ -3178,12 +3408,17 @@ calls per `execute!` (2026-10-16 neighbour audit U9-4; fix group F's open
 point, fix J). The two tuple fields are abstractly typed on purpose: a read
 is a pointer load of the tuple boxed once at the fill, and the turn loop
 stays compiled for ONE container type whatever the line's element types, as
-it was for the bare vector.
+it was for the bare vector. `binding` is what the compile bound into this
+line (`_bind_line_entries`, src/tasks/Tasks.jl: apertures and their record,
+surveyed cavities, the circumference), recorded per beam in the
+`:strong_strong_line_binding` receipt and reported by `configuration_report`
+(2026-10-19 fix batch, unit R).
 """
 struct StrongStrongBlocks <: AbstractVector{Any}
     blocks::Vector{Any}
     physics::Tuple
     observers::Tuple
+    binding::NamedTuple
 end
 Base.size(blocks::StrongStrongBlocks) = size(blocks.blocks)
 Base.IndexStyle(::Type{StrongStrongBlocks}) = IndexLinear()
@@ -3246,15 +3481,23 @@ end
 _strong_strong_cache_current(cached) =
     cached !== nothing && (!cached[2] || cached[3] == knob_epoch()) && cached[4] == _spec_epoch()
 
-function _strong_strong_runtime_blocks(task::StrongStrongTask, which::Integer)
+# The compiled blocks of beam `which`'s line, bound for `rep` (the beam's
+# representation; `nothing` from a report or a bare call, where the apertures
+# bind to the record the task already holds, or to none). The record is
+# allocated or reused here, as `_runtime_entries` does for a TrackingTask, and
+# the cache entry `(blocks, knob_dependent, kepoch, sepoch, record)` is keyed
+# on its identity too: a different beam has a different record and so a
+# recompiled line (2026-10-19 fix batch, unit R).
+function _strong_strong_runtime_blocks(task::StrongStrongTask, which::Integer, rep=nothing)
     cache = which == 1 ? task.runtime_entries_cache1 : task.runtime_entries_cache2
     line = which == 1 ? task.line1 : task.line2
+    record = _ensure_loss_record!(task, which, rep)
     cached = cache[]
-    _strong_strong_cache_current(cached) && return cached[1]
+    _strong_strong_cache_current(cached) && cached[5] === record && return cached[1]
     kepoch = knob_epoch()
     sepoch = _spec_epoch()
-    blocks = _split_strong_strong_line(line)
-    cache[] = (blocks, _has_knob_parameters(line), kepoch, sepoch)
+    blocks = _split_strong_strong_line(line, record)
+    cache[] = (blocks, _has_knob_parameters(line), kepoch, sepoch, record)
     empty!(which == 1 ? task.plan_cache1 : task.plan_cache2)
     # The equal-digest check over the RESOLVED lines (`_warn_resolved_duplicate_tables`,
     # src/tasks/Tasks.jl) runs once per compilation of the PAIR, spanning both
@@ -3272,12 +3515,46 @@ function _strong_strong_runtime_blocks(task::StrongStrongTask, which::Integer)
     return blocks
 end
 
-function _split_strong_strong_line(line::Tuple)
-    blocks = Any[]
-    current = Any[]
+"""
+    _split_strong_strong_line(line::Tuple, record=nothing) -> StrongStrongBlocks
+
+Compile one beam's line into its blocks: the entries between collision
+markers, each block closed by its marker (`nothing` for the trailing one).
+
+The line is compiled FLAT first, every element through the same
+`_append_runtime_line!` the TrackingTask compile uses, with the position of
+each collision marker noted; the flat tuple then goes through the ONE binding
+function both task kinds share, `_bind_line_entries` (src/tasks/Tasks.jl) --
+the loss `record` onto every aperture, the survey onto every cavity, the
+reference chain validated -- and only then is it cut into blocks at the noted
+positions. Until the 2026-10-19 fix batch (unit R; comprehensive audit
+2026-10-18, F-4) the elements were appended block by block and none of the
+three steps ran: a ThinRFCavity in a strong-strong line tracked `ds_turn =
+NaN` (the s = 0 boundary of a bare compile, max|dz| 0.1986 at sigma_z 1e-2
+against the same line through a TrackingTask), the two-E0 lattice was
+accepted, an aperture killed with no record.
+
+The circumference each cavity's `ds_turn` wraps around is THIS line's total
+arc length, walked over its own specs by `_bind_survey`: a strong-strong task
+has two lines and two circumferences, one per beam, and a
+`StrongStrongCollision` is not an element spec, so the arc walker steps over
+it at zero length. The hook counter runs over the whole line, so hook indices
+stay line-global as before.
+"""
+function _split_strong_strong_line(line::Tuple, record=nothing)
+    entries = Any[]
+    cuts = Int[]           # entries[1:cuts[k]] end at the k-th collision marker
+    collisions = Any[]
     hook_counter = Ref(0)
-    _append_strong_strong_line!(blocks, current, line, hook_counter)
-    push!(blocks, StrongStrongBlock(Tuple(current), nothing))
+    _append_strong_strong_line!(entries, cuts, collisions, line, hook_counter)
+    bound, binding = _bind_line_entries(Tuple(entries), line, record)
+    blocks = Any[]
+    start = 1
+    for (cut, collision) in zip(cuts, collisions)
+        push!(blocks, StrongStrongBlock(bound[start:cut], collision))
+        start = cut + 1
+    end
+    push!(blocks, StrongStrongBlock(bound[start:end], nothing))
     # A `Vector{Any}`, not a Tuple: the turn loop indexes the blocks with a
     # runtime index, and `getindex` on a heterogeneous tuple of isbits blocks
     # BOXES A COPY of the whole block (its entries tuple inline) at every
@@ -3288,33 +3565,34 @@ function _split_strong_strong_line(line::Tuple)
     # beside the line's physics and observer tuples built here, once per
     # compilation, from the same blocks (fix J, 2026-10-17).
     physics, observers = _build_strong_strong_line_tuples(blocks)
-    return StrongStrongBlocks(blocks, physics, observers)
+    return StrongStrongBlocks(blocks, physics, observers, binding)
 end
 
-function _append_strong_strong_line!(blocks, current, line::Tuple, hook_counter)
+function _append_strong_strong_line!(entries, cuts, collisions, line::Tuple, hook_counter)
     for item in line
-        _append_strong_strong_line!(blocks, current, item, hook_counter)
+        _append_strong_strong_line!(entries, cuts, collisions, item, hook_counter)
     end
     return nothing
 end
 
-function _append_strong_strong_line!(blocks, current, line::AbstractVector, hook_counter)
+function _append_strong_strong_line!(entries, cuts, collisions, line::AbstractVector, hook_counter)
     for item in line
-        _append_strong_strong_line!(blocks, current, item, hook_counter)
+        _append_strong_strong_line!(entries, cuts, collisions, item, hook_counter)
     end
     return nothing
 end
 
-function _append_strong_strong_line!(blocks, current, collision::StrongStrongCollision, hook_counter)
-    push!(blocks, StrongStrongBlock(Tuple(current), collision))
-    empty!(current)
+function _append_strong_strong_line!(entries, cuts, collisions, collision::StrongStrongCollision,
+                                     hook_counter)
+    push!(cuts, length(entries))
+    push!(collisions, collision)
     return nothing
 end
 
-function _append_strong_strong_line!(blocks, current, element, hook_counter)
-    before = length(current)
-    _append_runtime_line!(current, element, hook_counter)
-    length(current) >= before || error("internal strong-strong line construction error")
+function _append_strong_strong_line!(entries, cuts, collisions, element, hook_counter)
+    before = length(entries)
+    _append_runtime_line!(entries, element, hook_counter)
+    length(entries) >= before || error("internal strong-strong line construction error")
     return nothing
 end
 
