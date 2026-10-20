@@ -34059,14 +34059,24 @@ end
     # repository -- the one validation script with a `dropped` column recomputes its
     # own from `_pic_axis_extent`.
     sl = LongitudinalSlicing(nslices=4, method=:normal_quantile, center_position=:centroid)
+    # Fresh stream ids (the suite's convention, `_unheld_rng_id`): the beams
+    # claimed `rng_id = 1` and `2` explicitly, and the `@test_logs run()` below
+    # asserts SILENCE, so the block's verdict depended on whether an earlier
+    # block in the same process had auto-assigned those two ids to an observer
+    # (the registry warns on an explicit claim of a held id). It had, under the
+    # stage runner with "BPM reads a device number, not the truth" ahead of it
+    # (fix batch 2 integration, 2026-10-20); the full suite's earlier explicit
+    # claims hid the coupling. Computed once, so every `mk()` builds the same beams.
+    dropped_id = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
+    dropped_id2 = Octopus._unheld_rng_id(dropped_id + 1)
     mk() = begin
         set_global_rng!(seed=91, method=:philox)
         e = Beam(3000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.7),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            rng_id=dropped_id, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
         p = Beam(3000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.9),
             alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            rng_id=dropped_id2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
         (e, p)
     end
     run(; kw...) = begin
