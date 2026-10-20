@@ -359,7 +359,14 @@ ambiguity.
 1. **The thin limit.** `L = 0` and the drift–kick–drift thick cavity at `L → 0`
    must agree to round-off.
 2. **Zero voltage is the identity**, bit for bit, as `ref_tilt = 0` and
-   `x_offset = 0` already are elsewhere.
+   `x_offset = 0` already are elsewhere — for a cavity compiled *bare*. A
+   cavity a task line has bound to the survey keeps its velocity-slip shift
+   at zero voltage, because its share of the turn enters there or nowhere
+   ([`arc_survey_and_velocity_slip.md`](arc_survey_and_velocity_slip.md)
+   §3), so there it is the shift alone and nothing else. The early return
+   that dropped the share sat above the survey branch from the F16 closure
+   until the 2026-10-19 fix batch (F-91 of the 2026-10-18 audit: ν_s off by
+   63 % and 31 % with one of two cavities off).
 3. **Symplecticity** by complex step, as every other element.
 4. **The synchrotron tune** against the analytic
    $\nu_s = \sqrt{h\,\eta\,qV\cos\phi_s / (2\pi\beta^2 E)}$ for a simple ring —

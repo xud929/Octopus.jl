@@ -62,7 +62,8 @@ struct ThinRFCavity{M<:AbstractTrackingMethod,T<:Number} <: AbstractTrackOp
     # keeps the documented s = 0 model boundary. A finite value is bound by
     # `_bind_survey` when a task compiles the line, and switches the kick to
     # the slip-corrected form: a symplectic z-shift of
-    # `ds_turn * (β/β₀ - 1)` before the kick (see _rf_kick). `ds_turn` is the
+    # `ds_turn * (β/β₀ - 1)` before the kick, whatever the voltage (see
+    # _rf_kick). `ds_turn` is the
     # arc distance from the previous cavity kick, wrapping the turn (one
     # cavity: the full line length), so every number stays bounded at any
     # turn count and no turn counter is needed: the correction is a per-op
@@ -126,21 +127,21 @@ inside the conjugation cancels out of the one-turn dynamics entirely
 derivation, that negative measurement, and the injection-pass convention are
 in docs/theory/arc_survey_and_velocity_slip.md.
 
+**Zero voltage (F-91, fix batch 2026-10-19): the shift fires whatever the
+voltage.** `_bind_survey` partitions the turn over every compiled cavity, so a
+switched-off cavity's share of `C*(β/β₀ - 1)` enters here or nowhere; a
+surveyed cavity at zero voltage is therefore its slip shift ALONE, and only a
+cavity compiled bare at zero voltage returns its input bit for bit (the
+"exactly nothing" precedent of `_misalignment_wrap`). From the F16 closure
+until 2026-10-19 the zero-voltage return sat above the survey branch, and a
+two-cavity ring with one cavity off closed with `eta = alpha_c -
+(ds_live/C)/gamma0^2`: nu_s off by 63 % and 31 % on the F16 fixture.
+
 Changing only the momentum by a function of the coordinate is a canonical
 transformation, so the kick is symplectic, and the two wrappers are symplectic
 by construction (Section 2). The composition therefore is.
 """
 @inline function _rf_kick(elem::ThinRFCavity{M,T}, x, px, y, py, z, pz) where {M,T}
-    # A cavity with no voltage is exactly nothing, not nothing to round-off.
-    # The conversion round trip is only exact to ~4e-16, so without this a
-    # switched-off cavity would perturb a lattice in the last bits -- and
-    # `_misalignment_wrap` and `_ref_tilt_wrap` both set the precedent of
-    # returning the input untouched when there is no effect to apply.
-    iszero(elem.strength) && return (x, px, y, py, z, pz)
-    # Static message, so the branch compiles as device IR (AGENTS.md rule).
-    isnan(elem.k) && error("ThinRFCavitySpec(harmon=...) has no frequency until \
-a task line's circumference resolves it; compile through a TrackingTask, or \
-give frequency= for standalone use")
     # Survey-bound (F16 closure): the velocity slip enters as a symplectic
     # z-SHIFT before the kick, never as an `s` argument to the conversion.
     # The convention-#3 coordinate is a path deficit and physically does not
@@ -150,11 +151,30 @@ give frequency= for standalone use")
     # previous kick, `ds_turn * (β/β₀ - 1)`. (A constant `s` inside the
     # conversion cancels out of the one-turn dynamics entirely: measured
     # nu_s stayed at the alpha_c-only value to 0.7%. The derivation and that
-    # negative result: docs/theory/arc_survey_and_velocity_slip.md.)
+    # negative result: docs/theory/arc_survey_and_velocity_slip.md.) It fires
+    # WHATEVER the voltage (F-91, fix batch 2026-10-19): `_bind_survey`
+    # partitions the turn over every compiled cavity, live or not, so a
+    # switched-off cavity's share enters here or nowhere -- the zero-voltage
+    # return below sat ABOVE this branch from the F16 closure until the fix,
+    # and a two-cavity ring with one cavity off closed with eta = alpha_c -
+    # (ds_live/C)/gamma0^2 (nu_s off by 63 % and 31 % on the F16 fixture).
     if _has_survey(elem)
         pt0 = _pt_from_delta(pz, elem.beta0, elem.gamma0)
         z += elem.ds_turn * _velocity_slip_g(pz, pt0, elem.beta0, elem.gamma0)
     end
+    # A cavity with no voltage is exactly nothing BEYOND that shift, not
+    # nothing to round-off: the conversion round trip is only exact to ~4e-16,
+    # so without this a switched-off cavity would perturb a lattice in the
+    # last bits -- `_misalignment_wrap` and `_ref_tilt_wrap` both set the
+    # precedent of returning the input untouched when there is no effect to
+    # apply. Compiled bare (no survey) the input returns bit for bit, and a
+    # harmon cavity at zero voltage returns here before its NaN `k` is
+    # consulted, as it always did.
+    iszero(elem.strength) && return (x, px, y, py, z, pz)
+    # Static message, so the branch compiles as device IR (AGENTS.md rule).
+    isnan(elem.k) && error("ThinRFCavitySpec(harmon=...) has no frequency until \
+a task line's circumference resolves it; compile through a TrackingTask, or \
+give frequency= for standalone use")
     z1, pt = convert_longitudinal(PATHLENGTH_DELTA => TIME_ENERGY, z, pz;
                                   beta0=elem.beta0, gamma0=elem.gamma0)
     pt += elem.strength * sin(elem.k * z1 + elem.phase)
@@ -184,9 +204,25 @@ end
 function _cross_backend_rounding(op::ThinRFCavity)
     thick = !iszero(op.L)
     if iszero(op.strength)
-        thick && return _rounding_class(untouched=(:px, :py, :pz), ulp=(:x, :y, :z), ulp_bound=8,
-            why="a cavity at zero voltage is its two drift halves: the straight drift's fused `x + px/ps0 L` (see LatticeMagnet)")
-        return _rounding_class(untouched=_COORDINATE_NAMES, why="a thin cavity at zero voltage: the identity")
+        # Surveyed, the dead cavity is its slip alone (F-91, 2026-10-19): z is
+        # written by `z + ds_turn g(pz)`, whose product the device fuses into
+        # the add, and `g` carries two more fusable `beta0 pt` terms
+        # (`_velocity_slip_g`, `_pt_from_delta`); the other five coordinates
+        # are never written. Measured on the fix's probe (400 particles with
+        # spread, 3 turns, ds_turn = 100 m, RTX 4500 Ada, 2026-10-19):
+        # 2.0 ulps of z's scale thin and 3.0 thick at 2.5 GeV, where the shift
+        # is comparable to z, so 8 and 16 declared (four times the measurement,
+        # to a power of two); bitwise at 275 GeV, where the shift is 1e-4 of
+        # z's ulp. Bare, it is exactly the identity.
+        slip = _has_survey(op)
+        if thick
+            return _rounding_class(untouched=(:px, :py, :pz), ulp=(:x, :y, :z), ulp_bound=slip ? 16 : 8,
+                why="a cavity at zero voltage is its two drift halves: the straight drift's fused `x + px/ps0 L` (see LatticeMagnet)" *
+                    (slip ? ", with the surveyed slip `z + ds_turn g(pz)` between them (3 ulps of z's scale measured at 2.5 GeV, ds_turn = 100 m)" : ""))
+        end
+        slip && return _rounding_class(untouched=(:x, :px, :y, :py, :pz), ulp=(:z,), ulp_bound=8,
+            why="a surveyed cavity at zero voltage is its slip alone: `z + ds_turn g(pz)`, the product fused into the add on the device and the `beta0 pt` terms of g likewise (2 ulps of z's scale measured at 2.5 GeV, ds_turn = 100 m; bitwise at 275 GeV); x, px, y, py, pz are never written")
+        return _rounding_class(untouched=_COORDINATE_NAMES, why="a bare thin cavity at zero voltage: the identity")
     end
     return _rounding_class(untouched=thick ? (:px, :py) : (:x, :px, :y, :py),
                            ulp=thick ? (:x, :y, :z, :pz) : (:z, :pz), ulp_bound=8,
@@ -256,7 +292,9 @@ cavity has no velocity-slip term and closes a ring with `alpha_c` alone,
 missing `-1/gamma0²`; compiled *through a task line*, it is bound to the
 geometric survey and applies the exact slip as a symplectic z-shift before
 its kick, closing the ring with the full `eta = alpha_c - 1/gamma0²`
-(`docs/theory/arc_survey_and_velocity_slip.md`).
+(`docs/theory/arc_survey_and_velocity_slip.md`). The shift fires whatever the
+voltage: a survey-bound cavity at zero voltage is its slip share alone, and
+only a bare cavity at zero voltage is exactly the identity (F-91, 2026-10-19).
 
 `phase_noise` and `strength_noise` declare turn-by-turn modulation, by the
 same `TurnModulated` wrap the crab cavity uses
@@ -405,11 +443,12 @@ end
 # A mismatched beam is refused at compile by name (`_required_beam_eltype`,
 # src/track/Track.jl, derived from the `T` parameter below; the check in
 # src/tasks/Tasks.jl). This kernel is one of the measured device failures:
-# `_rf_kick` returns the input tuple untouched from `iszero(strength)` and a
-# slip-shifted `z` from `_has_survey`, so a Float32 beam through a Float64
-# cavity returns tuples of two types and `fusedTrack` does not compile as
-# device IR, where the CPU narrowed every coordinate on store without a word
-# (2026-10-16 neighbour audit, S2-2). The remedy is the registry-derived one:
+# `_rf_kick` returns the input tuple (its `z` slip-shifted when surveyed)
+# from `iszero(strength)` and the converted pair from its kick, so a Float32
+# beam through a Float64 cavity returns tuples of two types and `fusedTrack`
+# does not compile as device IR, where the CPU narrowed every coordinate on
+# store without a word (2026-10-16 neighbour audit, S2-2). The remedy is the
+# registry-derived one:
 # `ThinRFCavitySpec{Float32}(; ...)` or the beam in the cavity's type.
 #
 # `T = numeric_type(spec)`, the one rule of every kind: the stored type of a
@@ -493,14 +532,14 @@ end
         phase=ParamMeta(default=0, unit="rad", meaning="RF phase in radians, entering as the additive `k*z1 + phase` with z1 the TIME_ENERGY coordinate (z/beta in the tracked convention; coincides with ThinCrabCavity's k*z only at beta = 1). phase = 0 gives no net acceleration, which is a ring's natural zero; an accelerating cavity is a different element with a different zero"),
         beta0=ParamMeta(required=true, meaning="reference velocity, dimensionless. Needed by the coordinate conversions and by the energy-to-momentum factor; it is what distinguishes a proton ring from an electron ring and what the ultrarelativistic approximation throws away"),
         gamma0=ParamMeta(required=true, meaning="reference Lorentz factor, dimensionless. With beta0, fixes the exact conversion between longitudinal conventions"),
-        L=ParamMeta(default=0, unit="m", meaning="cavity length, which buys DRIFT SPACE only: the kick stays a single localised impulse at the centre, as AT's CavityPass does, so a lattice gets the right arc positions without the element pretending to integrate the field. L = 0 is the exact limit of that rather than a separate model. No transit-time factor, no RF focusing and no velocity-slip term -- see the element docstring"),
+        L=ParamMeta(default=0, unit="m", meaning="cavity length, which buys DRIFT SPACE only: the kick stays a single localised impulse at the centre, as AT's CavityPass does, so a lattice gets the right arc positions without the element pretending to integrate the field. L = 0 is the exact limit of that rather than a separate model. No transit-time factor and no RF focusing; the velocity slip is the survey channel's (ds_turn, bound when a task compiles the line and applied whatever the voltage), not L's -- see the element docstring"),
         phase_noise=ParamMeta(unit="rad", default=nothing, meaning="turn-by-turn additive phase modulation: nothing (inactive) or ONE rule (WhiteNoise, PinkNoise, TurnTable, SpectralNoise -- the last resolving to a TurnTable at compile_runtime) realised once per turn on the host by the TurnModulated wrap at compile_runtime, never read by the kernel; the phase is a scalar, so a tuple is refused; see src/elements/turn_modulated.jl"),
         strength_noise=ParamMeta(default=nothing, meaning="turn-by-turn RELATIVE modulation of the strength qV/(P0 c), dimensionless: nothing (inactive) or ONE rule (WhiteNoise, PinkNoise, TurnTable, SpectralNoise -- the last resolving to a TurnTable at compile_runtime), the strength being a scalar, whose realised per-turn value d scales the strength to strength (1 + d) -- one voltage driver (relative, 2026-10-15); a WhiteNoise sigma is the relative voltage jitter's rms itself and a TurnTable holds relative factors"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV)
-    construction_help = "Friendly constructor: ThinRFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0) or ThinRFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0, tracking_method=Symplectic6DMap()); keyword-only alternative ThinRFCavitySpec(harmon=h; ...) stores the harmonic number instead of a frequency -- f = h*beta0*c/C resolves against the line's total arc length when a task compiles the line, and a harmon cavity compiled bare throws at its first kick rather than guess a circumference (give exactly one of frequency/harmon). Turn-by-turn modulation: phase_noise and strength_noise are each nothing (inactive, the default) or ONE rule, WhiteNoise(sigma; rng_id), PinkNoise(sigma; rng_id, octaves), TurnTable(offsets; name) or SpectralNoise(sigma, band, spectrum; rng_id, turns), which resolves to a TurnTable when the line compiles -- the phase and the strength are scalars, so a tuple is refused -- whose realised per-turn value (an offset in rad added to the phase for phase_noise; for strength_noise a dimensionless relative factor d scaling the strength to strength (1 + d), one voltage driver, so a relative voltage jitter's rms is the rule's sigma itself and a table holds relative factors -- relative, 2026-10-15) is applied once per turn by the TurnModulated wrap that compile_runtime builds, never by the kernel; the survey binding (ds_turn, a harmon cavity's k) is carried into every realised cavity. Numeric type: the compiled cavity is numeric_type(spec), the promotion of the parameters over a Float64 floor for the untyped form, so Float32 inputs compile to a Float64 cavity and nothing is narrowed; ThinRFCavitySpec{Float32}(frequency; ...) is the typed form (numeric_type = Float32 stored), the Float32 cavity, where a Float64 turn table is refused rather than promoted. A THIN RF cavity WITHOUT acceleration -- Bmad's rfcavity, not its lcavity -- so the reference energy is constant through it and phase = 0 is no net acceleration. Thin means ONE localised kick: L buys drift space so the cavity occupies its proper arc length, but there is no transit-time factor and no RF focusing, the same standing as ThinCrabCavity and ThinMultipole. THIRD model boundary, CONDITIONAL since the F16 closure (2026-08-14): a cavity compiled BARE -- outside a task line -- has no velocity-slip term, so a ring it closes has slip factor alpha_c alone, missing -1/gamma0^2 (the recorded 1.84x synchrotron-tune error at a 2.5 GeV proton with alpha_c = 0.2, and the wrong side of transition whenever alpha_c < 1/gamma0^2). A cavity compiled THROUGH A TASK LINE is bound to the geometric survey and applies the exact velocity slip as a symplectic z-shift ds_turn*(beta/beta0 - 1) before its kick, closing the ring with the full eta = alpha_c - 1/gamma0^2 on every path and backend; a cavity inside a kept-whole own-state sub-line is surveyed through the line and bound like one at task level (since 2026-10-18; before that it was refused loudly at compile). Physics: docs/theory/arc_survey_and_velocity_slip.md. Frequency in Hz and phase in radians, matching ThinCrabCavity so that `phase` means one thing across every RF element. The energy is an ARGUMENT and not a field: voltage and e0 are reduced to a dimensionless strength at construction, so nothing on the element can disagree with BeamParams.E0. The body is written in the TIME_ENERGY convention and conjugated back by convert_longitudinal, which is why there is no beta factor in it. Design: docs/theory/rf_cavity_and_reference_energy.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinRFCavitySpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "Friendly constructor: ThinRFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0) or ThinRFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0, tracking_method=Symplectic6DMap()); keyword-only alternative ThinRFCavitySpec(harmon=h; ...) stores the harmonic number instead of a frequency -- f = h*beta0*c/C resolves against the line's total arc length when a task compiles the line, and a harmon cavity compiled bare throws at its first kick rather than guess a circumference (give exactly one of frequency/harmon). Turn-by-turn modulation: phase_noise and strength_noise are each nothing (inactive, the default) or ONE rule, WhiteNoise(sigma; rng_id), PinkNoise(sigma; rng_id, octaves), TurnTable(offsets; name) or SpectralNoise(sigma, band, spectrum; rng_id, turns), which resolves to a TurnTable when the line compiles -- the phase and the strength are scalars, so a tuple is refused -- whose realised per-turn value (an offset in rad added to the phase for phase_noise; for strength_noise a dimensionless relative factor d scaling the strength to strength (1 + d), one voltage driver, so a relative voltage jitter's rms is the rule's sigma itself and a table holds relative factors -- relative, 2026-10-15) is applied once per turn by the TurnModulated wrap that compile_runtime builds, never by the kernel; the survey binding (ds_turn, a harmon cavity's k) is carried into every realised cavity. Numeric type: the compiled cavity is numeric_type(spec), the promotion of the parameters over a Float64 floor for the untyped form, so Float32 inputs compile to a Float64 cavity and nothing is narrowed; ThinRFCavitySpec{Float32}(frequency; ...) is the typed form (numeric_type = Float32 stored), the Float32 cavity, where a Float64 turn table is refused rather than promoted. A THIN RF cavity WITHOUT acceleration -- Bmad's rfcavity, not its lcavity -- so the reference energy is constant through it and phase = 0 is no net acceleration. Thin means ONE localised kick: L buys drift space so the cavity occupies its proper arc length, but there is no transit-time factor and no RF focusing, the same standing as ThinCrabCavity and ThinMultipole. THIRD model boundary, CONDITIONAL since the F16 closure (2026-08-14): a cavity compiled BARE -- outside a task line -- has no velocity-slip term, so a ring it closes has slip factor alpha_c alone, missing -1/gamma0^2 (the recorded 1.84x synchrotron-tune error at a 2.5 GeV proton with alpha_c = 0.2, and the wrong side of transition whenever alpha_c < 1/gamma0^2). A cavity compiled THROUGH A TASK LINE is bound to the geometric survey and applies the exact velocity slip as a symplectic z-shift ds_turn*(beta/beta0 - 1) before its kick, closing the ring with the full eta = alpha_c - 1/gamma0^2 on every path and backend -- whatever the voltage, so a survey-bound cavity at zero voltage is its slip share alone and only a BARE cavity at zero voltage is exactly the identity (F-91, 2026-10-19); a cavity inside a kept-whole own-state sub-line is surveyed through the line and bound like one at task level (since 2026-10-18; before that it was refused loudly at compile). Physics: docs/theory/arc_survey_and_velocity_slip.md. Frequency in Hz and phase in radians, matching ThinCrabCavity so that `phase` means one thing across every RF element. The energy is an ARGUMENT and not a field: voltage and e0 are reduced to a dimensionless strength at construction, so nothing on the element can disagree with BeamParams.E0. The body is written in the TIME_ENERGY convention and conjugated back by convert_longitudinal, which is why there is no beta factor in it. Design: docs/theory/rf_cavity_and_reference_energy.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinRFCavitySpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 # ---------------------------------------------------------------------------

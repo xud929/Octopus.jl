@@ -93,7 +93,12 @@ z ← z + Δs · g(δ),      g(δ) = β/β₀ - 1,
 with `Δs` the arc distance from the previous cavity's kick, wrapping the
 turn (`Σ Δs = C`; one cavity: `Δs = C`). Between kicks the lattice maps do
 not touch `δ`, so per-segment shifts compose to exactly the per-turn
-`C·(β/β₀ - 1)` whatever the cavity placement. The map `(z, δ) → (z + f(δ), δ)`
+`C·(β/β₀ - 1)` whatever the cavity placement. The composition needs every
+cavity's share, so the shift fires whatever the cavity's **voltage**: a
+switched-off cavity in a task line is its shift alone, and a kick that
+skipped it closed the ring with `η = α_c − (Σ_live Δs / C)/γ₀²` (F-91 of the
+2026-10-18 audit: ν_s off by 63 % and 31 % with one of two cavities off;
+fixed 2026-10-19). The map `(z, δ) → (z + f(δ), δ)`
 is symplectic for any `f`, and the kick that follows is the unchanged
 conjugated body, so the composition is symplectic exactly.
 
@@ -162,4 +167,8 @@ crossing-count quantization (~1%), with `max|z|` over 4096 turns at
 - `_velocity_slip_g` against BigFloat across energies and amplitudes;
 - the survey walker against `s_positions` and (externally) against MAD-X
   `SURVEY` for nested, reflected, and curved fixtures;
-- the two-cavity `Δs` partition and its wrap to `C`.
+- the two-cavity `Δs` partition and its wrap to `C`;
+- the two-cavity ring with one cavity switched off: ν_s against the full `η`
+  and the one-turn `z` advance at zero voltage, the dead cavity's share
+  included, and a surveyed zero-voltage cavity as its shift alone against
+  the bare one as the exact identity (F-91, 2026-10-19).
