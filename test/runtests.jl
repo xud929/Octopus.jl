@@ -22889,7 +22889,18 @@ end
     #     MAX_THREADS_PER_BLOCK, because the raw sites take whatever thread count
     #     the policy or a CUDAPICLaunchConfig hands them (up to 1024). A kernel
     #     whose register count grows past 64 fails here on the GPU gate and must
-    #     move behind `_cuda_launch_capped!`.
+    #     move behind `_cuda_launch_capped!`. This half measures the kernels
+    #     AS THE TEST PROCESS COMPILES THEM: `Pkg.test` runs it with
+    #     `--check-bounds=yes`, `@inbounds` is void there, and a kernel costs
+    #     more registers than in a production process (bounds checks `auto`).
+    #     The stricter ceiling is the right side to be on -- a kernel that
+    #     fits under check-bounds fits without -- and the first full gate of
+    #     the fix batch (2026-10-19) showed why it is measured here and not in
+    #     a plain process: `_cuda_gaussian_build_moments_kernel!` read 66
+    #     registers and a ceiling of 896 under the flag (56 and 1024 without),
+    #     the unit's plain-process census had passed it, and the launch moved
+    #     behind the cap. The ceilings are read from EVERY instance the process
+    #     has compiled, the minimum per kernel.
     #
     # Each row: file, kernel, raw-site count, and the thread count the launch can
     # hand the kernel -- `:device` when it comes from the policy or a
@@ -22912,7 +22923,6 @@ end
         ("pic_cuda.jl", :_cuda_indices_from_mask_kernel!, 1, :device),                      # 17
         ("pic_cuda.jl", :_cuda_gaussian_fused_moment_kernel!, 1, moment_fixed),             # 56
         ("pic_cuda.jl", :_cuda_gaussian_reduce_partials_kernel!, 1, :device),               # 40
-        ("pic_cuda.jl", :_cuda_gaussian_build_moments_kernel!, 1, :device),                 # 56
         ("pic_cuda.jl", :_cuda_pic_init_wavefront_bounds_partials_kernel!, 1, :device),     # 8
         ("pic_cuda.jl", :_cuda_pic_finalize_force_luminosity_bounds_kernel!, 1, bounds_fixed), # 66 (ceiling 896)
         ("pic_cuda.jl", :_cuda_pic_finalize_force_bounds_kernel!, 1, bounds_fixed),         # 54

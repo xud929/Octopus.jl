@@ -69,7 +69,12 @@ if _HAS_CUDA
         `CUDAPICLaunchConfig(field_threads = 1024)` -- or a plain
         `CUDALaunchConfig(threads = 1024)`, which every PIC family inherits --
         failed the DEFAULT route with `Block register count exceeds device
-        limit`. Both indexed bounds kernels now launch through here.
+        limit`. Both indexed bounds kernels now launch through here, and so
+        does `_cuda_gaussian_build_moments_kernel!`, whose ceiling is 896
+        (uncoupled) and 768 (coupled) under the test process's
+        `--check-bounds=yes`, where `@inbounds` is void and the register
+        count grows past 64 -- the full gate's finding on 2026-10-19, which a
+        plain process (56 and 64 registers, ceiling 1024) cannot reproduce.
         `max_blocks` bounds the scaled-up block count for a grid-strided kernel
         whose per-block output has a fixed number of slots (the bounds partials
         hold `_CUDA_PIC_BOUNDS_PARTIAL_BLOCKS` per column). The suite pins every
@@ -1421,7 +1426,20 @@ if _HAS_CUDA
                 CUDA.@cuda threads=launch_reduce.threads blocks=launch_reduce.blocks _cuda_gaussian_reduce_partials_kernel!(
                         device_sums, partials, block_counts, nstats, ncolumns)
                 launch_build = _active_cuda_launch(ncolumns)
-                CUDA.@cuda threads=launch_build.threads blocks=launch_build.blocks _cuda_gaussian_build_moments_kernel!(
+                # Through the register cap (the kernel is grid-strided with no
+                # per-block output, so the cap's block scale-up is a partition
+                # change). Under `--check-bounds=yes`, which is what the test
+                # process runs under `Pkg.test`, `@inbounds` is void and this
+                # kernel compiles to 66 registers uncoupled (ceiling 896 on the
+                # RTX 4500 Ada) and 76 coupled (768), where a production process
+                # (bounds checks `auto`) compiles 56 and 64 and launches 1024
+                # threads; a legal threads=1024 therefore failed this raw launch
+                # on the full gate of 2026-10-19 (the launch-site tripwire's
+                # device half; fix batch, unit P's sibling) and nowhere else
+                # (measured both ways on both trees, 2026-10-20). Behind the cap
+                # the launch runs under either flag, with the receipt.
+                _cuda_launch_capped!(_cuda_gaussian_build_moments_kernel!,
+                        (threads=launch_build.threads, blocks=launch_build.blocks), nothing,
                         device_kmoments, device_means, moment_flag, device_sums, col_n, L,
                         solver.ignore_centroid1, solver.ignore_centroid2,
                         T(solver.min_sigma), ncolumns, Val(COUPLED))
