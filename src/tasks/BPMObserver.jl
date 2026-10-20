@@ -388,9 +388,11 @@ function _bpm_prepare!(bpm::BPMObserver, first_turn)
                                            ["turn", "x", "y"], Int(first_turn);
                                            s=_active_probe_s(bpm))
         # The discard above kept the memory prefix with turns < first_turn,
-        # and the bind truncated the artifact group to the same boundary --
-        # the two are the same rows, so the push cursor starts past them
-        # (starting at 0 re-pushed every retained reading on continuation).
+        # and the commit truncates the artifact group to the same boundary
+        # (`commit_run_artifact!`, after every bind; the bind itself did it
+        # before the 2026-10-19 fix batch, F-58) -- the two are the same
+        # rows, so the push cursor starts past them (starting at 0 re-pushed
+        # every retained reading on continuation).
         bpm.artifact_flushed = length(bpm.turns)
     end
     return nothing

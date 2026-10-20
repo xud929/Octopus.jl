@@ -95,11 +95,14 @@ One group per producer, position and provenance as attributes:
     /bpm/BPM_07              readings          attrs: name, s
     /losses                  the write_loss_record layout (names, counts,
                              aperture_s, per-loss rows, summary); a
-                             TrackingTask's one beam
+                             TrackingTask's one beam; rows and counts span
+                             every window of a continued file under the
+                             replay rule, the summary is the last execute!'s
+                             beam (the /losses paragraph under Crash recovery)
     /losses/beam_1           a StrongStrongTask's: one subgroup per beam
     /losses/beam_2           whose line carries an aperture, each in the
-                             layout above (2026-10-19; the reader returns
-                             them keyed by beam)
+                             layout above and under the same replay rule
+                             (2026-10-19; the reader returns them keyed by beam)
     /turn_modulation/3/1/phase_noise[1]   attrs only: element_count on the
                              execution slot (/3 = ledger row 3); element, beam,
                              slot_count per element; index, kind, rng_id,
@@ -238,8 +241,12 @@ owns" above).
 - `append`: `false` recreates the file per `execute!`; `true` continues it
   across `execute!` calls and process restarts under the replay idempotence
   rule (rows at or beyond the incoming window's first turn are dropped per
-  group first); a file whose luminosity groups do not match the task's
-  collision labels is refused rather than silently mixed.
+  group first, `/losses` included); a file whose luminosity groups do not
+  match the task's collision labels is refused rather than silently mixed,
+  as is one whose `/losses` names other apertures than the task's line. The
+  rule is applied by `commit_run_artifact!` after every refusal of the
+  window, so a refused continuation leaves the file as found (the window
+  protocol under Crash recovery, 2026-10-19).
 - `capacity`: the rows per group buffered between flushes, the ONE batching
   knob for every row-shaped producer (luminosity, moments, BPM readings and
   the turn-modulation series; snapshots write their block per fire); at
@@ -387,6 +394,95 @@ group carries a **rows-valid-through-turn cursor attribute**, flushed with
 its batch, so a retry trusts exactly the cursored prefix and the replay
 discard truncates datasets against absolute turns, as the text path does
 today. This must be designed in from the first dataset, not retrofitted.
+
+**The window protocol: validation before mutation (2026-10-19 fix batch,
+the comprehensive audit's F-56, F-58).** Measured on cb3c344: under
+`append=true` four by-name refusals of `prepare_run_artifact!` -- the
+missing ledger, a ledger lacking the seed columns, a partial provenance slot,
+an occupied provenance slot -- fired AFTER the replay truncation had dropped
+every luminosity row at or beyond `first_turn` (100 rows and cursor 99 became
+50 and 49, the file closed and unlocked, the refusal claiming to leave it as
+found); and probe groups were truncated one bind at a time, so a later
+probe's refused bind (a duplicate name, a changed column layout) left every
+earlier probe cut back to `first_turn - 1`. The decision is one protocol in
+three steps, each the task's to call once per `execute!`:
+
+1. `prepare_run_artifact!` validates and writes nothing to a continued file
+   before it has: every by-name refusal is an entry of one table,
+   `_RA_PREPARE_CHECKS` (the file is an artifact; its luminosity groups are
+   the task's labels; the ledger is present with every column; no provenance
+   slot is partial; its `/losses` names exactly the task's apertures when the
+   task records losses, the `aperture_names` keyword; the provenance slot is
+   free and the two walks agree), run in order after the open and before the
+   ledger row is appended. A continuation the prepare refuses leaves the
+   file BYTE-IDENTICAL: an HDF5 `r+` open and close without a write changes
+   no byte (measured), and the suite derives one fixture per table entry and
+   pins the bytes, so a refusal cannot join the table without its
+   measurement and the loop's place before the first write is read from the
+   source.
+2. Every probe bind (`_ra_bind_probe!`) validates -- a name, a known kind,
+   unique within the `execute!`, the stored column layout -- and registers
+   the probe; it creates and truncates nothing.
+3. `commit_run_artifact!`, called by both task kinds after their observers
+   have prepared and after their last refusal that can stop a run before its
+   first turn, applies the replay rule to every group at once: each
+   luminosity channel of a continued file is truncated to `min(cursor,
+   first_turn - 1)` (the torn tail and the replayed rows, one bound), each
+   bound probe is created or truncated the same way and stamped with its
+   `s`. Only then may rows arrive: `push_luminosity!` and the probe push
+   refuse by name before the commit (a row appended beyond stale rows would
+   be the silent form of the defect), a probe cannot bind after it, a second
+   commit is an error, and a window that tracked turns without committing is
+   refused at finalize. A window refused between its prepare and its commit
+   -- an observer's refusal, the fused-route refusal -- leaves every row and
+   cursor as the prepare found them; it keeps its ledger row, whose
+   `current_turn = start_turn - 1` says nothing ran, and writes no `/losses`.
+
+Rejected: truncating lazily at the first write (a window whose probes never
+fire would leave its replayed rows in place, and the crash path's `/losses`
+write could not tell a refused window from a run), and moving the ledger row
+into the commit as well (it would move the provenance groups and the series
+recorders with it; the retained row is the ledger's documented posture for a
+replayed window, and it says it reached nothing). Record: the 2026-10-19 fix
+batch's history record, the comprehensive audit's section 4 for the findings.
+
+**`/losses` under the replay rule (2026-10-19 fix batch, F-57).** Measured
+on cb3c344: the group was deleted and rewritten whole from the task's
+in-memory record at every `execute!`, and the record is the BEAM's (it is
+reallocated when a different beam object arrives, `_ensure_loss_record!`), so
+a new task continuing a file -- the process restart `append=true` promises --
+rewrote it from an empty record: three windows in the ledger, zero loss
+rows, `aperture_counts = [0]`, `summary_dead = 0`; and within one task a
+fresh beam per window lost the earlier window's rows the same way. The
+decision: `/losses` follows the rule every other group follows, by the
+`turn` column of its rows. `_ra_write_losses!`, on a continued file, keeps
+the group's rows whose `turn` is below this window's first turn and that this
+record does not itself carry (the same beam continuing in one process holds
+its earlier rows in its cumulative record, so they are kept once, keyed on
+`(particle_id, turn)`), drops the rows at or beyond it as replayed, and
+appends every row of this record; `aperture_counts` is this record's
+attribution plus that of the kept rows, so `sum(aperture_counts) ==
+record_count` whenever rows are logged. The `summary_*` attributes stay the
+writing `execute!`'s beam -- `particles`, `live`, `dead`, `logged`,
+`unattributed` as `loss_summary` defines them, the beam's state at the end of
+that window, not a sum over windows: a restart from a checkpoint carries a
+different beam, and the reconciliation `unattributed = dead - logged` is only
+meaningful within one beam. So on a fresh file `sum(aperture_counts) ==
+summary_logged` as before, and on a continued file the counts exceed
+`summary_logged` by the earlier windows' retained losses; a reader of a
+continued file reads the rows and counts as the file's history and the
+summary as its last window's beam. A continued file's `/losses` must name
+exactly the task's apertures -- the rows' `element_id` is interpreted under
+the file's names -- so a line with other apertures, or none, is refused at
+prepare (the labels' rule). A continued group that logged no rows (a
+counters-only record, unreachable from a task with an artifact, which always
+allocates slots) carries its counts whole, there being no turn to replay by,
+and the writer warns that a replayed window counts twice. A window that
+never committed writes nothing and leaves the group as found. Rejected:
+reading the earlier rows back into the new task's record (the record is a
+per-particle device buffer keyed by slot; a restart's beam need not have the
+same particles), and a per-execution slotted `/losses` (a schema change for
+every reader where the existing columns already carry the turn).
 
 **The partial provenance slot (decided 2026-10-16, owner; the stage 3-4
 audit's U5-2, restored by the crab-noise neighbour audit).** Since the

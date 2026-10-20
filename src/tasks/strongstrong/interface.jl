@@ -2893,8 +2893,14 @@ function _execute_strong_strong_task!(
     # header matching and corruption refusal without writing;
     # `prepare_observers!` then did its own validation-and-commit; only then
     # was the luminosity file written. A refusal on either side left BOTH
-    # outputs as they were -- and the artifact keeps that shape: its prepare
-    # validates (label match, torn-tail truncation) before any probe binds.
+    # outputs as they were -- and the artifact keeps that shape, now by one
+    # mechanism (2026-10-19 fix batch, F-56/F-58): its prepare validates
+    # (every refusal of `_RA_PREPARE_CHECKS`) without truncating anything,
+    # every probe bind validates without touching its group, and
+    # `commit_run_artifact!` below applies the replay rule to all of them once
+    # the last bind is in. Before it the prepare truncated the luminosity
+    # channels and each bind its own group, so a refusal here left the
+    # earlier groups cut back.
     #
     # The artifact opens FIRST: named probes in either line bind to it
     # during their prepare through the active-artifact scope.
@@ -2906,8 +2912,17 @@ function _execute_strong_strong_task!(
         # element group (docs/design/turn_modulation_record.md D5, D8).
         columns = vcat(_turn_modulation_columns!(Any[], _strong_strong_physics_line(blocks1)),
                        _turn_modulation_columns!(Any[], _strong_strong_physics_line(blocks2)))
+        # The apertures each beam records losses for (its record's names; none
+        # when that line has no aperture): a continued file's /losses/beam_<i>
+        # must name exactly these (`_ra_check_loss_apertures`; units R and S of
+        # the 2026-10-19 fix batch, joined at integration).
+        beam_apertures = ntuple(2) do which
+            record = task.loss_records[which][]
+            record === nothing ? String[] : aperture_names(record)
+        end
         prepare_run_artifact!(task.artifact, labels, Int(first_turn), Int(turns);
                               turn_modulation=prov, turn_modulation_columns=columns,
+                              aperture_names=(beam_1=beam_apertures[1], beam_2=beam_apertures[2]),
                               task_kind=string(nameof(typeof(task))))
     end
     # The task's output receipt, the consumer `strong_strong_task_option_schema().artifact`
@@ -2933,6 +2948,10 @@ function _execute_strong_strong_task!(
             prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2);
                                turns=Int(turns), first_turn=Int(first_turn))
         end
+        # Every bind validated: the artifact commits the window, the replay
+        # rule applied to every channel and bound probe at once (F-56/F-58).
+        # Inside the same try, so a commit that fails closes the artifact too.
+        task.artifact === nothing || commit_run_artifact!(task.artifact)
     catch
         task.artifact === nothing || finalize_run_artifact!(task.artifact)
         rethrow()

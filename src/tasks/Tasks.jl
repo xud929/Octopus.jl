@@ -1064,10 +1064,12 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
             # is "on file".
             _report_losses(task, rep, summary, task.artifact !== nothing)
             if task.artifact !== nothing
-                # Success path: /losses is rewritten whole from the cumulative
-                # record (the write_loss_record idempotence rule), then the
-                # artifact closes. A failure HERE is the failure -- an output
-                # that cannot be written must raise, the task-observer rule.
+                # Success path: /losses is written under the replay rule from
+                # the cumulative record (`_ra_write_losses!`: a continued
+                # file's earlier rows kept below this window, this record's
+                # appended; 2026-10-19, F-57), then the artifact closes. A
+                # failure HERE is the failure -- an output that cannot be
+                # written must raise, the task-observer rule.
                 _ra_write_losses!(task.artifact, task.loss_record[],
                                   _aperture_s_positions(task.elements), summary,
                                   first(_mp_current_shard(rep)); folded=true)
@@ -1367,9 +1369,15 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
         # each modulated element's active slot indices and nominals -- come
         # from the sibling walk over the same compiled line
         # (docs/design/turn_modulation_record.md D3, D5).
+        # The apertures this task records losses for (its loss record's names;
+        # none when the line has no aperture): a continued file's /losses must
+        # name exactly these, as its luminosity groups must match the labels
+        # (2026-10-19 fix batch, F-57).
+        record = task.loss_record[]
         prepare_run_artifact!(art, labels, Int(first_turn), Int(turns);
                               turn_modulation=turn_modulation,
                               turn_modulation_columns=_turn_modulation_columns!(Any[], runtime_elems),
+                              aperture_names=record === nothing ? String[] : aperture_names(record),
                               task_kind=string(nameof(typeof(task))))
     end
     # The task's output receipt, AFTER the artifact is prepared (2026-10-16 fix
@@ -1415,7 +1423,13 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
             "deliberately -- the split costs nothing there. Either run on a " *
             "CPU policy, or pass luminosity_tracking = :isolated."))
     end
-    # The last refusal is behind us: the per-run receipts, then the route's.
+    # The last refusal is behind us: the artifact commits the window -- the
+    # replay rule applied to every channel and bound probe at once, now that
+    # every bind has validated (2026-10-19 fix batch, F-56/F-58; before it the
+    # prepare truncated the channels and each bind its own group, so a
+    # refusal here left the earlier groups cut back) -- then the per-run
+    # receipts, then the route's.
+    art === nothing || commit_run_artifact!(art)
     _record_tracking_receipts!(task, runtime_entries, policy, turns, first_turn, turn_modulation)
     if artifact_diagnostics
         # The route that ACTUALLY ran, not the one requested: a receipt naming

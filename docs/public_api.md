@@ -172,7 +172,14 @@ name in force when each `execute!` began (`rng_seed`, `rng_method`; a
 `set_global_rng!` between two windows is on record row by row). A continued
 (`append = true`) file written before those columns existed is refused by
 name rather than padded; reading it stays possible, the missing columns
-read as `nothing`.
+read as `nothing`. A continuation is validated before anything is written
+(2026-10-19): every by-name refusal of the prepare leaves the file
+byte-identical, a refused probe bind leaves every group's rows and cursor as
+found, and the replay rule -- rows at or beyond the window's first turn
+dropped per group, `/losses` included -- is applied once every bind is in.
+`read(out, :losses)` on a continued file therefore spans every window the
+file holds (rows and `aperture_counts` under the replay rule), while its
+`summary` is the last `execute!`'s beam.
 
 One `execute!` holds its artifact exclusively across processes (2026-10-16):
 while it runs, the sidecar lock `<path>.lock` holds one line naming the
