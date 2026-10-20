@@ -21,9 +21,10 @@ Base.get_extension(Octopus, :OctopusMPIExt) === nothing &&
 
 spec = Octopus._mpi_pic_contract_spec(ARGS)
 policy = MultiProcessExecutionPolicy(threads=spec.threads_per_rank)
-base = StrongStrongPICBackendConsistencyContract(
-    n_particles=spec.n_particles, turns=spec.turns, grid=spec.grid, nslices=spec.nslices,
-    deposit_method=spec.deposit_method, green_cache=spec.green_cache, seed=spec.seed)
+# Every forwarded field, by the parent's derived list (F-53): a field the
+# parent forwards reaches this contract without an edit here.
+base = StrongStrongPICBackendConsistencyContract(;
+    (f => spec[f] for f in Octopus._mpi_pic_contract_forwarded())...)
 
 set_global_rng!(seed=spec.seed, method=:philox)
 beam1, beam2 = Octopus._strong_strong_contract_base_beams(base, policy)

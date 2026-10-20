@@ -14,6 +14,17 @@ end
 # stored parameters (until 2026-10-16 the stored values' own float types).
 function _float_params(spec::ElementSpec, keys::Symbol...)
     T = numeric_type(spec)
+    # A missing parameter is refused by name: the flexible form
+    # `ElementSpec{:crab_dispersion}(; zeta1=...)` stores what it is given, and
+    # the runtime constructor reading `zeta2` died with a raw `KeyError: key
+    # :zeta2 not found` naming neither the element nor the remedy (2026-10-18
+    # audit, F-55; the knob contract's unset-knob probe relied on the knob guard
+    # firing before this lookup).
+    absent = [k for k in keys if !hasparam(spec, k)]
+    isempty(absent) || throw(ArgumentError(
+        "ElementSpec{:$(kind(spec))} is missing the parameter(s) $(join(string.(absent), ", ")) its " *
+        "runtime constructor reads; the flexible form requires every parameter the friendly " *
+        "constructor would supply (see construction_help(ElementSpec{:$(kind(spec))}))"))
     return map(k -> T(param(spec, k)), keys)
 end
 
