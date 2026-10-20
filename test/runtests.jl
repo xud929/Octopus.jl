@@ -3196,6 +3196,10 @@ end
         @test abs(m.tune / (2pi) - 0.0360896443733161) <= 1e-13
     end
     @test norm(determined_value(c.frame)' * S4 * determined_value(c.frame) + 2im * I) <= 64 * _MC_EPS * determined_value(c.kappa_frame)
+    # Fix batch 2026-10-19 unit W (F-192): the modes' canonical indices are a permutation of the half members; at exact
+    # degeneracy the two eigenvalues coincide, so WHICH member each mode carries is a convention (the `cs` and `cn` pins
+    # below are the certified cases).
+    @test sort([m.index for m in determined_value(c.modes)]) == c.half_members
     @test r.degeneracy_status === :all_resolved
     # An explicit partition of the same map: the chord does not drive the merging, the receipt is empty.
     rp = _mc_run(M; partition=[[1, 2, 3, 4]])
@@ -3213,6 +3217,15 @@ end
         @test m.eigenvector_residual.normalized <= 64 * _MC_EPS * determined_value(cs.kappa_frame)
     end
     @test length(_mc_run(Ms).clusters) == 2
+    # Fix batch 2026-10-19 unit W (F-192): each recovered mode carries the canonical index of its OWN eigenvalue, the half
+    # member nearest its oriented eigenvalue under `_pair_gap`, one-to-one (`_recover_modes`); the tag is certified when
+    # that distance is below half the cluster's internal gap. The position rule `half[j]` it replaces tagged each mode with
+    # the OTHER member here (distance 0.3875, the whole gap; the audit measured the swap on 16 of 16 partitioned clusters).
+    @test sort([m.index for m in determined_value(cs.modes)]) == cs.half_members
+    for m in determined_value(cs.modes)
+        @test Octopus._pair_gap(rs.eigenvalues[m.index], m.eigenvalue) < cs.internal_gap / 2
+        @test Octopus._pair_gap(rs.eigenvalues[m.index], m.eigenvalue) <= 64 * _MC_EPS * norm(Ms)   # measured 0 (the snapped Schur value IS the canonical eigenvalue or its conjugate)
+    end
     # A nearly degenerate coupled pair under a partition and chord Inf: the restricted map's eigenvectors from
     # `eigen` are orthogonal only to eps / split ~ 1e-9; the qr re-orthonormalization (D7e) keeps the rotated
     # frame (N4)-normalized to eps kappa, and the modes' (I1) residuals stay at roundoff.
@@ -3230,6 +3243,13 @@ end
         @test m.eigenvector_residual.normalized <= 64 * _MC_EPS * determined_value(cn.kappa_frame) # measured 0.73 eps kappa
     end
     @test isapprox(sort([m.tune for m in determined_value(cn.modes)]), [0.9, 0.9 + 1e-7]; atol=1e-9)
+    # Fix batch 2026-10-19 unit W (F-192) under chord Inf: the split 1e-7 is far above the map error, so the tag is certified
+    # (distance below half the internal gap, 5e-8); the position rule put both modes at the whole gap (1e-7).
+    @test sort([m.index for m in determined_value(cn.modes)]) == cn.half_members
+    for m in determined_value(cn.modes)
+        @test Octopus._pair_gap(rn.eigenvalues[m.index], m.eigenvalue) < cn.internal_gap / 2
+        @test Octopus._pair_gap(rn.eigenvalues[m.index], m.eigenvalue) <= 64 * _MC_EPS * norm(Mnear)   # measured 0
+    end
     # Invalid partitions.
     @test_throws ArgumentError _mc_run(Ms; partition=[[1, 2], [3, 4]])          # 1's partner is 4: not closed
     @test_throws ArgumentError _mc_run(Ms; partition=[[1, 2, 3]])                # misses 4
@@ -7168,6 +7188,85 @@ end
     @test ru.rho_M0 >= 1e-8 && ru.diagnostics.rho_M0 == ru.rho_M0 && ru.clusters.rho_M0 == ru.rho_M0
     @test ru.diagnostics.rho_M1 >= ru.rho_M0
     @test r0.rho_M0 < 1e-8
+end
+
+@testset "Resolved multi-member clusters (fix batch 2026-10-19 W): each mode names its own eigenvalue, longitudinal_mode = k selects it, the projector route keeps per-mode traces, the selection text quotes the selected mode (F-192, F-176, F-177)" begin
+    # A weakly coupled block-diagonal map: betatron phases 0.73 and 1.41, synchrotron phase 0.05 (canonical order by angle:
+    # 1 = e^{0.05 i}, 2 = e^{0.73 i}, 3 = e^{1.41 i}, 4..6 their conjugates), conjugated by exp(S H) at scale 0.05 so the
+    # dispersion is non-zero and every route has work to do. The default chord leaves three singletons; the explicit
+    # partitions below merge two same-sense pairs into a definite cluster of multiplicity two that the default chord
+    # RESOLVES (its internal chord is ~1e-13), the configuration the audit found tagged by position (F-192), averaged in
+    # the projector route's trace list (F-176) and misquoted by the selection text (F-177).
+    Msym = Octopus._manufactured_symplectic_map(MersenneTwister(11), 6; scale=0.05).M
+    M = Msym * _st4b_a_blockrot(0.73, 1.41, 0.05) * Octopus._symplectic_inverse(Msym)
+    ref = analyze(TwissDispersionAnalysis(longitudinal_mode=1, strict=false), M)
+    ev = ref.clusters.eigenvalues
+    @test ref.status === :passed && all(length(c.half_members) == 1 for c in ref.clusters.clusters)
+    @test abs(angle(ev[1]) - 0.05) <= 1e-12 && abs(angle(ev[2]) - 0.73) <= 1e-12 && abs(angle(ev[3]) - 1.41) <= 1e-12
+    eps_M = eps() * max(1.0, norm(M))
+    # F-192 at the kernel through the public option: the synchrotron pair {1, 6} merged with the x pair {2, 5}
+    part_sx = [[1, 2, 5, 6], [3, 4]]
+    rp = analyze(TwissDispersionAnalysis(clusters=part_sx, longitudinal_mode=1, strict=false), M)
+    big = rp.clusters.clusters[findfirst(c -> length(c.half_members) == 2, rp.clusters.clusters)]
+    @test big.classification === :definite && big.resolved && !big.forced && big.half_members == [1, 2]
+    @test sort([m.index for m in _st4b_a_val(big.modes)]) == big.half_members
+    for m in _st4b_a_val(big.modes)
+        @test Octopus._pair_gap(ev[m.index], m.eigenvalue) < big.internal_gap / 2             # the tag's own certification
+        @test Octopus._pair_gap(ev[m.index], m.eigenvalue) <= 64 * eps_M                       # measured 0
+        @test abs(2cos(m.tune) - 2cos(angle(ev[m.index]))) <= 64 * eps_M                       # the index names the mode's trace
+    end
+    # F-192 through analyze: longitudinal_mode = k (either member of a conjugate pair) computes the dispersion of the mode
+    # k names; the unfixed tree returned the OTHER member of the resolved cluster (tau_s 1.4903 for the synchrotron request,
+    # 1.9975 for the betatron one) and reported the swap as a frame failure rather than naming it.
+    for (k, mu) in ((1, 0.05), (6, 0.05), (2, 0.73))
+        r = analyze(TwissDispersionAnalysis(clusters=part_sx, longitudinal_mode=k, strict=false), M)
+        @test r.dispersion.longitudinal == (imag(ev[k]) > 0 ? k : r.clusters.conjugate_partner[k]) && r.dispersion.longitudinal_cluster == 1
+        @test abs(_st4b_a_val(r.dispersion.tau_s) - 2cos(mu)) <= 64 * eps_M
+        if mu == 0.05
+            # the same mode as the auto-clustered reference: the same triple, the same verdict, every route agreeing
+            @test r.status === :passed
+            @test norm(_st4b_a_val(r.dispersion.eta) - _st4b_a_val(ref.dispersion.eta), Inf) <= 64 * eps_M     # measured 2.2e-16 (ratio 6e-3)
+            @test norm(_st4b_a_val(r.dispersion.zeta) - _st4b_a_val(ref.dispersion.zeta), Inf) <= 64 * eps_M   # measured 1.7e-16 (ratio 5e-3)
+            @test abs(_st4b_a_val(r.dispersion.h) - _st4b_a_val(ref.dispersion.h)) <= 64 * eps_M                # measured 4.4e-16 (ratio 1.3e-2)
+            @test all(rt.status === :none for rt in r.dispersion.routes)
+        end
+    end
+    # F-176: the two betatron pairs merged into a resolved cluster of multiplicity two; the projector route's three traces
+    # are the modes' own Re(rho + 1 / rho). The unfixed list repeated the cluster's first trace and then replaced it by the
+    # average through the trace identity, so the route ran on wrong factors and reported a garbage graph as :not_invariant
+    # (gaps [1.092, 1.092] against the true [0.507, 1.677]) while `degradations` said nothing.
+    rb = analyze(TwissDispersionAnalysis(clusters=[[2, 3, 4, 5], [1, 6]], longitudinal_mode=1, strict=false), M)
+    cb = rb.clusters.clusters[findfirst(c -> length(c.half_members) == 2, rb.clusters.clusters)]
+    @test cb.classification === :definite && cb.resolved && rb.dispersion.longitudinal == 1
+    pr = rb.dispersion.routes[findfirst(rt -> rt.route === :projector, rb.dispersion.routes)]
+    ep = rb.dispersion.routes[findfirst(rt -> rt.route === :eigenplane, rb.dispersion.routes)]
+    @test pr.status === :none && ep.status === :none
+    @test norm(sort(pr.singular_values) - sort(abs.(2cos(0.05) .- [2cos(0.73), 2cos(1.41)])), Inf) <= 64 * eps_M
+    @test norm(_st4b_a_val(pr.eta) - _st4b_a_val(ep.eta), Inf) <= 64 * eps_M                 # measured 1.2e-16 (ratio 3e-3)
+    @test norm(_st4b_a_val(pr.zeta) - _st4b_a_val(ep.zeta), Inf) <= 64 * eps_M               # measured 4.2e-17 (ratio 1e-3)
+    @test abs(_st4b_a_val(pr.h) - _st4b_a_val(ep.h)) <= 64 * eps_M                           # measured 1.1e-16 (ratio 3e-3)
+    @test rb.status === :passed && all(rt.status === :none for rt in rb.dispersion.routes)
+    # the (D17) trace-cubic diagnostic reads the same per-mode traces (its first-eigenvalue rule left one root unmatched and
+    # the residual at the trace gap, 0.507, on both partitions; the suite's c_cubic = 64 at kappa max(1, ||M||)^3)
+    @test rb.dispersion.trace_cubic_residual <= 64 * eps() * max(1.0, norm(M))^3                    # measured 1.55e-15 (ratio 7e-3; 0.507 unfixed)
+    @test rp.dispersion.trace_cubic_residual <= 64 * eps() * max(1.0, norm(M))^3                    # measured 1.55e-15 (ratio 7e-3; 0.507 unfixed)
+    # the projector route INSIDE the resolved multi-member cluster (the synchrotron pair merged with the x pair) has three
+    # distinct traces too: the selected mode's own, never the cluster's doubled trace (gap 0, :singular_coefficient)
+    prp = rp.dispersion.routes[findfirst(rt -> rt.route === :projector, rp.dispersion.routes)]
+    @test prp.status === :none && norm(sort(prp.singular_values) - sort(abs.(2cos(0.05) .- [2cos(0.73), 2cos(1.41)])), Inf) <= 64 * eps_M
+    # F-177: the synchrotron pair second in canonical order (phase 0.9, between 0.73 and 1.41) and the betatron pairs merged,
+    # so the resolved-mode order is (x, y, s) and the selected mode (position 3) is not at its cluster's position (2): the
+    # heuristic's text quotes the SELECTED mode's signed z-area, which is h by (K12); the unfixed text quoted the z-area at
+    # the cluster position (a betatron mode's, -7e-4 against h = 0.998).
+    M2 = Msym * _st4b_a_blockrot(0.73, 1.41, 0.9) * Octopus._symplectic_inverse(Msym)
+    rd = analyze(TwissDispersionAnalysis(clusters=[[1, 3, 4, 6], [2, 5]], strict=false), M2)
+    sel = _st4b_a_val(rd.diagnostics.longitudinal_selection)
+    lb = _st4b_a_val(rd.dispersion.labels)
+    @test sel.rule === :max_signed_z_area && rd.dispersion.longitudinal == 2 && rd.dispersion.longitudinal_cluster == 2 && lb.longitudinal == 3
+    quoted = match(r"signed z-area (\S+)\)", sel.detail)
+    @test quoted !== nothing
+    @test quoted !== nothing && parse(Float64, quoted.captures[1]) == sel.weights[lb.longitudinal]
+    @test abs(sel.weights[lb.longitudinal] - _st4b_a_val(rd.dispersion.h)) <= 64 * eps() * max(1.0, norm(M2))^2   # (K12) kappa_sz = h; measured 0
 end
 
 @testset "4b-B validator block and AbstractAnalysis tree guard" begin

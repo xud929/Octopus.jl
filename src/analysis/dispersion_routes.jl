@@ -456,9 +456,10 @@ the pair was named; 0 when none was selected) and `longitudinal_cluster` (its cl
 position in `clusters.clusters`); `tau_s` (`2 cos mu_s`), `tunes` (the
 three oriented tunes in label order when labelled); `trace_cubic_roots` (the
 three roots of (D17) from the trace identities) and `trace_cubic_residual`
-(their largest distance to a cluster trace `2 cos mu_j`; a diagnostic of the
-cubic against the eigenvalues; a `ModeClusters` report without a single
-cluster trace is an ArgumentError, never an `Inf`); `routes` in the requested order, one [`DispersionRoute`](@ref)
+(their largest distance to a mode trace `2 cos mu_j`: one per recovered mode
+of a resolved cluster, the first eigenvalue's for an unresolved or real-class
+one; a diagnostic of the cubic against the eigenvalues; a `ModeClusters`
+report without a single trace is an ArgumentError, never an `Inf`); `routes` in the requested order, one [`DispersionRoute`](@ref)
 each (a route absent from the request is present with `:route_not_selected`
 so the vector always has five entries in the [`DISPERSION_ROUTES`](@ref)
 order); `primary` (`:eigenplane`); `zeta`, `eta`, `h`, `graph` (the PRIMARY
@@ -957,7 +958,7 @@ function _polynomial_route(M::AbstractMatrix{<:Real}, tau_s::Real; rho_M1::Real)
 end
 
 """
-    _projector_route(M, taus, selected; rho_M1, cluster_projector=nothing) -> DispersionRoute
+    _projector_route(M, taus, selected; rho_M1, reference_projector=nothing) -> DispersionRoute
 
 Dossier E6, theory 8.5 (D26)-(D27): with `Z = M + M^-1` (the symplectic
 inverse `_symplectic_inverse`) and the three traces `taus` (the selected one
@@ -969,7 +970,13 @@ compares the smallest gap with its floor directly); the projector residuals
 `||P_s^2 - P_s||`, `||M P_s - P_s M||` in `detail`; `h = tr((P_s)_ll) / 2`
 (D27) with `h_alternative` from (D8) of the graph `D = (P_s)_rl / h`;
 `:singular_longitudinal_projection` when `|h|` is at or below the graph
-floor; then the residuals as in E4. `coefficient_condition`: the two
+floor; then the residuals as in E4. `reference_projector`, when given, is
+the caller's projector onto the selected mode's plane (the longitudinal
+cluster's spectral projector for a singleton or an unresolved candidate,
+the selected mode's (N5) projector `-Im(u u') S` inside a resolved
+multi-member cluster, whose cluster projector has rank `2m`; fix batch
+2026-10-19, F-176), and `||P_s - reference projector||` joins `detail`, a
+diagnostic that decides nothing. `coefficient_condition`: the two
 `:singular_*` early returns report the trace-separation condition `cc =
 max(1, ||Z||_2) / min_k |tau_s - tau_k|`; the FORMED graph reports the
 route's roundoff amplification into it, `max(1, cc)^2 * max(1, ||P_s||_2 /
@@ -978,7 +985,7 @@ alone under-states it by a witness ratio 5.6e3 at multiplier 1 on the
 derivation's corpus, 2026-09-14).
 """
 function _projector_route(M::AbstractMatrix{<:Real}, taus::AbstractVector{<:Real}, selected::Integer; rho_M1::Real,
-                          cluster_projector::Union{Nothing,AbstractMatrix{<:Real}}=nothing)
+                          reference_projector::Union{Nothing,AbstractMatrix{<:Real}}=nothing)
     size(M) == (6, 6) || throw(ArgumentError("_projector_route takes a 6x6 matrix, got $(size(M))"))
     length(taus) == 3 || throw(ArgumentError("_projector_route takes three traces, got $(length(taus))"))
     all(isfinite, taus) || throw(ArgumentError("_projector_route: the traces must be finite, got $(taus)"))
@@ -1006,7 +1013,7 @@ function _projector_route(M::AbstractMatrix{<:Real}, taus::AbstractVector{<:Real
     h = tr(Ps[5:6, 5:6]) / 2
     ll_dev = norm(Ps[5:6, 5:6] - h * Matrix{Float64}(I, 2, 2))
     diag_detail = "projector residuals: ||P^2 - P|| $(idem), ||M P - P M|| $(comm), ||(P_s)_ll - h I|| $(ll_dev)" *
-                  (cluster_projector === nothing ? "" : ", ||P_s - cluster projector|| $(norm(Ps - cluster_projector))")
+                  (reference_projector === nothing ? "" : ", ||P_s - reference projector|| $(norm(Ps - reference_projector))")
     nPs = opnorm(Ps)
     gfloor = _GRAPH_SINGULARITY_MULTIPLIER * rho_M1 * max(1.0, nPs)
     if abs(h) <= gfloor
@@ -1205,18 +1212,27 @@ end
 _signed_z_area(u::AbstractVector{<:Complex}) = -imag(conj(u[5]) * u[6])
 
 """
+    _eigenvalue_trace(rho) -> Float64
+
+The trace `tau = Re(rho + 1 / rho)` of one oriented eigenvalue (`2 cos mu` on the unit circle): the projector
+route's factor `(Z - tau I)` annihilates the mode of `rho` when `rho + 1 / rho` is real, i.e. on the unit circle
+and for a real hyperbolic pair. The per-mode trace of a resolved cluster's recovered modes (fix batch 2026-10-19,
+F-176) and, through [`_cluster_trace`](@ref), the common trace of an unresolved one.
+"""
+_eigenvalue_trace(rho::Number) = real(rho + 1 / rho)
+
+"""
     _cluster_trace(c) -> Float64
 
-The trace `tau = Re(rho + 1 / rho)` of the cluster's first eigenvalue (`2 cos mu` on the unit circle,
-shared by the half members of a definite, unresolved or defective cluster); the projector route's factor
-`(Z - tau I)` annihilates the cluster's modes when `rho + 1 / rho` is real, i.e. on the unit circle and
-for a real hyperbolic pair. Not for a Krein quartet: there `Im(rho + 1 / rho) = (|rho| - 1 / |rho|) sin mu`
-is non-zero, so `_dispersion_routes` takes no trace from an `:unstable` cluster (stage 9, U5-2-3).
+The trace [`_eigenvalue_trace`](@ref) of the cluster's first eigenvalue: the common trace shared by the half members
+of a definite UNRESOLVED, an unresolved or a defective cluster (a RESOLVED multi-member cluster has one trace per
+recovered mode, which `_dispersion_routes` reads from its `modes`, never from this first-member value; fix batch
+2026-10-19, F-176). Not for a Krein quartet: there `Im(rho + 1 / rho) = (|rho| - 1 / |rho|) sin mu` is non-zero, so
+`_dispersion_routes` takes no trace from an `:unstable` cluster (stage 9, U5-2-3).
 """
 function _cluster_trace(c::ModeCluster)
     isempty(c.eigenvalues) && throw(ArgumentError("_cluster_trace: cluster $(c.members) has no eigenvalues"))
-    rho = c.eigenvalues[1]
-    return real(rho + 1 / rho)
+    return _eigenvalue_trace(c.eigenvalues[1])
 end
 
 """
@@ -1302,8 +1318,12 @@ definite and resolved: `labels` by E3, the longitudinal mode by the largest
 signed z-area or the explicit `longitudinal` index into the canonical
 eigenvalue list; the default rule is a heuristic and the unique `labels`
 says so in its `detail`, see [`ModeLabels6D`](@ref)), `tau_s = 2 cos mu_s`,
-and the requested routes run with `rho_M1 = clusters.rho_M1`; a route not
-requested is present with `:route_not_selected`. When the longitudinal
+the projector route's three traces are the resolved modes' own `Re(rho +
+1 / rho)` (a resolved multi-member cluster contributes one per recovered
+mode, an unresolved one its common trace repeated by its half
+multiplicity; fix batch 2026-10-19, F-176), and the requested routes run
+with `rho_M1 = clusters.rho_M1`; a route not requested is present with
+`:route_not_selected`. When the longitudinal
 candidate lies in a definite UNRESOLVED cluster (m >= 2), no route runs on
 a mode: `eta` is the ambiguity set of stage 3's `_dispersion_ambiguity_set`
 with `:cluster_unresolved`, the polynomial and projector routes are formed
@@ -1336,9 +1356,22 @@ function _dispersion_routes(M::AbstractMatrix{<:Real}, clusters::ModeClusters; l
     rho_M1 = clusters.rho_M1
     # Design step 3: the coasting test before any spectral classification (E1, E2).
     coasting = _coasting_structure(Mf; rho_M1=rho_M1)
-    # (D17) diagnostics: the cubic roots against every cluster trace.
+    # (D17) diagnostics: the cubic roots against every mode trace. A resolved cluster contributes the trace of each of
+    # its recovered modes (a resolved multi-member cluster has two distinct ones; its first eigenvalue alone left the
+    # other root unmatched and the residual at the trace gap, 0.507 on the fix-W fixture: the neighbour of F-176, fix
+    # batch 2026-10-19), an unresolved or real-class cluster its first eigenvalue's trace.
     cubic = _trace_cubic_roots(Mf)
-    cluster_traces = [_cluster_trace(c) for c in clusters.clusters if !isempty(c.eigenvalues)]
+    cluster_traces = Float64[]
+    for c in clusters.clusters
+        isempty(c.eigenvalues) && continue
+        if c.resolved
+            for m in determined_value(c.modes)
+                push!(cluster_traces, _eigenvalue_trace(m.eigenvalue))
+            end
+        else
+            push!(cluster_traces, _cluster_trace(c))
+        end
+    end
     isempty(cluster_traces) && throw(ArgumentError("_dispersion_routes: the ModeClusters report has no cluster with eigenvalues; no trace to compare the (D17) cubic with"))
     cubic_residual = maximum(minimum(abs(r - t) for t in cluster_traces) for r in cubic)
     resolved_modes = ClusterMode[m for c in clusters.clusters if c.resolved for m in determined_value(c.modes)]
@@ -1376,31 +1409,45 @@ function _dispersion_routes(M::AbstractMatrix{<:Real}, clusters::ModeClusters; l
     else
         resolved_tunes
     end
-    # The three traces for the projector route: every cluster's trace repeated by its half multiplicity
-    # (a definite unresolved betatron pair contributes the same trace twice, the repeated factor retained).
-    # A single multiple cluster (an unresolved or defective pair) gets its common trace from the trace identity
-    # tr M = sum_j tau_j instead of its computed eigenvalues (a defective eigenvalue is only sqrt(eps) accurate;
-    # tr M and the resolved singletons' traces are eps accurate, so the retained repeated factor stays exact).
-    # An :unstable cluster contributes no trace. A Krein quartet (complex rho off the unit circle) has two half
-    # members and a shared Re(rho + 1 / rho), but rho + 1 / rho itself is not real, so (Z - tau I) annihilates none
-    # of its modes; a three-trace count built from it let the projector route run on a non-projector and report
-    # :not_invariant where the real hyperbolic pair reports :unstable_spectrum (stage 9, U5-2-3). The blocker
-    # below now names the cluster's reason for both.
-    cluster_tau = [(isempty(c.eigenvalues) || c.classification === :unstable) ? NaN : _cluster_trace(c) for c in clusters.clusters]
-    multiples = [ci for (ci, c) in enumerate(clusters.clusters) if length(c.half_members) >= 2]
-    if length(multiples) == 1 && all(!isnan, cluster_tau) && sum(length(c.half_members) for c in clusters.clusters) == 3
-        mi = multiples[1]
-        others = sum(cluster_tau[ci] for ci in eachindex(clusters.clusters) if ci != mi; init=0.0)
-        cluster_tau[mi] = (tr(Mf) - others) / length(clusters.clusters[mi].half_members)
-    end
-    taus = Float64[]; tau_positions = Int[]
+    # The three traces for the projector route, one per oriented mode. A RESOLVED cluster contributes the trace
+    # Re(rho + 1 / rho) of each of its recovered modes: one for a singleton, the two DISTINCT traces of a resolved
+    # multi-member cluster (an explicit partition or the chord Inf produces one; the earlier list repeated the cluster's
+    # first trace and then averaged it through the trace identity, so the route ran on wrong factors and reported a
+    # garbage graph as :not_invariant while `degradations` stayed silent; fix batch 2026-10-19, F-176). An UNRESOLVED
+    # multi-member cluster contributes its common trace repeated by its half multiplicity (a definite unresolved
+    # betatron pair: the same trace twice, the repeated factor retained); when it is the only multi-member cluster and
+    # all three traces are present, its common trace comes from the trace identity tr M = sum_j tau_j instead of its
+    # computed eigenvalues (a defective eigenvalue is only sqrt(eps) accurate; tr M and the resolved traces are eps
+    # accurate, so the retained repeated factor stays exact). An :unstable cluster contributes no trace. A Krein quartet
+    # (complex rho off the unit circle) has two half members and a shared Re(rho + 1 / rho), but rho + 1 / rho itself is
+    # not real, so (Z - tau I) annihilates none of its modes; a three-trace count built from it let the projector route
+    # run on a non-projector and report :not_invariant where the real hyperbolic pair reports :unstable_spectrum (stage 9,
+    # U5-2-3). The blocker below names the cluster's reason for both.
+    taus = Float64[]; tau_positions = Int[]; tau_modes = Int[]   # per trace: the cluster's position, the mode's canonical index (0 for a common trace)
     for (ci, c) in enumerate(clusters.clusters)
-        isnan(cluster_tau[ci]) && continue
-        for _ in 1:length(c.half_members)
-            push!(taus, cluster_tau[ci]); push!(tau_positions, ci)
+        (isempty(c.eigenvalues) || c.classification === :unstable) && continue
+        if c.resolved
+            for m in determined_value(c.modes)
+                push!(taus, _eigenvalue_trace(m.eigenvalue)); push!(tau_positions, ci); push!(tau_modes, m.index)
+            end
+        else
+            for _ in 1:length(c.half_members)
+                push!(taus, _cluster_trace(c)); push!(tau_positions, ci); push!(tau_modes, 0)
+            end
         end
     end
-    selected_tau = findfirst(==(cand.cluster), tau_positions)
+    unresolved_multiples = [ci for (ci, c) in enumerate(clusters.clusters) if length(c.half_members) >= 2 && !c.resolved]
+    if length(unresolved_multiples) == 1 && length(taus) == 3
+        mi = unresolved_multiples[1]
+        others = sum(taus[k] for k in eachindex(taus) if tau_positions[k] != mi; init=0.0)
+        common = (tr(Mf) - others) / length(clusters.clusters[mi].half_members)
+        for k in eachindex(taus)
+            tau_positions[k] == mi && (taus[k] = common)
+        end
+    end
+    # the selected trace: the selected mode's own inside a resolved cluster, the common one of an unresolved candidate
+    selected_tau = cand.mode === nothing ? findfirst(==(cand.cluster), tau_positions) :
+        findfirst(k -> tau_positions[k] == cand.cluster && tau_modes[k] == cand.mode.index, eachindex(taus))
     # The projector route needs exactly three traces (one per oriented mode); a real-class (unstable or
     # unit-eigenvalue) cluster breaks the count and the route is unavailable with that cluster's reason.
     projector_blocker = (length(taus) == 3 && selected_tau !== nothing) ? nothing :
@@ -1409,7 +1456,7 @@ function _dispersion_routes(M::AbstractMatrix{<:Real}, clusters::ModeClusters; l
             bc === nothing ? (:singular_coefficient, "the projector route needs three mode traces, found $(length(taus))") :
                 (clusters.clusters[bc].reason, "the projector route needs three mode traces, found $(length(taus)): cluster $(clusters.clusters[bc].members) is $(clusters.clusters[bc].classification)")
         end
-    run_projector(cp) = projector_blocker === nothing ? _projector_route(Mf, taus, selected_tau; rho_M1=rho_M1, cluster_projector=cp) :
+    run_projector(cp) = projector_blocker === nothing ? _projector_route(Mf, taus, selected_tau; rho_M1=rho_M1, reference_projector=cp) :
         _unavailable_route(:projector, projector_blocker[1], projector_blocker[2])
     make_unavailable(reason, d) = [_unavailable_route(r, r in routes ? reason : :route_not_selected,
                                                       r in routes ? d : "route :$(r) not requested") for r in DISPERSION_ROUTES]
@@ -1422,7 +1469,7 @@ function _dispersion_routes(M::AbstractMatrix{<:Real}, clusters::ModeClusters; l
                                 Determined{Vector{Float64}}(reason, d_block), Determined{Vector{Float64}}(reason, d_block), Determined{Float64}(reason, d_block),
                                 _AGREEMENT_T[], coasting)
     end
-    tau_s = cluster_tau[cand.cluster]
+    tau_s = taus[findfirst(==(cand.cluster), tau_positions)]
     if cand.mode === nothing
         # Definite UNRESOLVED longitudinal cluster (theory 13.5-13.6, design rows 2 and 4): eta is the ambiguity set;
         # the two algebraic routes run with the common trace and land in :singular_coefficient by (N16).
@@ -1448,6 +1495,11 @@ function _dispersion_routes(M::AbstractMatrix{<:Real}, clusters::ModeClusters; l
     # The normal path (design row 1 and row 3): a resolved longitudinal mode; the requested routes run.
     u_s = cand.mode.vector
     tau_s = 2 * cos(cand.mode.tune)
+    # The projector route's reference: the longitudinal cluster's spectral projector when the selected mode is its only
+    # member; inside a RESOLVED multi-member cluster the cluster's P_c is the group projector of rank 2m, so the reference
+    # is the selected mode's own (N5) projector -Im(u u') S (fix batch 2026-10-19, F-176).
+    reference = length(c_long.half_members) == 1 ? (is_determined(c_long.projector) ? determined_value(c_long.projector) : nothing) :
+                Matrix{Float64}(-imag(u_s * u_s') * _symplectic_form(6))
     rv = DispersionRoute[]
     for r in DISPERSION_ROUTES
         if !(r in routes)
@@ -1457,7 +1509,7 @@ function _dispersion_routes(M::AbstractMatrix{<:Real}, clusters::ModeClusters; l
         elseif r === :polynomial
             push!(rv, _polynomial_route(Mf, tau_s; rho_M1=rho_M1))
         elseif r === :projector
-            push!(rv, run_projector(is_determined(c_long.projector) ? determined_value(c_long.projector) : nothing))
+            push!(rv, run_projector(reference))
         elseif r === :newton
             push!(rv, _newton_route(Mf, tau_s; rho_M1=rho_M1, max_iterations=newton_max_iterations))
         else
