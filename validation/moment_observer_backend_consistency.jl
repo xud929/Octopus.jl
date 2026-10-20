@@ -20,6 +20,14 @@ Overrides: `OCTOPUS_MOMENT_CONSISTENCY_N` (default 100000),
 
 (The requirement, the run command, the metric and the no-output note were all
 absent from this header until the 2026-08-05_b audit, U25-9.)
+
+The two observers are artifact views constructed by name,
+`MomentObserver(; name = ...)`, since 2026-10-19 (fix batch unit X): the
+standalone `MomentObserver(path)` writer was retired on 2026-08-18 and this
+script died on that constructor for two months (comprehensive audit
+2026-10-18, A-4) while the check it wraps kept passing. Nothing binds the
+views to an artifact -- the reduction is called directly -- so the script
+still writes no files.
 =#
 
 if !isdefined(Main, :Octopus)
@@ -39,8 +47,8 @@ offsets = (2.0e-6, -3.0e-7, 1.0e-7, 4.0e-8, -2.0e-3, 8.0e-6)
 arrays = ntuple(i -> offsets[i] .+ scales[i] .* randn(rng, n), 6)
 cpu_rep = Phase6DRep(arrays...)
 gpu_rep = Phase6DRep(map(CUDA.CuArray, arrays)...)
-cpu_observer = MomentObserver(tempname() * ".h5")
-gpu_observer = MomentObserver(tempname() * ".h5")
+cpu_observer = MomentObserver(; name = "cpu")
+gpu_observer = MomentObserver(; name = "gpu")
 ctx = TrackingContext(turn=17)
 
 cpu_row = Octopus._moment_observer_row(ctx, cpu_rep, cpu_observer.moments, cpu_observer)

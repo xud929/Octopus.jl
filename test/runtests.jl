@@ -17750,6 +17750,175 @@ end
     end
 end
 
+@testset "No committed script constructs a retired observer or task spelling" begin
+    # Three committed scripts died on the 2026-08-18 retirement of the
+    # standalone `MomentObserver(path)` writer and nothing executing noticed
+    # for two months (comprehensive audit 2026-10-18: A-4, F-200, F-236; a
+    # fourth, profiling/cuda_device_profile.jl, under F-201). CI has no GPU,
+    # the gate's heavyweight sections run neither validation/ nor profiling/,
+    # and a retired constructor or keyword is kept only to THROW a message
+    # naming its replacement -- so a script that still spells the old form is
+    # dead at its first call and nothing says so until someone runs it. A
+    # syntax-only include of those scripts is not available (they run on
+    # load), so this scans their TEXT for every retired spelling and pins that
+    # none remains.
+    #
+    # Two directions, so the table cannot age silently:
+    # - each row's `probe` IS the retired call, run live: it must still throw
+    #   a message naming the retirement, or the row is stale (the spelling
+    #   came back) and the scan would be refusing a valid form;
+    # - the retirement literals of `src/` ("the ... was/were retired") are
+    #   derived by grep, and every one must be produced by some probe, so a
+    #   new retirement that lands without a scanner row fails here by name.
+    # Each row also carries a `sample` of the dead spelling the scan must
+    # catch, and the current valid forms below must pass it: a scanner that
+    # cannot fire is not a scanner.
+    #
+    # What it cannot see: a call built through a variable or a splat, a
+    # retirement that does not throw, a shell script, and every OTHER way a
+    # script can be dead (a renamed internal, a changed default). Those are
+    # caught only by running the script -- for the CUDA-requiring ones that
+    # is the gate's CUDA arm, which CI cannot stand in for.
+    root = pkgdir(Octopus)
+    script_dirs = ("validation", "profiling", "examples", joinpath("test", "examples"))
+    scripts = sort!([joinpath(root, d, f) for d in script_dirs
+                     for f in readdir(joinpath(root, d)) if endswith(f, ".jl")])
+    @test length(scripts) >= 40            # the four directories hold scripts
+    # Comments go -- every script's header is a `#= =#` block and may name the
+    # old forms in prose -- and so do `# ...` line tails. Strings stay: a
+    # docstring quoting a dead form trips the scan, and none does today.
+    strip_comments(text) = replace(replace(text, r"#=.*?=#"s => " "), r"#[^\n]*" => "")
+    # The argument text of every `name(` call, by paren matching, so a call
+    # that spans lines or nests `Moment(; x = 1)` is read whole. A call left
+    # unbalanced ends the walk for that file: nothing after it is scanned.
+    function call_arguments(text, name)
+        out = String[]
+        for m in eachmatch(Regex("\\b" * name * "\\("), text)
+            i = m.offset + ncodeunits(m.match)
+            depth = 1
+            j = i
+            while j <= ncodeunits(text) && depth > 0
+                c = text[j]
+                depth += c == '(' ? 1 : c == ')' ? -1 : 0
+                j = nextind(text, j)
+            end
+            depth == 0 || break
+            # `j` sits one past the closing paren; the arguments end before it.
+            push!(out, text[i:prevind(text, prevind(text, j))])
+        end
+        return out
+    end
+    positional_first(args) = (s = lstrip(args); !isempty(s) && first(s) != ';')
+    has_keyword(args, kw) = occursin(Regex("(^|[;,\\s(])" * kw * "\\s*="), args)
+    rows = (
+        (what = "MomentObserver(path, ...): the standalone moment file writer",
+         scan = text -> any(positional_first, call_arguments(text, "MomentObserver")),
+         sample = "obs = ScheduledObserver(\n    MomentObserver(path1; orders = 1:1), schedule)",
+         probe = () -> MomentObserver("probe.h5")),
+        (what = "MomentObserver(...; capacity = ...): the per-observer capacity",
+         scan = text -> any(a -> has_keyword(a, "capacity"), call_arguments(text, "MomentObserver")),
+         sample = "MomentObserver(; name = \"electron\",\n    capacity = moment_capacity)",
+         probe = () -> MomentObserver(; name = "probe", capacity = 4)),
+        (what = "CoordinateSnapshotObserver(path, ...): the standalone snapshot file",
+         scan = text -> any(positional_first, call_arguments(text, "CoordinateSnapshotObserver")),
+         sample = "CoordinateSnapshotObserver(joinpath(dir, \"snap.h5\"); npart = 10)",
+         probe = () -> CoordinateSnapshotObserver("probe.h5")),
+        (what = "BPMObserver(...; path = ...): the BPM TSV path output",
+         scan = text -> any(a -> has_keyword(a, "path"), call_arguments(text, "BPMObserver")),
+         sample = "BPMObserver(\"bpm_01\"; x_offset = 1e-4, path = \"bpm.tsv\")",
+         probe = () -> BPMObserver("probe"; path = "probe.tsv")),
+        (what = "BPMObserver(...; capacity = ...): the per-observer capacity",
+         scan = text -> any(a -> has_keyword(a, "capacity"), call_arguments(text, "BPMObserver")),
+         sample = "BPMObserver(\"bpm_01\", capacity = 64)",
+         probe = () -> BPMObserver("probe"; capacity = 4)),
+        (what = "StrongStrongTask(...; luminosity_path = / luminosity_append = / luminosity = ...): the standalone luminosity outputs",
+         scan = text -> any(a -> any(kw -> has_keyword(a, kw),
+                                     ("luminosity_path", "luminosity_append", "luminosity")),
+                            call_arguments(text, "StrongStrongTask")),
+         sample = "StrongStrongTask((ip,), (ip,); luminosity_path=luminosity_path)",
+         probe = () -> StrongStrongTask((), (); luminosity_path = "probe.lum")),
+        (what = "StrongStrongTask(...; seed = ...): the task seed keyword",
+         scan = text -> any(a -> has_keyword(a, "seed"), call_arguments(text, "StrongStrongTask")),
+         sample = "StrongStrongTask(line1, line2; policy = policy, seed = 12345)",
+         probe = () -> StrongStrongTask((), (); seed = 1)),
+        (what = "TrackingTask(...; luminosity = ...): the standalone luminosity outputs",
+         scan = text -> any(a -> has_keyword(a, "luminosity"), call_arguments(text, "TrackingTask")),
+         sample = "TrackingTask(line; hooks = [obs],\n    luminosity = joinpath(dir, \"run.lum\"))",
+         probe = () -> TrackingTask((); luminosity = "probe.lum")),
+        (what = "TrackingTask(...; loss_log = ...): the standalone loss log",
+         scan = text -> any(a -> has_keyword(a, "loss_log"), call_arguments(text, "TrackingTask")),
+         sample = "TrackingTask(line; loss_log = \"losses.tsv\")",
+         probe = () -> TrackingTask((); loss_log = "probe.tsv")),
+        (what = "TrackingTask(...; seed = ...): the task seed keyword",
+         scan = text -> any(a -> has_keyword(a, "seed"), call_arguments(text, "TrackingTask")),
+         sample = "TrackingTask(line; seed = 7, artifact = path)",
+         probe = () -> TrackingTask((); seed = 1)),
+    )
+    # The scanner can fire, and does not fire on the live forms or on a
+    # commented-out dead one.
+    valid_forms = """
+        obs = MomentObserver(; name = "proton", orders = 1:2,
+                             extra = (Moment(; pz = 4),), exclude = (Moment(; z = 2),))
+        snap = CoordinateSnapshotObserver(; name = "inj", npart = 100)
+        bpm = BPMObserver("bpm_01"; x_offset = 1.0e-4, x_noise = 5.0e-6, artifact = true)
+        task = StrongStrongTask(line1, line2; policy = policy,
+                                artifact = RunArtifact(path; capacity = 64))
+        wtask = TrackingTask(line; hooks = [ScheduledObserver(obs)], artifact = path,
+                             luminosity_tracking = :isolated)
+        rng_seed = 5; set_global_rng!(seed = rng_seed)
+        # MomentObserver(old_path; capacity = 8)
+        #= TrackingTask(line; loss_log = "x", seed = 1) =#
+        """
+    for row in rows
+        @testset let what = row.what
+            @test row.scan(row.sample)
+            @test !row.scan(strip_comments(valid_forms))
+        end
+    end
+    # Each row's retired call still throws, and names the retirement.
+    retirement(f) = try
+        f()
+        ""
+    catch err
+        sprint(showerror, err)
+    end
+    messages = Dict{String,String}()
+    for row in rows
+        @testset let what = row.what
+            msg = retirement(row.probe)
+            @test occursin("retired", msg)
+            messages[what] = msg
+        end
+    end
+    # Every retirement literal in src/ is produced by some probe: the table's
+    # coverage is derived from the source, not remembered.
+    src_root = joinpath(root, "src")
+    src_files = [joinpath(r, f) for (r, _, fs) in walkdir(src_root) for f in fs if endswith(f, ".jl")]
+    literals = Set{String}()
+    for file in src_files, m in eachmatch(r"\"(the [^\"]*? (?:was|were) retired)", read(file, String))
+        push!(literals, m.captures[1])
+    end
+    @test length(literals) >= 7
+    produced = join(values(messages), "\n")
+    for lit in sort!(collect(literals))
+        @testset let literal = lit
+            @test occursin(lit, produced)
+        end
+    end
+    # The scan itself.
+    offenders = String[]
+    for script in scripts
+        text = strip_comments(read(script, String))
+        for row in rows
+            row.scan(text) && push!(offenders, relpath(script, root) * " -- " * row.what)
+        end
+    end
+    println("retired-spelling scan: ", length(scripts), " scripts, ", length(rows),
+            " rows, ", length(literals), " src literals, ", length(offenders), " offenders")
+    foreach(o -> println("  RETIRED SPELLING: ", o), offenders)
+    @test isempty(offenders)
+end
+
 @testset "Observer schema keys must name public fields" begin
     # U4-18, re-enabled 2026-09-07. `validate_configuration_metadata` compares
     # each observer's schema keys against its `configuration_report` entry

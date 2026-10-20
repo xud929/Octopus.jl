@@ -147,12 +147,13 @@ diagnosis:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_PIC_TIMING=1 OCTOPUS_CUDA_PIC_TIMING_DETAIL=1 julia --project=. test/examples/strong_strong_tracking.jl
 
-Output is written to `test/result/` (this harness keeps its outputs beside the
-tests; the clean `examples/` counterpart writes to the repo-root `result/`):
-
-- `test/result/pic_hcc.lum`
-- `test/result/pic_hcc.ele.h5`
-- `test/result/pic_hcc.pro.h5`
+Output is ONE run artifact, `result/pic_hcc.h5` (`/luminosity/ip`,
+`/moments/electron`, `/moments/proton`; read with `TaskOutput(path)` or
+`MomentOutput(path; name = ...)`), unless both outputs are disabled. Artifact
+form since 2026-10-19 (fix batch unit X): the per-observer moment files and
+the `luminosity_path` keyword this copy still used were retired 2026-08-17/18,
+so until then only the documented both-outputs-disabled invocation could run
+(comprehensive audit 2026-10-18, F-201).
 =#
 
 if !isdefined(Main, :Octopus)
@@ -229,9 +230,7 @@ input = (
     ),
 
     output = (
-        luminosity_file = "pic_hcc.lum",
-        electron_moment_file = "pic_hcc.ele.h5",
-        proton_moment_file = "pic_hcc.pro.h5",
+        artifact_file = "pic_hcc.h5",
         moment_start = 0,
         moment_step = 1,
         moment_capacity = 100,
@@ -596,26 +595,31 @@ ip = StrongStrongCollision(:ip; poisson_solver = solver)
 collision_elements = disable_collision ? () : (ip,)
 
 mkpath(input.result_dir)
-luminosity_path = joinpath(input.result_dir, input.output.luminosity_file)
-electron_moment_path = joinpath(input.result_dir, input.output.electron_moment_file)
-proton_moment_path = joinpath(input.result_dir, input.output.proton_moment_file)
+artifact_path = joinpath(input.result_dir, input.output.artifact_file)
 moment_schedule = EveryNSteps(;
     start = input.output.moment_start,
     stop = input.total_turns,
     step = input.output.moment_step,
 )
 electron_observers = disable_moments ? () : (
-    ScheduledObserver(
-        MomentObserver(electron_moment_path; capacity = moment_capacity),
-        moment_schedule,
-    ),
+    ScheduledObserver(MomentObserver(; name = "electron"), moment_schedule),
 )
 proton_observers = disable_moments ? () : (
-    ScheduledObserver(
-        MomentObserver(proton_moment_path; capacity = moment_capacity),
-        moment_schedule,
-    ),
+    ScheduledObserver(MomentObserver(; name = "proton"), moment_schedule),
 )
+# The harness's rule, copied with the artifact form: with both outputs off
+# nothing needs the artifact and it is dropped whole; with the moment views on
+# the artifact exists and the luminosity channel writes whenever the collision
+# evaluates, so suppressing only the luminosity rows is honest only when
+# luminosity evaluation itself is off.
+disable_artifact = disable_luminosity_output && disable_moments
+if disable_luminosity_output && !disable_moments && pic_luminosity_every != 0
+    error("OCTOPUS_DISABLE_LUMINOSITY_OUTPUT=1 cannot suppress the " *
+          "luminosity channel while the artifact exists for the moment " *
+          "views and the collision still evaluates luminosity: also set " *
+          "OCTOPUS_PIC_LUMINOSITY_EVERY=0, or OCTOPUS_DISABLE_MOMENTS=1 " *
+          "to drop the artifact whole.")
+end
 
 line_ele = (
     electron_tccb2ip_inv,
@@ -649,7 +653,8 @@ line_pro = (
 )
 
 task = StrongStrongTask(line_ele, line_pro;
-    luminosity_path = disable_luminosity_output ? nothing : luminosity_path,
+    artifact = disable_artifact ? nothing :
+               RunArtifact(artifact_path; capacity = moment_capacity),
     diagnostics,
 )
 # --- device-time decomposition (CUDA.jl in-process CUPTI profiler) ---
@@ -752,8 +757,9 @@ let resolved = solver_configuration(solver)
         println("pic_luminosity_deposit_method_resolved = ",
                 resolved.resolved_luminosity_deposit_method)
 end
-println("luminosity = ", disable_luminosity_output ? "disabled" : luminosity_path)
-println("electron moments = ", disable_moments ? "disabled" : electron_moment_path)
-println("proton moments = ", disable_moments ? "disabled" : proton_moment_path)
+println("artifact = ", disable_artifact ? "disabled" : artifact_path)
+println("luminosity = ", disable_luminosity_output ? "disabled" : artifact_path * ":/luminosity/ip")
+println("electron moments = ", disable_moments ? "disabled" : artifact_path * ":/moments/electron")
+println("proton moments = ", disable_moments ? "disabled" : artifact_path * ":/moments/proton")
 println("electron rms = ", stats_ele.rms)
 println("proton rms = ", stats_pro.rms)

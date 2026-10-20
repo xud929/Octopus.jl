@@ -5,12 +5,40 @@ The benchmark uses identical initial host coordinates for every run, warms each
 configuration before timing, and reports the median steady-state time. Physics
 work is held constant: luminosity and the longitudinal kick remain enabled.
 
+Every configuration is a NamedTuple whose fields other than `name` are passed
+straight through as `PICPoissonSolver` keywords (`batch_mode`, `green_cache`
+and, on CUDA, `cuda_async`, `cuda_batch_fft`, `cuda_wavefront_fft`,
+`cuda_indexed_wavefront`), so a configuration field the solver does not read
+cannot exist here: it is an unknown-keyword error, never a silently identical
+run. `solver_default` is derived from `PICPoissonSolver()` itself.
+
+Fixed point and provenance. The physics case (the 20k-per-beam EIC-shaped e-p
+pair below, 15 slices, grid 128, seed 123456789) is unchanged since the first
+version (2026-07-17). On 2026-10-19 (fix batch unit X, comprehensive audit
+2026-10-18 F-200) the driver was ported to the run artifact: the task carries
+`artifact = RunArtifact(path)` and the physics check reads the last luminosity
+row back with `read(TaskOutput(path), :luminosity; name = "ip")` -- the
+`luminosity_path` keyword and the `.lum` text file were retired 2026-08-17/18
+and the driver had been dead since. Its eleven CUDA "configurations" differed
+only through `OCTOPUS_CUDA_PIC_*` environment switches that no runtime code
+reads, so only four were distinct; they now set the solver's own keywords, the
+two rows whose switches have no runtime counterpart at all
+(`wavefront_batched_luminosity`, `wavefront_async_luminosity`) are gone, and
+the roster is nine named rows plus `solver_default`. The phase profile of the
+fastest validated configuration runs under
+`StrongStrongDiagnostics(pic_timing = true)` instead of an environment switch.
+Rows recorded before 2026-10-19 came from a driver that compared four
+configurations under eleven names: do not compare rows by name across that
+date.
+
 Run from the Octopus project root, preferably with one CPU thread per physical
 core on a single socket:
 
     julia --threads=32 --project=. profiling/benchmark_strong_strong_pic.jl
 
-Useful size controls:
+Size and selection controls, defaults shown -- every OCTOPUS_BENCH_* name this
+script reads (the list is checked against the read sites at load; the
+`let` block after the `const`s):
 
     OCTOPUS_BENCH_N_MACRO=20000
     OCTOPUS_BENCH_TURNS=2
@@ -20,8 +48,11 @@ Useful size controls:
     OCTOPUS_BENCH_GRID=128
     OCTOPUS_BENCH_CACHE_MIN_RATIO=0.50
     OCTOPUS_BENCH_CACHE_GROWTH=0.25
-    OCTOPUS_BENCH_CUDA_CONFIGS=wavefront_indexed,wavefront_batched
-    OCTOPUS_BENCH_CPU_CONFIGS=cpu_sequential,cpu_wavefront
+    OCTOPUS_BENCH_PHYSICS_RTOL=1e-10
+    OCTOPUS_BENCH_CACHE_STATS=0
+    OCTOPUS_BENCH_PROFILE_FASTEST=1
+    OCTOPUS_BENCH_CUDA_CONFIGS=wavefront_indexed,wavefront_batched   (default: every row)
+    OCTOPUS_BENCH_CPU_CONFIGS=cpu_sequential,cpu_wavefront           (default: every row)
     OCTOPUS_BENCH_RESULT_PATH=result/strong_strong_pic_benchmark.tsv
 
 The tab-separated summary is written to
@@ -57,6 +88,18 @@ const PROFILE_FASTEST = env_bool("OCTOPUS_BENCH_PROFILE_FASTEST", true)
 const CACHE_STATS = env_bool("OCTOPUS_BENCH_CACHE_STATS", false)
 const PHYSICS_RTOL = parse(Float64, get(ENV, "OCTOPUS_BENCH_PHYSICS_RTOL", "1e-10"))
 
+# The header's OCTOPUS_BENCH_* list against what this file reads, so the two
+# cannot drift (five names were missing from it before 2026-10-19,
+# comprehensive audit F-202): the header is the text above the first `=#`.
+let text = read(@__FILE__, String)
+    header, body = split(text, "=#"; limit=2)
+    named = Set(m.match for m in eachmatch(r"OCTOPUS_BENCH_[A-Z_]+", header))
+    read_names = Set(m.match for m in eachmatch(r"OCTOPUS_BENCH_[A-Z_]+", body))
+    named == read_names || error("benchmark header drift: named but never read " *
+        string(sort!(collect(setdiff(named, read_names)))) * "; read but not named " *
+        string(sort!(collect(setdiff(read_names, named)))))
+end
+
 N_MACRO > 0 || error("OCTOPUS_BENCH_N_MACRO must be positive")
 TURNS > 0 || error("OCTOPUS_BENCH_TURNS must be positive")
 REPEATS > 0 || error("OCTOPUS_BENCH_REPEATS must be positive")
@@ -64,40 +107,38 @@ WARMUP_TURNS >= 0 || error("OCTOPUS_BENCH_WARMUP_TURNS must be non-negative")
 NSLICES > 0 || error("OCTOPUS_BENCH_SLICES must be positive")
 GRID_SIZE > 2 || error("OCTOPUS_BENCH_GRID must be greater than 2")
 
+# One NamedTuple per configuration: `name`, then PICPoissonSolver keywords
+# verbatim (header). The CUDA rows are the first version's roster minus the
+# two whose switches had no runtime counterpart; the explicit
+# `cuda_indexed_wavefront=false` on every row but `wavefront_indexed` is that
+# roster's baseline, not the solver's default (`true`), which is why
+# `solver_default` -- the constructor's own values, read off an instance --
+# closes the list.
 const CUDA_CONFIGS = [
     (name="sequential_batched", batch_mode=:sequential, green_cache=:none,
-     async=true, batch_fft=true, wavefront_fft=true, wavefront_green_fft=true,
-     indexed=false, batch_luminosity=false, async_luminosity=false),
+     cuda_async=true, cuda_batch_fft=true, cuda_wavefront_fft=true, cuda_indexed_wavefront=false),
     (name="sequential_four_stream", batch_mode=:sequential, green_cache=:none,
-     async=true, batch_fft=false, wavefront_fft=true, wavefront_green_fft=true,
-     indexed=false, batch_luminosity=false, async_luminosity=false),
+     cuda_async=true, cuda_batch_fft=false, cuda_wavefront_fft=true, cuda_indexed_wavefront=false),
     (name="sequential_synchronous", batch_mode=:sequential, green_cache=:none,
-     async=false, batch_fft=true, wavefront_fft=true, wavefront_green_fft=true,
-     indexed=false, batch_luminosity=false, async_luminosity=false),
+     cuda_async=false, cuda_batch_fft=true, cuda_wavefront_fft=true, cuda_indexed_wavefront=false),
     (name="wavefront_batched", batch_mode=:wavefront, green_cache=:none,
-     async=true, batch_fft=true, wavefront_fft=true, wavefront_green_fft=true,
-     indexed=false, batch_luminosity=false, async_luminosity=false),
+     cuda_async=true, cuda_batch_fft=true, cuda_wavefront_fft=true, cuda_indexed_wavefront=false),
     (name="wavefront_pair_batched", batch_mode=:wavefront, green_cache=:none,
-     async=true, batch_fft=true, wavefront_fft=false, wavefront_green_fft=true,
-     indexed=false, batch_luminosity=false, async_luminosity=false),
+     cuda_async=true, cuda_batch_fft=true, cuda_wavefront_fft=false, cuda_indexed_wavefront=false),
     (name="wavefront_four_stream", batch_mode=:wavefront, green_cache=:none,
-     async=true, batch_fft=false, wavefront_fft=true, wavefront_green_fft=true,
-     indexed=false, batch_luminosity=false, async_luminosity=false),
+     cuda_async=true, cuda_batch_fft=false, cuda_wavefront_fft=true, cuda_indexed_wavefront=false),
     (name="wavefront_indexed", batch_mode=:wavefront, green_cache=:none,
-     async=true, batch_fft=true, wavefront_fft=true, wavefront_green_fft=true,
-     indexed=true, batch_luminosity=false, async_luminosity=false),
-    (name="wavefront_batched_luminosity", batch_mode=:wavefront, green_cache=:none,
-     async=true, batch_fft=true, wavefront_fft=true, wavefront_green_fft=true,
-     indexed=false, batch_luminosity=true, async_luminosity=false),
-    (name="wavefront_async_luminosity", batch_mode=:wavefront, green_cache=:none,
-     async=true, batch_fft=true, wavefront_fft=true, wavefront_green_fft=true,
-     indexed=false, batch_luminosity=false, async_luminosity=true),
+     cuda_async=true, cuda_batch_fft=true, cuda_wavefront_fft=true, cuda_indexed_wavefront=true),
     (name="sequential_slice_pair_cache", batch_mode=:sequential, green_cache=:slice_pair,
-     async=true, batch_fft=true, wavefront_fft=true, wavefront_green_fft=true,
-     indexed=false, batch_luminosity=false, async_luminosity=false),
+     cuda_async=true, cuda_batch_fft=true, cuda_wavefront_fft=true, cuda_indexed_wavefront=false),
     (name="wavefront_slice_pair_cache", batch_mode=:wavefront, green_cache=:slice_pair,
-     async=true, batch_fft=true, wavefront_fft=true, wavefront_green_fft=true,
-     indexed=false, batch_luminosity=false, async_luminosity=false),
+     cuda_async=true, cuda_batch_fft=true, cuda_wavefront_fft=true, cuda_indexed_wavefront=false),
+    let d = PICPoissonSolver()
+        (name="solver_default", batch_mode=d.batch_mode, green_cache=d.green_cache,
+         cuda_async=d.cuda_async, cuda_batch_fft=d.cuda_batch_fft,
+         cuda_wavefront_fft=d.cuda_wavefront_fft,
+         cuda_indexed_wavefront=d.cuda_indexed_wavefront)
+    end,
 ]
 
 const CPU_CONFIGS = [
@@ -117,30 +158,19 @@ function selected_configs(configs, env_name)
     return filter(cfg -> cfg.name in requested, configs)
 end
 
-function set_cuda_options!(cfg; timing=false)
-    ENV["OCTOPUS_CUDA_PIC_ASYNC"] = cfg.async ? "1" : "0"
-    ENV["OCTOPUS_CUDA_PIC_BATCH_FFT"] = cfg.batch_fft ? "1" : "0"
-    ENV["OCTOPUS_CUDA_PIC_WAVEFRONT_FFT"] = cfg.wavefront_fft ? "1" : "0"
-    ENV["OCTOPUS_CUDA_PIC_WAVEFRONT_GREEN_FFT"] = cfg.wavefront_green_fft ? "1" : "0"
-    ENV["OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT"] = cfg.indexed ? "1" : "0"
-    ENV["OCTOPUS_CUDA_PIC_BATCH_LUMINOSITY"] = cfg.batch_luminosity ? "1" : "0"
-    ENV["OCTOPUS_CUDA_PIC_ASYNC_LUMINOSITY"] = cfg.async_luminosity ? "1" : "0"
-    ENV["OCTOPUS_CUDA_PIC_TIMING"] = timing ? "1" : "0"
-    ENV["OCTOPUS_CUDA_PIC_TIMING_DETAIL"] = "0"
-    ENV["OCTOPUS_CUDA_NVTX"] = "0"
-    ENV["OCTOPUS_PIC_CACHE_STATS"] = CACHE_STATS ? "1" : "0"
-    return nothing
-end
+# Everything but `name` is a solver keyword (header): a field the solver does
+# not read is an unknown-keyword error, never a silently identical run.
+solver_options(cfg) = NamedTuple{filter(!=(:name), keys(cfg))}(cfg)
 
 function make_base_beams()
     set_global_rng!(seed=123456789, method=:philox)
     electron = Beam(N_MACRO, CPUThreadsBackend, Float64;
-        beta=(0.55, 0.056, 0.7e-2 / 5.5e-4), alpha=(0.0, 0.0),
+        beta=(0.55, 0.056, 0.7e-2 / 5.5e-4), alpha=(0.0, 0.0, 0.0),
         sigma=(106.0e-6, 9.5e-6, 0.7e-2), cutoff=5.0, rng_id=1,
         charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
         r0=RE * ME0 / EMASS_EV, npart=1.7203e11)
     proton = Beam(N_MACRO, CPUThreadsBackend, Float64;
-        beta=(0.8, 0.072, 6.0e-2 / 6.6e-4), alpha=(0.0, 0.0),
+        beta=(0.8, 0.072, 6.0e-2 / 6.6e-4), alpha=(0.0, 0.0, 0.0),
         sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0, rng_id=2,
         charge=1.0, mc2=PMASS_EV, E0=275.0e9,
         r0=RE * ME0 / PMASS_EV, npart=0.6881e11)
@@ -162,16 +192,21 @@ end
 clone_for_backend(beam, ::Type{CPUThreadsBackend}) = clone_cpu(beam)
 clone_for_backend(beam, ::Type{CUDABackend}) = clone_cuda(beam)
 
-function make_task(cfg, luminosity_path)
+function make_task(cfg, artifact_path; profile=false)
     slicing = LongitudinalSlicing(method=:normal_quantile, nslices=NSLICES,
                                   center_position=:centroid)
-    solver = PICPoissonSolver(slicing=slicing, grid=(GRID_SIZE, GRID_SIZE),
-        deposit_method=:CIC, green_type=:integrated, green_cache=cfg.green_cache,
+    solver = PICPoissonSolver(; slicing=slicing, grid=(GRID_SIZE, GRID_SIZE),
+        deposit_method=:CIC, green_type=:integrated,
         slice_pair_green_min_ratio=CACHE_MIN_RATIO,
         slice_pair_green_growth=CACHE_GROWTH,
-        longitudinal_kick=true, batch_mode=cfg.batch_mode, luminosity_schedule=nothing)
+        longitudinal_kick=true, luminosity_schedule=nothing,
+        solver_options(cfg)...)
     ip = StrongStrongCollision(:ip; poisson_solver=solver)
-    return StrongStrongTask((ip,), (ip,); luminosity_path=luminosity_path)
+    # The artifact is the task's one output; `/luminosity/ip` is what the
+    # physics check reads back. `append=false`: every execute! of the task
+    # rewrites the file, so the last repeat's rows are what remain.
+    return StrongStrongTask((ip,), (ip,); artifact=RunArtifact(artifact_path),
+        diagnostics=StrongStrongDiagnostics(pic_timing=profile, cache_stats=CACHE_STATS))
 end
 
 sync_backend(::Type{CPUThreadsBackend}) = nothing
@@ -185,10 +220,9 @@ function median_value(values)
 end
 
 function read_last_luminosity(path)
-    lines = readlines(path)
-    isempty(lines) && return NaN
-    fields = split(lines[end], '\t')
-    return parse(Float64, fields[end])
+    series = read(TaskOutput(path), :luminosity; name="ip")
+    isempty(series.value) && return NaN
+    return Float64(last(series.value))
 end
 
 host_coordinates(beam) = map(x -> Array(x), coordinate_arrays(beam.rep))
@@ -208,10 +242,9 @@ function coordinate_error(a, b)
     return max_abs, sqrt(sum_diff2 / max(sum_ref2, eps(Float64)))
 end
 
-function run_configuration(cfg, backend, base1, base2, tempdir; profile=false)
-    backend === CUDABackend && set_cuda_options!(cfg; timing=profile)
-    lum_path = joinpath(tempdir, cfg.name * ".lum")
-    task = make_task(cfg, lum_path)
+function run_configuration(cfg, backend, base1, base2, tempdir)
+    artifact_path = joinpath(tempdir, cfg.name * ".h5")
+    task = make_task(cfg, artifact_path)
 
     if WARMUP_TURNS > 0
         warm1 = clone_for_backend(base1, backend)
@@ -235,7 +268,7 @@ function run_configuration(cfg, backend, base1, base2, tempdir; profile=false)
         if repeat == REPEATS
             final1 = host_coordinates(beam1)
             final2 = host_coordinates(beam2)
-            luminosity = read_last_luminosity(lum_path)
+            luminosity = read_last_luminosity(artifact_path)
         end
     end
     med = median_value(times)
@@ -287,16 +320,19 @@ function write_summary(path, results, cpu_reference)
 end
 
 function profile_configuration(cfg, base1, base2, tempdir)
-    lum_path = joinpath(tempdir, "profile_" * cfg.name * ".lum")
-    set_cuda_options!(cfg; timing=false)
-    task = make_task(cfg, lum_path)
+    # One task with `pic_timing=true` from construction: a diagnostic is a
+    # task field, not an environment switch flipped between two execute!s,
+    # so the warm-up turns print a profile as well -- the labelled
+    # steady-state block is the one to read.
+    task = make_task(cfg, joinpath(tempdir, "profile_" * cfg.name * ".h5"); profile=true)
     if WARMUP_TURNS > 0
+        println("  [warm-up: JIT and cache build, not steady state]")
         warm1 = clone_cuda(base1)
         warm2 = clone_cuda(base2)
         execute!(task, warm1, warm2; turns=WARMUP_TURNS)
         CUDA.synchronize()
     end
-    set_cuda_options!(cfg; timing=true)
+    println("  [steady-state turn]")
     beam1 = clone_cuda(base1)
     beam2 = clone_cuda(base2)
     execute!(task, beam1, beam2; turns=1)
