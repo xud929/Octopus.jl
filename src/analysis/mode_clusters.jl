@@ -242,12 +242,16 @@ const _RESOLUTION_RECEIPT_T = NamedTuple{(:first, :second, :gap, :kappa, :kappa_
     ClusterMode
 
 One individual mode recovered from a definite cluster (dossier D7e; an
-`m = 1` cluster has exactly one): `index` (position in the report's
-eigenvalue list), `eigenvalue` (oriented, `e^{-i mu}`), `tune` (`mu` in
-`[0, 2 pi)`), `vector` (the (E3)-normalized oriented eigenvector, a column of
-the rotated frame), `eigenvector_residual` (the (I1) vector form of
-`M u - rho u`, normalized and raw, `_invariance_residual`), and
-`normalization_residual` (`|u' S u + 2i|`).
+`m = 1` cluster has exactly one): `index` (the canonical eigenvalue index of
+the mode: the half member, `Im rho > 0` in the report's eigenvalue list,
+whose eigenvalue is nearest the mode's oriented `eigenvalue` under
+`_pair_gap`, matched one-to-one BY EIGENVALUE and certified when that
+distance is below half the cluster's internal gap, see
+[`_recover_modes`](@ref); fix batch 2026-10-19, F-192), `eigenvalue`
+(oriented, `e^{-i mu}`), `tune` (`mu` in `[0, 2 pi)`), `vector` (the
+(E3)-normalized oriented eigenvector, a column of the rotated frame),
+`eigenvector_residual` (the (I1) vector form of `M u - rho u`, normalized and
+raw, `_invariance_residual`), and `normalization_residual` (`|u' S u + 2i|`).
 """
 struct ClusterMode
     index::Int
@@ -693,7 +697,46 @@ function _group_quantities(M::AbstractMatrix{<:Real}, U::AbstractMatrix{<:Comple
 end
 
 """
-    _recover_modes(M, U, T, half, rho_M1, kappa_frame, resolution_chord; oriented_values=nothing) -> (resolved, forced, chord_matrix, U_rotated, modes, eigenvalues)
+    _nearest_assignment(dist) -> Vector{Int}
+
+The greedy one-to-one pairing of the rows of a square distance matrix with
+its columns: repeatedly take the smallest remaining entry `dist[i, j]` and
+pair row `i` with column `j`, each row and each column used once (a row whose
+remaining entries are all non-finite takes the first free column); returns
+`col[i]`, the column paired with row `i`, a permutation. The one source for
+the two pairings of this file (fix batch 2026-10-19, F-192): the canonical
+index of each mode a definite cluster recovers ([`_recover_modes`](@ref)) and
+the eigenvalue of each column of an indefinite cluster's signed basis (stage
+9, U4a-2-2). When the rows are the columns displaced by less than half the
+smallest separation between two columns, every row's nearest column is unique
+and distinct across rows and the greedy pairing returns exactly that matching;
+when a displacement reaches half a separation (members the map's accuracy does
+not separate, or an exact degeneracy) the pairing is a convention and every
+assignment is equivalent.
+"""
+function _nearest_assignment(dist::AbstractMatrix{<:Real})
+    m = size(dist, 1)
+    size(dist, 2) == m || throw(ArgumentError("_nearest_assignment needs a square distance matrix, got $(size(dist))"))
+    col = zeros(Int, m)
+    free_i = trues(m); free_j = trues(m)
+    for _ in 1:m
+        bi = 0; bj = 0; bd = Inf
+        for i in 1:m, j in 1:m
+            if free_i[i] && free_j[j] && dist[i, j] < bd
+                bi = i; bj = j; bd = dist[i, j]
+            end
+        end
+        if bi == 0
+            bi = findfirst(free_i); bj = findfirst(free_j)
+        end
+        col[bi] = bj
+        free_i[bi] = false; free_j[bj] = false
+    end
+    return col
+end
+
+"""
+    _recover_modes(M, U, T, half, half_values, rho_M1, kappa_frame, resolution_chord; oriented_values=nothing) -> (resolved, forced, chord_matrix, U_rotated, modes, eigenvalues)
 
 Dossier D7e: eigen-decompose the restricted map `T_c` (unitary), re-orthonormalize
 its eigenvectors by `qr`, form the internal chords `q_jk = _chord(kappa_frame,
@@ -716,12 +759,36 @@ provided that assignment is one-to-one (it is whenever the cluster resolved:
 the internal separation is then far above `eps kappa_frame ||M||`); the
 chords are still formed from the `T_c` eigenvalues. Stage 3 Part A2 added
 this after the stage 2 (I1) pin `residual <= 64 eps ||M||` failed on map 50.
+
+The canonical index of each recovered mode is matched BY EIGENVALUE (fix
+batch 2026-10-19, F-192). `half_values[k]` is the canonical eigenvalue
+`rho[half[k]]` of half member `k` (the `Im rho > 0` copy of its conjugate
+pair), and mode `j` is tagged `half[k]` for the `k` nearest its oriented
+eigenvalue `theta_j` under `_pair_gap` (the conjugation-blind distance: the
+oriented value is the member's conjugate when the Gram was negative definite),
+one-to-one by [`_nearest_assignment`](@ref). The tag is certified when that
+distance is below half the cluster's internal gap `_internal_gap(rho, half)`
+(the smallest `_pair_gap` between two half members; the runner-up is then
+farther by the triangle inequality). A cluster resolved under a finite chord
+satisfies this by construction: `q = 2 kappa_frame rho_M1 / g <= chord <= 2`
+puts its internal separation `g` at least `2 / chord` times above
+`kappa_frame rho_M1`, the roundoff of the `T_c` eigenvalues (2000 times at the
+default chord), and the snap to the Schur values leaves the distance at the
+Schur backward error. Under `Inf` a forced cluster can reach the ambiguous
+case; its two eigenvalues then coincide within the map error and the tag is a
+convention, like the modes themselves (theory 13.8). The j-th eigenvalue of
+`eigen(T_c)` is in LAPACK's order, not the half's canonical order: tagging
+mode `j` with `half[j]` named the OTHER member in every resolved m = 2 cluster
+the 2026-10-18 audit measured (26 of 26 under `Inf`, 16 of 16 under an
+explicit partition), so a caller asking for canonical index k was handed the
+other mode.
 """
 function _recover_modes(M::AbstractMatrix{<:Real}, U::AbstractMatrix{<:Complex}, T::AbstractMatrix{<:Complex},
-                        half::AbstractVector{<:Integer}, rho_M1::Real, kappa_frame::Real, resolution_chord::Real;
-                        oriented_values=nothing)
+                        half::AbstractVector{<:Integer}, half_values::AbstractVector{<:Complex}, rho_M1::Real,
+                        kappa_frame::Real, resolution_chord::Real; oriented_values=nothing)
     m = size(U, 2)
     length(half) == m || throw(ArgumentError("_recover_modes: $(length(half)) half members for a frame of $(m) columns"))
+    length(half_values) == m || throw(ArgumentError("_recover_modes: $(length(half_values)) half eigenvalues for $(m) half members"))
     S = _symplectic_form(size(M, 1))
     if m == 1
         V = Matrix{ComplexF64}(I, 1, 1)
@@ -770,9 +837,17 @@ function _recover_modes(M::AbstractMatrix{<:Real}, U::AbstractMatrix{<:Complex},
     end
     modes = ClusterMode[]
     if resolved
+        # The canonical index of mode j is the half member whose canonical eigenvalue
+        # is nearest theta_j under `_pair_gap`, one-to-one (the docstring's rule; by
+        # position, `half[j]`, it was the other member: F-192).
+        dist = zeros(Float64, m, m)
+        for j in 1:m, k in 1:m
+            dist[j, k] = _pair_gap(half_values[k], theta_out[j])
+        end
+        tag = _nearest_assignment(dist)
         for j in 1:m
             u = U_rotated[:, j]
-            push!(modes, ClusterMode(half[j], theta_out[j], mod(-angle(theta_out[j]), 2pi), u,
+            push!(modes, ClusterMode(half[tag[j]], theta_out[j], mod(-angle(theta_out[j]), 2pi), u,
                                      _invariance_residual(M, u, theta_out[j]), abs(dot(u, S * u) + 2im)))
         end
     end
@@ -1300,7 +1375,7 @@ function _complex_cluster(M::AbstractMatrix{<:Real}, spec, rho::AbstractVector{<
         oriented = kc.conjugate ? conj.(ev.values) : ev.values
         fr = _cluster_frame(Qc, Hc, S)
         gq = _group_quantities(M, fr.U, S, tau_c)
-        rec = _recover_modes(M, fr.U, gq.T, half, ev.rho_M1, gq.kappa_frame, resolution_chord; oriented_values=oriented)
+        rec = _recover_modes(M, fr.U, gq.T, half, rho[half], ev.rho_M1, gq.kappa_frame, resolution_chord; oriented_values=oriented)
         U = rec.resolved ? rec.U_rotated : fr.U
         evals = rec.resolved ? rec.eigenvalues : Vector{ComplexF64}(oriented)
         reason = rec.resolved ? :none : :cluster_unresolved
@@ -1329,8 +1404,9 @@ function _complex_cluster(M::AbstractMatrix{<:Real}, spec, rho::AbstractVector{<
         # (for a split group the form is diagonal in the member basis and V is a
         # permutation). Each column takes the member eigenvalue nearest its own
         # Rayleigh quotient (conjugated for a Krein-negative column, whose vector
-        # was conjugated above), each member used once: greedy on the distance,
-        # and at exact degeneracy every assignment is equivalent.
+        # was conjugated above), each member used once: the greedy nearest pairing
+        # `_nearest_assignment` (shared with the mode recovery of a definite
+        # cluster), and at exact degeneracy every assignment is equivalent.
         dist = zeros(Float64, m, m)
         for i in 1:m
             w = W[:, i]
@@ -1339,19 +1415,9 @@ function _complex_cluster(M::AbstractMatrix{<:Real}, spec, rho::AbstractVector{<
                 dist[i, j] = abs(rq - (lam[i] < 0 ? conj(ev.values[j]) : ev.values[j]))
             end
         end
-        free_i = trues(m); free_j = trues(m)
-        for _ in 1:m
-            bi = 0; bj = 0; bd = Inf
-            for i in 1:m, j in 1:m
-                if free_i[i] && free_j[j] && dist[i, j] < bd
-                    bi = i; bj = j; bd = dist[i, j]
-                end
-            end
-            if bi == 0
-                bi = findfirst(free_i); bj = findfirst(free_j)
-            end
-            evals[bi] = lam[bi] < 0 ? conj(ev.values[bj]) : ev.values[bj]
-            free_i[bi] = false; free_j[bj] = false
+        col = _nearest_assignment(dist)
+        for i in 1:m
+            evals[i] = lam[i] < 0 ? conj(ev.values[col[i]]) : ev.values[col[i]]
         end
         Tw = (im / 2) * (W' * S * M * W)
         # The 13.8 reconstruction check: with the pairing above the columns are

@@ -1153,8 +1153,11 @@ function _analysis_6d(analysis::TwissDispersionAnalysis, Ms::AbstractMatrix{<:Re
         elseif certified
             "longitudinal_mode = $(lm): certified selection of canonical eigenvalue $(routes.longitudinal)"
         else
+            # `weights` are in the resolved-mode order of `labels`, whose `longitudinal` is the SELECTED mode's position there;
+            # indexing them by the cluster position quoted another mode's z-area whenever a resolved cluster had more than
+            # one member (fix batch 2026-10-19, F-177)
             zarea_text = isempty(weights) ? "the signed z-areas are unavailable: $(labels.reason), $(labels.detail)" :
-                "signed z-area $(weights[routes.longitudinal_cluster == 0 ? 1 : min(routes.longitudinal_cluster, length(weights))])"
+                "signed z-area $(weights[determined_value(labels).longitudinal])"
             "the :max_signed_z_area heuristic selected canonical eigenvalue $(routes.longitudinal) (cluster $(routes.longitudinal_cluster); $(zarea_text)); the heuristic is never certified on its own, whatever h (by (K12) kappa_sz = h and the three signed z-areas sum to 1, so a betatron mode can carry more z-area than the synchrotron mode, and must for h < 1/3; the theory labels the synchrotron mode by continuation, 10.4, 13.5, which no endpoint-map rule supplies): pass longitudinal_mode = <canonical eigenvalue index, the position in result.clusters.eigenvalues, not the normal_mode number; either member of the mode's conjugate pair names it> or the synchrotron tune mu_s to certify it"
         end
         selection = Determined(_LONGITUDINAL_SELECTION_T((rule, certified, routes.longitudinal, routes.longitudinal_cluster,
