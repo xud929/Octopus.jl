@@ -31782,6 +31782,146 @@ end
 end
 
 
+@testset "PIC :standard alignment tie is resolved by rule, not by rounding noise" begin
+    # Regression (2026-10-18 comprehensive audit, F-3). `_pic_align_grid_origins`
+    # offsets the source and field origins of green_type=:standard by half a
+    # cell, choosing between the two nearest half-cell separations by the SIGN
+    # of the fractional separation. After the Green cache's expansion by
+    # 1 + slice_pair_green_growth (green_cache=:slice_pair is the default) a
+    # pre-expansion separation of k + 1/2 cells becomes (k + 1/2)/1.25 cells,
+    # an INTEGER whenever k = 2 (mod 5): the fractional separation is then
+    # exactly zero and the sign test read rounding noise. The device fuses the
+    # slice bounds' `x + px*s` into one FMA (measured: 18373 of 100000 drifted
+    # coordinates differ from the host's two roundings, 0 from `fma`), so CPU
+    # and CUDA chose OPPOSITE half cells and solved on grids a whole cell apart:
+    # 1e-2 relative coordinate divergence and 8e-3 CUDA run-to-run on a route
+    # where :integrated and :lattice agree to 1e-13. The tie is now resolved by
+    # rule (toward the larger separation) inside a band of
+    # `_PIC_ALIGN_TIE_TOLERANCE` cells; outside the band the arithmetic is the
+    # old one, bit for bit.
+    h = 1.3e-5
+    s0 = -2.0e-4
+    sep(gt, s, f) = begin
+        s1, f1 = Octopus._pic_align_grid_origins(gt, s, f, h)
+        (f1 - s1) / h
+    end
+    frac_half(v) = abs(v - round(v - 0.5) - 0.5)   # distance from the nearest half-integer
+
+    # (a) the tie itself: an integer separation perturbed by one ulp either way
+    # must land on the SAME half-cell separation. Unfixed: n - 1/2 or n + 1/2,
+    # decided by the perturbation's sign.
+    for n in (0, 1, 2, 5)
+        f0 = s0 + n * h
+        seps = [sep(:standard, s0, f) for f in (f0, nextfloat(f0), prevfloat(f0))]
+        @test all(v -> frac_half(v) < 1e-9, seps)
+        @test maximum(seps) - minimum(seps) < 1e-9
+        @test seps[1] ≈ n + 0.5 atol=1e-9         # the rule: toward the larger separation
+    end
+    # the wrap: a source origin on a whole cell makes its fractional part flip
+    # between 0 and 1 under one ulp -- the same tie in a different costume
+    for n in (2, 5)
+        s = 3h
+        f0 = s + n * h
+        seps = [sep(:standard, sv, f0) for sv in (s, nextfloat(s), prevfloat(s))]
+        @test maximum(seps) - minimum(seps) < 1e-9
+        @test seps[1] ≈ n + 0.5 atol=1e-9
+    end
+    # (b) off the tie the rule is unchanged: the nearest half-integer
+    for d in (0.3, 0.7, 1.2, 2.8, -0.4, -1.6)
+        @test sep(:standard, s0, s0 + d * h) ≈ floor(d) + 0.5 atol=1e-9
+    end
+    # the integer-alignment branch (:lattice and the default :integrated) is
+    # not touched: an exact integer separation, as before
+    for gt in (:lattice, :integrated), d in (0.3, 2.0, 2.8, -1.6)
+        v = sep(gt, s0, s0 + d * h)
+        @test abs(v - round(v)) < 1e-9
+    end
+    # the band is a measured guard: far above the inputs' rounding noise (ulps
+    # of origin/h, below 1e-10 cells here) and far below the smallest non-tie
+    # residual at the default growth (0.2 cells)
+    @test 1e-10 < Octopus._PIC_ALIGN_TIE_TOLERANCE < 0.2
+
+    # (c) through the cache's expansion, for every k whose expanded separation
+    # is an integer at the default growth
+    nx = 32
+    width = (nx - 1) * h
+    for k in (2, 7, 12)
+        @test isinteger((k + 0.5) / 1.25)     # the premise: this k hits the tie
+        sg = (x0=s0, y0=s0, width=width, height=width)
+        f0 = s0 + (k + 0.5) * h
+        seps = map((f0, nextfloat(f0), prevfloat(f0))) do fx
+            fg = (x0=fx, y0=fx, width=width, height=width)
+            es = Octopus._pic_expand_grid_by(sg, 1.25)
+            ef = Octopus._pic_expand_grid_by(fg, 1.25)
+            es2, ef2 = Octopus._pic_realign_expanded_grids(:standard, es, ef, nx, nx)
+            (ef2.x0 - es2.x0) / (es.width / (nx - 1))
+        end
+        @test maximum(seps) - minimum(seps) < 1e-9
+        @test all(v -> frac_half(v) < 1e-9, seps)
+    end
+
+    # (d) end to end: CPU against CUDA, and CUDA against itself, on the default
+    # cache. Tolerances: coordinates as max |a - b| over the component's own
+    # scale max |a|, per-pair luminosity relative; 1e-11 is more than 100x the
+    # controls' measured class (CPU/CUDA 2e-13, CUDA run-to-run 1.6e-13 against
+    # the component's spread -- the deposit's float atomics, so a bitwise pin
+    # would be a pin on their ordering) and 1e8 below the defect (7.8e-3 CPU
+    # against CUDA, 1.8e-3 to 1e-2 run-to-run, 1.4e-4 per pair). :integrated
+    # and :lattice are the controls; :standard is the regression.
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        sl = LongitudinalSlicing(nslices=5, method=:normal_quantile, center_position=:centroid)
+        mk(pol) = begin
+            set_global_rng!(seed=91, method=:philox)
+            e = Beam(4000, pol, Float64; beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+                sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=1,
+                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            p = Beam(4000, pol, Float64; beta=(0.8, 0.072, 90.9), alpha=(0.0, 0.0, 0.0),
+                sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0, rng_id=2,
+                charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            (e, p)
+        end
+        run_pair(pol, gt) = begin
+            e, p = mk(pol)
+            solver = PICPoissonSolver(; slicing=sl, grid=(32, 32), green_type=gt,
+                                        luminosity_schedule=nothing)
+            ip = StrongStrongCollision(:ip; poisson_solver=solver)
+            task = StrongStrongTask((ip,), (ip,))
+            sink = Any[]
+            Base.ScopedValues.with(Octopus._ACTIVE_PIC_LUMINOSITY_PAIR_SINK => sink) do
+                execute!(task, e, p; turns=2)
+            end
+            Octopus.CUDA.synchronize()
+            hist = pol isa CUDAExecutionPolicy ?
+                Octopus._strong_strong_contract_cuda_cache_history(task) :
+                Octopus._strong_strong_contract_cpu_cache_history(task)
+            pairs = Dict((r.turn, r.i, r.j) => r.luminosity for r in sink)
+            coords = [Array(a) for b in (e, p) for a in coordinate_arrays(b)]
+            (coords=coords, pairs=pairs, hist=hist)
+        end
+        coord_rel(a, b) = maximum(maximum(abs.(ca .- cb)) / maximum(abs, ca)
+                                  for (ca, cb) in zip(a.coords, b.coords))
+        pair_rel(a, b) = keys(a.pairs) == keys(b.pairs) && !isempty(a.pairs) ?
+            maximum(abs(b.pairs[k] - a.pairs[k]) / max(abs(a.pairs[k]), eps()) for k in keys(a.pairs)) : Inf
+        for gt in (:integrated, :standard, :lattice)
+            @testset let green_type = gt
+                cpu = run_pair(CPUThreadsBackend, gt)
+                gpu1 = run_pair(CUDAExecutionPolicy(), gt)
+                gpu2 = run_pair(CUDAExecutionPolicy(), gt)
+                @test length(cpu.pairs) == 50                 # 25 slice pairs x 2 turns compared
+                @test coord_rel(cpu, gpu1) <= 1e-11            # CPU against CUDA
+                @test pair_rel(cpu, gpu1) <= 1e-11
+                @test cpu.hist == gpu1.hist                   # same cache hit/miss/rebuild history
+                @test cpu.hist[1] > 0                         # with reuse actually exercised
+                @test coord_rel(gpu1, gpu2) <= 1e-11           # CUDA run-to-run
+                @test pair_rel(gpu1, gpu2) <= 1e-11
+            end
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
+
 if _lane_gate("PIC green_type=:lattice")
 @testset "PIC green_type=:lattice" begin
     # The lattice Green function inverts the five-point discrete Laplacian exactly
