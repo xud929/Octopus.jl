@@ -64,6 +64,33 @@ function fail(msg)
 end
 
 """
+    refusal_direction(f, token) -> Bool
+
+Run `f()` and say which way it went: `true` when it threw the expected
+refusal, an `ArgumentError` whose message carries `token`; `false` when it
+ran. ANY other exception fails the child by name, with the exception's text.
+
+Every refusal arm below wrote this fold inline as
+`err isa ArgumentError && occursin(token, ...)` until the 2026-10-19 fix
+batch, and that fold maps an unrelated crash to `false` -- the value the "runs
+at one rank" half expects -- so a fixture that crashed at one rank passed that
+half. Both action fixtures did (F-222): `BeamSwapAction(identity)` threw a
+`MethodError` and the line-action task threw the artifact-view
+`ArgumentError`, and the child printed `action=false` as if they had run.
+"""
+function refusal_direction(f, token::AbstractString)
+    try
+        f()
+        return false
+    catch err
+        text = sprint(showerror, err)
+        err isa ArgumentError && occursin(token, text) && return true
+        fail("expected the \"$(token)\" refusal or a clean run, got " *
+             "$(nameof(typeof(err))): $(first(text, 600))")
+    end
+end
+
+"""
 A solver nobody has divided, standing in for the one someone adds next.
 
 Declared in the CHILD and nowhere else: it exists only to exercise the
@@ -86,6 +113,22 @@ child_rank() = MPI.Initialized() ? MPI.Comm_rank(MPI.COMM_WORLD) : 0
 # rank-agnostic assertion below while proving nothing about MPI.
 ext = Base.get_extension(Octopus, :OctopusMPIExt)
 ext === nothing && fail("OctopusMPIExt is not loaded in the child process")
+
+# The run artifacts the steps below write (3b, 3c, 4b, 4c) land in a
+# PER-LAUNCH directory every rank names alike: the parent's receipt directory
+# when there is one (fresh per launch, `mktempdir()` in `run_ranks`), else one
+# rank 0 makes and broadcasts, so a hand run leaves nothing behind either.
+# They were FIXED names under the shared `tempdir()`
+# (`octopus_mpi_seam_check_3c.h5` and siblings) until the 2026-10-19 fix
+# batch, and two children on one machine overwrote each other's files:
+# measured 2026-10-19, when a second suite's launcher testset failed on the
+# first suite's artifacts (F-223). Through `MPI` directly, not the seam: the
+# policy scope that makes `_mp_bcast` a collective is not in force here.
+const _ARTIFACT_DIR = if isempty(_RECEIPT_DIR)
+    MPI.bcast(child_rank() == 0 ? mktempdir() : "", 0, MPI.COMM_WORLD)
+else
+    _RECEIPT_DIR
+end
 
 rep = Phase6DRep([1.0e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
 resolved = Octopus._resolve_execution_policy(MultiProcessExecutionPolicy(), rep)
@@ -179,7 +222,7 @@ end
 # its peers. The proof that only rank 0 wrote is the ROW COUNT: if every rank
 # wrote, a P-rank run would leave P rows per turn instead of one.
 let policy = MultiProcessExecutionPolicy(threads=1)
-    path = _mpi_check_artifact_path()
+    path = _mpi_check_artifact_path(_ARTIFACT_DIR, "3b")
     beam = _mpi_check_build_beam(policy)
     resolved = Octopus._resolve_execution_policy(policy, beam.rep)
     Octopus._with_execution_policy(resolved) do
@@ -220,7 +263,7 @@ end
 # through the seam's gather and land in rank 0's file -- carrying the GLOBAL
 # particle id, not the slot index the rank happened to use.
 let policy = MultiProcessExecutionPolicy(threads=1)
-    path = joinpath(tempdir(), "octopus_mpi_seam_check_3c.h5")
+    path = _mpi_check_artifact_path(_ARTIFACT_DIR, "3c")
     beam = _mpi_check_build_beam(policy)
     resolved = Octopus._resolve_execution_policy(policy, beam.rep)
     Octopus._with_execution_policy(resolved) do
@@ -244,19 +287,29 @@ let policy = MultiProcessExecutionPolicy(threads=1)
     end
 
     # An action is the one thing left that Octopus cannot reason about, and it
-    # must still refuse rather than hand a callback one rank's shard.
-    threw = try
+    # must still refuse rather than hand a callback one rank's shard -- and at
+    # one rank the task must RUN it. The provider's call count is what makes
+    # that half a check: once, before the one tracked turn (`run_actions!`);
+    # zero above one rank, where the refusal fires before any turn. Until the
+    # 2026-10-19 fix batch this was `BeamSwapAction(identity)`, whose
+    # `identity(ctx)` hands the TrackingContext back as the beam: the one-rank
+    # half threw a `MethodError` that the inline fold read as "ran" (F-222).
+    swap, swap_calls = _mpi_check_swap_provider(_mpi_check_build_beam(policy))
+    threw = refusal_direction("task actions") do
         execute!(TrackingTask(_mpi_check_line(); policy=policy,
-                              actions=(Octopus.BeamSwapAction(identity),)),
+                              actions=(Octopus.BeamSwapAction(swap),)),
                  _mpi_check_build_beam(policy); turns=1)
-        false
-    catch err
-        err isa ArgumentError && occursin("task actions", sprint(showerror, err))
     end
     Octopus._with_execution_policy(resolved) do
         expected = Octopus._mp_nranks() > 1
         threw == expected ||
             fail("action refusal was $(threw) at $(Octopus._mp_nranks()) rank(s)")
+        swap_calls[] == (expected ? 0 : 1) ||
+            fail("the task action's provider was called $(swap_calls[]) time(s) " *
+                 "at $(Octopus._mp_nranks()) rank(s)")
+        # Every rank checked the direction above; rank 0 alone reports it.
+        Octopus._mp_is_root() &&
+            println("MPI-TRACKREFUSE action=", threw, " action_calls=", swap_calls[])
     end
 end
 
@@ -306,12 +359,9 @@ let policy = MultiProcessExecutionPolicy(threads=1)
 
             # `:equal_count` orders the whole beam, which is a sort and not a
             # fold, so it refuses rather than cutting a shard's boundaries.
-            threw = try
+            threw = refusal_direction("global ordering") do
                 Octopus.longitudinal_slices(
                     b1.rep, Octopus.LongitudinalSlicing(nslices=5, method=:equal_count))
-                false
-            catch err
-                err isa ArgumentError && occursin("global ordering", sprint(showerror, err))
             end
             threw == (Octopus._mp_nranks() > 1) ||
                 fail("equal_count refusal was $(threw) at $(Octopus._mp_nranks()) rank(s)")
@@ -327,7 +377,7 @@ end
 # DIFFERENT sizes, because a run holding two beams is where one scoped shard
 # handed the second beam the first beam's offset.
 let policy = MultiProcessExecutionPolicy(threads=1)
-    path = _mpi_check_ss_artifact_path()
+    path = _mpi_check_artifact_path(_ARTIFACT_DIR, "4b")
     b1, b2 = _mpi_check_ss_beams(policy)
     resolved = Octopus._resolve_execution_policy(policy, b1.rep)
     Octopus._with_execution_policy(resolved) do
@@ -382,12 +432,16 @@ let policy = MultiProcessExecutionPolicy(threads=1)
             write(stdout, "MPI-SPECTASKERR " * sprint(showerror, err) * "\n")
         false
     end
-    threw_action = try
+    # The line action's provider is called once at one rank, in line 1's
+    # action segment of the one turn, and never above one rank, where the
+    # refusal fires before any turn. Until the 2026-10-19 fix batch the
+    # fixture was `BeamSwapAction(identity)` beside line observers in a task
+    # with no artifact: at one rank it threw the artifact-view `ArgumentError`
+    # and the inline fold read that as "ran" (F-222).
+    swap, swap_calls = _mpi_check_swap_provider(_mpi_check_ss_beams(policy)[1])
+    threw_action = refusal_direction("line action") do
         ab1, ab2 = _mpi_check_ss_beams(policy)
-        execute!(_mpi_check_ss_task_with_action(policy), ab1, ab2; turns=1)
-        false
-    catch err
-        err isa ArgumentError && occursin("line action", sprint(showerror, err))
+        execute!(_mpi_check_ss_task_with_action(policy, swap), ab1, ab2; turns=1)
     end
     Octopus._with_execution_policy(resolved) do
         expected = Octopus._mp_nranks() > 1
@@ -395,9 +449,13 @@ let policy = MultiProcessExecutionPolicy(threads=1)
             fail("the spectral strong-strong task failed at $(Octopus._mp_nranks()) rank(s)")
         threw_action == expected ||
             fail("line-action refusal was $(threw_action) at $(Octopus._mp_nranks()) rank(s)")
+        swap_calls[] == (expected ? 0 : 1) ||
+            fail("the line action's provider was called $(swap_calls[]) time(s) " *
+                 "at $(Octopus._mp_nranks()) rank(s)")
         # Every rank checked the direction above; rank 0 alone reports it.
         Octopus._mp_is_root() && println("MPI-SSREFUSE spectral_ran=", spectral_ran,
-                                         " action=", threw_action)
+                                         " action=", threw_action,
+                                         " action_calls=", swap_calls[])
     end
 end
 
@@ -410,7 +468,7 @@ end
 # draw per particle, the artifact, two turns -- then one bare collide per
 # option variant, since each selects a different route through the code.
 let policy = MultiProcessExecutionPolicy(threads=1)
-    path = _mpi_check_pic_artifact_path()
+    path = _mpi_check_artifact_path(_ARTIFACT_DIR, "4c")
     b1, b2 = _mpi_check_ss_beams(policy)
     resolved = Octopus._resolve_execution_policy(policy, b1.rep)
     Octopus._with_execution_policy(resolved) do
@@ -531,11 +589,8 @@ let policy = MultiProcessExecutionPolicy(threads=1)
     # times. That is the shape of a check that cannot fail.
     Octopus._with_execution_policy(resolved) do
         dummy = _MPICheckUndividedSolver()
-        threw = try
+        threw = refusal_direction("_solver_divides") do
             Octopus._reject_undivided_solver(dummy)
-            false
-        catch err
-            err isa ArgumentError && occursin("_solver_divides", sprint(showerror, err))
         end
         expected = Octopus._mp_nranks() > 1
         threw == expected || fail(
@@ -593,7 +648,7 @@ flush(stdout)
 # zero by construction at this size, and a relative comparison there measures
 # chance rather than agreement.
 let policy = MultiProcessExecutionPolicy(threads=1)
-    path = _mpi_check_ss_big_artifact_path()
+    path = _mpi_check_artifact_path(_ARTIFACT_DIR, "4b_big")
     b1, b2 = _mpi_check_ss_big_beams(policy)
     resolved = Octopus._resolve_execution_policy(policy, b1.rep)
     Octopus._with_execution_policy(resolved) do
@@ -649,13 +704,10 @@ let policy = MultiProcessExecutionPolicy(threads=1)
             for a in Octopus.coordinate_arrays(b1.rep)
                 fill!(a, NaN)
             end
-            threw = try
+            threw = refusal_direction("live particle") do
                 allow_lost_particles() do
                     Octopus.longitudinal_slices(b1.rep, slc)
                 end
-                false
-            catch err
-                err isa ArgumentError && occursin("live particle", sprint(showerror, err))
             end
             threw || fail("all-dead beam did not refuse on rank $(Octopus._mp_rank())")
             Octopus._mp_is_root() &&
