@@ -22044,6 +22044,186 @@ end
     end
 end
 
+@testset "Every raw CUDA PIC launch site is pinned and its kernel fits the device thread ceiling" begin
+    # 2026-10-18 comprehensive audit, F-2 / F-12 / F-45. The testset above
+    # requires zero raw KICK launches and nothing watched the other sixty
+    # `CUDA.@cuda` sites of the two files, so the one non-kick kernel that cannot
+    # be launched at the device's 1024-thread ceiling
+    # (`_cuda_pic_force_luminosity_bounds_indexed_kernel!`, 68 registers, ceiling
+    # 896 on an RTX 4500 Ada) sat behind a raw launch on the default route and a
+    # legal `threads=1024` crashed it. Two halves:
+    #
+    # (1) SOURCE, on every machine. The raw launch sites are derived from the two
+    #     files -- every `CUDA.@cuda` line that is not the cap's own
+    #     `launch = false` compile -- and must equal the pinned table below per
+    #     (file, kernel, count). A new raw launch fails here with its site named;
+    #     so does a pinned site that disappeared, so the table cannot go stale.
+    #     The cap's compile line is pinned to exactly one, so a kernel object
+    #     compiled elsewhere and launched by calling it is not a way around this.
+    # (2) DEVICE, with a GPU. Every pinned raw kernel this process has compiled
+    #     must have a launchable ceiling at or above the device's
+    #     MAX_THREADS_PER_BLOCK, because the raw sites take whatever thread count
+    #     the policy or a CUDAPICLaunchConfig hands them (up to 1024). A kernel
+    #     whose register count grows past 64 fails here on the GPU gate and must
+    #     move behind `_cuda_launch_capped!`.
+    #
+    # Each row: file, kernel, raw-site count, and the thread count the launch can
+    # hand the kernel -- `:device` when it comes from the policy or a
+    # CUDAPICLaunchConfig family (anything up to MAX_THREADS_PER_BLOCK), or the
+    # fixed count the site launches with, DERIVED from the component that owns
+    # it and tied to the launch line by the token the line must carry. The
+    # register comments are documentation: the 2026-10-19 census on an RTX 4500
+    # Ada with CUDA.jl 6.3.1 at Float64 (fix batch 2026-10-19, unit P). They are
+    # not asserted -- a register count belongs to the compiler, not the source
+    # -- and half (2) re-measures the only property that matters.
+    moment_fixed = (token="threads=moment_threads",
+                    threads=Octopus._cuda_gaussian_moment_launch(1).threads)
+    partials_fixed = (token="threads=launch.threads",
+                      threads=Octopus._cuda_gaussian_moment_launch(1).threads)
+    bounds_fixed = (token="threads=block_cap", threads=Octopus._CUDA_PIC_BOUNDS_PARTIAL_BLOCKS)
+    pinned = [
+        ("pic_cuda.jl", :_cuda_pic_gather_slice_longitudinal_kernel!, 1, :device),          # 40 regs
+        ("pic_cuda.jl", :_cuda_pic_scatter_slice_longitudinal_kernel!, 1, :device),         # 26
+        ("pic_cuda.jl", :_cuda_pic_scatter_slice_kernel!, 1, :device),                      # 26
+        ("pic_cuda.jl", :_cuda_indices_from_mask_kernel!, 1, :device),                      # 17
+        ("pic_cuda.jl", :_cuda_gaussian_fused_moment_kernel!, 1, moment_fixed),             # 56
+        ("pic_cuda.jl", :_cuda_gaussian_reduce_partials_kernel!, 1, :device),               # 40
+        ("pic_cuda.jl", :_cuda_gaussian_build_moments_kernel!, 1, :device),                 # 56
+        ("pic_cuda.jl", :_cuda_pic_init_wavefront_bounds_partials_kernel!, 1, :device),     # 8
+        ("pic_cuda.jl", :_cuda_pic_finalize_force_luminosity_bounds_kernel!, 1, bounds_fixed), # 66 (ceiling 896)
+        ("pic_cuda.jl", :_cuda_pic_finalize_force_bounds_kernel!, 1, bounds_fixed),         # 54
+        ("pic_cuda.jl", :_cuda_pic_count_outside_drifted_kernel!, 1, :device),              # 24
+        ("pic_cuda.jl", :_cuda_pic_count_outside_zdrift_kernel!, 1, :device),               # 24
+        ("pic_cuda.jl", :_cuda_pic_deposit_nomask_kernel!, 3, :device),                     # 48
+        ("pic_cuda.jl", :_cuda_pic_field_kernel!, 2, :device),                              # 40
+        ("pic_cuda.jl", :_cuda_pic_deposit_drifted_nomask_kernel!, 1, :device),             # 48
+        ("pic_cuda.jl", :_cuda_pic_apply_green_batch_kernel!, 1, :device),                  # 36
+        ("pic_cuda.jl", :_cuda_pic_field_batch_kernel!, 1, :device),                        # 40
+        ("pic_cuda.jl", :_cuda_pic_multiply_spectral_perplane_kernel!, 3, :device),         # 22
+        ("pic_cuda.jl", :_cuda_pic_field_wavefront_kernel!, 5, :device),                    # 40
+        ("pic_cuda.jl", :_cuda_gpic_subtract_coupled_kernel!, 2, :device),                  # 38
+        ("pic_cuda.jl", :_cuda_gpic_subtract_kernel!, 2, :device),                          # 36
+        ("pic_cuda.jl", :_cuda_pic_multiply_spectral_stack_kernel!, 4, :device),            # 36
+        ("pic_cuda.jl", :_cuda_pic_green_stack_kernel!, 1, :device),                        # 53
+        ("pic_cuda.jl", :_cuda_pic_apply_green_plane_kernel!, 1, :device),                  # 28 (ComplexF64)
+        ("pic_cuda.jl", :_cuda_pic_deposit_drifted_plane_kernel!, 3, :device),              # 56
+        ("pic_cuda.jl", :_cuda_pic_deposit_drifted_indexed_plane_kernel!, 3, :device),      # 56
+        ("pic_cuda.jl", :_cuda_pic_deposit_drifted_indexed_plane_pair_kernel!, 1, :device), # 64, at the edge
+        ("pic_cuda.jl", :_cuda_pic_green_kernel!, 1, :device),                              # 61
+        ("pic_cuda.jl", :_cuda_pic_luminosity_wavefront_kernel!, 1, :device),               # 36
+        ("pic_cuda.jl", :_cuda_pic_luminosity_overlap_partials_kernel!, 2, :device),        # 38, power-of-two threads
+        ("pic_cuda.jl", :_cuda_lane_z_moment_kernel!, 4, :device),                          # 24
+        ("pic_cuda.jl", :_cuda_equal_area_histogram_kernel!, 1, :device),                   # 23
+        ("pic_cuda.jl", :_cuda_lane_indexed_sum_kernel!, 1, :device),                       # 28
+        ("pic_cuda.jl", :_cuda_gaussian_moment_partials_kernel!, 1, partials_fixed),        # 64
+        ("gaussian_pic_cuda.jl", :_cuda_gaussian_reduce_partials_kernel!, 1, :device),      # 40
+        ("gaussian_pic_cuda.jl", :_cuda_pic_deposit_drifted_nomask_kernel!, 1, :device),    # 48
+        ("gaussian_pic_cuda.jl", :_cuda_pic_field_kernel!, 1, :device),                     # 40
+    ]
+    expected = Dict((file, kernel) => count for (file, kernel, count, _) in pinned)
+    @test length(expected) == length(pinned)                     # no duplicate rows
+    found = Dict{Tuple{String,Symbol},Int}()
+    sites = Dict{Tuple{String,Symbol},Vector{Int}}()
+    site_text = Dict{Tuple{String,Symbol},Vector{String}}()
+    compile_sites = String[]
+    for file in ("pic_cuda.jl", "gaussian_pic_cuda.jl")
+        path = joinpath(pkgdir(Octopus), "src", "tasks", "strongstrong", file)
+        for (i, line) in enumerate(eachline(path))
+            # A launch is the macro followed by a keyword (`threads=`, `launch=`,
+            # ...); prose in a comment or docstring that names the macro is not.
+            occursin(r"CUDA\.@cuda\s+\w+\s*=", line) || continue
+            startswith(strip(line), "#") && continue
+            if occursin(r"launch\s*=\s*false", line)
+                push!(compile_sites, "$(file):$(i): $(strip(line))")
+                continue
+            end
+            m = match(r"(_cuda_[A-Za-z0-9_]+!)\(", line)
+            kernel = m === nothing ? :UNPARSED : Symbol(m.captures[1])
+            found[(file, kernel)] = get(found, (file, kernel), 0) + 1
+            push!(get!(sites, (file, kernel), Int[]), i)
+            push!(get!(site_text, (file, kernel), String[]), line)
+        end
+    end
+    # Exactly one compile-only site, `_cuda_launch_capped!`'s own.
+    @test length(compile_sites) == 1 &&
+          startswith(compile_sites[1], "pic_cuda.jl:") &&
+          endswith(compile_sites[1], "kernel = CUDA.@cuda launch = false f(args...)")
+    # Both directions, each site named: a raw launch not in the table (or more
+    # of a pinned kernel than the table says) and a pinned row the source no
+    # longer has.
+    for key in sort(collect(union(keys(found), keys(expected))); by=k -> (k[1], string(k[2])))
+        @testset let site = "$(key[1]) $(key[2]) at lines $(get(sites, key, Int[]))"
+            @test get(found, key, 0) == get(expected, key, 0)
+        end
+    end
+    # A fixed-count row holds only while its launch line still carries the
+    # token and the token is still assigned from the component the row derives
+    # its number from.
+    pic_src = read(joinpath(pkgdir(Octopus), "src", "tasks", "strongstrong", "pic_cuda.jl"), String)
+    @test occursin("moment_threads = _cuda_gaussian_moment_launch(1).threads", pic_src)
+    @test occursin("block_cap = _CUDA_PIC_BOUNDS_PARTIAL_BLOCKS", pic_src)
+    @test occursin(r"launch = _cuda_gaussian_moment_launch\(length\(idx\)\)\n(.*\n){0,3}.*CUDA\.@cuda threads=launch\.threads .*_cuda_gaussian_moment_partials_kernel!\(",
+                   pic_src)
+    for (file, kernel, _, needs) in pinned
+        needs === :device && continue
+        @testset let kernel = kernel, token = needs.token
+            @test all(l -> occursin(token, l), get(site_text, (file, kernel), String[]))
+        end
+    end
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        CUDA = Octopus.CUDA
+        # Populate the compiled-kernel cache with the two default routes so the
+        # device half cannot be vacuous in a short process.
+        let sl = LongitudinalSlicing(nslices=3, method=:normal_quantile)
+            mkb(pol) = Beam(2000, pol, Float64; beta=(0.55, 0.056, 12.7),
+                alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
+                r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            for solver in (PICPoissonSolver(; slicing=sl, grid=(16, 16)),
+                           GaussianPICPoissonSolver(; slicing=sl, grid=(16, 16)))
+                pol = CUDAExecutionPolicy()
+                set_global_rng!(seed=123, method=:philox)
+                ip = StrongStrongCollision(:ip; poisson_solver=solver)
+                execute!(StrongStrongTask((ip,), (ip,); policy=pol), mkb(pol), mkb(pol); turns=1)
+            end
+            CUDA.synchronize()
+        end
+        # CUDA.jl 6.3.1 keeps every compiled HostKernel in this Dict; if a CUDA.jl
+        # upgrade moves it, this fails loudly rather than skipping the device half.
+        @test isdefined(CUDA, :CUDACore) && isdefined(CUDA.CUDACore, :_kernel_instances)
+        if isdefined(CUDA, :CUDACore) && isdefined(CUDA.CUDACore, :_kernel_instances)
+            device_max = CUDA.attribute(CUDA.device(), CUDA.DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK)
+            ceilings = Dict{Symbol,Int}()
+            for k in values(CUDA.CUDACore._kernel_instances)
+                name = k.f isa Function ? nameof(k.f) : nameof(typeof(k.f))
+                ceilings[name] = min(get(ceilings, name, typemax(Int)), CUDA.maxthreads(k))
+            end
+            required = Dict{Symbol,Int}()
+            for (_, kernel, _, needs) in pinned
+                need = needs === :device ? device_max : needs.threads
+                required[kernel] = max(get(required, kernel, 0), need)
+            end
+            raw_kernels = collect(keys(required))
+            measured = filter(k -> haskey(ceilings, k), raw_kernels)
+            unmeasured = setdiff(raw_kernels, measured)
+            # Anti-vacuity: the two routes just run compile these four.
+            for k in (:_cuda_pic_deposit_drifted_indexed_plane_kernel!, :_cuda_pic_field_wavefront_kernel!,
+                      :_cuda_pic_finalize_force_luminosity_bounds_kernel!, :_cuda_gpic_subtract_kernel!)
+                @test k in measured
+            end
+            println("raw-launch ceiling check: ", length(measured), " of ", length(raw_kernels),
+                    " pinned kernels compiled in this process; not measured here: ", unmeasured)
+            for k in sort(measured; by=string)
+                @testset let kernel = k, ceiling = ceilings[k], required = required[k]
+                    @test ceiling >= required
+                end
+            end
+        end
+    else
+        @test_skip "CUDA device required for the per-kernel launch ceilings"
+    end
+end
+
 @testset "The Linear6D symplecticity validator accepts every numeric type it advertises" begin
     # 2026-08-05_b audit, U9-3. `_linear6d_symplectic_error` ordered on `T`
     # rather than `real(T)`: `typemax`, `max`, `>` and `<=` are all undefined
@@ -24507,6 +24687,223 @@ end
         end
         @test isempty(filter(r -> r.consumer === :cuda_strong_strong_thread_cap,
                              execution_receipts(audit256)))
+    else
+        @test_skip "CUDA device required: this pin is about a real kernel launch"
+    end
+end
+
+@testset "The wavefront bounds reduction is exact at every block size, warp multiple or not" begin
+    # 2026-10-18 comprehensive audit, F-1. `_cuda_pic_bounds_block_reduce` shuffled
+    # with the full warp mask, so a block whose thread count is not a multiple of
+    # 32 read lanes that do not exist (0.0 on an RTX 4500 Ada) and folded them
+    # into the min/max interaction-grid bounds. Every such count is legal:
+    # `CUDAPICLaunchConfig` accepts any `field_threads` in 1:1024, and the
+    # launch-geometry sweeps only ever tried 64/128/256/512. Measured unfixed:
+    # threads 100/48/20/16/7/1 wrong on every repeat, every warp multiple from 32
+    # to 1024 bitwise equal to the host reference.
+    #
+    # BITWISE against a host fold of the same scalar functions: min and max are
+    # exact, so no launch geometry may enter a correct reduction at all, and a
+    # tolerance here would be a weaker claim than the invariant.
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        CUDA = Octopus.CUDA
+        n = 10_007
+        rng = MersenneTwister(11)
+        block_cap = Octopus._CUDA_PIC_BOUNDS_PARTIAL_BLOCKS
+        sL = 0.3; sR = -0.2; opp = 0.004; half = 0.5; lum_drift = 0.05
+        # Strictly positive, then strictly negative coordinates: a stray 0.0 is a
+        # wrong minimum in the first set and a wrong maximum in the second. A
+        # centred beam absorbs it (min < 0 < max), which is how it stayed hidden.
+        for shift in (5.0, -5.0)
+            x = shift .+ 0.5 .* rand(rng, n); px = 0.01 .* randn(rng, n)
+            y = shift .+ 0.5 .* rand(rng, n); py = 0.01 .* randn(rng, n)
+            z = 0.01 .* randn(rng, n)
+            ref8 = Octopus._cuda_pic_bounds_pair_neutral(Float64)
+            ref12 = (ref8..., Octopus._cuda_pic_bounds_neutral(Float64)...)
+            for i in 1:n
+                ref8 = Octopus._cuda_pic_bounds_tuple_combine(ref8,
+                    Octopus._cuda_pic_source_field_bounds_value(
+                        x[i], px[i], y[i], py[i], z[i], sL, sR, opp, half))
+                ref12 = Octopus._cuda_pic_bounds_tuple_combine(ref12,
+                    Octopus._cuda_pic_source_field_luminosity_bounds_value(
+                        x[i], px[i], y[i], py[i], z[i], sL, sR, opp, half, lum_drift))
+            end
+            dx, dpx, dy, dpy, dz = CUDA.CuArray.((x, px, y, py, z))
+            idx = CUDA.CuArray(collect(1:n))
+            partials = CUDA.CuArray{Float64}(undef, 12, block_cap, 2)
+            bounds = CUDA.CuArray{Float64}(undef, 12, 2)
+            # This testset launches the kernels directly, so its largest counts
+            # are read off the kernels' own launchable ceilings (896 for the
+            # 68-register luminosity variant on an RTX 4500 Ada; the F-2 cap is
+            # the production route's business, not this probe's).
+            top = min(
+                CUDA.maxthreads(Octopus.CUDA.@cuda launch=false Octopus._cuda_pic_force_bounds_indexed_kernel!(
+                    partials, Int32(1), dx, dpx, dy, dpy, dz, idx, sL, sR, opp, half)),
+                CUDA.maxthreads(Octopus.CUDA.@cuda launch=false Octopus._cuda_pic_force_luminosity_bounds_indexed_kernel!(
+                    partials, Int32(2), dx, dpx, dy, dpy, dz, idx, sL, sR, opp, half, lum_drift)))
+            @test top >= 512 && top % 32 == 0
+            # Blocks smaller than a warp, partial last warps of several residues
+            # (including one just under the ceiling), and the warp multiples that
+            # always worked.
+            for threads in (1, 7, 16, 20, 33, 48, 100, 250, top - 23, 32, 64, 128, 256, 512, top)
+                blocks = min(cld(n, threads), block_cap)
+                Octopus.CUDA.@cuda threads=256 blocks=cld(length(partials), 256) Octopus._cuda_pic_init_wavefront_bounds_partials_kernel!(
+                    partials)
+                Octopus.CUDA.@cuda threads=threads blocks=blocks Octopus._cuda_pic_force_bounds_indexed_kernel!(
+                    partials, Int32(1), dx, dpx, dy, dpy, dz, idx, sL, sR, opp, half)
+                Octopus.CUDA.@cuda threads=threads blocks=blocks Octopus._cuda_pic_force_luminosity_bounds_indexed_kernel!(
+                    partials, Int32(2), dx, dpx, dy, dpy, dz, idx, sL, sR, opp, half, lum_drift)
+                Octopus.CUDA.@cuda threads=block_cap blocks=2 Octopus._cuda_pic_finalize_force_luminosity_bounds_kernel!(
+                    bounds, partials)
+                host = Array(bounds)
+                @testset let threads = threads, shift = shift
+                    @test Tuple(host[1:8, 1]) == ref8
+                    @test Tuple(host[1:12, 2]) == ref12
+                end
+            end
+        end
+    else
+        @test_skip "CUDA device required: the reduction under test is a warp shuffle"
+    end
+end
+
+@testset "Offset beams see the same CUDA PIC kick at field_threads=100 and 128" begin
+    # 2026-10-18 comprehensive audit, F-1, through the entry a run uses. The
+    # wavefront bounds kernels read `_cuda_pic_threads(:field)`, so a
+    # `CUDAPICLaunchConfig(field_threads=100)` on a StrongStrongTask reached the
+    # broken reduction. Measured unfixed with both beams displaced by 1 mm (ten
+    # widths) in x and y: max|dpx|/max|px| = 3.8e-2, max|dpy|/max|py| = 0.199 and
+    # a luminosity 45 % below the field_threads=128 run, while 96 and 64 agreed
+    # with 128 to 1.6e-15, 2.7e-14 and 0 (the CUDA route's atomic-deposit spread;
+    # see the file comment on run-to-run reproducibility in pic_cuda.jl).
+    #
+    # Pin: 1e-10 relative on each of the three, four decades above the measured
+    # spread and eight below the defect; the accepted-x10 / rejected-/10 window
+    # is [2.7e-13, 3.8e-3]. The luminosity is read from the per-pair trace sink
+    # the backend-consistency contract uses, summed over the pairs of the turn.
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        CUDA = Octopus.CUDA
+        offset = 1.0e-3
+        kicked = function (field_threads)
+            pol = CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=128))
+            set_global_rng!(seed=4242, method=:philox)
+            e = Beam(8000, pol, Float64; beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+                     sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=1, charge=-1.0,
+                     mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            p = Beam(8000, pol, Float64; beta=(0.8, 0.072, 90.9), alpha=(0.0, 0.0, 0.0),
+                     sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0, rng_id=2, charge=1.0,
+                     mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            e.rep.x .+= offset; e.rep.y .+= offset
+            p.rep.x .+= offset; p.rep.y .+= offset
+            solver = PICPoissonSolver(; grid=(32, 32),
+                slicing=LongitudinalSlicing(nslices=3, method=:equal_area),
+                backend_configurations=(CUDAPICLaunchConfig(field_threads=field_threads),))
+            ip = StrongStrongCollision(:ip; poisson_solver=solver)
+            task = StrongStrongTask((ip,), (ip,); policy=pol)
+            audit = ExecutionAudit()
+            sink = Any[]
+            with_execution_audit(audit) do
+                Base.ScopedValues.with(Octopus._ACTIVE_PIC_LUMINOSITY_PAIR_SINK => sink) do
+                    execute!(task, e, p; turns=1)
+                end
+            end
+            CUDA.synchronize()
+            fields = unique(r.values.threads for r in execution_receipts(audit)
+                            if r.consumer === :cuda_pic_launch && r.values.family === :field)
+            return (px=Array(e.rep.px), py=Array(e.rep.py),
+                    lum=sum(r.luminosity for r in sink), fields=fields)
+        end
+        ref = kicked(128)
+        @test ref.fields == [128]
+        @test !isempty(ref.px) && isfinite(ref.lum) && ref.lum > 0
+        for field_threads in (100, 96)
+            r = kicked(field_threads)
+            @testset let field_threads = field_threads
+                # The option really reached the consumer: the request as recorded.
+                @test r.fields == [field_threads]
+                @test maximum(abs.(r.px .- ref.px)) / maximum(abs.(ref.px)) <= 1.0e-10
+                @test maximum(abs.(r.py .- ref.py)) / maximum(abs.(ref.py)) <= 1.0e-10
+                @test abs(r.lum - ref.lum) / abs(ref.lum) <= 1.0e-10
+            end
+        end
+    else
+        @test_skip "CUDA device required: field_threads reaches a CUDA kernel only"
+    end
+end
+
+@testset "A field thread count the device accepts but the bounds kernel cannot run is capped, not fatal" begin
+    # 2026-10-18 comprehensive audit, F-2. The indexed wavefront bounds launches
+    # took the raw `:field` thread count, and
+    # `_cuda_pic_force_luminosity_bounds_indexed_kernel!` compiles to 68
+    # registers (launchable ceiling 896 on an RTX 4500 Ada), so
+    # `CUDAPICLaunchConfig(field_threads=1024)` -- and a plain
+    # `CUDALaunchConfig(threads=1024)`, which every PIC family inherits -- died on
+    # the DEFAULT route (indexed wavefront, luminosity on) with "Block register
+    # count exceeds device limit" after the run had started. Measured unfixed:
+    # 896 RAN, 1024 FAILED, policy 1024 FAILED, 1024 with luminosity off RAN (the
+    # 48-register kernel fits). The cap that the 2026-08-05_b audit introduced
+    # for the kick kernels existed and was not applied here.
+    #
+    # Completion IS the regression. The cap receipt is asserted against the
+    # kernel's ceiling MEASURED on this device, so a GPU where the kernel fits at
+    # 1024 is required to cap nothing rather than failing a pin written for Ada.
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        CUDA = Octopus.CUDA
+        device_max = CUDA.attribute(CUDA.device(), CUDA.DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK)
+        sl = LongitudinalSlicing(nslices=3, method=:normal_quantile)
+        mkb(pol) = Beam(4000, pol, Float64; beta=(0.55, 0.056, 12.7),
+            alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
+            r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+        default_route = function (solver, threads)
+            pol = CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=threads))
+            set_global_rng!(seed=123, method=:philox)
+            ip = StrongStrongCollision(:ip; poisson_solver=solver)
+            task = StrongStrongTask((ip,), (ip,); policy=pol)
+            audit = ExecutionAudit()
+            b1 = mkb(pol); b2 = mkb(pol)
+            with_execution_audit(audit) do
+                execute!(task, b1, b2; turns=1)
+            end
+            CUDA.synchronize()
+            return execution_receipts(audit), b1
+        end
+        pic(; kw...) = PICPoissonSolver(; slicing=sl, grid=(32, 32), longitudinal_kick=true,
+                                         batch_mode=:wavefront, kw...)
+        ceiling = let k = Octopus.CUDA.@cuda launch=false Octopus._cuda_pic_force_luminosity_bounds_indexed_kernel!(
+                CUDA.zeros(Float64, 12, Octopus._CUDA_PIC_BOUNDS_PARTIAL_BLOCKS, 2), Int32(1),
+                CUDA.zeros(Float64, 8), CUDA.zeros(Float64, 8), CUDA.zeros(Float64, 8),
+                CUDA.zeros(Float64, 8), CUDA.zeros(Float64, 8), CUDA.CuArray(collect(1:8)),
+                0.1, 0.2, 0.0, 0.5, 0.05)
+            CUDA.maxthreads(k)
+        end
+        for (label, solver, threads) in (
+                ("field_threads at the device maximum",
+                 pic(backend_configurations=(CUDAPICLaunchConfig(field_threads=device_max),)), 256),
+                ("policy threads at the device maximum, every family inherited", pic(), device_max))
+            @testset let label = label
+                rs, b1 = default_route(solver, threads)
+                @test all(isfinite, Array(b1.rep.px))
+                # The request, as recorded by the consumer: every :field launch asked
+                # for the device maximum, so the bounds kernels really saw it.
+                fields = [r.values.threads for r in rs
+                          if r.consumer === :cuda_pic_launch && r.values.family === :field]
+                @test !isempty(fields) && all(==(device_max), fields)
+                caps = [r for r in rs if r.consumer === :cuda_strong_strong_thread_cap &&
+                        r.values.kernel === :_cuda_pic_force_luminosity_bounds_indexed_kernel!]
+                if ceiling < device_max
+                    @test !isempty(caps)
+                    @test all(r -> r.values.requested == device_max &&
+                                   r.values.resolved == ceiling, caps)
+                else
+                    @test isempty(caps)
+                end
+                # Whatever was capped was capped coherently, and the 48-register
+                # bounds kernel is capped only where its own ceiling demands it.
+                @test all(r -> r.values.resolved < r.values.requested,
+                          filter(r -> r.consumer === :cuda_strong_strong_thread_cap, rs))
+            end
+        end
     else
         @test_skip "CUDA device required: this pin is about a real kernel launch"
     end
