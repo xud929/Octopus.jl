@@ -842,14 +842,25 @@ struct BeamSwapAction{F} <: AbstractBeamAction
 end
 
 function observe!(observer::MomentObserver, ctx::TrackingContext, rep)
-    # `name` joined the receipt in the 2026-10-16 fix batch (S4-3): the option
-    # names this receipt as its consumer, and it carried no field for it.
+    # The refusal FIRST and the receipt after it, as the snapshot twin orders
+    # them: recorded before the refusal, a refused fire left a receipt
+    # claiming an observation (comprehensive audit 2026-10-18, F-84). `name`
+    # joined the receipt in the 2026-10-16 fix batch (S4-3): the option names
+    # this receipt as its consumer, and it carried no field for it.
+    observer.initialized || throw(ArgumentError("MomentObserver must be prepared by a predictable schedule before tracking"))
     _record_execution!(:observer_output, _observer_backend(),
         (observer=:MomentObserver, name=Symbol(observer.name), turn=ctx.turn,
          capacity=observer.buffer_capacity, moments=length(observer.moments)))
-    observer.initialized || throw(ArgumentError("MomentObserver must be prepared by a predictable schedule before tracking"))
+    # Compute the row, THEN commit it: the count advances only once the row
+    # is in the buffer. Incremented first (until 2026-10-19), an exception
+    # inside `_moment_observer_row` left a stale or undefined row under the
+    # count, which the best-effort finalize of the failed run pushed into the
+    # artifact; the group's cursor was stamped from that row's turn column,
+    # and the retry of a chunked run truncated chunk 1 away (F-73: after the
+    # crash `[0,1,2,3,4,5,<garbage>]`, after the retry `[0,4,5,6,7]`).
+    row = _moment_observer_row(ctx, rep, observer.moments, observer)
+    observer.buffer[observer.buffer_length + 1, :] .= row
     observer.buffer_length += 1
-    observer.buffer[observer.buffer_length, :] .= _moment_observer_row(ctx, rep, observer.moments, observer)
     observer.buffer_length >= observer.buffer_capacity && _flush_moment_observer!(observer)
     return nothing
 end
@@ -1309,8 +1320,11 @@ end
 Lightweight handle for reading a `MomentObserver` output file.
 
 For HDF5 files written by `MomentObserver`, `read(file)` returns the full
-written `/data` matrix up to `/record_count`. Use `read(file, item)` for one
-column and keyword moment selection for a smaller matrix.
+written `/data` matrix up to the record count -- the `record_count` dataset
+of a standalone (pre-artifact) file, or the rows the group's `rows_valid`
+cursor blesses inside a run artifact, so a torn tail beyond the cursor is
+never returned (2026-10-19). Use `read(file, item)` for one column and
+keyword moment selection for a smaller matrix.
 
 ```julia
 out = MomentOutput("result/pic_hcc.h5")
@@ -1353,8 +1367,9 @@ const _READ_ALL_MOMENT_COLUMNS = :__octopus_read_all_moment_columns__
 Read an output data matrix.
 
 With no keyword selection, this returns the full written data matrix
-`/data[1:record_count, :]`. Column 1 is `turn`, and the remaining columns match
-`column_names(file)`.
+`/data[1:record_count, :]` (an artifact group's record count is its cursor's
+`rows_valid`, the rows `read(file, :record_count)` reports). Column 1 is
+`turn`, and the remaining columns match `column_names(file)`.
 
 With `orders`, `extra`, or `exclude`, this returns a selected HDF5 moment table.
 The returned matrix still includes `turn` as column 1. Selection uses the same
@@ -1394,7 +1409,8 @@ For HDF5 moment output, `item` may be:
 - `:turn` or `"turn"`
 - a `Moment`, such as `Moment(; x=1)`
 - a compact or separated moment name, such as `:m100000` or `:m1_0_0_0_0_0`
-- `:record_count`
+- `:record_count` -- the rows a read returns: an artifact group's cursor-blessed
+  rows (`rows_valid`), a standalone file's `record_count`
 - `:elapsed_time`
 
 Examples:
@@ -1482,9 +1498,13 @@ function _is_hdf5_output(path::AbstractString)
 end
 
 function _read_hdf5_record_count(h5)
-    # An artifact probe group has no record_count dataset: every row is
-    # cursor-valid on disk, so the row count IS the record count.
-    haskey(h5, "record_count") || return size(h5["data"], 1)
+    # A standalone (pre-artifact) moment file counts its records in the
+    # `record_count` dataset. An artifact probe group has none: its records
+    # are the rows its cursor blesses (`_ra_rows_valid`, RunArtifact.jl) --
+    # until 2026-10-19 this took every row on disk, so a torn tail of fill
+    # rows read back as data and `:record_count` counted it (F-59).
+    haskey(h5, "record_count") ||
+        return _ra_rows_valid(h5, size(h5["data"], 1), String(HDF5.name(h5)))
     count = read(h5["record_count"])
     return count isa AbstractArray ? Int(first(count)) : Int(count)
 end

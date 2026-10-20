@@ -383,6 +383,53 @@ its batch, so a retry trusts exactly the cursored prefix and the replay
 discard truncates datasets against absolute turns, as the text path does
 today. This must be designed in from the first dataset, not retrofitted.
 
+**The row-indexed cursor (decided 2026-10-19, the comprehensive audit's fix
+batch; F-73, F-74, F-59, F-63, F-84).** Measured on cb3c344: the cursor was
+the turn attribute `rows_valid_through_turn` alone and the truncation
+searched the turn column for it (`searchsortedlast`), so a torn tail of HDF5
+fill rows -- the extent advanced by a kill between the data write and the
+cursor flush, every unwritten row reading as turn 0 -- passed through
+untouched and a continuation appended after it (`[0,1,2,3,4,5,0,0,6,7]`,
+F-74); no reader applied the cursor at all (20 rows on disk at cursor 9 read
+as 20, and `MomentOutput`'s `:record_count` counted the tail, F-59); a group
+whose cursor attribute was absent took the no-rows default and was truncated
+to zero rows on the next append-open, rows below `first_turn` included
+(F-63), the cursor's rewrite being a delete-then-create with exactly that
+window; and `observe!(::MomentObserver)` advanced its row count before the
+row existed, so an exception inside the row computation left a garbage row
+that the failed run's best-effort finalize pushed, the cursor was stamped
+from that row's turn, and the retry of a chunked run cut chunk 1 away
+(`[0,4,5,6,7]` for a run owed `0:7`, F-73). Decided: the cursor KEYS ON THE
+ROW INDEX the writer owns. Every row group (`/luminosity/<label>`,
+`/moments|snapshot|bpm/<name>`) carries the pair `rows_valid` -- the number
+of leading rows the writer has blessed; the rows beyond it are a torn tail
+whatever their values -- and `rows_valid_through_turn`, the turn of that
+row, the public meaning (the no-rows sentinel `typemin(Int32)` when none),
+stamped together after each batch of rows (`_ra_stamp_cursor!`) and
+re-stamped by the truncation of an append-open; a group created and not yet
+flushed carries the turn sentinel alone and reads as zero rows blessed. The
+append-open truncates to `rows_valid` first, then applies the replay rule to
+the blessed prefix, whose turns are non-decreasing by construction (a prefix
+out of turn order is refused by name). Every reader -- `read(TaskOutput(p),
+kind; ...)` for every named kind and `:all`, the table of contents,
+`MomentOutput` and its `:record_count` -- returns the blessed rows only, and
+the table of contents reports `rows` (what a read returns) beside
+`rows_on_disk` (the extent), the one surface for the raw count. A same-type
+scalar attribute is rewritten in place, so a cursor never passes through an
+absent state. Compatibility rule: a group whose cursor is absent, and a
+group holding rows under the turn cursor of a file written before
+2026-10-19, are REFUSED by name under `append=true`, as found and never
+truncated, with the remedy (a new path, or `append=false`) -- the
+ledger-column precedent of 2026-10-16, chosen over deriving `rows_valid`
+from the turn cursor because that derivation is the by-value guess F-74 is
+about and is ambiguous on a snapshot whose fill value equals a recorded
+turn; reading such a file stays possible, every row on disk with a warning
+naming the group. `observe!` computes the row, then commits it, and records
+its `:observer_output` receipt after its `initialized` refusal, as the
+snapshot twin does (F-84). The suite's "The run artifact's row cursor: ..."
+testset pins each shape against the measured values; the probes are under
+`result/fix_batch_2026_10_19/probes/T/`.
+
 **The partial provenance slot (decided 2026-10-16, owner; the stage 3-4
 audit's U5-2, restored by the crab-noise neighbour audit).** Since the
 2026-10-16 neighbour audit the provenance writer runs every refusal before

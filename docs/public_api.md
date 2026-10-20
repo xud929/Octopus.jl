@@ -186,7 +186,15 @@ is writing as of its last flush, say so once per writer with an `@info`
 naming the lock's line (rows valid through each group's
 `rows_valid_through_turn` cursor and the ledger's `current_turn`), and retry
 a failed open once. The lock is advisory and for Octopus writers; HDF5
-itself does not honour it.
+itself does not honour it. Every reader applies that cursor (2026-10-19):
+the cursor is the row index the writer owns (`rows_valid`, with
+`rows_valid_through_turn` its turn), rows beyond it are a torn tail from an
+interrupted write and are not returned, `read(moments, :record_count)`
+counts the rows a read returns, and the table of contents `read(out)`
+reports `rows` beside `rows_on_disk` for every named group. A file written
+before the row cursor existed reads whole, with a warning naming the group,
+and is refused by name under `append = true` (use a new path or
+`append = false`).
 
 What a run's artifact RESOLVED is on record (2026-10-16): under
 `with_execution_audit`, `prepare_run_artifact!` records one

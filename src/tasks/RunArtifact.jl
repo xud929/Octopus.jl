@@ -155,10 +155,20 @@ state, and say so once per writer with an `@info` naming the lock's line.
 The in-process registry of live writers (the "second live observer"
 warning) stays beside it.
 
-**Crash recovery** is the per-group cursor attribute
-`rows_valid_through_turn`, written AFTER its batch of rows and flushed with
-it: on open, any rows beyond the cursor are a torn tail from an interrupted
-write and are truncated. `capacity` is the rows-per-group buffered between
+**Crash recovery** is the per-group cursor PAIR, written AFTER its batch of
+rows and flushed with it: `rows_valid`, the number of leading rows the writer
+has blessed, is what the protocol keys on (since 2026-10-19; before, the turn
+attribute alone was the cursor, and a torn tail of HDF5 fill rows passed
+through the turn-value search untouched), and `rows_valid_through_turn`, the
+turn of that row, is its public meaning. On an `append=true` open the rows
+beyond `rows_valid` are a torn tail from an interrupted write and are
+truncated whatever their values, then the replay rule applies; every reader
+returns the blessed rows only, and the table of contents shows `rows` beside
+`rows_on_disk`. A group whose cursor is absent is refused by name, never
+truncated to zero rows, as is a group holding rows under the turn-keyed
+cursor of a file written before 2026-10-19 (the remedy for both: a new path,
+or `append=false`); reading either stays possible, every row on disk with a
+warning naming the group. `capacity` is the rows-per-group buffered between
 flushes — the ONE batching knob for the row-shaped producers (luminosity,
 moments, BPM readings; the per-observer capacities retired 2026-08-18).
 Snapshots are the deliberate exception: a phase-space block is already
@@ -407,13 +417,60 @@ function _ra_artifact_entry(art::Union{Nothing,RunArtifact}, consumer::Symbol)
                               reason, consumer)
 end
 
-# HDF5 attribute write-or-overwrite (plain assignment refuses an existing
-# attribute in HDF5.jl, and the cursor is rewritten at every flush).
+# ---------------------------------------------------------------------------
+# The per-group crash-recovery cursor (docs/design/run_artifact.md, "Crash
+# recovery"): ONE pair of attributes that every row producer stamps together
+# (`_ra_stamp_cursor!`), every append-open reads (`_ra_row_cursor`) and every
+# reader applies (`_ra_rows_valid`). `rows_valid` is the cursor the protocol
+# KEYS on since 2026-10-19: the number of leading rows the writer has blessed,
+# so the rows beyond index `rows_valid` are a torn tail WHATEVER their values
+# -- a tail of HDF5 fill rows (turn 0) included, which the rule keyed on the
+# turn VALUE could not see: `searchsortedlast` over the turn column kept
+# `[0,1,2,3,4,5,0,0]` whole and a continuation appended after it, and no
+# reader applied the cursor at all (comprehensive audit 2026-10-18, F-74 and
+# F-59). `rows_valid_through_turn` is the public meaning beside it, the turn
+# of row `rows_valid` (`_RA_NO_TURN` when no row is blessed), the name the
+# lock-aware readers' @info and the docs cite. A group created and not yet
+# flushed carries the turn sentinel alone (`prepare_run_artifact!` and
+# `_ra_bind_probe!` stamp it at creation); the first flush or the first
+# continue stamps the pair.
+# ---------------------------------------------------------------------------
+const _RA_ROW_CURSOR = "rows_valid"
+const _RA_TURN_CURSOR = "rows_valid_through_turn"
+const _RA_NO_TURN = Int64(typemin(Int32))
+
+# HDF5 attribute write-or-overwrite. Plain assignment refuses an existing
+# attribute in HDF5.jl, and the cursors are rewritten at every flush. An
+# existing SCALAR attribute of the same datatype is rewritten IN PLACE
+# (`write(attr, value)`), so a cursor never passes through an absent state:
+# the delete-then-create this used to do left a window in which a kill landed
+# a group with no cursor, which the next append-open then truncated to zero
+# rows, rows below `first_turn` included (F-63; such a group is refused by
+# name now, `_ra_row_cursor`). A datatype or shape change takes the
+# delete-and-create route: an in-place write CONVERTS to the stored type
+# (measured 2026-10-19: 2.5 written in place over an Int64 attribute read
+# back as 2).
 function _ra_set_attr!(obj, name::String, value)
     a = HDF5.attributes(obj)
-    haskey(a, name) && HDF5.delete_attribute(obj, name)
+    if haskey(a, name)
+        attr = a[name]
+        if _ra_attr_rewritable(attr, value)
+            write(attr, value)
+            return nothing
+        end
+        HDF5.delete_attribute(obj, name)
+    end
     a[name] = value
     return nothing
+end
+
+# Whether `attr` can take `value` in place: a scalar Int64 or Float64 (the two
+# this file rewrites -- the cursors, a probe's `s`) over an attribute of the
+# same datatype and a scalar dataspace. Anything else is recreated.
+function _ra_attr_rewritable(attr, value)
+    value isa Union{Int64,Float64} || return false
+    HDF5.API.h5s_get_simple_extent_type(HDF5.dataspace(attr)) == HDF5.API.H5S_SCALAR || return false
+    return HDF5.datatype(attr) == HDF5.datatype(value)
 end
 
 _ra_get_attr(obj, name::String, default) = begin
@@ -433,19 +490,139 @@ function _ra_append_rows!(dset, vals)
     return nothing
 end
 
-# Truncate one luminosity group to rows with turn <= keep_through. Rows are in
-# ascending turn order (schedules plan forward; rewinds drop), so the cutoff
-# is a scan for the boundary.
+"""
+    _ra_stamp_cursor!(g, nvalid, last_turn)
+
+Advance the row group `g`'s cursor: `rows_valid = nvalid`, the leading rows
+the writer has blessed, and `rows_valid_through_turn`, the turn of row
+`nvalid` (`last_turn`; `_RA_NO_TURN` when `nvalid` is 0). Written AFTER the
+rows and flushed with them by every row producer (the luminosity flush, the
+probe push) and by the truncation of an append-open; read as a pair.
+"""
+function _ra_stamp_cursor!(g, nvalid::Integer, last_turn)
+    _ra_set_attr!(g, _RA_ROW_CURSOR, Int64(nvalid))
+    _ra_set_attr!(g, _RA_TURN_CURSOR, nvalid == 0 ? _RA_NO_TURN : Int64(last_turn))
+    return nothing
+end
+
+"""
+    _ra_row_cursor(g, nrows, where, path) -> Int
+
+The rows of the group `g` (`where`, its path inside the file at `path`) that
+the writer has blessed, read for an append-open: `rows_valid`, required to
+lie in `0:nrows`. Refused by name, as found and never truncated to zero rows
+(F-63): a group carrying neither cursor attribute (torn, or not this
+writer's); a group carrying `rows_valid_through_turn` but no `rows_valid`,
+written before 2026-10-19 under the turn-keyed cursor, under which a torn
+tail of fill rows cannot be told from valid rows -- unless the turn attribute
+is the no-rows sentinel, the one state a group created and never flushed is
+in, which is zero rows blessed; a `rows_valid` outside `0:nrows` (the cursor
+claims rows the file does not hold); and a `rows_valid` without its turn twin
+(the two are written together). Every refusal offers the remedy: a new path,
+or `append=false`.
+"""
+function _ra_row_cursor(g, nrows::Integer, where::String, path::String)
+    a = HDF5.attributes(g)
+    has_rows, has_turn = haskey(a, _RA_ROW_CURSOR), haskey(a, _RA_TURN_CURSOR)
+    if !has_rows
+        if has_turn
+            turn_cursor = Int64(read(a[_RA_TURN_CURSOR]))
+            turn_cursor == _RA_NO_TURN && return 0
+            throw(ArgumentError(
+                "RunArtifact(append=true): $(where) at $(path) carries the turn cursor " *
+                "$(_RA_TURN_CURSOR) = $(turn_cursor) but no row cursor $(_RA_ROW_CURSOR): the file " *
+                "predates the row-indexed cursor (2026-10-19), under which a torn tail of fill rows " *
+                "is told from valid rows by row index and not by turn value, and this writer does " *
+                "not continue it; use a new path or append=false"))
+        end
+        throw(ArgumentError(
+            "RunArtifact(append=true): $(where) at $(path) carries no cursor ($(_RA_ROW_CURSOR), " *
+            "$(_RA_TURN_CURSOR)): the group is torn or not this writer's; use a new path or " *
+            "append=false"))
+    end
+    has_turn || throw(ArgumentError(
+        "RunArtifact(append=true): $(where) at $(path) carries $(_RA_ROW_CURSOR) but no " *
+        "$(_RA_TURN_CURSOR); the two are written together, so the group is torn; use a new path " *
+        "or append=false"))
+    valid = Int(read(a[_RA_ROW_CURSOR]))
+    0 <= valid <= nrows || throw(ArgumentError(
+        "RunArtifact(append=true): $(where) at $(path) has $(_RA_ROW_CURSOR) = $(valid) but its " *
+        "dataset holds $(nrows) row(s): the cursor claims rows the file does not hold, so the " *
+        "group is torn; use a new path or append=false"))
+    return valid
+end
+
+"""
+    _ra_rows_valid(g, nrows, where) -> Int
+
+The rows of the group `g` a READER returns: `rows_valid` when the group
+carries it (clamped to the `nrows` on disk, with a warning, when it claims
+more); zero for a group created and never flushed (the turn sentinel alone);
+otherwise -- a group written before the row cursor existed (2026-10-19), or
+one carrying no cursor at all -- every row on disk, with a warning naming
+the group, because the torn-tail rule cannot be applied by turn value.
+Reading never refuses on the cursor; continuing does (`_ra_row_cursor`).
+Before 2026-10-19 no reader applied the cursor (F-59).
+"""
+function _ra_rows_valid(g, nrows::Integer, where::String)
+    a = HDF5.attributes(g)
+    if haskey(a, _RA_ROW_CURSOR)
+        valid = Int(read(a[_RA_ROW_CURSOR]))
+        0 <= valid <= nrows && return valid
+        @warn "$(where) has $(_RA_ROW_CURSOR) = $(valid) but $(nrows) row(s) on disk: the cursor " *
+              "claims rows the file does not hold (torn); read as far as the rows on disk" path = HDF5.filename(g)
+        return clamp(valid, 0, nrows)
+    end
+    if haskey(a, _RA_TURN_CURSOR)
+        Int64(read(a[_RA_TURN_CURSOR])) == _RA_NO_TURN && return 0
+        @warn "$(where) predates the row-indexed cursor (2026-10-19): its torn-tail rule cannot be " *
+              "applied by turn value, so its $(nrows) row(s) are read as they stand; continuing the " *
+              "file with append=true is refused, use a new path" path = HDF5.filename(g)
+        return nrows
+    end
+    @warn "$(where) carries no row cursor ($(_RA_ROW_CURSOR)): the torn-tail rule cannot be applied " *
+          "and its $(nrows) row(s) are read as they stand" path = HDF5.filename(g)
+    return nrows
+end
+
+# A blessed prefix out of turn order is refused by name: the replay rule is a
+# `searchsortedlast`, which answers silently on an unsorted column.
+function _ra_check_turn_order(turns, where::String, path::String)
+    issorted(turns) || throw(ArgumentError(
+        "RunArtifact(append=true): the $(length(turns)) row(s) the cursor of $(where) at $(path) " *
+        "blesses are not in turn order, so the group is torn or not this writer's; use a new " *
+        "path or append=false"))
+    return nothing
+end
+
+"""
+    _ra_truncate_group!(g, keep_through)
+
+The append-open of one luminosity group: the torn-tail rule by the ROW cursor
+first (`_ra_row_cursor`: the rows beyond `rows_valid` are a torn tail whatever
+their values), then the replay rule on the blessed prefix -- the rows with
+turn <= `keep_through` stay, where `keep_through` is `min(<turn cursor>,
+first_turn - 1)` as `prepare_run_artifact!` computes it; the prefix's turns
+never exceed the turn cursor, so `first_turn - 1` is the bound that acts. The
+prefix is in non-decreasing turn order by construction (one writer, rows in
+turn order within a window, a replayed window dropped before the next is
+appended); one that is not is refused by name. Both datasets are cut to the
+rows kept and the cursor pair is re-stamped. Until 2026-10-19 this searched
+the whole turn column for the turn cursor (F-74).
+"""
 function _ra_truncate_group!(g, keep_through::Int64)
+    where, path = String(HDF5.name(g)), String(HDF5.filename(g))
     dt, dv = g["turns"], g["values"]
-    turns = length(dt) == 0 ? Int64[] : read(dt)
+    nrows = min(length(dt), length(dv))
+    valid = _ra_row_cursor(g, nrows, where, path)
+    turns = valid == 0 ? Int64[] : Int64.(dt[1:valid])
+    _ra_check_turn_order(turns, where, path)
     keep = searchsortedlast(turns, keep_through)
-    if keep < length(turns)
+    if keep < length(dt) || keep < length(dv)
         HDF5.set_extent_dims(dt, (keep,))
         HDF5.set_extent_dims(dv, (keep,))
     end
-    _ra_set_attr!(g, "rows_valid_through_turn",
-                  Int64(keep == 0 ? typemin(Int32) : turns[keep]))
+    _ra_stamp_cursor!(g, keep, keep == 0 ? _RA_NO_TURN : turns[keep])
     return nothing
 end
 
@@ -1122,9 +1299,9 @@ weak-strong task without a strong beam, the crab-noise example's own shape,
 showed the nothing-known sentinel after a kill with tens of thousands of rows
 on file. `current_turn` is the turn being processed when the flush ran (both
 loops assign it at the top of the turn, before any channel push); each
-channel's own cursor (`rows_valid_through_turn`, a series' row count) says
-where that channel stands, so within one turn the ledger may lead a channel
-by one.
+channel's own cursor (a row group's `rows_valid` / `rows_valid_through_turn`
+pair, a series' row count) says where that channel stands, so within one
+turn the ledger may lead a channel by one.
 """
 function _ra_stamp_ledger!(art::RunArtifact)
     ex = art.file["execution"]
@@ -1138,11 +1315,12 @@ function _ra_flush_luminosity!(art::RunArtifact, label::String)
     (t === nothing || isempty(t)) && return nothing
     v = art.pending_values[label]
     g = art.file["luminosity"][label]
+    n = length(g["turns"])
     _ra_append_rows!(g["turns"], t)
     _ra_append_rows!(g["values"], v)
     # Rows first, cursor after, flushed together: a crash in between leaves
     # rows beyond the cursor, which the next open truncates -- conservative.
-    _ra_set_attr!(g, "rows_valid_through_turn", t[end])
+    _ra_stamp_cursor!(g, n + length(t), t[end])
     _ra_stamp_ledger!(art)
     HDF5.flush(art.file)
     empty!(t)
@@ -1286,14 +1464,27 @@ the artifact at prepare time.
 const _ACTIVE_RUN_ARTIFACT = Base.ScopedValues.ScopedValue{Any}(nothing)
 active_run_artifact() = _ACTIVE_RUN_ARTIFACT[]
 
+"""
+    _ra_truncate_probe!(g, keep_through)
+
+The append-open of one probe group (`/moments|snapshot|bpm/<name>`), the
+row-matrix twin of `_ra_truncate_group!`: the torn-tail rule by the row
+cursor (`_ra_row_cursor`), then the replay rule on the blessed prefix's turn
+column (column 1), `keep_through = min(<turn cursor>, first_turn - 1)` as
+`_ra_bind_probe!` computes it. Until 2026-10-19 this searched the whole turn
+column for the turn cursor, which a tail of HDF5 fill rows (turn 0) passed
+through untouched, so a continuation appended after the torn tail (F-74).
+"""
 function _ra_truncate_probe!(g, keep_through::Int64)
+    where, path = String(HDF5.name(g)), String(HDF5.filename(g))
     d = g["data"]
     nrows = size(d, 1)
-    turns = nrows == 0 ? Float64[] : d[1:nrows, 1]
+    valid = _ra_row_cursor(g, nrows, where, path)
+    turns = valid == 0 ? Float64[] : vec(d[1:valid, 1])
+    _ra_check_turn_order(turns, where, path)
     keep = searchsortedlast(turns, Float64(keep_through))
     keep < nrows && HDF5.set_extent_dims(d, (keep, size(d, 2)))
-    _ra_set_attr!(g, "rows_valid_through_turn",
-                  Int64(keep == 0 ? typemin(Int32) : round(Int64, turns[keep])))
+    _ra_stamp_cursor!(g, keep, keep == 0 ? _RA_NO_TURN : round(Int64, turns[keep]))
     return nothing
 end
 
@@ -1364,9 +1555,10 @@ end
 
 """
 Append a block of probe rows (column 1 is the absolute turn) and advance the
-group's cursor to the block's last turn, flushed together -- the same
-rows-then-cursor ordering the luminosity channel uses, so a crash between
-them truncates conservatively on the next open.
+group's cursor pair -- `rows_valid` to the row count, `rows_valid_through_turn`
+to the block's last turn -- flushed together: the same rows-then-cursor
+ordering the luminosity channel uses, so a crash between them leaves rows
+beyond the cursor that the next open truncates, conservatively.
 """
 function _ra_push_probe_rows!(art::RunArtifact, key::String, rows::AbstractMatrix)
     _mp_is_root() || return nothing
@@ -1383,7 +1575,7 @@ function _ra_push_probe_rows!(art::RunArtifact, key::String, rows::AbstractMatri
     n = size(d, 1)
     HDF5.set_extent_dims(d, (n + size(rows, 1), size(d, 2)))
     d[(n + 1):(n + size(rows, 1)), :] = Float64.(rows)
-    _ra_set_attr!(g, "rows_valid_through_turn", Int64(round(Int64, rows[end, 1])))
+    _ra_stamp_cursor!(g, n + size(rows, 1), round(Int64, rows[end, 1]))
     # The ledger after the rows and the cursor, flushed together (U5-1).
     _ra_stamp_ledger!(art)
     HDF5.flush(art.file)
@@ -1422,7 +1614,8 @@ function _ra_open(path)
     if held !== nothing
         @info "a live Octopus writer holds the run artifact's lock, so the file is being " *
               "written: its rows are valid through each group's rows_valid_through_turn " *
-              "cursor and the ledger's current_turn, and a read may fail while a flush " *
+              "cursor (the rows_valid rows the readers return) and the ledger's " *
+              "current_turn, and a read may fail while a flush " *
               "lands" path = p writer = held maxlog = 1 _id = Symbol("run_artifact_lock_", hash((p, held)))
     end
     try
@@ -1478,7 +1671,12 @@ Moment groups additionally read through the full `MomentOutput` machinery
 Reading never takes the artifact's sidecar lock (`<path>.lock`, held by a
 live writer; see [`RunArtifact`](@ref)): a file another process is writing
 reads as of its last flush, with its rows valid through each group's
-`rows_valid_through_turn` cursor and the ledger's `current_turn`. When such a
+`rows_valid_through_turn` cursor and the ledger's `current_turn`. Every read
+here applies the cursor (2026-10-19): the rows beyond a group's `rows_valid`
+are a torn tail and are not returned, and the table of contents reports
+`rows` (what a read returns) beside `rows_on_disk` (the dataset's extent); a
+group written before the row cursor existed reads whole, with a warning
+naming it. When such a
 lock exists, every reader here says so once per writer and process -- an
 `@info` naming the lock's line (host, pid, since when, task) -- and an open
 that fails while a flush lands is retried once before the failure propagates
@@ -1535,17 +1733,27 @@ end
 # Reader fields are the per-row convention (turn, value) -- the quantity is
 # named by the KIND, matching the probes' singular column names; the FILE
 # datasets keep their layout names (turns/values), so existing artifacts
-# continue and append untouched (owner direction, 2026-08-19).
-_ra_lum_series(g) = (turn=read(g["turns"]), value=read(g["values"]))
+# continue and append untouched (owner direction, 2026-08-19). Both readers
+# return the rows the group's cursor blesses (`_ra_rows_valid`): rows beyond
+# it are a torn tail -- fill rows of a kill between the data write and the
+# cursor flush -- which every reader returned as data until 2026-10-19 (F-59).
+function _ra_lum_series(g)
+    dt, dv = g["turns"], g["values"]
+    n = _ra_rows_valid(g, min(length(dt), length(dv)), String(HDF5.name(g)))
+    return (turn=n == 0 ? Int64[] : Int64.(dt[1:n]),
+            value=n == 0 ? Float64[] : Float64.(dv[1:n]))
+end
 
 function _ra_probe_columns(g)
     names = String.(read(g["column_names"]))
-    data = read(g["data"])
+    d = g["data"]
+    n = _ra_rows_valid(g, size(d, 1), String(HDF5.name(g)))
+    data = n == 0 ? zeros(Float64, 0, size(d, 2)) : d[1:n, :]
     # `s` is the probe's arc position (the design's attrs: name, s), nothing
     # for task-hook probes and files from before the attribute existed --
     # the read_losses mixed scalars-and-columns precedent.
     (; :s => _ra_get_attr(g, "s", nothing),
-       (Symbol(n) => vec(data[:, i]) for (i, n) in pairs(names))...)
+       (Symbol(nm) => vec(data[:, i]) for (i, nm) in pairs(names))...)
 end
 
 _ra_column_key(column::Symbol) = column
@@ -2018,7 +2226,10 @@ end
 
 The artifact's table of contents, RECURSIVE and metadata-only (shape and
 attribute reads; no data): each named kind maps to `Dict(name =>
-(columns, rows[, s]))` -- `s` is the probe's arc position where stamped --
+(columns, rows, rows_on_disk[, s]))` -- `rows` the cursor-blessed rows a
+`read(out, kind; name)` returns, `rows_on_disk` the dataset's extent (a torn
+tail beyond the cursor shows as the difference; 2026-10-19), `s` the probe's
+arc position where stamped --
 and the single products carry their own `(columns, rows, ...)`;
 `turn_modulation` is its provenance vector whole (attributes, the nominals
 included), with each slot's `series` standing as the recorded ROW COUNT in
@@ -2051,13 +2262,20 @@ function Base.read(out::TaskOutput)
                 for name in keys(obj)
                     g = obj[name]
                     g isa HDF5.Group || continue
+                    # `rows` is what a read returns (the cursor-blessed rows);
+                    # `rows_on_disk` the dataset's extent, so a torn tail shows
+                    # as the difference (2026-10-19, F-59).
                     if k == "luminosity"
+                        on_disk = min(length(g["turns"]), length(g["values"]))
                         groups[String(name)] = (columns=["turn", "value"],
-                                                rows=length(g["turns"]))
+                                                rows=_ra_rows_valid(g, on_disk, String(HDF5.name(g))),
+                                                rows_on_disk=on_disk)
                     else
                         s = _ra_get_attr(g, "s", nothing)
+                        on_disk = size(g["data"], 1)
                         base = (columns=String.(read(g["column_names"])),
-                                rows=size(g["data"], 1))
+                                rows=_ra_rows_valid(g, on_disk, String(HDF5.name(g))),
+                                rows_on_disk=on_disk)
                         groups[String(name)] = s === nothing ? base :
                                                merge(base, (s=Float64(s),))
                     end
