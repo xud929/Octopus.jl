@@ -56,9 +56,30 @@ struct WeakStrongBeamBeamMap <: AbstractTrackingMethod end
 """
     default_method(spec)
 
-Return the preferred tracking method object for an element spec.
+Return the preferred tracking method object for an element spec: the kind's
+own override where it has one (the eight kinds whose methods exclude
+`Symplectic6DMap`), else `Symplectic6DMap()`.
+
+A registered kind that declares NO tracking method (`tracking_methods =
+DataType[]`: the composite `:line`, whose placements each compile with their
+own) is refused by name rather than answered with a method it denies.
+`compile_runtime(spec, Symplectic6DMap())` refuses the same request on such a
+kind, and the registry's two answers must agree; until the 2026-10-20 fix batch
+this returned `Symplectic6DMap()` for the line (2026-10-18 comprehensive audit,
+F-174). Derived from the declaration, so a future method-less kind needs no
+override of its own; `validate_element_metadata` holds every kind to it.
 """
-default_method(::Type{<:AbstractElementSpec}) = Symplectic6DMap()
+function default_method(T::Type{<:AbstractElementSpec})
+    meta = _element_meta_or_nothing(T)
+    if meta !== nothing && isempty(meta.tracking_methods)
+        throw(ArgumentError(
+            "element kind $(repr(meta.kind)) declares no tracking method of its own " *
+            "(supported_tracking_methods is empty): a composite compiles each placement " *
+            "with that placement's tracking_method, so there is no method to answer. " *
+            "Set tracking_method on the placements instead."))
+    end
+    return Symplectic6DMap()
+end
 default_method(spec::AbstractElementSpec) = default_method(typeof(spec))
 
 description(::Type{Symplectic6DMap}) =

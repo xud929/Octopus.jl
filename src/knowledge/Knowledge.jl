@@ -222,7 +222,11 @@ alternatives replace the generic candidate rule for that parameter, so they
 also serve `Real` parameters whose only falsifiable moves are specific
 values. An empty tuple means "no declaration"; validity of each alternative
 is arbitrated by the constructor at probe time, exactly as numeric
-perturbations are (U4-3).
+perturbations are (U4-3). The two readings are told apart by the default's
+type: for a Symbol or type default the tuple is the enum and
+`validate_element_metadata` requires the default to be one of its members;
+for a numeric default the tuple is perturbation values and need not contain
+it (the aperture's limits default to `Inf` against shrunken alternatives).
 """
 struct ParamMeta
     required::Bool
@@ -236,14 +240,16 @@ ParamMeta(; required::Bool=false, unit="", default=nothing, meaning="",
     ParamMeta(required, String(unit), default, String(meaning), alternatives)
 
 # Schema entries for the placement keys, spliced into every registered kind's
-# `parameters` declaration (`_PLACEMENT_PARAMS...`) so `parameter_schema`,
-# `element_help`, and the parameter-effectiveness contract see what the
-# compile wraps consume for every kind — before this, the schemas
+# `parameters` declaration (`_PLACEMENT_PARAMS...`, or `_placement_param(:key;
+# meaning=...)` below where a kind has more to say about one) so
+# `parameter_schema`, `element_help`, and the parameter-effectiveness contract
+# see what the compile wraps consume for every kind — before this, the schemas
 # under-declared what `compile_runtime` reads (2026-08-05 audit, U13-2
-# completion). Kinds where a placement parameter conjugates to exactly
-# nothing (an identity map, a constant kick) say why in
-# `DEFAULT_INACTIVE_ELEMENT_PARAMS`; the reasons are map structure, not
-# sweep output, because a mathematically inert conjugation can still move
+# completion). `validate_element_metadata` holds every kind's entries to this
+# table's unit, default and alternatives (F-171). Kinds where a placement
+# parameter conjugates to exactly nothing (an identity map, a constant kick)
+# say why in `DEFAULT_INACTIVE_ELEMENT_PARAMS`; the reasons are map structure,
+# not sweep output, because a mathematically inert conjugation can still move
 # the last bit through the (v - d) + d round trip.
 const _PLACEMENT_PARAMS = (
     # `name` is here for the same reason the placement keys are: the beam-line
@@ -283,6 +289,26 @@ const _PLACEMENT_PARAMS = (
     ref_tilt=ParamMeta(default=0, unit="rad",
         meaning="DESIGN roll of the element about s — geometry, not an error; wraps outside the misalignment, and a :madx alignment error against it is stated in the unrolled design frame"),
 )
+
+"""
+    _placement_param(key; meaning) -> ParamMeta
+
+The `_PLACEMENT_PARAMS` entry for `key` with a kind-specific `meaning` and
+NOTHING else changed: `required`, `unit`, `default` and `alternatives` come from
+the one table. A kind that has more to say about a placement key than the
+generic sentence (the bend's `tilt` against its `ref_tilt`, the thin kinds'
+zero-length reading of the convention, the line's rigid girder) declares it
+through this rather than by writing its own `ParamMeta`: 13 of the 31 kinds had
+copied the entries by hand and 79 of those copies had drifted -- every one had
+lost its unit, and seven kinds' `misalign_convention` had lost the
+`alternatives` the effectiveness contract needs to perturb a Symbol parameter at
+all (2026-10-18 comprehensive audit, F-171). `validate_element_metadata` holds
+every registered kind's placement entries to the table.
+"""
+function _placement_param(key::Symbol; meaning::AbstractString)
+    base = _PLACEMENT_PARAMS[key]
+    return ParamMeta(base.required, base.unit, base.default, String(meaning), base.alternatives)
+end
 
 """
     ElementMeta(; kind, spec_type, friendly_constructor, runtime_type, runtime_types,
@@ -590,6 +616,7 @@ Validation checklist:
 - declare `TwissDispersionAnalysis` on every kind whose `tracking_methods` contain `Symplectic6DMap` and not `NonSymplectic6DMap` (the suite's set tripwires derive that set and fail on a kind that departs from it); use `PlaceholderAnalysis` only for kinds that have no analysis;
 - the numeric type follows ONE rule for every kind (owner decision 2026-10-16): the compile constructor builds the runtime in `numeric_type(spec)`, the promotion of the stored parameters over a `Float64` floor for an untyped friendly constructor (a `Float32` input gives a `Float64` element, a dual or complex input widens it, nothing narrows) and the stored `numeric_type` for the `Spec{T}` form -- which every kind has, so every kind can sit in a `Float32` line; the typed form stores `_typed_spec_params(T; ...)` (floating-point inputs as `T`, `numeric_type = T`) and the untyped form routes `numeric_type=T` to it, storing no type itself (an untyped form that builds through its typed one drops the stored type again with `_floor_form`, so a dual or BigFloat placed later by a knob or a placement override still widens the element); declare the schema entry by splicing `_PLACEMENT_PARAMS...` (or `numeric_type=_PLACEMENT_PARAMS.numeric_type`); the runtime struct carries `T<:Number` as its one numeric type parameter, from which `_required_beam_eltype` (`src/track/Track.jl`) derives the beam element type the kind requires, so a task refuses a beam of another type by name; the suite pins the derived set against the registry;
 - declare the cross-backend rounding class on the runtime type (`_cross_backend_rounding`, `CrossBackendRounding` in `src/track/Track.jl`): for each of the six coordinates `:untouched`, `:bitwise` (written by single IEEE operations or arithmetic exact under any FMA fusion) or `:ulp` with a bound in ulps of the coordinate's scale and a `why` naming the operations; the device fuses `a b + c` into one FMA and its libm differs from the host's on transcendentals, so anything else is `:ulp`; there is no default, and the suite's "Cross-backend rounding classes" testset derives the set of types that must declare and measures every registry example against its declaration (the measurement wins);
+- declare the placement keys by splicing `_PLACEMENT_PARAMS...`, or through `_placement_param(:key; meaning=...)` where the kind has more to say about one: `validate_element_metadata` holds every placement entry to the table's unit, default and alternatives, compares EVERY declared default (the example's or not) with the map omitting the parameter compiles to, requires a Symbol or type default to lie within its `alternatives`, and refuses empty descriptions, keywords, meanings and construction help (F-168, F-171, F-172);
 - run `validate_element_metadata()`;
 - run `element_help(MyElementSpec)` and `element_help(:my_element)`;
 - smoke-test execution through `TrackingTask`.
@@ -1141,45 +1168,158 @@ function _compiled_matches_runtime(compiled, rt::Type)
 end
 
 """
-Compare each declared `ParamMeta.default` against the runtime it produces.
+Compare each declared `ParamMeta.default` against the runtime it produces, for
+EVERY non-required key that declares one.
 
 The checkable property is that OMITTING a parameter compiles to the same map as
-passing its declared default. Anything a kind cannot be built or compiled from
-is skipped rather than guessed at, and the skip is silent by design: this runs
-over every registered kind and a construction failure is the
-`ElementParameterEffectivenessContract`'s business, not this check's.
+passing its declared default. It is checked whether or not the kind's example
+sets the key: until the 2026-10-20 fix batch the loop skipped every key the
+example left at its default (`haskey(base, key) || continue`), which was 531 of
+the 608 declared defaults, every one on `:drift` and `:marker`, and the very
+`quadrupole.nst` an earlier version of this docstring cited as its
+discriminating example (2026-10-18 comprehensive audit, F-168: `drift.h`
+redeclared from 0 to 6 validated clean while the compiled map moved).
 
-Verified discriminating: with `quadrupole.nst`'s declared default (1) the two
-compile identically, and with a wrong one (7) they do not.
+Two bases, and no silent skip:
+
+  * the kind's example, with `key` removed on one side and set to the declared
+    default on the other -- the strong form, because the example's other
+    parameters make the key observable (`nst` splits a LOADED quadrupole);
+  * when the constructor REFUSES the declared default beside the example, the
+    example's REQUIRED parameters alone, where the key has no twin to conflict
+    with. That is the two-spellings refusal the constructors make by design: an
+    explicit `k1` beside the folded `kn[2]` it conflicts with, the bend's
+    `angle` beside its folded `h`/`b0`. The pairs compared this way are returned
+    in `on_required_base`, so the weaker form is visible and the suite can
+    re-derive that each one is refused beside its example.
+
+Anything else that refuses is an ERROR naming the key, never a skip: a declared
+default the constructor rejects on the bare base too (a default nothing can
+pass is a metadata lie), an example that does not build without one of its
+optional keys, a kind with declared defaults and no friendly constructor to
+pass them through. Returns `(; pairs, checked, on_required_base)`; on a clean
+tree `checked == pairs`.
+
+Verified discriminating on both bases: with `quadrupole.nst`'s declared default
+(1) the two compile identically and with a wrong one (7) they do not; with
+`quadrupole.k1`'s declared default (0), compared on `{L}` alone, they compile
+identically and with a wrong one (3) they do not.
 """
 function _check_declared_defaults!(errors, T, meta, example)
-    example isa ElementSpec || return errors
+    on_required_base = Tuple{Symbol,Symbol}[]
+    example isa ElementSpec || return (pairs=0, checked=0, on_required_base=on_required_base)
+    schema = parameter_schema(T)
+    declared = [(key, pmeta) for (key, pmeta) in pairs(schema)
+                if pmeta isa ParamMeta && pmeta.default !== nothing && !pmeta.required]
+    npairs = length(declared)
+    npairs == 0 && return (pairs=0, checked=0, on_required_base=on_required_base)
     ctor = meta.friendly_constructor
-    ctor === nothing && return errors
-    base = try
-        Dict{Symbol,Any}(params(example))
-    catch
-        return errors
+    if ctor === nothing
+        push!(errors, "ElementMeta $(meta.kind) declares $(npairs) parameter default(s) " *
+                      "but has no friendly_constructor through which to verify them")
+        return (pairs=npairs, checked=0, on_required_base=on_required_base)
     end
+    base = Dict{Symbol,Any}(params(example))
+    required_base = Dict{Symbol,Any}(k => v for (k, v) in base
+                                     if haskey(schema, k) && schema[k] isa ParamMeta &&
+                                        schema[k].required)
     u = (1.0e-3, 2.0e-4, -5.0e-4, 1.0e-4, 1.0e-3, 3.0e-4)
-    for (key, pmeta) in pairs(parameter_schema(T))
-        pmeta isa ParamMeta || continue
-        pmeta.default === nothing && continue
-        pmeta.required && continue
-        haskey(base, key) || continue
-        without = copy(base); delete!(without, key)
-        withdef = copy(base); withdef[key] = pmeta.default
-        omitted = try collect(compile_runtime(ctor(; without...))(u...)) catch; continue end
-        declared = try collect(compile_runtime(ctor(; withdef...))(u...)) catch; continue end
-        omitted == declared || push!(errors,
+    track(p) = collect(compile_runtime(ctor(; p...))(u...))
+    arms(b, key, default) = begin
+        without = copy(b); delete!(without, key)
+        withdef = copy(b); withdef[key] = default
+        (without, withdef)
+    end
+    # An example that does not build or compile as it stands has no defaults
+    # to compare against; the example-compiles check names the reason, and one
+    # line here keeps the unchecked pairs visible instead of one line per key.
+    try
+        track(base)
+    catch err
+        push!(errors, "ElementMeta $(meta.kind): its $(npairs) declared default(s) cannot be " *
+                      "checked because the example itself does not build or compile " *
+                      "through the friendly constructor: $(first(sprint(showerror, err), 160))")
+        return (pairs=npairs, checked=0, on_required_base=on_required_base)
+    end
+    checked = 0
+    for (key, pmeta) in declared
+        without, withdef = arms(base, key, pmeta.default)
+        omitted = try
+            track(without)
+        catch err
+            push!(errors, "ElementMeta $(meta.kind) example does not build or compile " *
+                          "without its optional parameter $(key): $(sprint(showerror, err))")
+            continue
+        end
+        reduced = false
+        compiled = try
+            track(withdef)
+        catch err_full
+            # Refused beside the example: the two-spellings case. The same key
+            # on the required parameters alone has no twin to conflict with.
+            try
+                without2, withdef2 = arms(required_base, key, pmeta.default)
+                omitted = track(without2)
+                reduced = true
+                track(withdef2)
+            catch err_reduced
+                push!(errors,
+                    "ElementMeta $(meta.kind) parameter $(key) declares default " *
+                    "$(repr(pmeta.default)) that the constructor refuses, beside the " *
+                    "example ($(first(sprint(showerror, err_full), 160))) and on the " *
+                    "example's required parameters alone " *
+                    "($(first(sprint(showerror, err_reduced), 160))); a default nothing " *
+                    "can pass is a metadata lie")
+                continue
+            end
+        end
+        checked += 1
+        reduced && push!(on_required_base, (meta.kind, key))
+        omitted == compiled || push!(errors,
             "ElementMeta $(meta.kind) parameter $(key) declares default " *
-            "$(repr(pmeta.default)) but omitting it compiles to a different map")
+            "$(repr(pmeta.default)) but omitting it compiles to a different map" *
+            (reduced ? " (compared on the example's required parameters alone)" : ""))
+    end
+    return (pairs=npairs, checked=checked, on_required_base=on_required_base)
+end
+
+"""
+The registry's method ANSWERS against its method LIST, for one kind: a kind
+that declares tracking methods must answer a declared one from
+`default_method(T)` and from `tracking_method(example)`, and a kind that
+declares none must refuse both by name, as `compile_runtime(spec, method)`
+refuses an explicit request on it. The `:line` answered `Symplectic6DMap()` to
+both while its compile refused that very request (2026-10-18 comprehensive
+audit, F-174).
+"""
+function _check_method_answers!(errors, T, meta, example)
+    queries = Any[("default_method", () -> default_method(T))]
+    example isa ElementSpec &&
+        push!(queries, ("tracking_method(example)", () -> tracking_method(example)))
+    for (label, query) in queries
+        answered, err = try
+            (typeof(query()), nothing)
+        catch e
+            (nothing, e)
+        end
+        if isempty(meta.tracking_methods)
+            err isa ArgumentError || push!(errors,
+                "ElementMeta $(meta.kind) declares no tracking method but $(label) " *
+                (answered === nothing ? "throws $(typeof(err))" : "answers $(answered)") *
+                "; a kind without methods must refuse by name, as compile_runtime does")
+        elseif answered === nothing
+            push!(errors, "ElementMeta $(meta.kind) $(label) throws: $(sprint(showerror, err))")
+        elseif !(answered in meta.tracking_methods)
+            push!(errors, "ElementMeta $(meta.kind) $(label) answers $(answered), which is " *
+                          "not a declared tracking method")
+        end
     end
     return errors
 end
 
 """
     validate_element_metadata(; throw_on_error=false)
+        -> (; passed, errors, default_pairs, defaults_checked, defaults_on_required_base)
 
 Validate the registered element metadata table. This is intended for CI,
 notebooks, and agent self-checks after adding or editing an element.
@@ -1189,16 +1329,42 @@ Checks include:
 - every registered spec has exactly one `ElementMeta`
 - every required parameter appears in `example_spec`
 - no parameter is both required and given a default
-- every declared tracking method resolves to a runtime type
+- every declared tracking method resolves to a runtime type, and every
+  runtime-type entry is a declared tracking method (the map is what
+  `compile_runtime` executes; the list is what the registry publishes)
 - friendly constructor metadata agrees with the raw `ElementSpec{kind}` type
 - declared tracking methods, contracts, and analyses are subtypes of their
   architectural roots, and the example actually compiles to a declared
   runtime type -- the non-circular consumer checks added after the injected-
   defect measurement (audit part 7, K3: 1 of 13 lies caught before them)
+- every declared `ParamMeta.default` compiles to the map omitting the
+  parameter compiles to, for EVERY non-required key that declares one, the
+  example's or not (`_check_declared_defaults!`; the counts come back as
+  `default_pairs` and `defaults_checked`, equal on a clean tree, and
+  `defaults_on_required_base`, the keys compared on the example's required
+  parameters alone because the constructor refuses the default beside the
+  example's folded twin)
+- a discrete (non-numeric) default lies within its declared `alternatives`
+- the description, the keywords, the construction help and every parameter
+  meaning are non-empty: the free text `element_help` and the registry hand
+  to a reader
+- every kind's placement entries (`_PLACEMENT_PARAM_KEYS`, plus `name` and
+  `numeric_type` where declared) agree with `_PLACEMENT_PARAMS` in
+  `required`, `unit`, `default` and `alternatives`; only the meaning may be
+  the kind's own, through `_placement_param`
+- `default_method` and the example's `tracking_method` answer a declared
+  method, and refuse by name for a kind that declares none
+
+The last five landed with the 2026-10-20 fix batch (2026-10-18 comprehensive
+audit, F-168, F-171, F-172, F-174: each was shown validating a wrong entry
+clean before it landed).
 """
 function validate_element_metadata(; throw_on_error::Bool=false)
     errors = String[]
     seen_kinds = Set{Symbol}()
+    default_pairs = 0
+    defaults_checked = 0
+    defaults_on_required_base = Tuple{Symbol,Symbol}[]
 
     for T in registered_element_specs()
         meta = _element_meta_or_nothing(T)
@@ -1222,7 +1388,8 @@ function validate_element_metadata(; throw_on_error::Bool=false)
                 push!(errors, "ElementMeta $(meta.kind) has unapproved physics keyword $(keyword)")
         end
 
-        for (key, pmeta) in pairs(parameter_schema(T))
+        schema = parameter_schema(T)
+        for (key, pmeta) in pairs(schema)
             if pmeta isa ParamMeta
                 # The unit is drawn from a controlled vocabulary, for the same
                 # reason the keywords above are: it drives behaviour. See
@@ -1236,6 +1403,28 @@ function validate_element_metadata(; throw_on_error::Bool=false)
                 if pmeta.required && pmeta.default !== nothing
                     push!(errors, "ElementMeta $(meta.kind) parameter $(key) is required but has a default")
                 end
+                # The per-parameter free text: `meaning` is what `element_help`
+                # prints beside the key and the only prose a reader has for it;
+                # an empty one validated clean (2026-10-18 comprehensive audit,
+                # F-172 / U25-9).
+                isempty(pmeta.meaning) && push!(errors,
+                    "ElementMeta $(meta.kind) parameter $(key) has an empty meaning")
+                # A discrete default lies within its declared alternatives: for
+                # a Symbol (or a type, `numeric_type`) the alternatives ARE the
+                # enum, and a default outside it is a value the parameter does
+                # not take (`misalign_convention = :elegant` against
+                # `(:bmad, :madx)` validated clean; F-172 / U25-8). A NUMERIC
+                # default is exempt because alternatives mean something else
+                # there -- hand-picked perturbation values for the effectiveness
+                # sweep, which the aperture's `Inf` limits deliberately sit
+                # outside of (U4-1). `Bool <: Number`, so a flag is exempt too;
+                # its perturbation is its negation.
+                if !isempty(pmeta.alternatives) && pmeta.default !== nothing &&
+                   !(pmeta.default isa Number) && !(pmeta.default in pmeta.alternatives)
+                    push!(errors,
+                        "ElementMeta $(meta.kind) parameter $(key) declares default " *
+                        "$(repr(pmeta.default)) outside its alternatives $(pmeta.alternatives)")
+                end
                 if pmeta.required && example isa ElementSpec && !hasparam(example, key)
                     push!(errors, "ElementMeta $(meta.kind) example is missing required parameter $(key)")
                 end
@@ -1248,6 +1437,58 @@ function validate_element_metadata(; throw_on_error::Bool=false)
                 # a check.
                 _help_mentions_parameter(construction_help(T), key) ||
                     push!(errors, "ElementMeta $(meta.kind) construction_help does not mention parameter $(key)")
+            end
+        end
+
+        # The kind-level free text. The description is what `description(T)`,
+        # `element_help` and the registry snapshot hand to anyone asking what
+        # the kind is, the keywords are how an agent finds it, the construction
+        # help is how it is built; each validated clean when empty (2026-10-18
+        # comprehensive audit, F-172 / U25-9). The non-element registry types
+        # have had the "Every registry type describes itself" tripwire since
+        # U12-17; the element side had none.
+        isempty(meta.description) &&
+            push!(errors, "ElementMeta $(meta.kind) has an empty description")
+        isempty(meta.keywords) &&
+            push!(errors, "ElementMeta $(meta.kind) declares no physics keywords")
+        isempty(meta.construction_help) &&
+            push!(errors, "ElementMeta $(meta.kind) has an empty construction_help")
+
+        # Every kind's placement entries against the ONE table they are meant to
+        # be spliced from. `compile_runtime`'s wraps read these keys for every
+        # kind, the effectiveness contract perturbs a Symbol one from the
+        # table's `alternatives`, and `element_help` prints the table's units --
+        # so a kind that writes its own copies (13 did, and 79 of those copies
+        # had drifted: every unit lost, seven kinds' `misalign_convention`
+        # without the alternatives that make it perturbable at all; 2026-10-18
+        # comprehensive audit, F-171) is held to the table's `required`,
+        # `unit`, `default` and `alternatives`, while its `meaning` may say more
+        # (`_placement_param(key; meaning=...)` is the spelling for that). A
+        # kind with a schema must declare every placement key: an undeclared
+        # one is a key the unknown-key warning reports as untracked while the
+        # compile reads it (the U13-2 shape). `name` and `numeric_type` are
+        # held to the table where declared (`:line` declares no numeric type:
+        # a composite's type is its placements').
+        if !isempty(keys(schema))
+            for (key, ref) in pairs(_PLACEMENT_PARAMS)
+                if !haskey(schema, key)
+                    key in _PLACEMENT_PARAM_KEYS && push!(errors,
+                        "ElementMeta $(meta.kind) does not declare the placement parameter " *
+                        "$(key), which compile_runtime consumes for every kind; splice " *
+                        "_PLACEMENT_PARAMS... into its schema")
+                    continue
+                end
+                entry = schema[key]
+                entry isa ParamMeta || continue
+                (entry.required == ref.required && entry.unit == ref.unit &&
+                 isequal(entry.default, ref.default) && entry.alternatives == ref.alternatives) ||
+                    push!(errors,
+                        "ElementMeta $(meta.kind) placement parameter $(key) departs from " *
+                        "_PLACEMENT_PARAMS (required $(entry.required) vs $(ref.required), unit " *
+                        "$(repr(entry.unit)) vs $(repr(ref.unit)), default $(repr(entry.default)) " *
+                        "vs $(repr(ref.default)), alternatives $(entry.alternatives) vs " *
+                        "$(ref.alternatives)); declare it through _placement_param(key; " *
+                        "meaning=...) so that only the meaning is the kind's own")
             end
         end
 
@@ -1268,7 +1509,15 @@ function validate_element_metadata(; throw_on_error::Bool=false)
         # value would be meaningless -- an example is meant to demonstrate
         # non-default values, and 31 of 72 such pairs differ for exactly that
         # reason.
-        _check_declared_defaults!(errors, T, meta, example)
+        #
+        # EVERY declared default, not only the ones the example sets: the loop
+        # used to skip a key the example left at its default, which was 531 of
+        # 608 pairs (2026-10-18 comprehensive audit, F-168). The counts are
+        # returned so a skip is visible as `defaults_checked < default_pairs`.
+        counts = _check_declared_defaults!(errors, T, meta, example)
+        default_pairs += counts.pairs
+        defaults_checked += counts.checked
+        append!(defaults_on_required_base, counts.on_required_base)
 
         if example isa ElementSpec
             schema_keys = Set(keys(parameter_schema(T)))
@@ -1285,11 +1534,25 @@ function validate_element_metadata(; throw_on_error::Bool=false)
         # `meta.tracking_methods`, a tautology that let a fabricated method
         # list validate clean (audit part 7, K3). Injected-defect measurement
         # before this rewrite: 1 of 13 metadata lies caught.
-        for tracking_method in meta.tracking_methods
-            (tracking_method isa Type && tracking_method <: AbstractTrackingMethod) ||
-                push!(errors, "ElementMeta $(meta.kind) declares tracking method $(tracking_method), which is not an AbstractTrackingMethod")
-            haskey(meta.runtime_types, tracking_method) ||
-                push!(errors, "ElementMeta $(meta.kind) has no runtime type for $(tracking_method)")
+        for method in meta.tracking_methods
+            (method isa Type && method <: AbstractTrackingMethod) ||
+                push!(errors, "ElementMeta $(meta.kind) declares tracking method $(method), which is not an AbstractTrackingMethod")
+            haskey(meta.runtime_types, method) ||
+                push!(errors, "ElementMeta $(meta.kind) has no runtime type for $(method)")
+        end
+        # ... and the other direction: every runtime-type entry is a declared
+        # tracking method. `compile_runtime` gates on the runtime map alone, so
+        # an entry the method list does not carry is a method the kind compiles
+        # under while `supported_tracking_methods`, the Twiss-rule tripwire and
+        # the registry snapshot all deny it (2026-10-18 comprehensive audit,
+        # F-172 / U25-5: `Damping6DMap => LatticeMagnet` added to the drift's
+        # map validated clean and compiled; an emptied method list over an
+        # intact map validated clean too).
+        for method in keys(meta.runtime_types)
+            method in meta.tracking_methods || push!(errors,
+                "ElementMeta $(meta.kind) maps $(method) to a runtime type but does not " *
+                "declare it in tracking_methods; compile_runtime would honour a method " *
+                "the registry denies")
         end
         for contract in meta.contracts
             (contract isa Type && contract <: AbstractContract) ||
@@ -1361,6 +1624,14 @@ function validate_element_metadata(; throw_on_error::Bool=false)
             end
         end
 
+        # The registry's method ANSWERS agree with its method LIST: a declared
+        # method from `default_method(T)` and `tracking_method(example)` on a
+        # kind that declares methods, a refusal by name on a kind that declares
+        # none, as `compile_runtime(spec, method)` refuses. The line answered
+        # `Symplectic6DMap()` to both queries while its compile refused that
+        # very request (2026-10-18 comprehensive audit, F-174).
+        _check_method_answers!(errors, T, meta, example)
+
         friendly = meta.friendly_constructor
         if friendly !== nothing
             # These were three TAUTOLOGIES until 2026-09-07 (2026-08-06 audit,
@@ -1417,7 +1688,9 @@ function validate_element_metadata(; throw_on_error::Bool=false)
         end
     end
 
-    result = (passed=isempty(errors), errors=errors)
+    result = (passed=isempty(errors), errors=errors, default_pairs=default_pairs,
+              defaults_checked=defaults_checked,
+              defaults_on_required_base=defaults_on_required_base)
     if throw_on_error && !result.passed
         throw(ArgumentError("element metadata validation failed:\n" * join(errors, "\n")))
     end
@@ -1429,11 +1702,19 @@ end
 
 Return the tracking method selected by an element spec. `ElementSpec` values
 may carry `:tracking_method` in their flexible parameter dictionary; otherwise
-the element's `default_method` is used.
+the element's `default_method` is used -- which refuses by name for a kind that
+declares no tracking method (the composite `:line`), so this query never
+answers a method `compile_runtime(spec, method)` would reject (2026-10-18
+comprehensive audit, F-174).
 """
 tracking_method(spec::AbstractElementSpec) = _tracking_method_object(default_method(spec))
-tracking_method(spec::ElementSpec) =
-    _tracking_method_object(getparam(spec, :tracking_method, default_method(spec)))
+function tracking_method(spec::ElementSpec)
+    # The stored method first and `default_method` only when there is none:
+    # `getparam(spec, :tracking_method, default_method(spec))` evaluated the
+    # fallback eagerly, and the fallback refuses for a method-less kind.
+    stored = getparam(spec, :tracking_method, nothing)
+    return _tracking_method_object(stored === nothing ? default_method(spec) : stored)
+end
 
 _tracking_method_type(::Type{M}) where {M<:AbstractTrackingMethod} = M
 _tracking_method_type(method::AbstractTrackingMethod) = typeof(method)

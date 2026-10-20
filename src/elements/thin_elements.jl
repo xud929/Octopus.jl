@@ -266,13 +266,20 @@ KickerSpec
 const _THIN_COMMON = (
     knl=ParamMeta(default=(), meaning="integrated normal strengths; index i holds K_{i-1} L, so knl[2] is K1 L. Integrated, not the thick kn: a thin element is the L -> 0 limit at fixed K L"),
     ksl=ParamMeta(default=(), meaning="skew partners of knl"),
-    x_offset=ParamMeta(default=0, meaning="misalignment: horizontal displacement of the element"),
-    y_offset=ParamMeta(default=0, meaning="misalignment: vertical displacement"),
-    z_offset=ParamMeta(default=0, unit="m", meaning="longitudinal placement offset: the kick is applied after a drift of z_offset and undone by the matching negative drift, so it DOES move the transverse coordinates a thin kick is evaluated at (measured dx = 5.0e-6 at z_offset = 1e-2; 2026-08-05 audit, U11-10)"),
-    x_pitch=ParamMeta(default=0, meaning="misalignment: rotation about the y axis, in radians"),
-    y_pitch=ParamMeta(default=0, meaning="misalignment: rotation about the x axis, in radians"),
-    tilt=ParamMeta(default=0, meaning="misalignment: roll about the longitudinal axis, in radians. Geometric, and distinct from building a skew element through ksl"),
-    misalign_convention=ParamMeta(default=:bmad, meaning="which code's misalignment convention to follow, :bmad or :madx. At zero length the reference point cannot matter, so the two differ only in the order the rotations compose"),
+    # The placement entries are the ONE table's (`_PLACEMENT_PARAMS`: unit,
+    # default, alternatives) with the thin kinds' meanings. They were hand-copied
+    # `ParamMeta`s without units and, on `misalign_convention`, without the
+    # `alternatives` the effectiveness contract perturbs a Symbol parameter
+    # from -- so the convention was unperturbable on all seven thin kinds and
+    # kickers (2026-10-18 comprehensive audit, F-171); `validate_element_metadata`
+    # now refuses such a copy.
+    x_offset=_placement_param(:x_offset; meaning="misalignment: horizontal displacement of the element"),
+    y_offset=_placement_param(:y_offset; meaning="misalignment: vertical displacement"),
+    z_offset=_placement_param(:z_offset; meaning="longitudinal placement offset: the kick is applied after a drift of z_offset and undone by the matching negative drift, so it DOES move the transverse coordinates a thin kick is evaluated at (measured dx = 5.0e-6 at z_offset = 1e-2; 2026-08-05 audit, U11-10)"),
+    x_pitch=_placement_param(:x_pitch; meaning="misalignment: rotation about the y axis, in radians"),
+    y_pitch=_placement_param(:y_pitch; meaning="misalignment: rotation about the x axis, in radians"),
+    tilt=_placement_param(:tilt; meaning="misalignment: roll about the longitudinal axis, in radians. Geometric, and distinct from building a skew element through ksl"),
+    misalign_convention=_placement_param(:misalign_convention; meaning="which code's misalignment convention to follow, :bmad or :madx. At zero length the reference point cannot matter, so the two differ only in the order the rotations compose"),
     tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
 )
 

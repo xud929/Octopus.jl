@@ -1918,9 +1918,17 @@ function validate_configuration_metadata()
                 "$(policy_type).$(name) has no runtime consumer")
         end
     end
+    # Every policy default against a CONSTRUCTED default policy -- the U5-4
+    # rule every other block of this function follows. The CPU `threads` and
+    # the legacy GPU `threads`/`blocks` were compared with LITERALS (`:auto`,
+    # `256`): a copy of the schema beside the schema, so a keyword-default
+    # drift on either constructor passed with the message "disagrees with
+    # constructor" unable to fire, and `default_cpu` was constructed and never
+    # read (2026-10-18 comprehensive audit, F-169 / U25-2 / U6-9). The two
+    # `device` defaults had no check at all.
     default_cpu = CPUThreadsExecutionPolicy()
-    policy_option_schema(default_cpu).threads.default === :auto ||
-        push!(errors, "CPU policy metadata default disagrees with constructor")
+    policy_option_schema(default_cpu).threads.default === default_cpu.threads ||
+        push!(errors, "CPU policy metadata threads default disagrees with constructor")
     default_mp = MultiProcessExecutionPolicy()
     mp_schema = policy_option_schema(default_mp)
     mp_schema.threads.default === default_mp.threads ||
@@ -1928,16 +1936,26 @@ function validate_configuration_metadata()
     mp_schema.ranks.default === default_mp.ranks ||
         push!(errors, "multi-process policy metadata ranks default disagrees with constructor")
     default_cuda = CUDAExecutionPolicy()
-    default_cuda.launch.threads == policy_option_schema(default_cuda).threads.default ||
+    cuda_schema = policy_option_schema(default_cuda)
+    default_cuda.device === cuda_schema.device.default ||
+        push!(errors, "CUDA device metadata default disagrees with constructor")
+    default_cuda.launch.threads == cuda_schema.threads.default ||
         push!(errors, "CUDA thread metadata default disagrees with constructor")
-    default_cuda.launch.blocks == policy_option_schema(default_cuda).blocks.default ||
+    default_cuda.launch.blocks == cuda_schema.blocks.default ||
         push!(errors, "CUDA block metadata default disagrees with constructor")
     Set(fieldnames(CUDALaunchConfig)) == Set((:threads, :blocks)) ||
         push!(errors, "CUDALaunchConfig public fields changed without metadata review")
-    policy_option_schema(GPUExecutionPolicy).threads.default == 256 ||
+    # The deprecated policy is constructed like any other: its `Base.depwarn`
+    # speaks once per process under `--depwarn=yes` (the gate's setting), which
+    # is the deprecation doing its job, not a defect of this check.
+    default_legacy = GPUExecutionPolicy()
+    legacy_schema = policy_option_schema(default_legacy)
+    default_legacy.threads == legacy_schema.threads.default ||
         push!(errors, "legacy GPU thread metadata default disagrees with constructor")
-    policy_option_schema(GPUExecutionPolicy).blocks.default == 256 ||
+    default_legacy.blocks == legacy_schema.blocks.default ||
         push!(errors, "legacy GPU block metadata default disagrees with constructor")
+    default_legacy.device === legacy_schema.device.default ||
+        push!(errors, "legacy GPU device metadata default disagrees with constructor")
 
     Set(keys(slicing_option_schema())) == Set(fieldnames(LongitudinalSlicing)) ||
         push!(errors, "LongitudinalSlicing fields and metadata keys disagree")

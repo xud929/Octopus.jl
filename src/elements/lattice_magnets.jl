@@ -1104,13 +1104,17 @@ const _COMMON_PARAMS = (
     highest_fringe=ParamMeta(default=0, meaning="cap on the order included in the hard-edge multipole fringe, matching PTC's HIGHEST_FRINGE. 0 means every order the magnet carries, which is this code's default because enabling a sextupole's fringe and silently getting nothing back would be worse; PTC's own default is 2 (dipole and quadrupole only), so set 2 to reproduce PTC. Inactive unless fringe includes :multipole"),
     kill_ent_fringe=ParamMeta(default=false, meaning="suppress all three fringe mechanisms at the entrance face, matching PTC's KILL_ENT_FRINGE. Geometry maps (pole-face rotation, face curvature, wedge) still run, as they do in PTC. MAD-X sets the exit equivalent automatically when FINTX=0"),
     kill_exi_fringe=ParamMeta(default=false, meaning="suppress all three fringe mechanisms at the exit face, matching PTC's KILL_EXI_FRINGE"),
-    x_offset=ParamMeta(default=0, meaning="misalignment: horizontal displacement of the magnet body, referenced to the element centre as alignment data is. Curved elements are handled through the survey, whose geometry follows h rather than b0"),
-    y_offset=ParamMeta(default=0, meaning="misalignment: vertical displacement of the body centre"),
-    z_offset=ParamMeta(default=0, meaning="misalignment: longitudinal displacement of the body centre"),
-    x_pitch=ParamMeta(default=0, meaning="misalignment: rotation of the body about the y axis, in radians, about the element centre (Bmad's x_pitch)"),
-    y_pitch=ParamMeta(default=0, meaning="misalignment: rotation of the body about the x axis, in radians, about the element centre (Bmad's y_pitch)"),
-    tilt=ParamMeta(default=0, meaning="misalignment: roll of the body about the longitudinal axis, in radians. Geometric, and distinct from building a skew magnet through ks"),
-    misalign_convention=ParamMeta(default=:bmad, alternatives=(:bmad, :madx), meaning="which code's misalignment convention to follow. :bmad references the displacement to the element centre, as survey data means, and composes the rotations about fixed axes as R_y R_x R_z. :madx references it to the entrance frame and composes them intrinsically as R_z R_x R_y, reproducing EALIGN through MAD_MISALIGN_FIBRE. The two agree only for a pure translation of a straight element, and for any single rotation"),
+    # The placement entries are the ONE table's (`_PLACEMENT_PARAMS`: unit,
+    # default, alternatives) with this family's meanings; they were hand-copied
+    # `ParamMeta`s that had dropped every unit (2026-10-18 comprehensive audit,
+    # F-171), and `validate_element_metadata` now refuses such a copy.
+    x_offset=_placement_param(:x_offset; meaning="misalignment: horizontal displacement of the magnet body, referenced to the element centre as alignment data is. Curved elements are handled through the survey, whose geometry follows h rather than b0"),
+    y_offset=_placement_param(:y_offset; meaning="misalignment: vertical displacement of the body centre"),
+    z_offset=_placement_param(:z_offset; meaning="misalignment: longitudinal displacement of the body centre"),
+    x_pitch=_placement_param(:x_pitch; meaning="misalignment: rotation of the body about the y axis, in radians, about the element centre (Bmad's x_pitch)"),
+    y_pitch=_placement_param(:y_pitch; meaning="misalignment: rotation of the body about the x axis, in radians, about the element centre (Bmad's y_pitch)"),
+    tilt=_placement_param(:tilt; meaning="misalignment: roll of the body about the longitudinal axis, in radians. Geometric, and distinct from building a skew magnet through ks"),
+    misalign_convention=_placement_param(:misalign_convention; meaning="which code's misalignment convention to follow. :bmad references the displacement to the element centre, as survey data means, and composes the rotations about fixed axes as R_y R_x R_z. :madx references it to the entrance frame and composes them intrinsically as R_z R_x R_y, reproducing EALIGN through MAD_MISALIGN_FIBRE. The two agree only for a pure translation of a straight element, and for any single rotation"),
     tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
 )
 
@@ -1669,8 +1673,8 @@ end
         z_offset=_COMMON_PARAMS.z_offset,
         x_pitch=_COMMON_PARAMS.x_pitch,
         y_pitch=_COMMON_PARAMS.y_pitch,
-        tilt=ParamMeta(default=0, meaning="misalignment: roll of the magnet BODY about the longitudinal axis, in radians, with the design orbit unchanged. An error. This is Bmad's `roll` and MAD-X's `EALIGN, dpsi` -- it is NOT MAD-X's `sbend, tilt=`, which rolls the design orbit and is `ref_tilt` here"),
-        ref_tilt=ParamMeta(default=0, meaning="roll of the DESIGN ORBIT plane about the longitudinal axis, in radians: the reference trajectory itself bends in a rotated plane. A design choice, not an error, and the thing a body roll is not -- a vertical bend is ref_tilt = pi/2. Bmad's `ref_tilt`, and what MAD-X spells `sbend, tilt=`. The magnet a misalignment displaces is the rolled one; which axes that error is measured along follows misalign_convention, :bmad taking the rolled frame and :madx the unrolled design frame, and the two differ only when a roll and a misalignment are both nonzero"),
+        tilt=_placement_param(:tilt; meaning="misalignment: roll of the magnet BODY about the longitudinal axis, in radians, with the design orbit unchanged. An error. This is Bmad's `roll` and MAD-X's `EALIGN, dpsi` -- it is NOT MAD-X's `sbend, tilt=`, which rolls the design orbit and is `ref_tilt` here"),
+        ref_tilt=_placement_param(:ref_tilt; meaning="roll of the DESIGN ORBIT plane about the longitudinal axis, in radians: the reference trajectory itself bends in a rotated plane. A design choice, not an error, and the thing a body roll is not -- a vertical bend is ref_tilt = pi/2. Bmad's `ref_tilt`, and what MAD-X spells `sbend, tilt=`. The magnet a misalignment displaces is the rolled one; which axes that error is measured along follows misalign_convention, :bmad taking the rolled frame and :madx the unrolled design frame, and the two differ only when a roll and a misalignment are both nonzero"),
         misalign_convention=_COMMON_PARAMS.misalign_convention,
         # Declared explicitly because this kind enumerates the common keys
         # instead of splatting `_PLACEMENT_PARAMS` (2026-08-05_b audit, U15-12).

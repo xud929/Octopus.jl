@@ -782,14 +782,26 @@ end
     parameters = (
         name=ParamMeta(default="", meaning="line name; becomes the leading path segment of every placement it contains"),
         entries=ParamMeta(default=(), meaning="the expanded placements. Built by BeamLine(name, children...) from nested children; the keyword form takes them ready-made, which is how a slice becomes a line"),
-        x_offset=ParamMeta(default=0, meaning="misalignment of the WHOLE LINE, which is what makes a girder or cryostat: a line carrying one does not dissolve into its parent, it stays a single placement and moves its contents rigidly. The assembly survey is STRAIGHT: if the line contains bends its exit patch is wrong at first order in the bend angle (order dx*theta), and compiling one warns. Misalign bending elements individually where that matters"),
-        y_offset=ParamMeta(default=0, meaning="vertical misalignment of the whole line"),
-        z_offset=ParamMeta(default=0, meaning="longitudinal misalignment of the whole line"),
-        x_pitch=ParamMeta(default=0, meaning="rotation of the whole line about the y axis, in radians"),
-        y_pitch=ParamMeta(default=0, meaning="rotation of the whole line about the x axis, in radians"),
-        tilt=ParamMeta(default=0, meaning="roll of the whole line about the longitudinal axis, in radians"),
+        # The placement entries are the ONE table's (`_PLACEMENT_PARAMS`: unit,
+        # default, alternatives) with the line's meanings; they were hand-copied
+        # `ParamMeta`s without units (2026-10-18 comprehensive audit, F-171).
+        # The x_offset meaning also said the girder survey was STRAIGHT and
+        # warned on a bending line: that limitation closed 2026-08-16 (see
+        # `compile_runtime` above), and the sentence had outlived it.
+        x_offset=_placement_param(:x_offset; meaning="misalignment of the WHOLE LINE, which is what makes a girder or cryostat: a line carrying one does not dissolve into its parent, it stays a single placement and moves its contents rigidly. The girder's faces come from the line's composed floor-plan frames, so a line containing bends is displaced exactly (girder equals element to 1e-14 at every angle, both conventions; the straight-survey limitation and its warning retired 2026-08-16)"),
+        y_offset=_placement_param(:y_offset; meaning="vertical misalignment of the whole line"),
+        z_offset=_placement_param(:z_offset; meaning="longitudinal misalignment of the whole line"),
+        x_pitch=_placement_param(:x_pitch; meaning="rotation of the whole line about the y axis, in radians"),
+        y_pitch=_placement_param(:y_pitch; meaning="rotation of the whole line about the x axis, in radians"),
+        tilt=_placement_param(:tilt; meaning="roll of the whole line about the longitudinal axis, in radians"),
         misalign_convention=_COMMON_PARAMS.misalign_convention,
-        L=ParamMeta(default=0.0, unit="m", meaning="total arc length of the expanded line. DERIVED, not settable: `compile_runtime` merges the computed `total_length` under this key so a nested own-state line surveys at its real length rather than zero, and `BeamLine` rejects a supplied `L`. Nothing stores it on a user's line, so a supplied value would be honoured by the arc-position walkers and ignored by `total_length` and the survey"),
+        # No declared default: `L` is DERIVED and `BeamLine` refuses a supplied
+        # one on every base, so a declared `0.0` was a default nothing could
+        # pass -- the one entry the every-key default check (F-168) could only
+        # ever report as a lie. The inactive-table entry `(:line, :L)` of the
+        # effectiveness contract is unaffected (an exemption is consulted
+        # before any perturbation is formed).
+        L=ParamMeta(unit="m", meaning="total arc length of the expanded line. DERIVED, not settable and declaring no default: `compile_runtime` merges the computed `total_length` under this key so a nested own-state line surveys at its real length rather than zero, and `BeamLine` rejects a supplied `L`. Nothing stores it on a user's line, so a supplied value would be honoured by the arc-position walkers and ignored by `total_length` and the survey"),
         ref_tilt=_PLACEMENT_PARAMS.ref_tilt,
     )
     example = BeamLine("CELL", QuadrupoleSpec(L=0.4, k1=1.7, nst=2))

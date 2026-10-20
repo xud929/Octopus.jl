@@ -139,7 +139,11 @@ representation records which slice of a larger beam it is, and a field that
 said so could disagree with the array beside it. Summing the ranks' counts and
 re-deriving the rule cannot disagree with itself, so a beam that was built or
 split some other way fails loudly instead of tracking with the wrong random
-streams and reducing into the wrong chunk slots.
+streams and reducing into the wrong chunk slots -- and it fails on EVERY rank,
+because the verdict is taken on the all-summed count vector for every rank
+(`_mp_shard_verdict`), never on a rank's own count alone: a per-rank verdict
+let two of four ranks proceed to the next collective while the other two threw
+(2026-10-18 comprehensive audit, F-170; fixed 2026-10-20).
 
 **Random streams key on the global particle index.** The counter RNG keys each
 particle's stream on its index, so a rank holding global particles `k+1 … k+m`

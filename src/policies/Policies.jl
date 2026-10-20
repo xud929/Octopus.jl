@@ -485,10 +485,20 @@ processes that each believe they are a communicator of one, run the whole job,
 and write the same output file over each other -- silently, four times. Every
 launcher exports its size; a disagreement with the communicator Octopus
 actually has is a defect, so it throws.
+
+The GLOBAL counts are consulted first (`PMI_SIZE`: MPICH's Hydra and Intel
+MPI; `OMPI_COMM_WORLD_SIZE`: Open MPI; `PMIX_SIZE`: PMIx launchers;
+`MV2_COMM_WORLD_SIZE`: MVAPICH2; `SLURM_NTASKS`: `srun`). `MPI_LOCALNRANKS` is
+consulted LAST, only when none of those is set: it is the number of ranks on
+THIS NODE (Hydra and MVAPICH2 export it beside `MPI_LOCALRANKID`), so it can
+only under-report -- a one-rank-per-node job reads as 1 -- and it used to sit
+third in this list, ahead of three global counts, which left both consumers of
+this count silent for exactly that layout under a launcher without `PMI_SIZE`
+(2026-10-18 comprehensive audit, F-173).
 """
 function _launcher_rank_count()
-    for name in ("PMI_SIZE", "OMPI_COMM_WORLD_SIZE", "MPI_LOCALNRANKS",
-                 "PMIX_SIZE", "MV2_COMM_WORLD_SIZE", "SLURM_NTASKS")
+    for name in ("PMI_SIZE", "OMPI_COMM_WORLD_SIZE", "PMIX_SIZE",
+                 "MV2_COMM_WORLD_SIZE", "SLURM_NTASKS", "MPI_LOCALNRANKS")
         value = get(ENV, name, nothing)
         value === nothing && continue
         parsed = tryparse(Int, value)
@@ -753,22 +763,53 @@ the wrong chunk slots.
 
 Issues one integer collective, so every rank must reach it -- it belongs at a
 run's entry, not inside a per-turn loop.
+
+The verdict is SYMMETRIC: it is taken on the all-summed count vector, which
+every rank holds alike, and for every rank (`_mp_shard_verdict`), so a misbuilt
+beam throws on all ranks or on none. It used to be taken on this rank's own
+count alone, which at four ranks holding (256, 256, 255, 257) let ranks 0 and 1
+proceed to the next collective while 2 and 3 threw -- the deadlock shape the
+design rules out ("throws on every rank or none"); measured under `mpiexec`,
+the proceeding ranks sat in the next all-sum until the launcher was killed
+(2026-10-18 comprehensive audit, F-170). At two ranks a mismatch is always
+mutual by arithmetic, which is why the single-rank test survived the launcher
+testset.
 """
 function _mp_resolve_shard(local_n::Integer)
     context = _multi_process_context()
     (context === nothing || context.nranks == 1) && return (0, Int(local_n))
-    counts = zeros(Int, context.nranks)
+    nranks = context.nranks
+    counts = zeros(Int, nranks)
     counts[context.rank + 1] = Int(local_n)
     _mp_allsum!(counts)
     global_n = sum(counts)
-    expected = _mp_shard_range(global_n, context.nranks, context.rank)
-    length(expected) == Int(local_n) || throw(ArgumentError(
-        "rank $(context.rank) of $(context.nranks) holds $(local_n) particles, " *
-        "but the chunk-aligned shard of a $(global_n)-particle beam gives it " *
-        "$(length(expected)) (global indices $(expected)). Build the beam with " *
-        "`Beam(n_global, MultiProcessExecutionPolicy(...), ...)`, which shards " *
-        "it by this rule, or split it yourself on the same boundaries."))
-    return (first(expected) - 1, global_n)
+    wrong = _mp_shard_verdict(counts, nranks)
+    isempty(wrong) || throw(ArgumentError(
+        "the particle counts the $(nranks) ranks hold, $(counts), are not the " *
+        "chunk-aligned shards of a $(global_n)-particle beam, " *
+        "$([length(_mp_shard_range(global_n, nranks, r)) for r in 0:(nranks - 1)]): " *
+        "rank(s) $(join(wrong, ", ")) hold the wrong count (this is rank " *
+        "$(context.rank); the same error is thrown on every rank, from the same " *
+        "all-summed counts). Build the beam with " *
+        "`Beam(n_global, MultiProcessExecutionPolicy(...), ...)`, which shards it " *
+        "by this rule, or split it yourself on the same boundaries."))
+    mine = _mp_shard_range(global_n, nranks, context.rank)
+    return (first(mine) - 1, global_n)
+end
+
+"""
+    _mp_shard_verdict(counts, nranks) -> Vector{Int}
+
+The ranks (0-based) whose particle count is not the chunk-aligned shard
+`_mp_shard_range` prescribes for a beam of `sum(counts)` particles over
+`nranks` ranks; empty when the layout is the rule's. Pure arithmetic on the
+all-summed count vector, so every rank holding that vector reaches the same
+verdict -- the property `_mp_resolve_shard` needs and did not have (F-170).
+"""
+function _mp_shard_verdict(counts::AbstractVector{<:Integer}, nranks::Integer)
+    global_n = sum(counts)
+    return [r for r in 0:(Int(nranks) - 1)
+            if length(_mp_shard_range(global_n, nranks, r)) != counts[r + 1]]
 end
 
 """
@@ -987,15 +1028,18 @@ function _mp_current_shard(local_n::Integer)
 end
 
 """
-    _mp_chunk_fold(partials, offset_chunk, nchunks_local) -> value
+    _mp_chunk_fold(partials, first_chunk) -> value
 
-Fold this rank's chunk partials into the global chunk-ordered sum.
+Fold this rank's chunk partials -- which occupy the global chunk slots
+`first_chunk` onwards, `_mp_first_chunk()` -- into the global chunk-ordered sum.
 
 The single-process fold is `sum(partials)` over `_REDUCTION_CHUNKS` entries in
 chunk order. Across ranks each rank holds a contiguous run of those entries, so
 scattering them into their global slots, one all-sum, and the same ordered sum
 reproduces it exactly. The all-sum is over `_REDUCTION_CHUNKS` numbers, once
-per fold, whatever the beam size.
+per fold, whatever the beam size. (The signature line read `(partials,
+offset_chunk, nchunks_local)` until the 2026-10-20 fix batch; the one method
+and its three callers have always taken two arguments -- F-175.)
 """
 function _mp_chunk_fold(partials::AbstractVector{T}, first_chunk::Integer) where {T}
     context = _multi_process_context()
