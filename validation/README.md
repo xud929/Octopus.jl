@@ -824,6 +824,16 @@ compares two backends, so there is nothing for it to do on a CPU-only machine
 julia --project=. validation/moment_observer_backend_consistency.jl
 ```
 
+Since 2026-10-19 its two observers are artifact views constructed by name
+(`MomentObserver(; name = ...)`); the script calls the reduction directly and
+binds no artifact, so it still writes nothing. It had been dead on the
+retired `MomentObserver(path)` constructor since 2026-08-18 (comprehensive
+audit 2026-10-18, A-4) while the check it wraps kept passing: a CUDA-only
+script is run by nothing but the GPU machine's gate, so a constructor
+retirement must re-walk `validation/` and `profiling/` (the suite's
+"No committed script constructs a retired observer or task spelling"
+testset now scans them for the retired spellings).
+
 `strong_strong_luminosity_schedule_output.jl` verifies that the run
 artifact's per-collision luminosity channels omit unscheduled turns while
 preserving all scheduled results, including an evaluated `NaN`, each channel
@@ -1019,8 +1029,13 @@ julia --threads=8 --project=. validation/coherent_beam_beam_modes.jl
 ```
 
 Overrides: `OCTOPUS_CBB_TURNS`, `OCTOPUS_CBB_N_MACRO`, `OCTOPUS_CBB_SOLVERS`
-(comma list from `gaussian,pic,gaussian_pic`). Moment files are written under
-`result/` and overwritten on each run.
+(comma list from `gaussian,pic,gaussian_pic`). Each solver case writes one run
+artifact, `result/coherent_modes_<kind>.h5`, overwritten on each run, holding
+the two beams' barycenters as `/moments/beam1` and `/moments/beam2` (read
+back with `MomentOutput(path; name = "beam1")`). Artifact form since
+2026-10-19: the script had been dead on the retired `MomentObserver(path)`
+writer since 2026-08-18 (comprehensive audit 2026-10-18, F-236), the same
+class as `moment_observer_backend_consistency.jl` above.
 
 **Theory companions.**
 `coherent_mode_vlasov_theory.jl` derives the sigma/pi mode structure from

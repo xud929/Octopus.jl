@@ -59,7 +59,13 @@ Run (CPU, ~10-20 min at defaults; reduce turns/n_macro for a quick check):
 
 Environment overrides: OCTOPUS_CBB_TURNS, OCTOPUS_CBB_N_MACRO,
 OCTOPUS_CBB_SOLVERS (comma list from gaussian,pic,gaussian_pic).
-Moment files are written under result/ and overwritten on each run.
+Each solver case writes ONE run artifact, result/coherent_modes_<kind>.h5,
+overwritten on each run, holding the two beams' turn-by-turn barycenters as
+the moment views /moments/beam1 and /moments/beam2 (read back with
+MomentOutput(path; name = "beam1")). Artifact form since 2026-10-19 (fix
+batch unit X): the standalone MomentObserver(path) writer this script used
+was retired on 2026-08-18, and the script could not run from that day until
+it was ported (comprehensive audit 2026-10-18, F-236).
 =#
 
 if !isdefined(Main, :Octopus)
@@ -153,23 +159,23 @@ function run_case(kind::Symbol)
         dmu = 2pi .* tune)
 
     mkpath(config.result_dir)
-    path1 = joinpath(config.result_dir, "coherent_modes_$(kind).beam1.h5")
-    path2 = joinpath(config.result_dir, "coherent_modes_$(kind).beam2.h5")
-    rm(path1; force = true)
-    rm(path2; force = true)
+    # One run artifact per solver case; the two beams are named moment views
+    # into it (barycenters only, orders = 1:1). The artifact's `capacity` is
+    # the row batch per append -- one flush for the whole run -- and
+    # `append = false` rewrites the file on every run.
+    path = joinpath(config.result_dir, "coherent_modes_$(kind).h5")
     schedule = EveryNSteps(; start = 0, stop = config.turns, step = 1)
-    obs1 = ScheduledObserver(
-        MomentObserver(path1; orders = 1:1, capacity = config.turns + 1), schedule)
-    obs2 = ScheduledObserver(
-        MomentObserver(path2; orders = 1:1, capacity = config.turns + 1), schedule)
+    obs1 = ScheduledObserver(MomentObserver(; name = "beam1", orders = 1:1), schedule)
+    obs2 = ScheduledObserver(MomentObserver(; name = "beam2", orders = 1:1), schedule)
 
     line1 = (ip, one_turn(config.tune), obs1)
     line2 = (ip, one_turn(config.tune), obs2)
-    task = StrongStrongTask(line1, line2; policy = policy)
+    task = StrongStrongTask(line1, line2; policy = policy,
+                            artifact = RunArtifact(path; capacity = config.turns))
     elapsed = @elapsed execute!(task, beam1, beam2; turns = config.turns)
 
-    m1 = MomentOutput(path1)
-    m2 = MomentOutput(path2)
+    m1 = MomentOutput(path; name = "beam1")
+    m2 = MomentOutput(path; name = "beam2")
     result = Dict{Symbol,Any}(:elapsed => elapsed)
     for (plane, moment) in ((:x, Moment(; x = 1)), (:y, Moment(; y = 1)))
         c1 = read(m1, moment)
