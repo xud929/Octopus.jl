@@ -19051,6 +19051,278 @@ end
         @test_skip "CUDA device not available: the strong-strong binding's CUDA twin is not checked"
     end
     set_global_rng!(seed=0x5eed, method=:philox)
+
+# Fixtures for the row-cursor testset below (fix batch 2026-10-19, unit T:
+# comprehensive audit F-73, F-84, F-74, F-59, F-63). A coordinate array whose
+# `collect` throws while armed: `_moment_observer_row` collects the six
+# coordinate arrays before anything else, so arming it between a turn's
+# tracking and the MomentObserver's fire puts an exception INSIDE the row
+# computation through the public task loop, with no method of the package
+# redefined. The tracking kernels index the arrays and never collect them;
+# the testset checks that the arm took its path (the particle was tracked
+# through the arming turn before the observer threw).
+struct _FixTFailingVec <: AbstractVector{Float64}
+    data::Vector{Float64}
+    armed::Base.RefValue{Bool}
+end
+Base.size(v::_FixTFailingVec) = size(v.data)
+Base.IndexStyle(::Type{_FixTFailingVec}) = IndexLinear()
+Base.@propagate_inbounds Base.getindex(v::_FixTFailingVec, i::Int) = v.data[i]
+Base.@propagate_inbounds Base.setindex!(v::_FixTFailingVec, x, i::Int) = (v.data[i] = x; v)
+struct _FixTInjectedRowFailure <: Exception end
+Base.showerror(io::IO, ::_FixTInjectedRowFailure) =
+    print(io, "injected failure inside the moment row computation")
+Base.collect(v::_FixTFailingVec) = (v.armed[] && throw(_FixTInjectedRowFailure()); copy(v.data))
+# Arms the failure at one turn from the hook slot BEFORE the MomentObserver's
+# (hooks run in order after the turn's tracking); `turn = -1` disarms a retry.
+mutable struct _FixTArmAtTurn <: Octopus.AbstractBeamObserver
+    turn::Int
+    armed::Base.RefValue{Bool}
+end
+Octopus.observe!(a::_FixTArmAtTurn, ctx::Octopus.TrackingContext, rep) =
+    (ctx.turn == a.turn && (a.armed[] = true); nothing)
+
+@testset "The run artifact's row cursor: a mid-row exception leaves no garbage row, a fill-row torn tail is truncated, readers apply the cursor, a missing cursor is refused" begin
+    # Fix batch 2026-10-19, unit T (comprehensive audit 2026-10-18: F-73,
+    # F-84, F-74, F-59, F-63). Every pin marked "was" below was red on
+    # cb3c344 with the value it names (the unit report quotes the run); the
+    # `_ra_set_attr!` round trip at the end is a guard on the in-place
+    # rewrite the fix introduced (an in-place write of 2.5 over an Int64
+    # attribute reads back 2), green on both trees.
+    HDF5 = Octopus.HDF5
+    no_turn = Int64(typemin(Int32))
+    mktempdir() do dir
+        attrs(p, key) = HDF5.h5open(p, "r") do f
+            a = HDF5.attributes(f[key])
+            (; (Symbol(k) => read(a[k]) for k in keys(a))...)
+        end
+        disk_turns(p, key) = HDF5.h5open(p, "r") do f
+            d = f[key]["data"]
+            size(d, 1) == 0 ? Float64[] : vec(d[:, 1])
+        end
+        armed = Ref(false)
+        coords() = ([1.0e-4, 2.0e-4], [1.0e-5, -2.0e-5], [3.0e-4, -1.0e-4], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0])
+        failing() = Phase6DRep((_FixTFailingVec(copy(v), armed) for v in coords())...)
+        plain() = Phase6DRep((copy(v) for v in coords())...)
+
+        # (1) F-73: a chunked run whose second chunk throws inside the moment
+        # row at turn 6 (capacity 3: the rows of turns 4 and 5 are buffered,
+        # the row of turn 6 is never computed). The best-effort finalize of the
+        # failed run flushes the two complete rows and nothing else; the retry
+        # (the stored turn does not advance on failure) replays 4:7 onto 0:3
+        # and the file holds exactly 0:7.
+        p1 = joinpath(dir, "garbage_row.h5")
+        m1 = MomentObserver(; name="m", orders=1)
+        arm = _FixTArmAtTurn(6, armed)
+        t1 = TrackingTask((DriftSpec(L=1.0),);
+                          hooks=(ScheduledObserver(arm), ScheduledObserver(m1)),
+                          artifact=RunArtifact(p1; append=true, capacity=3))
+        r1 = failing()
+        execute!(t1, r1; turns=4)
+        @test disk_turns(p1, "moments/m") == [0, 1, 2, 3]
+        err1 = try; execute!(t1, r1; turns=4); nothing; catch e; e; end
+        # red for the defect's reason: the injected row failure, not a tracking error
+        @test err1 isa _FixTInjectedRowFailure
+        @test t1.next_turn[] == 4
+        # the arm took its path: the beam was tracked through turn 6 (seven
+        # drifts) before the observer threw -- bitwise what a plain seven-turn
+        # run of the same beam gives
+        let rp = plain()
+            execute!(TrackingTask((DriftSpec(L=1.0),)), rp; turns=7)
+            @test r1.x.data == rp.x && r1.px.data == rp.px
+        end
+        @test disk_turns(p1, "moments/m") == [0, 1, 2, 3, 4, 5]      # was [0,1,2,3,4,5,<garbage>] (7 rows)
+        a1 = attrs(p1, "moments/m")
+        @test a1.rows_valid == 6 && a1.rows_valid_through_turn == 5    # was rows_valid absent, cursor 0
+        armed[] = false
+        arm.turn = -1
+        execute!(t1, r1; turns=4)
+        @test disk_turns(p1, "moments/m") == collect(0:7)             # was [0,4,5,6,7]
+        @test read(MomentOutput(p1; name="m"), :turn) == collect(0:7)
+        a1b = attrs(p1, "moments/m")
+        @test a1b.rows_valid == 8 && a1b.rows_valid_through_turn == 7
+
+        # (1b) F-84: the receipt is recorded AFTER the `initialized` refusal,
+        # as the snapshot twin orders them: a refused fire leaves no receipt.
+        m84 = MomentObserver(; name="x", orders=1)
+        audit84 = ExecutionAudit()
+        @test_throws ArgumentError with_execution_audit(
+            () -> observe!(m84, Octopus.TrackingContext(turn=0), plain()), audit84)
+        @test isempty(execution_receipts(audit84))                   # was one :observer_output receipt
+
+        # (2) F-74: a torn tail of HDF5 fill rows -- the extent advanced, the
+        # cursor not, a kill between the data write and the cursor flush -- is
+        # removed by the row cursor whatever the fill value, and the
+        # continuation appends at the right place.
+        p2 = joinpath(dir, "fill_tail.h5")
+        m2 = MomentObserver(; name="m", orders=1)
+        t2 = TrackingTask((DriftSpec(L=1.0),); hooks=(ScheduledObserver(m2),),
+                          artifact=RunArtifact(p2; append=true, capacity=64))
+        r2 = plain()
+        execute!(t2, r2; turns=6)
+        a2 = attrs(p2, "moments/m")
+        @test a2.rows_valid == 6 && a2.rows_valid_through_turn == 5
+        HDF5.h5open(p2, "r+") do f
+            d = f["moments/m/data"]
+            n, c = size(d)
+            HDF5.set_extent_dims(d, (n + 2, c))
+        end
+        @test disk_turns(p2, "moments/m") == [0, 1, 2, 3, 4, 5, 0, 0]   # the fill rows ARE on disk
+        # (3) F-59: every reader applies the cursor; the raw count is the
+        # table of contents' `rows_on_disk`.
+        mo2 = MomentOutput(p2; name="m")
+        @test read(mo2, :turn) == collect(0:5)                          # was 0:5 followed by [0, 0]
+        @test size(read(mo2), 1) == 6
+        @test size(read(mo2; orders=1), 1) == 6
+        @test read(mo2, :record_count) == 6                             # was 8
+        @test read(TaskOutput(p2), :moments; name="m").turn == collect(0:5)
+        @test read(TaskOutput(p2), :moments; name="m", column=:turn) == collect(0:5)
+        @test read(TaskOutput(p2), :moments)["m"].turn == collect(0:5)
+        @test read(TaskOutput(p2), :all).moments["m"].turn == collect(0:5)
+        let toc = read(TaskOutput(p2))["moments"]["m"]
+            @test toc.rows == 6 && toc.rows_on_disk == 8                # was rows 8, no rows_on_disk
+        end
+        execute!(t2, r2; turns=2, start_turn=6)
+        @test disk_turns(p2, "moments/m") == collect(0:7)             # was [0,1,2,3,4,5,0,0,6,7]
+        a2b = attrs(p2, "moments/m")
+        @test a2b.rows_valid == 8 && a2b.rows_valid_through_turn == 7
+
+        # The luminosity channel takes the same rule (F-59's shape: rows on
+        # disk beyond the cursor read as data). A weak-strong thin strong beam
+        # with the particle on its axis writes a row every turn.
+        sb = ThinStrongBeamSpec(; kbb=1.0e-4, beta=(1.0, 1.0), sigma=(1.0e-3, 1.0e-3), klum=1.0)
+        p3 = joinpath(dir, "lum_tail.h5")
+        t3 = TrackingTask((sb, DriftSpec(L=1.0)); artifact=RunArtifact(p3; append=true, capacity=2))
+        axis() = Phase6DRep([0.0], [0.0], [0.0], [0.0], [0.0], [0.0])
+        execute!(t3, axis(); turns=5)
+        a3 = attrs(p3, "luminosity/strong_beam_1")
+        @test a3.rows_valid == 5 && a3.rows_valid_through_turn == 4
+        HDF5.h5open(p3, "r+") do f
+            g = f["luminosity/strong_beam_1"]
+            n = length(g["turns"])
+            HDF5.set_extent_dims(g["turns"], (n + 3,))
+            HDF5.set_extent_dims(g["values"], (n + 3,))
+        end
+        @test read(TaskOutput(p3), :luminosity; name="strong_beam_1").turn == collect(0:4)   # was 0:4 + [0,0,0]
+        @test read(TaskOutput(p3), :luminosity)["strong_beam_1"].turn == collect(0:4)
+        let ltoc = read(TaskOutput(p3))["luminosity"]["strong_beam_1"]
+            @test ltoc.rows == 5 && ltoc.rows_on_disk == 8
+        end
+        execute!(t3, axis(); turns=2, start_turn=5)
+        @test HDF5.h5open(f -> read(f["luminosity/strong_beam_1/turns"]), p3, "r") == collect(0:6)  # was [0,1,2,3,4,0,0,0,5,6]
+        @test attrs(p3, "luminosity/strong_beam_1").rows_valid == 7
+
+        # (4) F-63: a group whose cursor is absent is refused BY NAME on the
+        # append-open, as found -- never truncated to zero rows -- and the
+        # lock leaves with the refusal. Readers have no cursor to apply and
+        # read the rows as they stand, saying so.
+        p4 = joinpath(dir, "no_cursor.h5")
+        m4 = MomentObserver(; name="m", orders=1)
+        t4 = TrackingTask((DriftSpec(L=1.0),); hooks=(ScheduledObserver(m4),),
+                          artifact=RunArtifact(p4; append=true))
+        execute!(t4, plain(); turns=10)
+        HDF5.h5open(p4, "r+") do f
+            # conditional, so the unfixed tree (no `rows_valid` yet) reaches the pins
+            for attr in ("rows_valid", "rows_valid_through_turn")
+                haskey(HDF5.attributes(f["moments/m"]), attr) && HDF5.delete_attribute(f["moments/m"], attr)
+            end
+        end
+        err4 = try; execute!(t4, plain(); turns=1, start_turn=1000); nothing; catch e; e; end
+        msg4 = err4 === nothing ? "did not throw" : sprint(showerror, err4)
+        @test err4 isa ArgumentError && occursin("/moments/m", msg4) && occursin("rows_valid", msg4)   # was: no refusal
+        @test disk_turns(p4, "moments/m") == collect(0:9)             # was truncated to 0 rows
+        @test !isfile(p4 * ".lock")
+        @test (@test_logs (:warn, r"carries no row cursor") match_mode=:any read(MomentOutput(p4; name="m"), :record_count)) == 10
+        @test (@test_logs (:warn, r"carries no row cursor") match_mode=:any read(TaskOutput(p4), :moments; name="m").turn) == collect(0:9)
+
+        # A file written under the turn-keyed convention (before 2026-10-19):
+        # the turn cursor present, the row cursor absent. Refused by name under
+        # append=true, with the remedy; read as it stands with a warning.
+        p5 = joinpath(dir, "old_convention.h5")
+        m5 = MomentObserver(; name="m", orders=1)
+        t5 = TrackingTask((DriftSpec(L=1.0),); hooks=(ScheduledObserver(m5),),
+                          artifact=RunArtifact(p5; append=true))
+        execute!(t5, plain(); turns=10)
+        HDF5.h5open(p5, "r+") do f
+            haskey(HDF5.attributes(f["moments/m"]), "rows_valid") &&
+                HDF5.delete_attribute(f["moments/m"], "rows_valid")
+        end
+        @test attrs(p5, "moments/m").rows_valid_through_turn == 9
+        err5 = try; execute!(t5, plain(); turns=1, start_turn=1000); nothing; catch e; e; end
+        msg5 = err5 === nothing ? "did not throw" : sprint(showerror, err5)
+        @test err5 isa ArgumentError && occursin("/moments/m", msg5) &&
+              occursin("predates the row-indexed cursor (2026-10-19)", msg5) && occursin("append=false", msg5)
+        @test disk_turns(p5, "moments/m") == collect(0:9)
+        @test !isfile(p5 * ".lock")
+        @test (@test_logs (:warn, r"predates the row-indexed cursor") match_mode=:any read(TaskOutput(p5), :moments; name="m").turn) == collect(0:9)
+        @test (@test_logs (:warn, r"predates the row-indexed cursor") match_mode=:any read(MomentOutput(p5; name="m"), :record_count)) == 10
+
+        # A group created and never flushed carries the no-rows sentinel alone
+        # (the fresh group's shape at bind); it reads as zero valid rows with
+        # no warning and continues without a refusal, after which it carries
+        # the pair.
+        p6 = joinpath(dir, "never_fired.h5")
+        m6 = MomentObserver(; name="never", orders=1)
+        t6 = TrackingTask((DriftSpec(L=1.0),); hooks=(ScheduledObserver(m6, AtTurns([100])),),
+                          artifact=RunArtifact(p6; append=true))
+        Test.collect_test_logs() do        # the unfireable-schedule warning is not under test here
+            execute!(t6, plain(); turns=3)
+        end
+        a6 = attrs(p6, "moments/never")
+        @test a6.rows_valid_through_turn == no_turn && !haskey(a6, :rows_valid)
+        @test (@test_logs size(read(MomentOutput(p6; name="never")))) == (0, 7)
+        @test (@test_logs read(TaskOutput(p6))["moments"]["never"].rows) == 0
+        Test.collect_test_logs() do
+            execute!(t6, plain(); turns=3, start_turn=3)
+        end
+        a6b = attrs(p6, "moments/never")
+        @test a6b.rows_valid == 0 && a6b.rows_valid_through_turn == no_turn
+
+        # A cursor claiming rows the dataset does not hold is torn: refused by
+        # name under append=true; the readers read as far as the rows on disk,
+        # saying so.
+        p7 = joinpath(dir, "cursor_ahead.h5")
+        m7 = MomentObserver(; name="m", orders=1)
+        t7 = TrackingTask((DriftSpec(L=1.0),); hooks=(ScheduledObserver(m7),),
+                          artifact=RunArtifact(p7; append=true))
+        execute!(t7, plain(); turns=4)
+        HDF5.h5open(p7, "r+") do f
+            Octopus._ra_set_attr!(f["moments/m"], "rows_valid", Int64(9))
+        end
+        err7 = try; execute!(t7, plain(); turns=1, start_turn=4); nothing; catch e; e; end
+        msg7 = err7 === nothing ? "did not throw" : sprint(showerror, err7)
+        @test err7 isa ArgumentError && occursin("/moments/m", msg7) && occursin("rows_valid = 9", msg7)
+        @test disk_turns(p7, "moments/m") == collect(0:3)
+        @test (@test_logs (:warn, r"rows_valid = 9") match_mode=:any read(MomentOutput(p7; name="m"), :record_count)) == 4
+
+        # (5) The guard on the cursor's in-place rewrite: an attribute of the
+        # same type is rewritten in place and reads back in the same session
+        # (the production route, every cursor advance); a type change takes
+        # the delete-and-create route, read here after a reopen. Measured
+        # 2026-10-19 (result/fix_batch_2026_10_19/probes/T/p1_attr_type_change.jl):
+        # an in-place write of 2.5 over an Int64 attribute CONVERTS to 2, and
+        # a by-name read in the session that deleted and recreated an
+        # attribute returns the OLD value while an earlier read's handle is
+        # still open (HDF5.jl closes attribute handles at GC) -- the right
+        # value after a reopen. One attribute of the name remains either way.
+        pattr = joinpath(dir, "attr.h5")
+        HDF5.h5open(pattr, "w") do f
+            g = HDF5.create_group(f, "g")
+            Octopus._ra_set_attr!(g, "c", Int64(1))
+            Octopus._ra_set_attr!(g, "c", Int64(2))
+            @test read(HDF5.attributes(g)["c"]) === Int64(2)
+            Octopus._ra_set_attr!(g, "c", 2.5)
+        end
+        HDF5.h5open(pattr, "r+") do f
+            @test read(HDF5.attributes(f["g"])["c"]) === 2.5
+            @test collect(keys(HDF5.attributes(f["g"]))) == ["c"]
+            Octopus._ra_set_attr!(f["g"], "c", "s")
+        end
+        HDF5.h5open(pattr, "r") do f
+            @test read(HDF5.attributes(f["g"])["c"]) == "s"
+            @test collect(keys(HDF5.attributes(f["g"]))) == ["c"]
+        end
+    end
 end
 
 @testset "The run artifact records turn-modulation provenance" begin
