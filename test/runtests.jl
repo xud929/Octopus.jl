@@ -18690,6 +18690,7 @@ end
         @test ledger() == -1
         art.current_turn = 3
         key = Octopus._ra_bind_probe!(art, "moments", "m", ["turn", "x"], 0)
+        Octopus.commit_run_artifact!(art)          # the window protocol since 2026-10-19 (F-56/F-58)
         Octopus._ra_push_probe_rows!(art, key, [3.0 1.0])
         @test ledger() == 3
         art.current_turn = 5
@@ -20990,6 +20991,299 @@ end
         Octopus.finalize_run_artifact!(artR)
         @test size(HDF5.h5open(f -> read(f["turn_modulation/1/1/series"]), pR)) == (63, 2)
         set_global_rng!(seed=0x5eed, method=:philox)
+    end
+end
+
+@testset "Run artifact replay: the prepare validates before it mutates, probe binds commit together, /losses follows the replay rule across a restart" begin
+    # 2026-10-19 comprehensive audit, fix unit S: F-56 (four by-name refusals of
+    # `prepare_run_artifact!` fired AFTER the replay truncation had dropped every
+    # luminosity row at or beyond `first_turn`), F-58 (probe groups were truncated
+    # one bind at a time, so a later bind's refusal left the earlier probes cut
+    # back) and F-57 (`/losses` was rewritten whole from the current record, so a
+    # new task continuing a file emptied it). The window protocol since the fix:
+    # `prepare_run_artifact!` validates every refusal of the table
+    # `_RA_PREPARE_CHECKS` before it mutates a continued file, every probe bind
+    # validates without touching its group, and `commit_run_artifact!` -- called
+    # by both task kinds after the last refusal that can stop a run before its
+    # first turn -- applies the replay rule to every group at once. Red on
+    # cb3c344 with the commit step stubbed as a no-op (the unit's report quotes
+    # the run: result/fix_batch_2026_10_19/units/S_report.md).
+    HDF5 = Octopus.HDF5
+    mktempdir() do dir
+        refusal(f) = begin
+            err = try; f(); nothing catch e; e end
+            (err, err === nothing ? "" : sprint(showerror, err))
+        end
+        quiet(f) = Test.collect_test_logs(f)[2]      # the registry's sequential-sharing warning is not under test
+        lum_rows(p) = HDF5.h5open(f -> length(f["luminosity"]["ip"]["turns"]), p, "r")
+        lum_cursor(p) = HDF5.h5open(f -> read(HDF5.attributes(f["luminosity"]["ip"])["rows_valid_through_turn"]), p, "r")
+        probe_rows(p, kind, name) = HDF5.h5open(f -> size(f[kind][name]["data"], 1), p, "r")
+        ex_rows(p) = HDF5.h5open(f -> length(f["execution"]["start_turn"]), p, "r")
+        # A real artifact through the writer's own API, as the audit's probe A
+        # built it: the channel "ip" with rows 0..n-1 (cursor n-1), the probe
+        # /moments/m with the same turns, one ledger row.
+        function build(p; n=100)
+            rm(p; force=true); rm(p * ".lock"; force=true)
+            art = RunArtifact(p; capacity=1000)
+            Octopus.prepare_run_artifact!(art, ["ip"], 0, n; task_kind="suite")
+            key = Octopus._ra_bind_probe!(art, "moments", "m", ["turn", "x"], 0)
+            Octopus.commit_run_artifact!(art)
+            for t in 0:(n - 1)
+                Octopus.push_luminosity!(art, "ip", t, 1.0 + t)
+            end
+            Octopus._ra_push_probe_rows!(art, key, hcat(Float64.(0:(n - 1)), fill(0.5, n)))
+            Octopus.finalize_run_artifact!(art)
+            return nothing
+        end
+        # A partial /turn_modulation slot (probe A1b's shape) and a /losses group
+        # naming one aperture, both built through HDF5 directly.
+        partial!(p) = HDF5.h5open(p, "r+") do f
+            g = HDF5.create_group(HDF5.create_group(f, "turn_modulation"), "1")
+            HDF5.attributes(g)["element_count"] = Int64(2)
+            HDF5.attributes(g)["elements_valid_through"] = Int64(1)
+            eg = HDF5.create_group(g, "1")
+            HDF5.attributes(eg)["element"] = "ThinCrabCavity"
+            HDF5.attributes(eg)["beam"] = Int64(1)
+            HDF5.attributes(eg)["slot_count"] = Int64(0)
+        end
+        losses!(p) = HDF5.h5open(p, "r+") do f
+            g = HDF5.create_group(f, "losses")
+            g["aperture_names"] = ["COLL"]
+            g["aperture_counts"] = Int64[1]
+        end
+
+        @testset "F-56: a refused continuation leaves the file byte-identical" begin
+            # (a) The two refusals the audit measured (probe A1/A1b): a ledger
+            # without the rng_seed column, and a partial provenance slot. Before
+            # the fix both fired after the replay truncation: 100 rows and
+            # cursor 99 became 50 and 49. An HDF5 "r+" open and close without a
+            # write leaves the bytes identical (measured, the unit's probe), so
+            # the pin is on the bytes.
+            p_col = joinpath(dir, "a1_oldledger.h5"); build(p_col)
+            HDF5.h5open(f -> HDF5.delete_object(f["execution"], "rng_seed"), p_col, "r+")
+            p_part = joinpath(dir, "a1b_partial.h5"); build(p_part); partial!(p_part)
+            for (p, fragment) in ((p_col, "has no rng_seed column(s)"),
+                                  (p_part, "/turn_modulation/1 at " * p_part * " is partial (1 of 2"))
+                @testset let fixture = basename(p)
+                    before = read(p)
+                    @test lum_rows(p) == 100 && lum_cursor(p) == 99
+                    art = RunArtifact(p; append=true)
+                    err, msg = refusal(() -> Octopus.prepare_run_artifact!(art, ["ip"], 50, 10; task_kind="suite"))
+                    @test err isa ArgumentError && occursin(fragment, msg)
+                    @test read(p) == before
+                    @test lum_rows(p) == 100 && lum_cursor(p) == 99 && probe_rows(p, "moments", "m") == 100
+                    @test art.file === nothing && !isfile(p * ".lock")
+                end
+            end
+            # (b) The refusal table itself, `_RA_PREPARE_CHECKS`, derived from the
+            # code: one fixture per check it lists, each a continuation at turn
+            # 50 of a 100-row file that the check refuses and that must come
+            # back byte-identical. A check without a fixture here fails by name,
+            # so the table cannot grow without its measurement.
+            rid = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 4_000_000)
+            w = compile_runtime(ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,),
+                                                     phase_noise=(WhiteNoise(1.0e-3; rng_id=rid),),
+                                                     tracking_method=Symplectic6DMap()))
+            entries = Octopus._turn_modulation_entries((w,), 1)
+            columns = Octopus._turn_modulation_columns!(Any[], (w,))
+            # check => (corrupt the built file, the continuation's labels, its keywords, a fragment of the refusal)
+            fixtures = Dict{Function,Tuple}(
+                Octopus._ra_check_is_artifact =>
+                    (p -> HDF5.h5open(f -> HDF5.delete_object(f, "luminosity"), p, "r+"),
+                     ["ip"], (;), "is not a run artifact (no /luminosity group)"),
+                Octopus._ra_check_labels =>
+                    (p -> nothing, ["other"], (;), "do not match this task's collision labels"),
+                Octopus._ra_check_ledger =>
+                    (p -> HDF5.h5open(f -> HDF5.delete_object(f, "execution"), p, "r+"),
+                     ["ip"], (;), "carries no /execution ledger"),
+                Octopus._ra_check_ledger_columns =>
+                    (p -> HDF5.h5open(f -> HDF5.delete_object(f["execution"], "rng_method"), p, "r+"),
+                     ["ip"], (;), "has no rng_method column(s)"),
+                Octopus._ra_check_partial_slots =>
+                    (partial!, ["ip"], (;), "is partial (1 of 2"),
+                Octopus._ra_check_loss_apertures =>
+                    (losses!, ["ip"], (; aperture_names=["OTHER"]), "the /losses group at"),
+                Octopus._ra_check_turn_modulation =>
+                    (p -> HDF5.h5open(f -> HDF5.create_group(HDF5.create_group(f, "turn_modulation"), "2"), p, "r+"),
+                     ["ip"], (; turn_modulation=entries, turn_modulation_columns=columns),
+                     "/turn_modulation/2 already exists"),
+            )
+            @test !isempty(Octopus._RA_PREPARE_CHECKS)
+            for check in Octopus._RA_PREPARE_CHECKS
+                @testset let refusal_step = nameof(check)
+                    @test haskey(fixtures, check)
+                    if haskey(fixtures, check)
+                        corrupt!, labels, kw, fragment = fixtures[check]
+                        p = joinpath(dir, "table_" * String(nameof(check)) * ".h5")
+                        build(p)
+                        corrupt!(p)
+                        before = read(p)
+                        art = RunArtifact(p; append=true)
+                        err, msg = refusal(() -> Octopus.prepare_run_artifact!(art, labels, 50, 10;
+                                                                                task_kind="suite", kw...))
+                        @test err isa ArgumentError && occursin(fragment, msg)
+                        @test read(p) == before
+                        @test art.file === nothing && !isfile(p * ".lock")
+                    end
+                end
+            end
+            # (c) The two structural facts the table rests on, read from the
+            # source by its package path: the prepare runs the table in one loop
+            # after the open and before its first ledger write, and no by-name
+            # refusal of an OPEN file lives outside the table.
+            lines = split(read(joinpath(pkgdir(Octopus), "src", "tasks", "RunArtifact.jl"), String), '\n')
+            start = findfirst(l -> startswith(l, "function prepare_run_artifact!("), lines)
+            stop = findnext(==("end"), lines, start)
+            body = lines[start:stop]
+            open_at = findfirst(l -> occursin("HDF5.h5open(art.path", l), body)
+            loop_at = findfirst(l -> occursin("for check in _RA_PREPARE_CHECKS", l), body)
+            mutate_at = findfirst(l -> occursin("HDF5.set_extent_dims(d, (n + 1,))", l), body)
+            @test open_at !== nothing && loop_at !== nothing && mutate_at !== nothing
+            @test open_at < loop_at < mutate_at
+            @test !any(l -> occursin("throw(ArgumentError(", l), body[(open_at + 1):end])
+        end
+
+        @testset "F-58: every probe bind is validated before any group is truncated or created" begin
+            mkrep() = Phase6DRep([1.0e-4, -2.0e-4], zeros(2), [3.0e-5, 0.0], zeros(2), [1.0e-2, -1.0e-2], zeros(2))
+            pE = joinpath(dir, "e1_bind.h5")
+            line1 = (DriftSpec(L=1.0), ScheduledObserver(MomentObserver(; name="m1", orders=1)),
+                     ScheduledObserver(MomentObserver(; name="m2", orders=1)))
+            execute!(TrackingTask(line1; artifact=RunArtifact(pE; append=true)), mkrep(); turns=10)
+            @test probe_rows(pE, "moments", "m1") == 10 && probe_rows(pE, "moments", "m2") == 10
+            # Window 2 replays from turn 5 with m2's columns CHANGED (orders 1:2)
+            # and a new probe m3 bound before it: m2's bind is refused. Before
+            # the fix m1 was already cut back to 5 rows and m3's empty group
+            # created; the refused window keeps only its ledger row.
+            line2 = (DriftSpec(L=1.0), ScheduledObserver(MomentObserver(; name="m1", orders=1)),
+                     ScheduledObserver(MomentObserver(; name="m3", orders=1)),
+                     ScheduledObserver(MomentObserver(; name="m2", orders=1:2)))
+            t2 = TrackingTask(line2; artifact=RunArtifact(pE; append=true))
+            err, msg = quiet(() -> refusal(() -> execute!(t2, mkrep(); turns=5, start_turn=5)))
+            @test err isa ArgumentError && occursin("the probe group /moments/m2 at " * pE * " carries columns", msg)
+            @test probe_rows(pE, "moments", "m1") == 10 && probe_rows(pE, "moments", "m2") == 10
+            @test !HDF5.h5open(f -> haskey(f["moments"], "m3"), pE, "r")
+            @test t2.artifact.file === nothing && !isfile(pE * ".lock")
+            @test ex_rows(pE) == 2
+            # Positive control: the same continuation with m2's columns unchanged
+            # replays both probes from turn 5 and creates m3 at the commit.
+            line3 = (DriftSpec(L=1.0), ScheduledObserver(MomentObserver(; name="m1", orders=1)),
+                     ScheduledObserver(MomentObserver(; name="m3", orders=1)),
+                     ScheduledObserver(MomentObserver(; name="m2", orders=1)))
+            quiet(() -> execute!(TrackingTask(line3; artifact=RunArtifact(pE; append=true)), mkrep(); turns=5, start_turn=5))
+            for (name, turns) in (("m1", 0:9), ("m2", 0:9), ("m3", 5:9))
+                @test Int.(read(TaskOutput(pE), :moments; name=name).turn) == collect(turns)
+            end
+            # Through the writer's API: a bind refused after the prepare leaves
+            # the luminosity channel untruncated too -- the replay rule is
+            # applied only by the commit, after the last bind -- and a refused
+            # window finalizes as found.
+            pB = joinpath(dir, "bind_lum.h5"); build(pB)
+            artB = RunArtifact(pB; append=true)
+            quiet(() -> Octopus.prepare_run_artifact!(artB, ["ip"], 50, 10; task_kind="suite"))
+            errB, msgB = refusal(() -> Octopus._ra_bind_probe!(artB, "moments", "m", ["turn", "y"], 50))
+            @test errB isa ArgumentError && occursin("carries columns", msgB)
+            @test lum_rows(pB) == 100 && probe_rows(pB, "moments", "m") == 100
+            Octopus.finalize_run_artifact!(artB)
+            @test lum_rows(pB) == 100 && lum_cursor(pB) == 99 && probe_rows(pB, "moments", "m") == 100
+            # Rows cannot arrive before the commit (refused by name, never
+            # silently appended beyond stale rows); the commit truncates every
+            # group at once; it runs once, and no probe binds after it.
+            artC = RunArtifact(pB; append=true)
+            quiet(() -> Octopus.prepare_run_artifact!(artC, ["ip"], 50, 10; task_kind="suite"))
+            keyC = Octopus._ra_bind_probe!(artC, "moments", "m", ["turn", "x"], 50)
+            errR, msgR = refusal(() -> Octopus.push_luminosity!(artC, "ip", 50, 1.0))
+            @test errR isa ErrorException && occursin("commit_run_artifact!", msgR)
+            errP, msgP = refusal(() -> Octopus._ra_push_probe_rows!(artC, keyC, [50.0 1.0]))
+            @test errP isa ErrorException && occursin("commit_run_artifact!", msgP)
+            @test lum_rows(pB) == 100 && probe_rows(pB, "moments", "m") == 100
+            Octopus.commit_run_artifact!(artC)
+            @test lum_rows(pB) == 50 && lum_cursor(pB) == 49 && probe_rows(pB, "moments", "m") == 50
+            @test refusal(() -> Octopus.commit_run_artifact!(artC))[1] isa ErrorException
+            @test refusal(() -> Octopus._ra_bind_probe!(artC, "moments", "late", ["turn"], 50))[1] isa ArgumentError
+            Octopus.push_luminosity!(artC, "ip", 50, 1.0)
+            Octopus._ra_push_probe_rows!(artC, keyC, [50.0 1.0])
+            Octopus.finalize_run_artifact!(artC)
+            @test lum_rows(pB) == 51 && lum_cursor(pB) == 50 && probe_rows(pB, "moments", "m") == 51
+        end
+
+        @testset "F-57: /losses follows the replay rule across windows and a new-task restart" begin
+            line(name="COLL") = (DriftSpec(L=1.0), ApertureSpec(x_limit=2.0e-3, name=name), DriftSpec(L=0.5))
+            lossy() = Phase6DRep([1.0e-3, 5.0e-3], zeros(2), [0.0, 1.0e-4], zeros(2), zeros(2), zeros(2))
+            clean() = Phase6DRep([1.0e-4, -1.0e-4], zeros(2), zeros(2), zeros(2), zeros(2), zeros(2))
+            pL = joinpath(dir, "losses_restart.h5")
+            losses() = read(TaskOutput(pL), :losses)
+            run!(task, rep; kw...) = quiet(() -> allow_lost_particles(() -> execute!(task, rep; kw...); enabled=true))
+            # Window 1 (task A): particle 2 is outside the aperture and lost at turn 0.
+            tA = TrackingTask(line(); artifact=RunArtifact(pL; append=true))
+            run!(tA, lossy(); turns=3)
+            l1 = losses()
+            @test l1.turn == [0.0] && l1.particle_id == [2.0] && l1.aperture_counts == [1] && l1.summary.dead == 1
+            # Window 2 (the same task, a FRESH beam object, so the record -- the
+            # beam's -- is reallocated): particle 2 is lost again, at turn 3.
+            # The file keeps window 1's row beside it; before the fix the whole
+            # rewrite from the new record left one row at turn 3.
+            run!(tA, lossy(); turns=3)
+            l2 = losses()
+            @test l2.turn == [0.0, 3.0] && l2.particle_id == [2.0, 2.0] && l2.element_id == [1.0, 1.0]
+            @test l2.aperture_counts == [2] && l2.summary.dead == 1 && l2.summary.logged == 1
+            # Window 3 (a process restart: a NEW task object continues the file):
+            # nothing is lost and the earlier windows' rows and counts survive.
+            # Before the fix: 0 rows, counts [0], dead 0, three ledger rows.
+            tB = TrackingTask(line(); artifact=RunArtifact(pL; append=true))
+            run!(tB, clean(); turns=3, start_turn=6)
+            l3 = losses()
+            @test l3.turn == [0.0, 3.0] && l3.aperture_counts == [2]
+            @test l3.summary.dead == 0 && l3.summary.logged == 0 && l3.summary.particles == 2
+            @test read(TaskOutput(pL), :execution).start_turn == [0, 3, 6]
+            # Window 4 replays turns 3..5 with a new task and a lossy beam: window
+            # 2's row at turn 3 is dropped by the replay rule and re-recorded,
+            # window 1's row stays, and the counts follow the rows.
+            tC = TrackingTask(line(); artifact=RunArtifact(pL; append=true))
+            run!(tC, lossy(); turns=3, start_turn=3)
+            l4 = losses()
+            @test l4.turn == [0.0, 3.0] && l4.particle_id == [2.0, 2.0] && l4.aperture_counts == [2]
+            @test l4.summary.dead == 1 && l4.summary.logged == 1
+            HDF5.h5open(pL, "r") do f
+                g = f["losses"]
+                @test read(HDF5.attributes(g)["record_count"]) == 2
+                @test read(HDF5.attributes(g)["summary_folded"]) == 1
+            end
+            # The same beam continuing in one process (the chunked run) stays
+            # idempotent: the record's earlier rows ARE the file's earlier rows,
+            # kept once.
+            pS = joinpath(dir, "losses_split.h5")
+            tS = TrackingTask(line(); artifact=RunArtifact(pS; append=true))
+            beam = lossy()
+            run!(tS, beam; turns=2)
+            run!(tS, beam; turns=3)
+            lS = read(TaskOutput(pS), :losses)
+            @test lS.turn == [0.0] && lS.particle_id == [2.0] && lS.aperture_counts == [1] && lS.summary.logged == 1
+            # A continued file whose /losses names other apertures -- or a line
+            # with no aperture at all -- is refused at prepare, as found: the
+            # rows' element ids are interpreted under the file's names.
+            before = read(pL)
+            for (task_line, label) in ((line("OTHER"), "renamed"), ((DriftSpec(L=1.0),), "none"))
+                @testset let apertures = label
+                    tD = TrackingTask(task_line; artifact=RunArtifact(pL; append=true))
+                    errD, msgD = refusal(() -> quiet(() -> execute!(tD, clean(); turns=1, start_turn=9)))
+                    @test errD isa ArgumentError && occursin("the /losses group at " * pL, msgD) && occursin("COLL", msgD)
+                    @test read(pL) == before && !isfile(pL * ".lock") && tD.artifact.file === nothing
+                end
+            end
+        end
+
+        @testset "every task kind commits the window it prepared" begin
+            # Derived from the tree: each src/ file with a `prepare_run_artifact!`
+            # call site also calls `commit_run_artifact!` (the existing tripwire
+            # pins the two call sites and their task_kind).
+            srcfiles = String[]
+            for (d, _, fs) in walkdir(joinpath(pkgdir(Octopus), "src")), f in fs
+                endswith(f, ".jl") && push!(srcfiles, joinpath(d, f))
+            end
+            callsites = [f for f in srcfiles if occursin(r"^\s+prepare_run_artifact!\("m, read(f, String))]
+            @test length(callsites) == 2
+            @test all(f -> occursin(r"^\s+.*commit_run_artifact!\("m, read(f, String)), callsites)
+        end
     end
 end
 

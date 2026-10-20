@@ -60,6 +60,22 @@ TurnModulationRecorder(file, capacity, beam, keys, active, buffers, cursor, rows
     TurnModulationRecorder(file, capacity, beam, keys, active, buffers, cursor, rows, nothing)
 
 """
+A probe bound to the artifact this `execute!` and not yet committed: what
+`_ra_bind_probe!` validated and `commit_run_artifact!` creates or continues
+(`_ra_commit_probe!`) -- the group key, its kind and name, the column layout,
+the window's first turn the replay rule truncates against, and the probe's arc
+position `s` (`nothing` for a task-hook probe). 2026-10-19 fix batch, F-58.
+"""
+struct PendingProbeBind
+    key::String
+    kind::String
+    name::String
+    colnames::Vector{String}
+    first_turn::Int64
+    s::Union{Nothing,Float64}
+end
+
+"""
     RunArtifact(path; append=false, capacity=64, record_turn_modulation=false)
 
 The one-output-file-per-task sink (docs/design/run_artifact.md): an HDF5 file
@@ -79,8 +95,12 @@ The artifact carries every product of the run:
   probe additionally carries its arc position as the `s` attribute (the
   design's `attrs: name, s`; task-hook probes have no line position and
   carry none).
-- `/losses`: the loss accounting, rewritten whole per `execute!` from the
-  cumulative record.
+- `/losses`: the loss accounting in the `write_loss_record` layout, written
+  per `execute!` under the replay rule like every other group (2026-10-19 fix
+  batch, F-57): a continued file keeps the earlier windows' loss rows below the
+  incoming window's first turn and drops the rows at or beyond it, this
+  window's record is appended, and `aperture_counts` follows the rows; the
+  `summary_*` attributes are the writing `execute!`'s beam (`_ra_write_losses!`).
 - `/execution`: one row per `execute!` — `start_turn`, planned `turns`,
   `current_turn` and wall-clock `elapsed`, the last two updated at every
   flush, and since 2026-10-16 `rng_seed` and `rng_method`, the global
@@ -135,7 +155,15 @@ Read it back through one handle: [`TaskOutput`](@ref).
 continues it across `execute!` calls and process restarts under the replay
 idempotence rule: rows at or beyond the incoming window's first turn are
 dropped per group first. A file whose luminosity groups do not match the
-task's collision labels is refused rather than silently mixed.
+task's collision labels is refused rather than silently mixed, as is one
+whose `/losses` group names other apertures than the task's line. The window
+protocol is validation before mutation (2026-10-19 fix batch, F-56/F-58):
+`prepare_run_artifact!` runs every by-name refusal of a continuation before
+it writes anything, each probe bind validates its group without touching it,
+and `commit_run_artifact!` -- called by the task after the last refusal that
+can stop a run before its first turn -- applies the replay rule to every
+channel and probe at once; a refused continuation leaves the file as found
+(byte-identical when the prepare refuses).
 
 **Cross-process exclusion** (2026-10-16): while an `execute!` holds the
 file, rank 0 also holds the sidecar lock `<path>.lock`, created exclusively
@@ -240,6 +268,14 @@ mutable struct RunArtifact <: AbstractRunArtifact
     # path that does not exist yet is created fresh under `append=true`). The
     # `:run_artifact_output` receipt carries it (2026-10-16 fix batch, S4-2).
     continued::Bool
+    # The window protocol (2026-10-19 fix batch, F-56/F-58), execute!-scoped on
+    # rank 0: the window's first turn the replay rule truncates against, the
+    # probes bound and not yet committed, and whether `commit_run_artifact!`
+    # has applied the rule -- before it no row may arrive and `/losses` is not
+    # written; set at prepare, cleared at finalize.
+    first_turn::Int64
+    committed::Bool
+    pending_probes::Vector{PendingProbeBind}
 end
 
 function RunArtifact(path::AbstractString; append=false, capacity=64,
@@ -262,7 +298,8 @@ function RunArtifact(path::AbstractString; append=false, capacity=64,
     return RunArtifact(String(path), Bool(append), cap, record_turn_modulation, nothing,
                        TurnModulationRecorder[],
                        Dict{String,Vector{Int64}}(), Dict{String,Vector{Float64}}(),
-                       0, UInt64(0), false, Int64(0), Set{String}(), nothing, false)
+                       0, UInt64(0), false, Int64(0), Set{String}(), nothing, false,
+                       Int64(0), false, PendingProbeBind[])
 end
 
 """
@@ -296,10 +333,12 @@ run_artifact_option_schema() = (
         "`false` recreates the file per `execute!`; `true` continues it across " *
         "`execute!` calls and process restarts under the replay idempotence rule " *
         "(rows at or beyond the incoming window's first turn are dropped per group " *
-        "first). A file whose luminosity groups do not match the task's collision " *
-        "labels is refused rather than silently mixed, as is an existing file that " *
-        "is not HDF5, one without the ledger, and one holding a partial " *
-        "/turn_modulation slot. Resolved at prepare: the :run_artifact_output " *
+        "first, /losses included, by commit_run_artifact! after every refusal). A " *
+        "file whose luminosity groups do not match the task's collision labels is " *
+        "refused rather than silently mixed, as is an existing file that is not " *
+        "HDF5, one without the ledger, one holding a partial /turn_modulation slot " *
+        "and one whose /losses names other apertures; a refused continuation " *
+        "leaves the file as found. Resolved at prepare: the :run_artifact_output " *
         "receipt's `continued` says whether an existing file was continued or " *
         "the path was created fresh.";
         category=:output, consumer=:run_artifact_output),
@@ -581,11 +620,11 @@ function _ra_release_lock!(art::RunArtifact)
 end
 
 """
-Open (or create) the artifact for one `execute!`: validate or build the
-luminosity groups for `labels`, apply crash-truncation (rows beyond each
-group's cursor are a torn tail) and the replay rule (rows at or beyond
-`first_turn` are dropped), append this execution's ledger row, record the
-line's turn-modulation provenance `turn_modulation` (the receipt entries of
+Open (or create) the artifact for one `execute!`: validate the file against
+this window -- every by-name refusal of the table `_RA_PREPARE_CHECKS`, run in
+the table's order after the open and BEFORE anything is written to a continued
+file -- then append this execution's ledger row, record the line's
+turn-modulation provenance `turn_modulation` (the receipt entries of
 `_turn_modulation_entries`) under `/turn_modulation/<slot>` for that row --
 nothing when empty -- with each active slot's nominal parameters from
 `turn_modulation_columns` (the aligned entries of `_turn_modulation_columns!`,
@@ -595,6 +634,16 @@ register the path by artifact identity, hold the file open, and record the
 `:run_artifact_output` receipt with what was resolved
 (`_ra_output_receipt`).
 
+The replay rule is NOT applied here (2026-10-19 fix batch, F-56/F-58): the
+luminosity channels and the probe groups keep every row until
+[`commit_run_artifact!`](@ref), which the task calls after its observers have
+bound -- each bind validating its group without touching it -- and after its
+last refusal that can stop the run before the first turn. A continuation this
+function refuses therefore leaves the file BYTE-IDENTICAL, measured by the
+suite for every entry of the table; before the fix four of the refusals fired
+after the truncation had dropped every luminosity row at or beyond
+`first_turn` (100 rows and cursor 99 became 50 and 49).
+
 Before the file opens, fresh or continued, rank 0 takes the sidecar lock
 `<path>.lock` (`_ra_take_lock!`; `task_kind` is the task's type name, written
 into the lock line so a refused second writer learns who holds the path);
@@ -603,20 +652,26 @@ released with the file at finalize and on every path that closes it, this
 function's own refusals included. A continued path that exists and is not
 an HDF5 file is refused by name BEFORE the open (`HDF5.ishdf5`; before the
 2026-10-16 fix batch HDF5's own "unable to determine if ... is accessible"
-message surfaced first, S5-7). The ledger row appended here carries the
-columns of `_RA_LEDGER_COLUMNS`, the global seed and RNG method among them;
-a continued file whose ledger lacks any of them predates the columns and is
-refused by name rather than padded, and one holding a PARTIAL
-`/turn_modulation` slot (a cursor behind its element count, the artefact of
-a writer that stopped mid-prepare) is refused by name too, never rolled
-back. The in-process path registry is written AFTER the last of these
-refusals, so a refused writer is never registered as a live one (unit A's
-open point, 2026-10-16); the lock keeps its place before the registry.
+message surfaced first, S5-7). The table's checks, in order: the file is a
+run artifact (`/luminosity`); its luminosity groups are exactly `labels`; it
+carries the `/execution` ledger with every column of `_RA_LEDGER_COLUMNS`
+(a continued file lacking any predates the seed columns and is refused by
+name rather than padded); no `/turn_modulation` slot is PARTIAL (a cursor
+behind its element count, the artefact of a writer that stopped mid-prepare;
+never rolled back); its `/losses` group, when present and `aperture_names`
+is given, names exactly this task's apertures (`aperture_names` is the
+task's loss record's names; `nothing`, the default, is a writer that records
+no losses and leaves the group unchecked); and the provenance slot the
+ledger row would take is free, with the recorder's column walk agreeing with
+the provenance. The in-process path registry is written AFTER the last of
+these refusals, so a refused writer is never registered as a live one (unit
+A's open point, 2026-10-16); the lock keeps its place before the registry.
 """
 function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
                                first_turn::Int, planned_turns::Int;
                                turn_modulation::AbstractVector=Any[],
                                turn_modulation_columns::AbstractVector=Any[],
+                               aperture_names::Union{Nothing,AbstractVector{<:AbstractString}}=nothing,
                                task_kind::AbstractString="prepare_run_artifact!")
     art.file === nothing || error("RunArtifact at $(art.path) is already open; " *
                                   "one artifact serves one execute! at a time")
@@ -676,62 +731,26 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
             for (name, T) in _RA_LEDGER_COLUMNS
                 _ra_extendable!(ex, name, T)
             end
-        else
-            haskey(file, "luminosity") || throw(ArgumentError(
-                "RunArtifact(append=true): $(art.path) is not a run artifact " *
-                "(no /luminosity group). Use a new path."))
-        existing = sort(collect(keys(file["luminosity"])))
-            sort(labels) == existing || throw(ArgumentError(
-                "RunArtifact(append=true): the luminosity groups at $(art.path) " *
-                "($(existing)) do not match this task's collision labels " *
-                "($(sort(labels))). Use a new path."))
-            for label in labels
-                g = file["luminosity"][label]
-                cursor = Int64(_ra_get_attr(g, "rows_valid_through_turn",
-                                            Int64(typemin(Int32))))
-                # Torn tail first (rows the cursor never blessed), then the
-                # replay rule: both reduce to one keep-through bound.
-                _ra_truncate_group!(g, min(cursor, Int64(first_turn) - 1))
-            end
         end
-        # A file without the ledger is not one this writer made (2026-10-16
-        # neighbour audit, U5-9: it used to surface as a raw KeyError).
-        haskey(file, "execution") || throw(ArgumentError(
-            "RunArtifact(append=true): $(art.path) carries no /execution ledger, so it " *
-            "is not a run artifact this writer can continue; use a new path or append=false"))
+        # VALIDATION BEFORE MUTATION (2026-10-19 fix batch, F-56): every
+        # by-name refusal of this window, in the table's order, before a
+        # continued file is written to. The table `_RA_PREPARE_CHECKS` is the
+        # one source -- the suite derives a byte-identity fixture per entry
+        # from it -- and nothing below truncates: the replay rule waits for
+        # `commit_run_artifact!`, after every probe has bound. A fresh file
+        # passes the continuation checks by construction (its skeleton was
+        # just created) and still meets the provenance check, which concerns
+        # both. Checked BEFORE the ledger datasets are extended, so a refusal
+        # leaves the ledger as it found it (U5-3: a refusal after the append
+        # left a phantom row the reader paired with a stranger group).
+        ctx = (path=art.path, labels=labels, first_turn=Int64(first_turn),
+               entries=turn_modulation, columns=turn_modulation_columns,
+               aperture_names=aperture_names)
+        for check in _RA_PREPARE_CHECKS
+            check(file, ctx)
+        end
         ex = file["execution"]
-        # Every column this writer appends must already be in a continued
-        # ledger. A file lacking any of them predates the `rng_seed` and
-        # `rng_method` columns (2026-10-16, S5-4) and is refused BY NAME, as
-        # found and unchanged, rather than padded: a padded seed column would
-        # claim a provenance the earlier rows never recorded. (This supersedes
-        # the step-1 `current_turn` padding, whose files lack these too.) A
-        # loop, not a comprehension: `ex` is assigned on both branches above,
-        # and a closure over it would box it (the suite's Core.Box sweep).
-        absent = String[]
-        for (name, _) in _RA_LEDGER_COLUMNS
-            haskey(ex, name) || push!(absent, name)
-        end
-        isempty(absent) || throw(ArgumentError(
-            "RunArtifact(append=true): the /execution ledger at $(art.path) has no " *
-            "$(join(absent, ", ")) column(s): the file predates the ledger's rng_seed and " *
-            "rng_method columns (2026-10-16) and this writer does not continue it; use a " *
-            "new path or append=false"))
-        # A partial provenance slot left by a writer that stopped mid-prepare
-        # is a crash artefact this writer neither continues past nor rolls
-        # back (owner decision 2026-10-16): refused by name, as found.
-        fresh || _ra_check_partial_slots(file, art.path)
         n = length(ex["start_turn"])
-        # The provenance slot of the row about to be appended must be free:
-        # checked BEFORE the four ledger datasets are extended, so a refusal
-        # leaves the ledger as it found it. Checked inside the writer after
-        # the append, the refusal left a phantom row (`start_turn`, `turns`,
-        # `current_turn = first_turn - 1`, `elapsed = 0.0`) that the reader
-        # paired with the stranger group (2026-10-13 neighbour audit, U5-3).
-        # Since the 2026-10-16 neighbour audit (U5-6) the whole writer validation
-        # runs here, the column walk included: its refusals left the same
-        # phantom row through the writer's later check.
-        _ra_validate_turn_modulation!(file, art.path, n + 1, turn_modulation, turn_modulation_columns)
         # The row's values in the table's column order (`_RA_LEDGER_COLUMNS`):
         # the seed and the method are those in force NOW, as this execute!
         # begins, which is what every stochastic consumer of the window keys
@@ -762,6 +781,11 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
                                                  turn_modulation_columns)
         art.start_time_ns = time_ns()
         art.current_turn = Int64(first_turn) - 1
+        # The window protocol's state (F-56/F-58): uncommitted until the task
+        # calls `commit_run_artifact!`, no probe bound yet.
+        art.first_turn = Int64(first_turn)
+        art.committed = false
+        empty!(art.pending_probes)
         empty!(art.probe_names)
         HDF5.flush(file)
     catch
@@ -786,6 +810,60 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
     # prepare leaves no receipt claiming a prepared artifact.
     _record_execution!(:run_artifact_output, _observer_backend(),
                        _ra_output_receipt(art, task_kind, turn_modulation))
+    return nothing
+end
+
+"""
+    commit_run_artifact!(art)
+
+Commit this `execute!`'s window: apply the replay idempotence rule to EVERY
+group the window writes, at once, after the last refusal that can stop the run
+before its first turn (2026-10-19 fix batch, F-56/F-58). Each luminosity
+channel of a continued file is truncated to `min(cursor, first_turn - 1)` --
+the torn tail beyond its `rows_valid_through_turn` cursor and the rows at or
+beyond this window's first turn, one bound -- and each probe bound this
+`execute!` (`_ra_bind_probe!`, which validated without touching the file) is
+created, or truncated the same way, and stamped with its `s`
+(`_ra_commit_probe!`). Then rows may arrive: `push_luminosity!` and
+`_ra_push_probe_rows!` refuse by name before the commit (a row appended beyond
+stale rows would be the silent form of the defect), a probe cannot bind after
+it, and `_ra_write_losses!` writes `/losses` only for a committed window -- a
+window refused before its commit leaves the file as the prepare found it, its
+ledger row aside. Called once per `execute!` by both task kinds, right after
+their observers have prepared (every bind done) and after their last pre-turn
+refusal; a second call is an error. Nothing on a non-root rank, which holds no
+file. Before the fix the prepare truncated the channels and each bind its own
+group, so a later refusal left the earlier groups cut back.
+"""
+function commit_run_artifact!(art::RunArtifact)
+    _mp_is_root() || return nothing
+    f = art.file
+    f === nothing && error(
+        "RunArtifact at $(art.path) is not open: prepare_run_artifact! comes before " *
+        "commit_run_artifact!")
+    art.committed && error(
+        "RunArtifact at $(art.path): the window starting at turn $(art.first_turn) is already " *
+        "committed; commit_run_artifact! runs once per execute!")
+    keep_through = art.first_turn - 1
+    if art.continued
+        # A fresh file's channels are new and empty: nothing to replay.
+        lum = f["luminosity"]
+        for label in keys(lum)
+            g = lum[label]
+            g isa HDF5.Group || continue
+            cursor = Int64(_ra_get_attr(g, "rows_valid_through_turn",
+                                        Int64(typemin(Int32))))
+            # Torn tail first (rows the cursor never blessed), then the
+            # replay rule: both reduce to one keep-through bound.
+            _ra_truncate_group!(g, min(cursor, keep_through))
+        end
+    end
+    for pending in art.pending_probes
+        _ra_commit_probe!(f, pending)
+    end
+    empty!(art.pending_probes)
+    art.committed = true
+    HDF5.flush(f)
     return nothing
 end
 
@@ -874,6 +952,116 @@ function _ra_validate_turn_modulation!(file, path::String, slot::Int, entries, c
     end
     return nothing
 end
+
+# ---------------------------------------------------------------------------
+# The prepare's refusals, ONE table (2026-10-19 fix batch, F-56).
+# `prepare_run_artifact!` runs every entry, in order, after the open and before
+# its first write, so a refused continuation leaves the file byte-identical.
+# Each check takes the open file and the window's context
+# `(path, labels, first_turn, entries, columns, aperture_names)` and returns
+# `nothing` or throws the `ArgumentError` that names the cause. The order
+# matters where a later check reads what an earlier one established (the
+# ledger before its columns and the provenance slot). The suite derives one
+# byte-identity fixture per entry from `_RA_PREPARE_CHECKS` and reads the
+# prepare's body for the loop ("Run artifact replay: ..."), so an entry cannot
+# join without its measurement and a refusal cannot leave the table. Before
+# the table the ledger, column, partial-slot and provenance refusals sat
+# after the luminosity truncation (100 rows and cursor 99 became 50 and 49).
+# ---------------------------------------------------------------------------
+
+"""The file is a run artifact: it carries a `/luminosity` group."""
+function _ra_check_is_artifact(file, ctx)
+    haskey(file, "luminosity") || throw(ArgumentError(
+        "RunArtifact(append=true): $(ctx.path) is not a run artifact " *
+        "(no /luminosity group). Use a new path."))
+    return nothing
+end
+
+"""The luminosity groups are exactly this task's collision labels."""
+function _ra_check_labels(file, ctx)
+    existing = sort(collect(keys(file["luminosity"])))
+    sort(ctx.labels) == existing || throw(ArgumentError(
+        "RunArtifact(append=true): the luminosity groups at $(ctx.path) " *
+        "($(existing)) do not match this task's collision labels " *
+        "($(sort(ctx.labels))). Use a new path."))
+    return nothing
+end
+
+"""
+The `/execution` ledger is present: a file without it is not one this writer
+made (2026-10-16 neighbour audit, U5-9: it used to surface as a raw KeyError).
+"""
+function _ra_check_ledger(file, ctx)
+    haskey(file, "execution") || throw(ArgumentError(
+        "RunArtifact(append=true): $(ctx.path) carries no /execution ledger, so it " *
+        "is not a run artifact this writer can continue; use a new path or append=false"))
+    return nothing
+end
+
+"""
+Every column this writer appends is in the ledger. A file lacking any of them
+predates the `rng_seed` and `rng_method` columns (2026-10-16, S5-4) and is
+refused BY NAME, as found and unchanged, rather than padded: a padded seed
+column would claim a provenance the earlier rows never recorded. (This
+supersedes the step-1 `current_turn` padding, whose files lack these too.)
+"""
+function _ra_check_ledger_columns(file, ctx)
+    ex = file["execution"]
+    absent = String[]
+    for (name, _) in _RA_LEDGER_COLUMNS
+        haskey(ex, name) || push!(absent, name)
+    end
+    isempty(absent) || throw(ArgumentError(
+        "RunArtifact(append=true): the /execution ledger at $(ctx.path) has no " *
+        "$(join(absent, ", ")) column(s): the file predates the ledger's rng_seed and " *
+        "rng_method columns (2026-10-16) and this writer does not continue it; use a " *
+        "new path or append=false"))
+    return nothing
+end
+
+"""The table's method of `_ra_check_partial_slots`: no provenance slot is partial."""
+_ra_check_partial_slots(file, ctx::NamedTuple) = _ra_check_partial_slots(file, ctx.path)
+
+"""
+The `/losses` group, when the file has one and the task records losses
+(`aperture_names !== nothing`), names exactly this task's apertures: a
+continued file keeps the earlier windows' loss rows under the file's aperture
+ids (`_ra_write_losses!`, F-57), so a line with other apertures -- or none --
+is refused rather than silently mixed, the luminosity labels' rule. A group
+without the names dataset is not one this writer wrote and is refused as torn.
+"""
+function _ra_check_loss_apertures(file, ctx)
+    ctx.aperture_names === nothing && return nothing
+    haskey(file, "losses") || return nothing
+    g = file["losses"]
+    haskey(g, "aperture_names") || throw(ArgumentError(
+        "RunArtifact(append=true): the /losses group at $(ctx.path) has no aperture_names " *
+        "dataset, so it is not a group this writer can continue; use a new path or append=false"))
+    stored = String.(read(g["aperture_names"]))
+    names = collect(String, ctx.aperture_names)
+    stored == names || throw(ArgumentError(
+        "RunArtifact(append=true): the /losses group at $(ctx.path) names the apertures " *
+        "$(stored) but this task's line has " *
+        (isempty(names) ? "no aperture" : "the apertures $(names)") * "; a continued file " *
+        "keeps the losses of its earlier windows under the file's aperture ids, so a " *
+        "different aperture set is refused rather than silently mixed. Use a new path or " *
+        "append=false"))
+    return nothing
+end
+
+"""
+The provenance slot the ledger row would take is free and the recorder's
+column walk agrees with the provenance (`_ra_validate_turn_modulation!`; the
+writer runs it again before it creates the first group). Reads the ledger, so
+it follows `_ra_check_ledger` in the table.
+"""
+_ra_check_turn_modulation(file, ctx) =
+    _ra_validate_turn_modulation!(file, ctx.path, length(file["execution"]["start_turn"]) + 1,
+                                  ctx.entries, ctx.columns)
+
+const _RA_PREPARE_CHECKS = (_ra_check_is_artifact, _ra_check_labels, _ra_check_ledger,
+                            _ra_check_ledger_columns, _ra_check_partial_slots,
+                            _ra_check_loss_apertures, _ra_check_turn_modulation)
 
 """
 Write `/turn_modulation/<slot>` for the ledger row `slot` just appended:
@@ -1101,6 +1289,13 @@ the design's point.
 """
 function push_luminosity!(art::RunArtifact, label::String, turn::Integer, value::Float64)
     _mp_is_root() || return nothing
+    # Before the commit the channel may still hold rows at or beyond this
+    # window's first turn: a row buffered now would land beyond stale rows,
+    # the silent form of F-56. Refused by name (2026-10-19 fix batch).
+    art.committed || error(
+        "RunArtifact at $(art.path): a luminosity row for $(label) (turn $(turn)) arrived " *
+        "before the window committed; commit_run_artifact! applies the replay rule after " *
+        "the last refusal and before the first turn")
     t = get!(() -> Int64[], art.pending_turns, label)
     v = get!(() -> Float64[], art.pending_values, label)
     push!(t, Int64(turn))
@@ -1170,14 +1365,60 @@ function _ra_gathered_loss_rows(record, shard_offset::Integer)
 end
 
 """
-Rewrite the artifact's `/losses` group from the task's cumulative loss
-record, mirroring `write_loss_record`'s layout (per-loss rows, aperture
-names/counts/arc positions, and the reconciliation summary as attributes
-when the caller has one). Rewritten WHOLE per execute! -- the record is
-cumulative and a particle is lost at most once, so the rewrite is
-idempotent, exactly the loss-log rule. A task with no loss record (no
-aperture in the line) writes nothing; a counters-only record (no log
-slots requested) writes the per-aperture accounting without rows.
+The rows of a continued `/losses` group that survive this window: `turn`
+below `first_turn` (the replay rule) and `(particle_id, turn)` not among this
+record's rows `gathered` -- the same beam continuing in one process already
+carries its earlier rows in its cumulative record, so they are kept once.
+Both matrices are in the `LOSS_RECORD_COLUMNS` layout; `gathered` is `nothing`
+for a counters-only record, which keeps every row below `first_turn`.
+"""
+function _ra_retained_loss_rows(data0::AbstractMatrix, gathered, first_turn::Int64)
+    jid = findfirst(==("particle_id"), LOSS_RECORD_COLUMNS)
+    jturn = findfirst(==("turn"), LOSS_RECORD_COLUMNS)
+    own = Set{Tuple{Int64,Int64}}()
+    if gathered !== nothing
+        for i in 1:size(gathered, 1)
+            push!(own, (Int64(gathered[i, jid]), Int64(gathered[i, jturn])))
+        end
+    end
+    keep = Int[]
+    for i in 1:size(data0, 1)
+        t = data0[i, jturn]
+        t < first_turn || continue
+        (Int64(data0[i, jid]), Int64(t)) in own && continue
+        push!(keep, i)
+    end
+    return data0[keep, :]
+end
+
+"""
+Write the artifact's `/losses` group for this `execute!` -- the
+`write_loss_record` layout (per-loss rows, aperture names/counts/arc
+positions, and the reconciliation summary as attributes when the caller has
+one) -- under the replay idempotence rule every other group follows
+(2026-10-19 fix batch, F-57; before it the group was rewritten whole from the
+current record, so a new task continuing a file, a process restart, emptied
+it). On a continued file the group's earlier rows are kept where their `turn`
+is below this window's first turn and not already in this record
+(`_ra_retained_loss_rows`: the same beam continuing in one process carries
+its earlier rows in its cumulative record, so they are kept once), rows at or
+beyond it are dropped as replayed, and this record's rows -- every one of
+them; the record is the beam's and cumulative -- are appended, in that order;
+`aperture_counts` is this record's attribution plus that of the kept rows,
+so `sum(aperture_counts) == record_count` whenever rows are logged. The
+`summary_*` attributes are the writing `execute!`'s beam (`loss_summary`: its
+particles, live, dead, logged, unattributed), not a sum over windows: on a
+fresh file `sum(aperture_counts) == summary_logged` as before, on a continued
+file the counts exceed the beam's `logged` by the earlier windows' retained
+losses. A continued group that logged no rows (a counters-only record)
+carries its counts whole -- there is no turn to replay by -- and says so with
+a warning. The group is still written whole, deleted and recreated from the
+merged rows. A window that never committed (`commit_run_artifact!`: refused
+before its first turn) writes nothing and leaves the group as found; one that
+ran turns without committing is an error. A task with no loss record (no
+aperture in the line) writes nothing; the aperture names of a continued group
+were matched against this task's at prepare (`_ra_check_loss_apertures`), so
+a mismatch here is an internal error, not a refusal.
 """
 function _ra_write_losses!(art::RunArtifact, record, s_positions, summary,
                            shard_offset::Integer=0; folded::Bool=false)
@@ -1187,9 +1428,16 @@ function _ra_write_losses!(art::RunArtifact, record, s_positions, summary,
     gathered = _ra_gathered_loss_rows(record, shard_offset)
     art.file === nothing && return nothing
     record === nothing && return nothing
-    haskey(art.file, "losses") && HDF5.delete_object(art.file, "losses")
-    g = HDF5.create_group(art.file, "losses")
-    g["aperture_names"] = aperture_names(record)
+    if !art.committed
+        # Refused before its first turn: nothing ran, the group stays as found.
+        # Turns tracked without the commit are an ordering bug, said by name.
+        art.current_turn >= art.first_turn && error(
+            "RunArtifact at $(art.path): the window starting at turn $(art.first_turn) reached " *
+            "turn $(art.current_turn) without commit_run_artifact!, so /losses cannot be " *
+            "written under the replay rule")
+        return nothing
+    end
+    names = aperture_names(record)
     # The GLOBAL attribution, not this rank's. `loss_counts(record)` is the
     # rank-local `LossRecord.counts`, bumped only by this rank's own kills, and
     # every other value in this group is the whole beam's: `data` is
@@ -1202,13 +1450,48 @@ function _ra_write_losses!(art::RunArtifact, record, s_positions, summary,
     # all-summed by `_global_loss_summary`, index-aligned with `aperture_names`
     # because both derive from the same record, and identical to the local one
     # at a single rank.
-    g["aperture_counts"] = summary === nothing ? loss_counts(record) :
-                           collect(Int, summary.by_aperture)
+    counts = summary === nothing ? Int.(loss_counts(record)) : collect(Int, summary.by_aperture)
+    # The replay rule for the single group (F-57): the earlier windows' rows of
+    # a continued file below this window's first turn, less those this
+    # cumulative record carries itself, keep their place ahead of this record's.
+    kept = zeros(Float64, 0, length(LOSS_RECORD_COLUMNS))
+    if art.continued && haskey(art.file, "losses")
+        g0 = art.file["losses"]
+        stored = String.(read(g0["aperture_names"]))
+        stored == names || error(
+            "RunArtifact at $(art.path): the /losses group names the apertures $(stored) but " *
+            "this record's are $(names); prepare_run_artifact! validates this for every task " *
+            "that records losses (aperture_names)")
+        if haskey(g0, "data")
+            cols0 = String.(read(g0["column_names"]))
+            cols0 == LOSS_RECORD_COLUMNS || error(
+                "RunArtifact at $(art.path): the /losses group carries columns $(cols0), not " *
+                "$(LOSS_RECORD_COLUMNS); not a group this writer can continue")
+            kept = _ra_retained_loss_rows(read(g0["data"]), gathered, art.first_turn)
+        else
+            stored_counts = Int.(read(g0["aperture_counts"]))
+            length(stored_counts) == length(counts) && (counts .+= stored_counts)
+            @warn "the continued run artifact's /losses group logged no per-loss rows, so the " *
+                  "replay rule cannot apply to its earlier windows: their per-aperture counts " *
+                  "are carried whole and added to this window's, and a replayed window counts " *
+                  "twice" path = art.path
+        end
+    end
+    jelem = findfirst(==("element_id"), LOSS_RECORD_COLUMNS)
+    for i in 1:size(kept, 1)
+        e = Int(kept[i, jelem])
+        1 <= e <= length(counts) && (counts[e] += 1)
+    end
+    merged = gathered === nothing ? kept : vcat(kept, gathered)
+    haskey(art.file, "losses") && HDF5.delete_object(art.file, "losses")
+    g = HDF5.create_group(art.file, "losses")
+    g["aperture_names"] = names
+    g["aperture_counts"] = counts
     s_positions === nothing || (g["aperture_s"] = collect(Float64, s_positions))
-    if gathered !== nothing
-        g["data"] = gathered
+    if gathered !== nothing || size(merged, 1) > 0
+        g["data"] = merged
         g["column_names"] = collect(String, LOSS_RECORD_COLUMNS)
-        _ra_set_attr!(g, "record_count", Int64(size(gathered, 1)))
+        _ra_set_attr!(g, "record_count", Int64(size(merged, 1)))
     end
     if summary !== nothing
         _ra_set_attr!(g, "summary_particles", Int64(summary.particles))
@@ -1251,6 +1534,13 @@ own refusal, releases the lock itself.
 function finalize_run_artifact!(art::RunArtifact)
     art.file === nothing && return nothing
     try
+        # A window that tracked turns without `commit_run_artifact!` wrote no
+        # row (the pushes refuse) and never applied the replay rule: the error
+        # of a success path, a warning beside the error that stopped a crashed
+        # run. A window refused before its first turn is not this (nothing ran).
+        (!art.committed && art.current_turn >= art.first_turn) && error(
+            "RunArtifact at $(art.path): the window starting at turn $(art.first_turn) reached " *
+            "turn $(art.current_turn) without commit_run_artifact!; its groups were never replayed")
         for label in collect(keys(art.pending_turns))
             _ra_flush_luminosity!(art, label)
         end
@@ -1263,6 +1553,8 @@ function finalize_run_artifact!(art::RunArtifact)
         close(art.file)
         art.file = nothing
         empty!(art.turn_modulation_recorders)
+        art.committed = false
+        empty!(art.pending_probes)
         _ra_release_lock!(art)
     end
     return nothing
@@ -1308,10 +1600,15 @@ function _active_probe_s(observer)
 end
 
 """
-Bind one probe to the open artifact: create its group (or continue it,
-refusing a column-layout mismatch), apply the crash-truncation and replay
-rules, and enforce name uniqueness within this execute!. Returns the group
-key the probe pushes rows through.
+Bind one probe to the open artifact: validate it -- a name, one of the table's
+named kinds, unique within this `execute!`, and, when its group exists, a
+stored column layout equal to `colnames` -- and register it for the commit,
+which creates or continues the group and applies the crash-truncation and
+replay rules (`commit_run_artifact!`, `_ra_commit_probe!`). Nothing is written
+here (2026-10-19 fix batch, F-58: binding truncated one group at a time, so a
+later probe's refusal left the earlier probes cut back to `first_turn - 1`). A
+bind after the commit is refused by name. Returns the group key the probe
+pushes rows through.
 """
 function _ra_bind_probe!(art::RunArtifact, kind::String, name::String,
                          colnames::Vector{String}, first_turn::Int;
@@ -1329,37 +1626,55 @@ function _ra_bind_probe!(art::RunArtifact, kind::String, name::String,
     _mp_is_root() || return key
     art.file === nothing && throw(ArgumentError(
         "a named probe needs an open run artifact; give the task artifact=..."))
+    art.committed && throw(ArgumentError(
+        "the probe /$(key) binds after the window committed: every probe binds before " *
+        "commit_run_artifact!, which applies the replay rule to all of them at once"))
     key in art.probe_names && throw(ArgumentError(
         "duplicate probe name $(repr(name)) under /$(kind): names are the " *
         "artifact's group identities and must be unique within a task"))
-    push!(art.probe_names, key)
     f = art.file
-    parent = haskey(f, kind) ? f[kind] : HDF5.create_group(f, kind)
-    if haskey(parent, name)
-        g = parent[name]
-        stored = read(g["column_names"])
+    if haskey(f, kind) && haskey(f[kind], name)
+        stored = read(f[kind][name]["column_names"])
         stored == colnames || throw(ArgumentError(
             "the probe group /$(key) at $(art.path) carries columns $(stored), " *
             "not $(colnames); use a different name or path"))
+    end
+    push!(art.probe_names, key)
+    push!(art.pending_probes,
+          PendingProbeBind(key, kind, name, copy(colnames), Int64(first_turn),
+                           s === nothing ? nothing : Float64(s)))
+    return key
+end
+
+"""
+Create or continue one probe group at the commit (the body `_ra_bind_probe!`
+ran at bind time before the 2026-10-19 fix batch): an existing group is
+truncated to `min(cursor, first_turn - 1)` by `_ra_truncate_probe!` -- the
+torn tail beyond its cursor and the replayed rows, one bound -- and a new one
+is created with its `data` matrix, `column_names`, `name` and the
+nothing-known cursor. The design's `attrs: name, s` either way: a line-placed
+probe records WHERE in the line it sat (arc length at its placement), so the
+file answers it without the script that made it; stamped on continue too --
+idempotent for the same lattice, corrective if the probe moved.
+"""
+function _ra_commit_probe!(f, pending::PendingProbeBind)
+    parent = haskey(f, pending.kind) ? f[pending.kind] : HDF5.create_group(f, pending.kind)
+    if haskey(parent, pending.name)
+        g = parent[pending.name]
         cursor = Int64(_ra_get_attr(g, "rows_valid_through_turn",
                                     Int64(typemin(Int32))))
-        _ra_truncate_probe!(g, min(cursor, Int64(first_turn) - 1))
+        _ra_truncate_probe!(g, min(cursor, pending.first_turn - 1))
     else
-        g = HDF5.create_group(parent, name)
-        ncols = length(colnames)
+        g = HDF5.create_group(parent, pending.name)
+        ncols = length(pending.colnames)
         HDF5.create_dataset(g, "data", HDF5.datatype(Float64),
             HDF5.dataspace((0, ncols); max_dims=(-1, ncols)); chunk=(256, ncols))
-        g["column_names"] = colnames
-        _ra_set_attr!(g, "name", name)
+        g["column_names"] = pending.colnames
+        _ra_set_attr!(g, "name", pending.name)
         _ra_set_attr!(g, "rows_valid_through_turn", Int64(typemin(Int32)))
     end
-    # The design's `attrs: name, s`: a line-placed probe records WHERE in the
-    # line it sat (arc length at its placement), so the file answers it
-    # without the script that made it. Stamped on continue too -- idempotent
-    # for the same lattice, corrective if the probe moved.
-    s === nothing || _ra_set_attr!(g, "s", Float64(s))
-    HDF5.flush(f)
-    return key
+    pending.s === nothing || _ra_set_attr!(g, "s", pending.s)
+    return nothing
 end
 
 """
@@ -1378,6 +1693,11 @@ function _ra_push_probe_rows!(art::RunArtifact, key::String, rows::AbstractMatri
         "RunArtifact at $(art.path) is closed but probe rows for $(key) " *
         "are still arriving: observer flushes must run before " *
         "finalize_run_artifact!")
+    # The group exists and is replayed only from the commit on (F-58).
+    art.committed || error(
+        "RunArtifact at $(art.path): probe rows for $(key) arrived before the window " *
+        "committed; commit_run_artifact! applies the replay rule after the last refusal " *
+        "and before the first turn")
     g = art.file[key]
     d = g["data"]
     n = size(d, 1)
@@ -1931,7 +2251,13 @@ beside the columns (`nothing` for task-hook probes and pre-attribute files).
 
 `:losses` returns the per-loss rows as column vectors (pre-kill coordinates),
 the per-aperture names/counts/arc positions, and the reconciliation summary
-when the run recorded one (`nothing` otherwise). `:execution` returns the
+when the run recorded one (`nothing` otherwise). On a continued
+(`append=true`) file the rows and `aperture_counts` span every window the
+file holds under the replay rule (the earlier windows' rows below each later
+window's first turn, then that window's own; 2026-10-19), while `summary` is
+the LAST `execute!`'s beam, so `sum(aperture_counts) == summary.logged` holds
+on a fresh file and the counts exceed `summary.logged` by the earlier windows'
+retained losses on a continued one. `:execution` returns the
 ledger -- one entry per `execute!`: `start_turn`, `turns`,
 `current_turn`/`elapsed` updated at every flush of every channel (luminosity,
 probe rows, turn-modulation series) and at finalize, and `rng_seed`/
