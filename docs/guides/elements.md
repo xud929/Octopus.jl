@@ -77,7 +77,16 @@ docstrings of public objects.
      later by a knob or a placement override still widens the element. Splice
      `_PLACEMENT_PARAMS...` into the schema (or `numeric_type=
      _PLACEMENT_PARAMS.numeric_type`) and mention `numeric_type` in the
-     `construction_help`; `validate_element_metadata` checks both. The runtime
+     `construction_help`; `validate_element_metadata` checks both. A kind
+     with more to say about a placement key than the table's sentence
+     declares it as `_placement_param(:key; meaning="...")`, never as its
+     own `ParamMeta`: the validator holds every kind's placement entries to
+     the table's unit, default and `alternatives` (13 kinds had copied them
+     by hand and the copies had drifted; 2026-10-18 audit, F-171). It also
+     compares EVERY declared `ParamMeta.default` -- the example's or not --
+     with the map omitting the parameter compiles to, requires a discrete
+     default to lie within its `alternatives`, and refuses empty
+     descriptions, keywords, meanings and construction help. The runtime
      struct carries `T<:Number` as its ONE numeric type parameter: that is
      what `_required_beam_eltype` (`src/track/Track.jl`) derives, so a task
      refuses a beam of another element type by name, with the remedy naming

@@ -67,7 +67,11 @@ rather than redefine one.
 4. Add the policy's block to `validate_configuration_metadata()` in
    `src/tasks/strongstrong/interface.jl`. The validator enumerates policy
    types by hand (an open `../todo.md` row); its tree guard names any
-   concrete policy that has no block.
+   concrete policy that has no block. The block compares every schema
+   default with a CONSTRUCTED default policy (`NewPolicy()`), never with a
+   literal copy of the schema's own value: two of the five blocks compared
+   literals until the 2026-10-20 fix batch, and a keyword-default drift on
+   those constructors passed (2026-10-18 audit, F-169).
 5. Add coverage beside "The placeholder and deprecated policies actually run"
    and "Configuration rejection" in `test/runtests.jl`.
 

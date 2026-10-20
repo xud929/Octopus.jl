@@ -14116,8 +14116,15 @@ if _lane_gate("Element parameter effectiveness")
     # Float32 typed form and sees its map move by Float32 rounding -- the
     # typed form reaching the map, measured, for all thirty kinds (the
     # marker's through its placement wraps). Unperturbable and rejected
-    # moved by nothing (41 / 23).
-    @test r.metrics[:checked] >= 530
+    # moved by nothing (41 / 23). 530 -> 537 on 2026-10-20 (fix batch 2 unit
+    # C, F-171): the seven thin kinds' and kickers' `misalign_convention`
+    # gained the one table's `alternatives=(:bmad, :madx)` their hand-copied
+    # entries had dropped, so the sweep perturbs it there too -- measured
+    # bmad != madx on all seven with every placement DOF set (max |diff|
+    # 2.2e-12 thin_sextupole .. 4.8e-10 thin_dipole: the rotation-composition
+    # order, second order in the pitches, not last-bit hair). Unperturbable
+    # 41 -> 34, rejected unchanged.
+    @test r.metrics[:checked] >= 537
 
     # What the contract does NOT decide has to be visible, and bounded
     # (2026-08-05_b audit, U4-2). 112 of 501 declared parameters used to be
@@ -14141,7 +14148,9 @@ if _lane_gate("Element parameter effectiveness")
     # undecided -- the working-point measurements in _LATTICE_BODY_PROBE's
     # comment are what made that true. 42 -> 41 on 2026-08-16 (U4-1):
     # aperture.shape moved to checked through its declared alternatives.
-    @test r.metrics[:unperturbable] <= 41
+    # 41 -> 34 on 2026-10-20 (fix batch 2 unit C, F-171): the seven
+    # misalign_convention entries above moved to checked.
+    @test r.metrics[:unperturbable] <= 34
     @test r.metrics[:rejected] <= 23
 
     # `:name` is CARRIED by every kind and consumed by none, so it is exempt
@@ -18344,6 +18353,248 @@ end
         end
     end
     @test validate_element_metadata().passed      # registry restored again
+end
+
+@testset "The validators check every key: declared defaults beyond the example, discrete defaults in their alternatives, runtime maps against method lists, free text non-empty, placement entries against the one table, a method-less kind's answers, policy defaults against constructed policies" begin
+    # 2026-10-18 comprehensive audit, fix batch 2 unit C (F-168, F-169, F-171,
+    # F-172, F-174). Every injection below validated CLEAN on main b9c1253;
+    # the unit's probe log quotes each MISSED verdict beside the fixed tree's
+    # CAUGHT (result/fix_batch2_2026_10_20/probes/C/{unfixed,fixed}_validators.log).
+    # Each registry mutation is restored in a `finally` and the registry is
+    # re-validated at the end, as the K3/K6 controls above do.
+    rebuild(m; parameters=m.parameters, runtime_types=m.runtime_types,
+            tracking_methods=m.tracking_methods, description=m.description,
+            keywords=m.keywords, construction_help=m.construction_help, example=m.example) =
+        Octopus.ElementMeta(m.kind, m.spec_type, m.friendly_constructor, m.runtime_type,
+                            runtime_types, description, keywords, tracking_methods,
+                            m.contracts, m.analyses, parameters, example, construction_help)
+    withmeta(p; required=p.required, unit=p.unit, default=p.default, meaning=p.meaning,
+             alternatives=p.alternatives) =
+        ParamMeta(required, unit, default, meaning, alternatives)
+    function with_replaced_meta(f, kind, newmeta)
+        old = Octopus.ELEMENT_META_BY_KIND[kind]
+        try
+            Octopus.ELEMENT_META_BY_KIND[kind] = newmeta
+            Octopus.ELEMENT_META_BY_SPEC_TYPE[old.spec_type] = newmeta
+            old.friendly_constructor === nothing ||
+                (Octopus.ELEMENT_META_BY_FRIENDLY_TYPE[old.friendly_constructor] = newmeta)
+            f()
+        finally
+            Octopus.ELEMENT_META_BY_KIND[kind] = old
+            Octopus.ELEMENT_META_BY_SPEC_TYPE[old.spec_type] = old
+            old.friendly_constructor === nothing ||
+                (Octopus.ELEMENT_META_BY_FRIENDLY_TYPE[old.friendly_constructor] = old)
+        end
+    end
+    naming(r, words...) = filter(e -> all(w -> occursin(w, e), words), r.errors)
+    drift = Octopus.ELEMENT_META_BY_KIND[:drift]
+    quad = Octopus.ELEMENT_META_BY_KIND[:quadrupole]
+    line = Octopus.ELEMENT_META_BY_KIND[:line]
+
+    # F-168 (a), the real tree: EVERY declared default compared, none skipped.
+    # The old `haskey(base, key)` gate compared 77 of 608; the identity below
+    # is what a skip breaks, and the pair count may only grow (2026-10-20: 607,
+    # the 608 less `line.L`, which declares no default now because `BeamLine`
+    # refuses one on every base).
+    r = validate_element_metadata()
+    @test r.passed
+    @test r.default_pairs >= 607
+    @test r.defaults_checked == r.default_pairs
+    # The weaker base (the example's required parameters alone) is used exactly
+    # where the constructor refuses the declared default beside the example --
+    # the two-spellings refusals -- and that is re-derived here rather than
+    # hand-listed: each listed key's declared default IS refused beside its
+    # example, and the list is not empty (the folded strength sugar is).
+    @test !isempty(r.defaults_on_required_base)
+    for (kind, key) in r.defaults_on_required_base
+        m = Octopus.ELEMENT_META_BY_KIND[kind]
+        p = Dict{Symbol,Any}(Octopus.params(m.example))
+        p[key] = m.parameters[key].default
+        @test_throws ArgumentError m.friendly_constructor(; p...)
+    end
+    # F-168 (b), the gate shown open, together with F-171 and F-172 on one
+    # lying drift: `h` is absent from the drift example (the old gate never
+    # compared it; its default moved to 6), `misalign_convention` defaults to
+    # a value outside (:bmad, :madx), `x_offset` lost the table's unit and
+    # `y_offset` the table's default, `L` has no meaning, the runtime map
+    # carries a method the list does not, the description and the keywords
+    # are empty.
+    @test !haskey(Octopus.params(drift.example), :h)
+    let rt = copy(drift.runtime_types)
+        rt[Damping6DMap] = first(values(drift.runtime_types))
+        liar = rebuild(drift;
+            parameters=merge(drift.parameters, (
+                h=withmeta(drift.parameters.h; default=6),
+                misalign_convention=withmeta(drift.parameters.misalign_convention; default=:elegant),
+                x_offset=withmeta(drift.parameters.x_offset; unit=""),
+                y_offset=withmeta(drift.parameters.y_offset; default=1),
+                L=withmeta(drift.parameters.L; meaning=""))),
+            runtime_types=rt, description="", keywords=Symbol[])
+        with_replaced_meta(:drift, liar) do
+            r = validate_element_metadata()
+            @test !r.passed
+            @test !isempty(naming(r, "drift", " h ", "different map"))
+            @test !isempty(naming(r, "drift", "misalign_convention", "outside its alternatives"))
+            @test !isempty(naming(r, "drift", "x_offset", "_PLACEMENT_PARAMS"))
+            @test !isempty(naming(r, "drift", "y_offset", "_PLACEMENT_PARAMS"))
+            @test !isempty(naming(r, "drift", " L ", "empty meaning"))
+            @test !isempty(naming(r, "drift", "Damping6DMap", "does not declare it"))
+            @test !isempty(naming(r, "drift", "empty description"))
+            @test !isempty(naming(r, "drift", "no physics keywords"))
+            # ... and the real defaults the lie left alone still compare clean.
+            @test r.defaults_checked == r.default_pairs
+        end
+    end
+    # The docstring's own discriminating example, `quadrupole.nst`, is absent
+    # from the quadrupole example and was therefore never compared; and a
+    # folded sugar key (`k1`, refused beside the example's `kn`) is compared on
+    # the required-only base rather than skipped.
+    @test !haskey(Octopus.params(quad.example), :nst)
+    with_replaced_meta(:quadrupole, rebuild(quad; parameters=merge(quad.parameters, (
+            nst=withmeta(quad.parameters.nst; default=7),
+            k1=withmeta(quad.parameters.k1; default=3))))) do
+        r = validate_element_metadata()
+        hits = naming(r, "quadrupole", "nst", "different map")
+        @test !isempty(hits) && !any(e -> occursin("required parameters alone", e), hits)
+        @test !isempty(naming(r, "quadrupole", "k1", "different map", "required parameters alone"))
+    end
+    # A declared default nothing can pass is an error, not a skip: the very
+    # entry the live registry carried (`line.L = 0.0`, refused by `BeamLine`
+    # on every base) and corrected in this batch.
+    with_replaced_meta(:line, rebuild(line; parameters=merge(line.parameters, (
+            L=withmeta(line.parameters.L; default=0.0),)))) do
+        r = validate_element_metadata()
+        @test !isempty(naming(r, "line", " L ", "refuses", "metadata lie"))
+    end
+    @test line.parameters.L.default === nothing
+    # The numeric exemption of the alternatives rule, stated: the aperture's
+    # limits default to Inf against shrunken perturbation values (U4-1).
+    @test Octopus.parameter_schema(ApertureSpec).x_limit.default == Inf
+    @test !(Inf in Octopus.parameter_schema(ApertureSpec).x_limit.alternatives)
+
+    # F-172: an emptied method list over an intact runtime map is refused too
+    # (the map is what compile_runtime executes).
+    with_replaced_meta(:drift, rebuild(drift; tracking_methods=DataType[])) do
+        r = validate_element_metadata()
+        @test !isempty(naming(r, "drift", "Symplectic6DMap", "does not declare it"))
+    end
+
+    # F-171, the real tree: every kind's placement entries agree with
+    # `_PLACEMENT_PARAMS` in everything but the meaning. 13 kinds had copied
+    # them by hand and 79 copies had drifted -- every unit lost, and the seven
+    # thin kinds' and kickers' `misalign_convention` without the alternatives
+    # the effectiveness contract derives its Symbol perturbations from.
+    for T in registered_element_specs()
+        schema = Octopus.parameter_schema(T)
+        isempty(keys(schema)) && continue
+        for key in Octopus._PLACEMENT_PARAM_KEYS
+            @test haskey(schema, key)
+            haskey(schema, key) || continue
+            entry, ref = schema[key], Octopus._PLACEMENT_PARAMS[key]
+            @test (entry.required, entry.unit, entry.default, entry.alternatives) ==
+                  (ref.required, ref.unit, ref.default, ref.alternatives)
+        end
+    end
+    # The consumer this was about: the convention is perturbable on those
+    # kinds now, from the table's alternatives (the candidate rule returned
+    # `()` for a Symbol without alternatives).
+    for ctor in (ThinDipoleSpec, ThinMultipoleSpec, ThinQuadrupoleSpec, ThinSextupoleSpec,
+                 HKickerSpec, VKickerSpec, KickerSpec)
+        pm = Octopus.parameter_schema(ctor).misalign_convention
+        @test pm.alternatives == (:bmad, :madx)
+        @test Octopus._perturb_candidates(:misalign_convention, :bmad, pm) == (:madx,)
+    end
+    # And `element_help` prints the table's unit on a kind that declares its
+    # own meaning.
+    let io = IOBuffer()
+        element_help(:sbend; io=io)
+        text = String(take!(io))
+        @test occursin(r"- y_offset \(optional; unit=m; default=0; misalignment", text)
+    end
+
+    # F-174: a kind that declares no tracking method answers none. The line
+    # answered `Symplectic6DMap()` from both `tracking_method` and
+    # `default_method` while `compile_runtime(line, Symplectic6DMap())` refused
+    # the request (K8 above).
+    let bl = BeamLine("L", DriftSpec(L=1.0))
+        @test isempty(supported_tracking_methods(ElementSpec{:line}))
+        @test_throws ArgumentError tracking_method(bl)
+        @test_throws ArgumentError default_method(ElementSpec{:line})
+        @test compile_runtime(bl) isa Octopus.CompositeLine     # the one-argument compile is untouched
+        # a stored method still wins over the fallback, and the fallback still
+        # answers for a kind that declares methods
+        @test tracking_method(DriftSpec(L=1.0, tracking_method=Symplectic6DMap())) isa Symplectic6DMap
+        @test default_method(ElementSpec{:drift}) isa Symplectic6DMap
+        @test default_method(ElementSpec{:aperture}) isa NonSymplectic6DMap   # a kind's own override
+    end
+    # ... and the validator holds every kind to it: a method-less kind whose
+    # example answers a method is refused by name.
+    try
+        Octopus.register_element_meta!(Octopus.ElementMeta(;
+            kind=:c_methodless, spec_type=ElementSpec{:c_methodless},
+            description="probe", keywords=[:placeholder], construction_help="probe",
+            example=ElementSpec{:c_methodless}(Dict{Symbol,Any}(:tracking_method => Symplectic6DMap()))))
+        r = validate_element_metadata()
+        @test !isempty(naming(r, "c_methodless", "declares no tracking method",
+                              "tracking_method(example)", "answers Symplectic6DMap"))
+    finally
+        delete!(Octopus.ELEMENT_META_BY_KIND, :c_methodless)
+        delete!(Octopus.ELEMENT_META_BY_SPEC_TYPE, ElementSpec{:c_methodless})
+        filter!(t -> t !== ElementSpec{:c_methodless}, Octopus.REGISTERED_ELEMENT_SPECS)
+    end
+    @test validate_element_metadata().passed      # registry restored
+
+    # F-169: the policy defaults are compared with CONSTRUCTED default
+    # policies, so a keyword-default drift on the CPU, the legacy GPU and the
+    # CUDA constructors is refused by name -- all three passed the validator
+    # when the schema was compared with literal copies of itself. In a CHILD
+    # PROCESS, like the two validator controls below: redefining a keyword
+    # constructor on `Octopus` is a session-wide edit. The project is the
+    # package's own directory, which is the same answer under `Pkg.test` and
+    # under a runner that includes this block as a string.
+    let root = pkgdir(Octopus)
+        script = """
+            using Octopus
+            using Octopus: validate_configuration_metadata
+            refused(words...) = begin
+                caught = try
+                    validate_configuration_metadata()
+                    ""
+                catch err
+                    sprint(showerror, err)
+                end
+                all(w -> occursin(w, caught), words)
+            end
+            println("CLEAN ", validate_configuration_metadata())
+            @eval Octopus CPUThreadsExecutionPolicy(; threads=1) = CPUThreadsExecutionPolicy(threads)
+            println("CPU-DRIFT-REFUSED ", refused("CPU policy metadata threads default"))
+            @eval Octopus CPUThreadsExecutionPolicy(; threads=:auto) = CPUThreadsExecutionPolicy(threads)
+            @eval Octopus GPUExecutionPolicy(; threads::Integer=128, blocks::Integer=64, device=nothing) =
+                GPUExecutionPolicy(threads, blocks, device)
+            println("GPU-DRIFT-REFUSED ", refused("legacy GPU thread metadata default",
+                                                  "legacy GPU block metadata default"))
+            @eval Octopus GPUExecutionPolicy(; threads::Integer=256, blocks::Integer=256, device=nothing) =
+                GPUExecutionPolicy(threads, blocks, device)
+            @eval Octopus CUDAExecutionPolicy(; device=0, launch::CUDALaunchConfig=CUDALaunchConfig()) =
+                CUDAExecutionPolicy(device, launch)
+            println("CUDA-DEVICE-DRIFT-REFUSED ", refused("CUDA device metadata default"))
+            @eval Octopus CUDAExecutionPolicy(; device=nothing, launch::CUDALaunchConfig=CUDALaunchConfig()) =
+                CUDAExecutionPolicy(device, launch)
+            println("RESTORED ", validate_configuration_metadata())
+            """
+        buf = IOBuffer()
+        cmd = `$(Base.julia_cmd()) --startup-file=no --project=$(root) -e $(script)`
+        proc = run(pipeline(cmd; stdout=buf, stderr=buf); wait=false)
+        wait(proc)
+        text = String(take!(buf))
+        success(proc) || @info "the policy-default child failed" out=last(text, 3000)
+        @test success(proc)
+        @test occursin("CLEAN true", text)
+        @test occursin("CPU-DRIFT-REFUSED true", text)
+        @test occursin("GPU-DRIFT-REFUSED true", text)
+        @test occursin("CUDA-DEVICE-DRIFT-REFUSED true", text)
+        @test occursin("RESTORED true", text)
+    end
 end
 
 @testset "The configuration validator's tree walks reach concrete types at any depth" begin
@@ -23491,6 +23742,27 @@ end
     @test Octopus._mp_resolve_shard(1234) == (0, 1234)
     @test Octopus._mp_first_chunk() == 1
     @test Octopus._mp_local_chunks() == chunks
+
+    # The resolve's verdict is a function of the all-summed count vector, so
+    # it is the same on every rank (2026-10-18 comprehensive audit, F-170):
+    # four ranks holding (256, 256, 255, 257) name ranks 2 and 3 on EVERY
+    # rank, where the old per-rank test let ranks 0 and 1 proceed to the next
+    # collective and block there -- measured under mpiexec, the unit's cases B
+    # and C in result/fix_batch2_2026_10_20/probes/C/unfixed_shard_verdict.log.
+    @test Octopus._mp_shard_verdict([256, 256, 255, 257], 4) == [2, 3]
+    @test Octopus._mp_shard_verdict([256, 256, 256, 256], 4) == Int[]
+    # At two ranks a mismatch is always mutual (the expected lengths sum to the
+    # counts' sum), which is why the per-rank test survived the two-rank
+    # launcher testset; and 255 + 256 over 64 chunks IS the rule for 511.
+    @test Octopus._mp_shard_verdict([256, 255], 2) == [0, 1]
+    @test Octopus._mp_shard_verdict([255, 256], 2) == Int[]
+    # A rank count that cannot divide the chunks refuses in the verdict too,
+    # from the same arithmetic on every rank.
+    @test_throws ArgumentError Octopus._mp_shard_verdict([300, 300, 300], 3)
+    # F-175: the chunk fold's docstring names the signature its one method has.
+    @test length(methods(Octopus._mp_chunk_fold)) == 1
+    @test occursin("_mp_chunk_fold(partials, first_chunk)",
+                   string(Base.Docs.doc(Base.Docs.Binding(Octopus, :_mp_chunk_fold))))
 end
 
 @testset "A sharded run keys its random streams on the global particle index" begin
@@ -24425,6 +24697,37 @@ end
     end
     # No launcher variable, no warning and no error: the ordinary case.
     @test activate(CPUThreadsExecutionPolicy()) == 1
+
+    # The launcher count is read from a GLOBAL variable before the per-node
+    # `MPI_LOCALNRANKS` (2026-10-18 comprehensive audit, F-173): with the
+    # per-node variable consulted third, one rank per node under a launcher
+    # exporting only SLURM_NTASKS beside it read as a single process, and
+    # both consumers of the count -- this refusal and the farming warning --
+    # stayed silent.
+    clear = ("PMI_SIZE" => nothing, "OMPI_COMM_WORLD_SIZE" => nothing,
+             "MPI_LOCALNRANKS" => nothing, "PMIX_SIZE" => nothing,
+             "MV2_COMM_WORLD_SIZE" => nothing, "SLURM_NTASKS" => nothing)
+    withenv(clear..., "MPI_LOCALNRANKS" => "1", "SLURM_NTASKS" => "4") do
+        @test Octopus._launcher_rank_count() == ("SLURM_NTASKS", 4)
+        @test_throws ArgumentError activate(MultiProcessExecutionPolicy())
+    end
+    withenv(clear..., "MPI_LOCALNRANKS" => "2", "PMIX_SIZE" => "8") do
+        @test Octopus._launcher_rank_count() == ("PMIX_SIZE", 8)
+    end
+    withenv(clear..., "MPI_LOCALNRANKS" => "2", "MV2_COMM_WORLD_SIZE" => "8") do
+        @test Octopus._launcher_rank_count() == ("MV2_COMM_WORLD_SIZE", 8)
+    end
+    withenv(clear..., "PMI_SIZE" => "8", "MPI_LOCALNRANKS" => "2") do
+        @test Octopus._launcher_rank_count() == ("PMI_SIZE", 8)
+    end
+    # The per-node count is the last resort, consulted only when no global
+    # count is exported; it can under-report, never over-report.
+    withenv(clear..., "MPI_LOCALNRANKS" => "3") do
+        @test Octopus._launcher_rank_count() == ("MPI_LOCALNRANKS", 3)
+    end
+    withenv(clear...) do
+        @test Octopus._launcher_rank_count() === nothing
+    end
 end
 
 if _lane_gate("The multi-process seam runs under an MPI launcher")
