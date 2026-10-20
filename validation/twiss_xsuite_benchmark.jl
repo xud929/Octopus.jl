@@ -729,19 +729,40 @@ function lattice_fixture(fixture)
             recorded_row("C2", fixture, "r56_converted_minus_octopus_nst64", Mconv[5, 6], Moct[5, 6])
         end
     end
-    order = fitted_order(NST_LADDER, residuals)
+    # The gated order is fitted on the ladder points clear of the reference's
+    # finite-difference floor. The xtrack map is a finite difference, and on
+    # the bend cells its error sits at the 2e-9 level, where the nst=64
+    # residual of U2 and K2 (2.4e-9) lands: fitted on all five points the
+    # order read 3.703 and 3.705 against the band [3.7, 4.3], a pass by 0.94 %
+    # and 1.7 % of the band that pinned xtrack's floor, not the integrator
+    # (comprehensive audit 2026-10-18, F-228). The floor is MAP-DEPENDENT (K1's
+    # finest residual is 3.5e-12, U2's 2.4e-9), so the exclusion is derived
+    # from each fixture's own ladder rather than from one constant: the finest
+    # residual is an upper bound on the reference's floor for that map, and a
+    # point less than ten times above it is not clearly in the integrator's
+    # asymptotic regime (the same factor ten the lattice-function fit below
+    # uses). On a clean fourth-order ladder (consecutive points 16x apart)
+    # this drops exactly the finest point; on U2 and K2 it drops nst=32 as
+    # well (1.07e-8, already 20 % contaminated: per-step orders 4.00, 4.02,
+    # 4.22, 2.16), leaving three points at order 4.01. Fewer than three points
+    # is an error, not a fit; the all-points order stays recorded beside it.
+    above_floor = [i for i in eachindex(residuals) if residuals[i] > 10 * residuals[end]]
+    length(above_floor) >= 3 || error("TW-XSUITE: fixture $(fixture) leaves fewer than three ladder points above ten times its finest residual $(residuals[end]); the order cannot be fitted")
+    order_all = fitted_order(NST_LADDER, residuals)
+    order = fitted_order(collect(NST_LADDER)[above_floor], residuals[above_floor])
     forder = fitted_order(NST_LADDER, fres)
     gated = fixture in C2_ORDERED
     cap_ok = !isfinite(NST64_CAP) || residuals[end] <= NST64_CAP
     order_ok = abs(order - ORDER_TARGET) <= ORDER_BAND && cap_ok
     status = gated ? (order_ok ? "PASS" : "FAIL") : "RECORDED"
     if gated
-        println("TW-XSUITE-ORDER ", fixture, " ", fmt(order), " ", fmt(NST64_CAP), " ", status)
+        println("TW-XSUITE-ORDER ", fixture, " ", fmt(order), " ", fmt(NST64_CAP), " ", status, " points_above_floor=", length(above_floor))
     else
         println("TW-XSUITE-RECORDED ", fixture, " model_fitted_order(not_gated) ", fmt(order), " ", fmt(ORDER_TARGET), " ", fmt(abs(order - ORDER_TARGET)))
     end
     println("TW-XSUITE-NOTE ", fixture, " model_nst64_residual_vs_frozen_cap ", fmt(residuals[end]), " ", fmt(NST64_CAP))
     record!("C2", fixture, "model_fitted_order", order, ORDER_TARGET, abs(order - ORDER_TARGET), ORDER_BAND, "TOL-E", status)
+    recorded_row("C2", fixture, "model_fitted_order(all_points,fd_floor_included)", order_all, ORDER_TARGET)
     record!("C2", fixture, "model_nst64_vs_frozen_cap", residuals[end], NST64_CAP, residuals[end], NST64_CAP, "TOL-E", status)
     gated && (ok &= order_ok)
     recorded_row("C2", fixture, "nst32_block_residual(design_1e-9_reference,not_gated_per_A2_precedent)", residuals[end-1], 1e-9)

@@ -33,6 +33,14 @@ luminosity, which recording leaves bitwise unchanged.
 same case WITHOUT the noise and with radiation excitation on, which carried
 the MPI and timing toggles first and is the driver's dry-run target.
 
+The gate's CUDA arm (validation/README.md, "The gate's CUDA arm") runs this
+driver at the reduced size below, a threads arm and the CUDA arm of the crab
+harness at 2000 macroparticles over 30 turns, and reads the CUDA-vs-baseline
+line of the comparison table as the verdict; an arm without a row makes the
+driver exit 1 (since 2026-10-20; before, a failed arm was a printed line and
+exit 0).
+GATE-CUDA-ARM: args harness=crab n_macro=2000 turns=30 skip=5 arms=threads:4,cuda baseline=threads:4 tag=cuda_arm_gate out=@TMP@ cuda_threads=4 ; verdict "CUDA vs threads:4: eps_x/eps_y/lumi max rel"
+
 What is measured, per arm:
   * steady ms/turn: median, 10th and 90th percentile of the per-turn wall
     time over turns skip+1..T (skip = 20 by default) read from the timing
@@ -755,3 +763,6 @@ isempty(failed) || say("ARMS WITHOUT A ROW: ", join(failed, "; "))
 say("rows: ", TSV_PATH)
 say("log : ", LOG_PATH)
 close(LOGIO)
+# An arm without a row is a failed benchmark, not a table with a gap: the
+# exit code says so, for the gate's CUDA arm and for any caller.
+isempty(failed) || exit(1)

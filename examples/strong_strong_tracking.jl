@@ -65,18 +65,39 @@ config = (
 # ---------------------------------------------------------------------------
 # Physics input (the collision case). Independent of the run configuration.
 # ---------------------------------------------------------------------------
+# Derived once, read everywhere (comprehensive audit 2026-10-18, F-206): the
+# half crossing angle was typed four times in the `input` block, each beam's
+# longitudinal beta sigma_z/sigma_delta twice and the crab kick
+# tan(theta)/sqrt(beta_cc beta*) three times, so editing `crossing_angle`
+# left the crab kicks at 12.5 mrad and editing sigma_z left beta_z behind --
+# the drift the knob_control.jl example exists to prevent for exactly this
+# quantity. The same literals, read from one place: the arithmetic is
+# unchanged bit for bit.
+#
+# HALF the full crossing angle, which is what LorentzBoostSpec takes and what
+# the crab strength tan(theta)/sqrt(beta_cc*beta*) assumes. Named
+# `half_crossing_angle` in knob_control.jl, Knobs.jl and
+# validation/crossing_luminosity_anchor.jl -- same quantity, and the factor
+# of two is the classic beam-beam error (2026-08-05_b audit, U16-10).
+half_crossing_angle = 12.5e-3
+electron_sigma = (106.0e-6, 9.5e-6, 0.7e-2)
+electron_sigma_delta = 5.5e-4
+electron_beta_star = (0.55, 0.056)
+electron_crab_beta_x = 150.0
+proton_sigma = (95.0e-6, 8.5e-6, 6.0e-2)
+proton_sigma_delta = 6.6e-4
+proton_beta_star = (0.8, 0.072)
+proton_crab_beta_x = 1300.0
+electron_beta_z = electron_sigma[3] / electron_sigma_delta
+proton_beta_z = proton_sigma[3] / proton_sigma_delta
+crab_kick(beta_cc, beta_star) = tan(half_crossing_angle) / sqrt(beta_cc * beta_star)
+
 input = (
     # `case_name` and `seed` name the output directory and files below.
     case_name = "pic_hcc",
     result_dir = joinpath(@__DIR__, "..", "result"),
     seed = 123456789,
-    # HALF the full crossing angle, which is what LorentzBoostSpec takes and
-    # what the crab strength tan(theta)/sqrt(beta_cc*beta*) below assumes.
-    # Named `half_crossing_angle` in knob_control.jl, Knobs.jl and
-    # validation/crossing_luminosity_anchor.jl -- same quantity, and the
-    # factor of two is the classic beam-beam error (2026-08-05_b audit,
-    # U16-10).
-    crossing_angle = 12.5e-3,
+    crossing_angle = half_crossing_angle,
 
     electron = (
         charge = -1.0,
@@ -84,14 +105,14 @@ input = (
         energy = 10.0e9,
         n_particle = 1.7203e11,
         cutoff = 5.0,
-        sigma = (106.0e-6, 9.5e-6, 0.7e-2),
-        beta = (0.55, 0.056, 0.7e-2 / 5.5e-4),
+        sigma = electron_sigma,
+        beta = (electron_beta_star..., electron_beta_z),
         alpha = (0.0, 0.0, 0.0),
-        crab_beta = (150.0, 30.0, 0.7e-2 / 5.5e-4),
+        crab_beta = (electron_crab_beta_x, 30.0, electron_beta_z),
         tune = (0.08, 0.14, -0.069),
         chromaticity = (1.0, 1.0),
         crab_frequency = 394.0e6,
-        crab_strength_x = (tan(12.5e-3) / sqrt(150.0 * 0.55), 0.0, 0.0),
+        crab_strength_x = (crab_kick(electron_crab_beta_x, electron_beta_star[1]), 0.0, 0.0),
         crab_strength_y = (0.0, 0.0, 0.0),
         crab_phase = (0.0, 0.0, 0.0),
         radiation_damping_turns = (4000.0, 4000.0, 2000.0),
@@ -103,16 +124,18 @@ input = (
         energy = 275.0e9,
         n_particle = 0.6881e11,
         cutoff = 5.0,
-        sigma = (95.0e-6, 8.5e-6, 6.0e-2),
-        beta = (0.8, 0.072, 6.0e-2 / 6.6e-4),
+        sigma = proton_sigma,
+        beta = (proton_beta_star..., proton_beta_z),
         alpha = (0.0, 0.0, 0.0),
-        crab_beta = (1300.0, 30.0, 6.0e-2 / 6.6e-4),
+        crab_beta = (proton_crab_beta_x, 30.0, proton_beta_z),
         tune = (0.228, 0.210, -0.01),
         chromaticity = (2.0, 2.0),
         crab_frequency = 197.0e6,
+        # The two-harmonic compensation scheme, weights (4/3, -1/3, 0) on the
+        # one derived kick.
         crab_strength_x = (
-            tan(12.5e-3) / sqrt(1300.0 * 0.8) * 4.0 / 3.0,
-            -tan(12.5e-3) / sqrt(1300.0 * 0.8) / 3.0,
+            crab_kick(proton_crab_beta_x, proton_beta_star[1]) * 4.0 / 3.0,
+            -crab_kick(proton_crab_beta_x, proton_beta_star[1]) / 3.0,
             0.0,
         ),
         crab_strength_y = (0.0, 0.0, 0.0),
@@ -162,7 +185,19 @@ if config.execution === :auto || config.execution === :cuda
     config.execution === :cuda && !cuda_ok && error(
         "config.execution = :cuda, but CUDA.functional(false) is false: no " *
         "usable device. Use :auto to fall back to CPU threads, or :threads.")
+elseif !(config.execution in (:threads, :multiprocess))
+    # Every other symbol used to fall through to CPU threads with exit 0 and
+    # the "execution policy = CPUThreadsExecutionPolicy" line as the only
+    # trace: `execution = :gpu` ran on the CPU (comprehensive audit
+    # 2026-10-18, F-204). The crab-cavity example refused it first; this is
+    # its rule.
+    error("config.execution = $(repr(config.execution)) is not one of :auto, :cuda, :threads, :multiprocess")
 end
+# `ranks` is read by `:multiprocess` alone; set anywhere else it would be a
+# configuration nothing read, which this repository counts as a defect.
+config.execution === :multiprocess || config.ranks === :auto || error(
+    "config.ranks = $(repr(config.ranks)) is read only under config.execution = :multiprocess; " *
+    "under $(repr(config.execution)) it would go unread")
 
 policy = if config.execution === :multiprocess
     # One Octopus process per MPI rank, each with its own CPU logical workers.
@@ -193,6 +228,19 @@ println("execution policy = ", nameof(typeof(policy)),
         config.execution === :auto ?
             (cuda_ok ? "  (auto: a CUDA device is available)" :
                        "  (auto: no CUDA device, running on CPU threads)") : "")
+# `gpu_device` reaches `CUDAExecutionPolicy(device = ...)` alone and `threads`
+# the two CPU policies alone, so a value set where the chosen policy cannot
+# read it is a configuration nothing read (comprehensive audit 2026-10-18,
+# F-204: none of the three examples guarded these two fields). Refused by
+# name, like `ranks` above, instead of being dropped.
+policy isa CUDAExecutionPolicy || config.gpu_device === nothing || error(
+    "config.gpu_device = $(repr(config.gpu_device)) is read only when the run executes on CUDA; " *
+    "this run's policy is $(nameof(typeof(policy))) (config.execution = $(repr(config.execution))), " *
+    "so the device index would go unread")
+!(policy isa CUDAExecutionPolicy) || config.threads === :auto || error(
+    "config.threads = $(repr(config.threads)) is read only by the CPU policies (:threads, " *
+    ":multiprocess, or :auto without a functional device); this run executes on CUDA, so the " *
+    "worker count would go unread")
 
 set_global_rng!(seed = input.seed, method = :philox)
 

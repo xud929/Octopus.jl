@@ -21,6 +21,16 @@ plus the printed physics summary.
 Run from the project root:
 
     julia --project=. validation/strong_strong_pic_extreme_benchmark.jl
+
+The gate's CUDA arm runs this benchmark at a reduced size, 20 turns (the
+minimum its steady-state window needs) of 4000 macroparticles per beam, so the
+driver, the harness's CUDA path and the summary's launch-family provenance are
+executed by the gate rather than by nobody (the testset "CUDA-requiring
+validation scripts run in the gate's CUDA arm" in test/runtests.jl reads the
+line below; validation/README.md). Its timings at that size are not a
+performance record.
+
+GATE-CUDA-ARM: env OCTOPUS_N_MACRO_ELE=4000 OCTOPUS_N_MACRO_PRO=4000 OCTOPUS_TURNS=20 OCTOPUS_RESULT_DIR=@TMP@ OCTOPUS_TURN_TIMING_PATH=@TMP@/pic_extreme_turn_times.tsv OCTOPUS_BENCHMARK_SUMMARY_PATH=@TMP@/pic_extreme_summary.tsv ; verdict "benchmark_summary = "
 =#
 
 defaults = Dict(

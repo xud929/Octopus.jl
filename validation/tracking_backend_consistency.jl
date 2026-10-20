@@ -28,6 +28,12 @@ Useful environment variables:
 If `OCTOPUS_REQUIRE_GPU_CONTRACT=1`, a skipped CPU/GPU check is treated as an
 error. Otherwise, lack of a visible CUDA device is reported as skipped.
 
+The gate's CUDA arm runs this script with the GPU legs required, at a reduced
+particle count (the testset "CUDA-requiring validation scripts run in the gate's
+CUDA arm" in test/runtests.jl reads the line below; validation/README.md):
+
+GATE-CUDA-ARM: env OCTOPUS_REQUIRE_GPU_CONTRACT=1 OCTOPUS_CONTRACT_N=2000 ; verdict "instances within their declared classes on CPU/CPU and CPU/GPU"
+
 The CPU/CPU check runs the same CPU backend twice in the same Julia process.
 For elementwise fused tracking it is expected to be bitwise identical, even with
 multiple Julia threads, because particles are independent and the Octopus

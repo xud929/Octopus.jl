@@ -22,7 +22,12 @@ Run from the project root; the first argument selects the part, the rest are
     julia --project=. validation/crab_cavity_noise_response.jl control   tsv=<sweep tsv> [case=C1 baseline=C0 tol_centroid=0.01 cov_cases=C0,C1,C3,C2 tol_c2=0.10 tol_c2_y=0.05 n0=2000]
     julia --project=. validation/crab_cavity_noise_response.jl report    tsv=<sweep tsv> [ref_y_over_x_phase=<none> ref_phase_white_x=1.72e-7 ref_amp_white_x=1.10e-6 ref_pink_ratio_x=0.15 ref_pink_ratio_y=0.17 tol_rate=1.25 tol_exp=0.1 tol_ratio=0.25 tol_t1=1e-10 tol_epsc_frac=0.8 tol_jc_frac=0.10 tol_baseline=0.05 tol_halves=0.20 tol_resid=0.05 tol_c1_epsc=0.01]
 
-`out` (every part) is the output directory, default `result/crab_noise/`
+An override key a part does not read is REFUSED by name before the part's
+work starts (comprehensive audit 2026-10-18, F-207: `tol_ration=0.01` gave
+60/60 PASS where `tol_ratio=0.01` fails, so a misspelt tolerance was judged
+at its default); every part reads all of its keys at entry and then asserts
+that no key of the command line is left unread, naming the stray key and the
+keys it does read. `out` (every part) is the output directory, default `result/crab_noise/`
 under the project root (git-ignored; never evidence). Everything a verdict
 rests on is printed and written to TSV there. The theory behind parts
 `pilot`, `sweep` and `report` is docs/theory/crab_cavity_noise_response.md
@@ -453,9 +458,24 @@ for a in ARGS[2:end]
     m === nothing && error("argument $(repr(a)) is not key=value")
     OPTS[m.captures[1]] = m.captures[2]
 end
-opt(key, default) = get(OPTS, key, default)
+# Every key a part reads is recorded, and `assert_options_consumed` (called by
+# each part after its option block, before any work) refuses by name any key of
+# the command line nothing read. Before 2026-10-20 a misspelt key kept its
+# default silently and the verdict was taken on a number the operator did not
+# set (comprehensive audit 2026-10-18, F-207). The set of known keys is DERIVED
+# from the reads, not listed: a new `opt(...)` is known the moment it is written.
+const OPTS_CONSUMED = Set{String}()
+opt(key, default) = (push!(OPTS_CONSUMED, key); get(OPTS, key, default))
 opt_int(key, default) = parse(Int, opt(key, string(default)))
 opt_float(key, default) = parse(Float64, opt(key, string(default)))
+has_opt(key) = (push!(OPTS_CONSUMED, key); haskey(OPTS, key))
+function assert_options_consumed(part)
+    unread = sort!(collect(setdiff(keys(OPTS), OPTS_CONSUMED)))
+    isempty(unread) && return nothing
+    error("part $(part) does not read the override key(s) $(join(unread, ", ")): a key " *
+          "nothing reads would leave its default in force silently. The keys this part " *
+          "reads are $(join(sort!(collect(OPTS_CONSUMED)), ", ")) (see the header).")
+end
 
 const ROOT = normpath(joinpath(@__DIR__, ".."))
 const OUT_DIR = normpath(opt("out", joinpath(ROOT, "result", "crab_noise")))
@@ -702,6 +722,7 @@ function run_noise_part()
     N_LONG = opt_int("long_turns", 1_048_576)
     N_LONG >= N || error("long_turns ($(N_LONG)) must be at least turns ($(N))")
     rms_streams = opt_int("rms_streams", 4096)
+    assert_options_consumed("noise")
     mkpath(OUT_DIR)
     set_global_rng!(seed=SEED, method=:philox)
 
@@ -1562,6 +1583,7 @@ function run_tablefile_part()
     scale = opt_float("scale", 1.0)
     phase_rms = opt_float("phase_rms", SIGMA_PHASE)
     strength_rel_rms = opt_float("strength_rel_rms", 0.0)
+    assert_options_consumed("tablefile")
     mkpath(OUT_DIR)
     digests = write_table_file(path; turns, scale, phase_rms, strength_rel_rms)
     for (k, d) in sort(collect(digests))
@@ -1580,6 +1602,7 @@ function run_pilot_part()
     threads = opt_int("threads", 4)
     n0 = opt_int("n0", N0_DEFAULT)
     artifact_dir = normpath(opt("artifact_dir", OUT_DIR))
+    assert_options_consumed("pilot")
     mkpath(OUT_DIR)
     tsv = joinpath(OUT_DIR, "pilot.tsv")
     done = Set(r["case"] for r in read_tsv(tsv))
@@ -1647,6 +1670,7 @@ function run_sweep_part()
     radiation = opt_int("radiation", 0)
     artifact_dir = normpath(opt("artifact_dir", OUT_DIR))
     table_file = opt("table_file", joinpath(OUT_DIR, "W1_realised_offsets_T$(turns).tsv"))
+    assert_options_consumed("sweep")
     mkpath(OUT_DIR)
     tsv = joinpath(OUT_DIR, "sweep_$(tag).tsv")
     done = Set(r["case"] for r in read_tsv(tsv))
@@ -1767,7 +1791,7 @@ function run_report_part()
     isempty(tsv) && error("report needs tsv=<sweep tsv>")
     # Reference numbers (docs/theory/crab_cavity_noise_response.md section 6)
     # and tolerances (section 7), every one overridable.
-    haskey(OPTS, "ref_amp_white_y") && error(
+    has_opt("ref_amp_white_y") && error(
         "ref_amp_white_y is retired (2026-10-15): the relative strength rule leaves strengthY = 0, so there is " *
         "no both-planes vertical prediction; the vertical rate under amplitude noise is the beam-beam coupling " *
         "alone (INFO) and C2 must show none without beam-beam (7)")
@@ -1775,7 +1799,7 @@ function run_report_part()
            amp_white_x = opt_float("ref_amp_white_x", 1.10e-6),
            pink_ratio_x = opt_float("ref_pink_ratio_x", 0.15),
            pink_ratio_y = opt_float("ref_pink_ratio_y", 0.17),
-           y_over_x_phase = haskey(OPTS, "ref_y_over_x_phase") ? opt_float("ref_y_over_x_phase", 0.0) : nothing)
+           y_over_x_phase = has_opt("ref_y_over_x_phase") ? opt_float("ref_y_over_x_phase", 0.0) : nothing)
     tol_rate = opt_float("tol_rate", 1.25)
     tol_exp = opt_float("tol_exp", 0.1)
     tol_ratio = opt_float("tol_ratio", 0.25)
@@ -1786,6 +1810,7 @@ function run_report_part()
     tol_halves = opt_float("tol_halves", 0.20)
     tol_resid = opt_float("tol_resid", 0.05)
     tol_c1_epsc = opt_float("tol_c1_epsc", 0.01)
+    assert_options_consumed("report")
     rows = read_tsv(tsv)
     isempty(rows) && error("no rows in $(tsv)")
     byid = Dict(r["id"] => r for r in rows)
@@ -2125,6 +2150,14 @@ function run_control_part()
     tol_c2 = opt_float("tol_c2", 0.10)
     tol_c2_y = opt_float("tol_c2_y", 0.05)   # the vertical verdict: |y - baseline| <= this of the propagated x slope
     n0 = opt_int("n0", N0_DEFAULT)
+    assert_options_consumed("control")
+    # Every other part creates its output directory; this one wrote
+    # `control_<case>_centroid.tsv` into an `out=` directory it never created,
+    # so a fresh `out=` crashed it after the centroid verdict and before the
+    # covariance verdicts and both machine-readable lines (comprehensive audit
+    # 2026-10-18, F-207). It only ever worked because `sweep` had created the
+    # default directory first.
+    mkpath(OUT_DIR)
     rows = read_tsv(tsv)
     byid = Dict(r["id"] => r for r in rows)
     haskey(byid, base_id) || error("the baseline row $(base_id) is needed in $(tsv)")

@@ -10,7 +10,7 @@ Controls:
     OCTOPUS_HIGH_ENERGY_N=20000
     OCTOPUS_HIGH_ENERGY_NSLICES=5
     OCTOPUS_HIGH_ENERGY_GRID=96
-    OCTOPUS_HIGH_ENERGY_SPECTRAL_GRID=128,1024
+    OCTOPUS_HIGH_ENERGY_SPECTRAL_GRID=127,1023
     OCTOPUS_HIGH_ENERGY_SPECTRAL_FREE_GRID=48,48
     OCTOPUS_HIGH_ENERGY_ELECTRON_GEV=1e100
     OCTOPUS_HIGH_ENERGY_SIGMA_XY=false
@@ -26,12 +26,38 @@ Controls:
 
 The electron beam energy is made effectively infinite, so its beam-beam kick is
 negligible while the proton beam still sees the electron source. The
-soft-Gaussian solver is compared against a frozen-source weak-strong reference.
-PIC is compared as a grid/model convergence characterization with explicit
-tolerances. Spectral grid and grid-free solvers are compared both against a
-frozen-source spectral weak-strong reference, to verify the high-energy
-strong-strong limit, and against the same analytic soft-Gaussian weak-strong
-reference, to record model/grid error.
+soft-Gaussian solver is compared against a frozen-source weak-strong reference
+built from the SAME slice arithmetic (`weakstrong_limit_reference!` shares
+`_slice_slice_gaussian_kick!` with the solver, so its luminosity agreement is a
+same-arithmetic identity, not an independent check -- the contract docstring
+says so; this header called it "a frozen-source weak-strong reference" without
+the qualification until 2026-10-20). PIC is compared as a grid/model
+convergence characterization with explicit tolerances. Spectral grid and
+grid-free solvers are compared both against a frozen-source spectral
+weak-strong reference, to verify the high-energy strong-strong limit, and
+against the same analytic soft-Gaussian weak-strong reference, to record
+model/grid error.
+
+Every arm asserts that the infinite-energy ELECTRON beam is unchanged, to the
+limit's absolute tolerance: the Gaussian arm against OCTOPUS_HIGH_ENERGY_GAUSSIAN_ATOL
+and the PIC arm against the same (the spectral arms always did; the Gaussian
+arm computed `gaussian_electron_max_abs_change` and reported it without a gate,
+and the PIC arm had no electron check -- comprehensive audit 2026-10-18, F-239).
+
+The default spectral grid is `(127, 1023)`: the same resolution class as the
+earlier `(128, 1024)`, at the odd sizes the solver's own DST rule asks for (a
+grid dimension N gives a DST/DCT extension of length 2(N + 1), so N = 2^k - 1
+makes it a power of two; `(128, 1024)` made every default run emit four
+"spectral mesh width makes the DST slow" warnings -- comprehensive audit
+2026-10-18, F-239). The production recommendation for the 11:1 flat beams is
+`(127, 383)` with `domain_factor = 8` (`?SpectralPoissonSolver`); this script
+keeps `domain_factor = 16` with the finer grid for its model-error record.
+
+The gate's CUDA arm runs this script with the CUDA spectral leg selected, at a
+reduced size (the testset "CUDA-requiring validation scripts run in the gate's
+CUDA arm" in test/runtests.jl reads the line below; validation/README.md):
+
+GATE-CUDA-ARM: env OCTOPUS_HIGH_ENERGY_SPECTRAL_CUDA=1 OCTOPUS_HIGH_ENERGY_N=4000 OCTOPUS_HIGH_ENERGY_NSLICES=3 OCTOPUS_HIGH_ENERGY_GRID=48 OCTOPUS_HIGH_ENERGY_SPECTRAL_GRID=63,255 OCTOPUS_HIGH_ENERGY_SPECTRAL_FREE_GRID=24,24 ; verdict "spectral_cuda_grid.limit_passed = true"
 =#
 
 if !isdefined(Main, :Octopus)
@@ -77,7 +103,7 @@ function _parse_pair_grid(text)
 end
 
 const SPECTRAL_GRID =
-    _parse_pair_grid(get(ENV, "OCTOPUS_HIGH_ENERGY_SPECTRAL_GRID", "128,1024"))
+    _parse_pair_grid(get(ENV, "OCTOPUS_HIGH_ENERGY_SPECTRAL_GRID", "127,1023"))
 const SPECTRAL_FREE_GRID =
     _parse_pair_grid(get(ENV, "OCTOPUS_HIGH_ENERGY_SPECTRAL_FREE_GRID", "48,48"))
 
@@ -345,6 +371,9 @@ function run_high_energy_weakstrong_limit(; n=N, nslices=NSLICES, grid=GRID,
 
     gaussian_proton_error = max_coordinate_abs(gaussian_proton.rep, reference_proton.rep)
     gaussian_electron_error = max_coordinate_abs(gaussian_electron.rep, base_electron.rep)
+    # The infinite-energy electron must come out of the PIC collision as it
+    # went in, too (header; F-239).
+    pic_electron_error = max_coordinate_abs(pic_electron.rep, base_electron.rep)
     pic_size_rel = maximum(abs.(centered_rms(pic_proton.rep) .-
                                 centered_rms(reference_proton.rep)) ./
                            max.(centered_rms(reference_proton.rep), eps(Float64)))
@@ -390,11 +419,17 @@ function run_high_energy_weakstrong_limit(; n=N, nslices=NSLICES, grid=GRID,
         pic_luminosity_relative_error=pic_lum_rel,
         gaussian_proton_max_abs_error=gaussian_proton_error,
         gaussian_electron_max_abs_change=gaussian_electron_error,
+        pic_electron_max_abs_change=pic_electron_error,
         gaussian_proton_size_relative_error=gaussian_size_rel,
         pic_proton_size_relative_error=pic_size_rel,
+        # The electron's change is part of each verdict (header; F-239): the
+        # limit is "the electron beam is a frozen source", and a kick it
+        # received would have been computed, printed and never judged.
         gaussian_passed=gaussian_proton_error <= gaussian_atol &&
+                        gaussian_electron_error <= gaussian_atol &&
                         gaussian_lum_rel <= gaussian_lum_rtol,
-        pic_passed=pic_lum_rel <= pic_luminosity_rtol && pic_size_rel <= pic_size_rtol,
+        pic_passed=pic_lum_rel <= pic_luminosity_rtol && pic_size_rel <= pic_size_rtol &&
+                   pic_electron_error <= gaussian_atol,
         pic_luminosity_rtol=pic_luminosity_rtol,
         pic_size_rtol=pic_size_rtol,
         spectral_grid=spectral_grid_result,

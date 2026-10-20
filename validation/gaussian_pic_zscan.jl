@@ -29,8 +29,10 @@ boundary jumps for pure PIC `:linear` and hybrid `:linear` on the same grid,
 plus the deposited residual fraction.
 
 Inputs (environment overrides): OCTOPUS_GPIC_ZSCAN_NPART (default 200_000),
-OCTOPUS_GPIC_ZSCAN_GRID (64), OCTOPUS_GPIC_ZSCAN_NSLICES (7),
-OCTOPUS_GPIC_ZSCAN_DEPOSIT (CIC | TSC).
+OCTOPUS_GPIC_ZSCAN_GRID (64), OCTOPUS_GPIC_ZSCAN_NSLICES (7; at least 3, the
+number of adjacent field slices the scan sweeps -- a smaller value is refused
+by name, where it used to die with a raw BoundsError; comprehensive audit
+2026-10-18, F-225), OCTOPUS_GPIC_ZSCAN_DEPOSIT (CIC | TSC).
 
 Output: result/gaussian_pic_zscan_summary.tsv and a printed table.
 
@@ -68,6 +70,12 @@ config = (
     boundary_eps_frac = 1.0e-6,
     seed = 20260726,
 )
+# The scan sweeps `scan_slices` adjacent field slices, so a slice count below
+# that indexed past the boundary vector (`OCTOPUS_GPIC_ZSCAN_NSLICES=2` died
+# with a raw BoundsError; comprehensive audit 2026-10-18, F-225).
+config.nslices >= config.scan_slices || error(
+    "OCTOPUS_GPIC_ZSCAN_NSLICES=$(config.nslices) must be at least $(config.scan_slices), " *
+    "the number of adjacent field slices the scan sweeps")
 
 nx, ny = config.grid
 gsolver = GaussianPICPoissonSolver(; grid=config.grid, deposit_method=config.deposit_method)

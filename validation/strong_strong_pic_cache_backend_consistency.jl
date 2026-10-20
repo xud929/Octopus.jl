@@ -18,6 +18,12 @@ Controls:
     OCTOPUS_REQUIRE_GPU_CONTRACT=1
 
 The contract uses temporary luminosity files and leaves no result artifacts.
+
+The gate's CUDA arm runs this script with the GPU leg required (the testset
+"CUDA-requiring validation scripts run in the gate's CUDA arm" in
+test/runtests.jl reads the line below; validation/README.md):
+
+GATE-CUDA-ARM: env OCTOPUS_REQUIRE_GPU_CONTRACT=1 OCTOPUS_CACHE_CONTRACT_N=1000 OCTOPUS_CACHE_CONTRACT_TURNS=2 ; verdict "status = passed"
 =#
 
 if !isdefined(Main, :Octopus)

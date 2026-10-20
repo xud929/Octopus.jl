@@ -18,6 +18,12 @@ Run from the project root:
 Overrides: `OCTOPUS_MOMENT_CONSISTENCY_N` (default 100000),
 `OCTOPUS_MOMENT_CONSISTENCY_RTOL`.
 
+The gate's CUDA arm runs this script (the testset "CUDA-requiring validation
+scripts run in the gate's CUDA arm" in test/runtests.jl reads the line below;
+validation/README.md):
+
+GATE-CUDA-ARM: env OCTOPUS_MOMENT_CONSISTENCY_N=20000 ; verdict "passed = true"
+
 (The requirement, the run command, the metric and the no-output note were all
 absent from this header until the 2026-08-05_b audit, U25-9.)
 

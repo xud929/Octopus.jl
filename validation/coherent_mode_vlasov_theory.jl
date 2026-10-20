@@ -30,14 +30,18 @@ the symmetric kernel
 Discretizing J on Gauss-Legendre nodes turns this into a 2N x 2N matrix
 eigenproblem.
 
-This is a CHARACTERIZATION script: it writes tables and prints diagnostics,
-and only one condition stops it (the kernel-sign criterion below — a broken
-kernel assembly poisons every table). The numbered self-checks print
-PASS/FAIL and escalate to a warning naming which downstream rows are
-unusable, but do not exit nonzero — a failing check in one regime still
-leaves the other tables worth writing, and the reader of a quoted band is
-expected to have read the warning (2026-08-05 audit, U19-4/9). Self-checks
-built in:
+This is a CHARACTERIZATION script with a gate at its end: it writes every
+table and prints diagnostics, and then FAILS (exit nonzero) if any numbered
+self-check failed or any aspect row is not a mode -- after the tables are
+written, so a failing check in one regime still leaves the other tables on
+disk, flagged (`is_mode`, `mesh_ok`), with the warning naming which rows are
+unusable. The kernel-sign criterion stops the run at once (a broken kernel
+assembly poisons every table). `OCTOPUS_VLASOV_ALLOW_SELF_CHECK_FAILURE=1`
+reduces the end gate to a warning for convergence experiments. (This
+paragraph said "only one condition stops it" and "do not exit nonzero" from
+the 2026-08-05 audit, U19-4/9, until 2026-10-20; the end gate landed with
+U22-11 and the header was not revised -- comprehensive audit 2026-10-18,
+F-239.) Self-checks built in:
 
 1. max u <= 1, with u(0) = (1 + r)/(1 + sqrt2 r) for the symmetric case --
    NOT u(0) = 1. The reduction convolves BOTH beams' other-plane spreads into
@@ -71,9 +75,10 @@ built in:
 
    The check-4 block also prints a rigid-bunch diagnostic,
    2*normalized_equilibrium(k,sqrt2)/n0phys, which is analytically exactly 1
-   (2*[1/(sqrt2(sqrt2+s_t))]*(1+s_t/sqrt2) = 1) and measures 1.0000-1.0085
-   across the scan.  It is a consistency check on the normalizer, not a
-   physics result.
+   (2*[1/(sqrt2(sqrt2+s_t))]*(1+s_t/sqrt2) = 1) and measures 1.0000-1.0003
+   across the scan (1.0000-1.0085 before the U22-1 panel quadrature; the
+   old range stood here until 2026-10-20). It is a consistency check on the
+   normalizer, not a physics result.
 
    This paragraph used to describe a DIFFERENT quantity --
    2*normalized_equilibrium(k,sqrt2)/normalized_equilibrium(k,1), divided by
@@ -334,7 +339,12 @@ kernel_matrix(k::PlaneKernel, N0, scale_w, scale_s, Jw, Js) =
 # beams: named tuples (Q, xi, scale) — `scale` = this beam's in-plane sigma in
 # kernel units. `s_t` in the same units. Returns eigenvalues, and diagnostics.
 # ---------------------------------------------------------------------------
-function coupled_modes(; Q1, xi1, scale1, Q2, xi2, scale2, s_t, sign_kernel)
+function coupled_modes(; Q1, xi1, scale1, Q2, xi2, scale2, s_t, sign_kernel,
+                       other1 = s_t / sqrt(2.0), other2 = s_t / sqrt(2.0))
+    # `other1`, `other2`: each beam's own other-plane sigma in kernel units
+    # (the normalizer below); the defaults are the symmetric case, where the
+    # two equal s_t/sqrt(2) exactly. The kick kernel itself keeps the summed
+    # spread `s_t`, which is what the 1D reduction convolves.
     Jn, Jw = gauss_legendre(NJ)
     J = (Jn .+ 1.0) .* (JMAX / 2)
     w = Jw .* (JMAX / 2)
@@ -353,12 +363,21 @@ function coupled_modes(; Q1, xi1, scale1, Q2, xi2, scale2, s_t, sign_kernel)
     # (sqrt(2) r + 1)/(r + 1).  The model diagnoses this itself -- with the
     # averaged curvature its rigid-bunch limit returns 1.213 (round) to 1.412
     # (extreme flat) where it must return exactly 1 (self-check 4 below).
-    # `s_t` is the summed other-plane spread of both beams, so one beam's is
-    # s_t/sqrt(2).
-    sigma_o = s_t / sqrt(2.0)
-    analytic_gradient(s_src) = 1.0 / (s_src * (s_src + sigma_o))
-    N01 = analytic_gradient(scale2) * scale1^2   # beam 1 kicked by 2
-    N02 = analytic_gradient(scale1) * scale2^2
+    #
+    # The SOURCE's sizes, for each source: `other1` and `other2` are the two
+    # beams' own other-plane sigmas, so the gradient that normalizes beam 1's
+    # detuning is beam 2's 1/[sigma_2 (sigma_2 + sigma_2,other)] and vice
+    # versa -- the same convention as `xi_bb`. Until 2026-10-20 both used
+    # `s_t/sqrt(2)`, the rms mean of BOTH beams' other-plane sigmas, which
+    # equals the source's own only for equal beams; on the EIC y plane that
+    # inflated the electron's effective detuning by 5.5 % and deflated the
+    # proton's by 4.6 % while xi_e, xi_p were built with the source's sizes,
+    # mixing two conventions in one eigenproblem (comprehensive audit
+    # 2026-10-18, F-237 / U43-3). The symmetric scans are unchanged: there
+    # other1 = other2 = s_t/sqrt(2) exactly.
+    analytic_gradient(s_src, s_src_other) = 1.0 / (s_src * (s_src + s_src_other))
+    N01 = analytic_gradient(scale2, other2) * scale1^2   # beam 1 kicked by 2
+    N02 = analytic_gradient(scale1, other1) * scale2^2
     u1 = [detuning_u(k, N01, scale1, scale2, Jv) for Jv in J]
     u2 = [detuning_u(k, N02, scale2, scale1, Jv) for Jv in J]
     K12 = kernel_matrix(k, N01, scale1, scale2, J, J)
@@ -772,7 +791,12 @@ println()
 println("Narrow plane (reciprocal aspect ratio, r >= 1; converged side):")
 open(joinpath(RESULT_DIR, "yokoya_vs_aspect_narrow.tsv"), "w") do io
     println(io, "# Narrow-plane branch of the 1D reduction: r = sigma_wide/sigma_narrow >= 1.")
-    println(io, "# Self-check 4 passes throughout this range (it fails only for r <= 0.3).")
+    # Self-check 4 passes at every shipped aspect ratio since the U22-1 panel
+    # quadrature (measured 2026-10-18: max |u(0) - exact| 4.8e-4 at r = 5),
+    # and a failure would now abort the run at the end gate; the comment
+    # "it fails only for r <= 0.3" described the pre-U22-1 state until
+    # 2026-10-20 (comprehensive audit 2026-10-18, F-239).
+    println(io, "# Self-check 4 passes throughout this range and at every shipped wide-plane ratio (a failure aborts the run).")
     println(io, "# Y_1d_sim here uses the DEFAULT periodic box L=24, which is NOT converged")
     println(io, "# at large r -- see yokoya_box_convergence.tsv.  Quote Y_m1_matrix.")
     println(io, "aspect_ratio\tY_m1_matrix\tY_1d_sim_L24\tspread_percent_L24")
@@ -871,9 +895,11 @@ open(joinpath(RESULT_DIR, "eic_coherent_modes.tsv"), "w") do io
         xi_e = xi_bb(pro.N, RE_M, beta_e, gamma_e, pro.sig, i)
         xi_p = xi_bb(ele.N, r_p, beta_p, gamma_p, ele.sig, i)
         s_t = sqrt(ele.sig[j]^2 + pro.sig[j]^2)
+        # Each source normalized by its OWN other-plane sigma, as `xi_bb` is.
         res = coupled_modes(; Q1=ele.tune[i], xi1=xi_e, scale1=ele.sig[i],
                             Q2=pro.tune[i], xi2=xi_p, scale2=pro.sig[i],
-                            s_t=s_t, sign_kernel=SIGN_KERNEL)
+                            s_t=s_t, sign_kernel=SIGN_KERNEL,
+                            other1=ele.sig[j], other2=pro.sig[j])
         vals = sort(real.(res.values))
         e_band = (ele.tune[i], ele.tune[i] + xi_e * maximum(res.u1))
         p_band = (pro.tune[i], pro.tune[i] + xi_p * maximum(res.u2))
@@ -897,15 +923,20 @@ open(joinpath(RESULT_DIR, "eic_coherent_modes.tsv"), "w") do io
         # eigenvalue always sits near Q_e, but it is one parameter change away --
         # a much larger tune split, or an inverted band ordering in a future
         # asymmetric case.
-        near_e = [v for v in vals if v <= e_band[2] + 5 * xi_e]
+        # The electron SECTOR: eigenvalues below the proton band's lower edge.
+        # The window used to be `v <= e_band[2] + 5 xi_e`, 0.44 wide in x
+        # against a 0.148 gap between the bands, so it excluded nothing and
+        # the line named the proton-edge mode as "near e-band" with a ratio
+        # (Q - Q_e)/xi_e that measured one beam's mode from the other beam's
+        # tune (comprehensive audit 2026-10-18, F-239 / U43-14).
+        near_e = [v for v in vals if v < p_band[1] - tol]
         if isempty(near_e)
-            println("    highest mode near e-band: none (no eigenvalue at or below ",
-                    round(e_band[2] + 5 * xi_e; digits=5),
-                    "; the spectrum sits entirely above the electron band)")
+            println("    highest mode of the electron sector (below the p band): none ",
+                    "(no eigenvalue below ", round(p_band[1] - tol; digits=5), ")")
         else
             top_e = maximum(near_e)
-            println("    highest mode near e-band: ", round(top_e; digits=5),
-                    "  ->  (Q - Q_e)/xi_e = ",
+            println("    highest mode of the electron sector (below the p band): ",
+                    round(top_e; digits=5), "  ->  (Q - Q_e)/xi_e = ",
                     round((top_e - ele.tune[i]) / xi_e; digits=3))
         end
         top_all = maximum(vals)

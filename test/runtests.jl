@@ -34334,6 +34334,224 @@ end
     end
 end
 
+# ---------------------------------------------------------------------------
+# The gate's CUDA arm for the CUDA-requiring scripts (fix batch 2 of the
+# 2026-10-18 comprehensive audit, 2026-10-20; the class fix batch 1 left open).
+#
+# Three committed scripts died on the 2026-08-18 retirement of a constructor
+# and nothing executing noticed for two months (A-4, F-200, F-236): CI has no
+# GPU, and a script that REQUIRES CUDA is otherwise run by nobody. This
+# testset runs every such script in a subprocess at a reduced, documented size
+# when this process has a device, and asserts exit 0 and the script's own
+# verdict token; on a CPU-only process (CI) it records a visible skip naming
+# the scripts it did not run.
+#
+# WHICH scripts is DERIVED from the scripts, not listed (AGENTS.md: derive from
+# one source and add a tripwire). A script is CUDA-capable when its code (block
+# and line comments stripped) carries one of the markers below -- the
+# `CUDA.functional() || error/return` refusal, the `OCTOPUS_REQUIRE_GPU_CONTRACT`
+# parser, a leg behind `_contract_backends_available(CUDABackend)`, or a
+# harness include that defaults `OCTOPUS_USE_GPU` to 1. Every CUDA-capable
+# script must carry ONE machine-readable header line,
+#
+#     GATE-CUDA-ARM: env K=V ... ; verdict "<substring of its stdout>" [; outputs <path> ...]
+#     GATE-CUDA-ARM: excluded -- <reason>
+#
+# whose `env` is the reduced size and the switch that selects or requires the
+# CUDA leg (`@TMP@` in a value is a fresh temporary directory, removed after),
+# whose `verdict` must appear in the run's output, and whose `outputs`
+# (relative to the repository root) must exist after the run and are removed.
+# Both directions are tripwires: a CUDA-capable script without the line fails
+# here by name (a new CUDA script cannot join unrun), and a `run` line on a
+# script with no marker fails as stale. An `excluded` line is printed, so a
+# deliberate exclusion is a visible decision rather than silence.
+#
+# Budget (AGENTS.md: the gate may not grow by more than ten minutes): each
+# script's wall time is printed and the total summed; the sizes in the header
+# lines were measured under `--check-bounds=yes` through the stage runner on
+# 2026-10-20 (validation/README.md, "The gate's CUDA arm", carries the table).
+# A script that hangs is killed after 900 s and fails. The subprocess loads
+# Octopus as a PACKAGE (`-L preload.jl` with `using Octopus`, so each script's
+# `isdefined(Main, :Octopus)` guard skips the source include and the
+# extensions are active) with the parent's flags (`Base.julia_cmd()`, so the
+# gate's `--check-bounds=yes` reaches the kernels) and thread count.
+# ---------------------------------------------------------------------------
+if _lane_gate("CUDA-requiring validation scripts run in the gate's CUDA arm")
+@testset "CUDA-requiring validation scripts run in the gate's CUDA arm" begin
+    root = pkgdir(Octopus)
+    script_dirs = ("validation", "profiling")
+    scripts = sort!([joinpath(root, d, f) for d in script_dirs
+                     for f in readdir(joinpath(root, d)) if endswith(f, ".jl")])
+    @test length(scripts) >= 50            # the two directories hold scripts
+    # Code only: a header may describe a refusal in prose. Block comments,
+    # line tails and a leading docstring go; the GATE line is read from the
+    # full text, because it lives in the header.
+    strip_comments(text) = replace(replace(replace(text, r"\A\s*\"\"\".*?\"\"\""s => " "),
+                                           r"#=.*?=#"s => " "), r"#[^\n]*" => "")
+    cuda_markers = (
+        ("a `CUDA.functional() || error/return` refusal",
+         r"CUDA\.functional\((?:false)?\)\)?\s*(?:\|\||&&)\s*(?:error|return)"),
+        ("the OCTOPUS_REQUIRE_GPU_CONTRACT parser `_require_gpu_contract()`",
+         r"_require_gpu_contract\(\)"),
+        ("a CUDA leg behind `_contract_backends_available(CUDABackend)`",
+         r"_contract_backends_available\(CUDABackend\)"),
+        ("a harness include defaulting OCTOPUS_USE_GPU to 1",
+         r"\"OCTOPUS_USE_GPU\"\s*=>\s*\"1\""),
+    )
+    function parse_gate_line(spec)
+        if startswith(spec, "excluded")
+            return (kind=:excluded, reason=strip(replace(spec, r"^excluded\s*(?:--)?" => "")))
+        end
+        env = Pair{String,String}[]
+        args = String[]
+        verdict = nothing
+        outputs = String[]
+        for raw in split(spec, ';')
+            part = strip(raw)
+            if startswith(part, "env ")
+                for token in split(part[5:end])
+                    kv = split(token, '='; limit=2)
+                    length(kv) == 2 || error("GATE-CUDA-ARM env token is not K=V: $(repr(token))")
+                    push!(env, String(kv[1]) => String(kv[2]))
+                end
+            elseif startswith(part, "args ")
+                # a script driven by key=value arguments instead of OCTOPUS_* variables
+                append!(args, String.(split(part[6:end])))
+            elseif startswith(part, "verdict ")
+                m = match(r"^verdict\s+\"(.*)\"$", part)
+                m === nothing && error("GATE-CUDA-ARM verdict must be a quoted string: $(repr(part))")
+                verdict = String(m.captures[1])
+            elseif startswith(part, "outputs ")
+                append!(outputs, String.(split(part[9:end])))
+            else
+                error("GATE-CUDA-ARM: unknown field $(repr(part)); fields are env, args, verdict, outputs")
+            end
+        end
+        verdict === nothing && error("GATE-CUDA-ARM run line without a verdict token: $(repr(spec))")
+        return (kind=:run, env=env, args=args, verdict=verdict, outputs=outputs)
+    end
+    marked = String[]
+    declared = Dict{String,Any}()
+    for script in scripts
+        text = read(script, String)
+        code = strip_comments(text)
+        markers = [m[1] for m in cuda_markers if occursin(m[2], code)]
+        is_marked = !isempty(markers)
+        line = match(r"^\s*(?:#\s*)?GATE-CUDA-ARM:\s*(.*?)\s*$"m, text)
+        is_marked && push!(marked, script)
+        if line !== nothing
+            declared[script] = parse_gate_line(String(line.captures[1]))
+        end
+        if is_marked && line === nothing
+            @info "TRIPWIRE: a CUDA-capable script carries no GATE-CUDA-ARM line, so the gate's CUDA arm would never run it" script=relpath(script, root) markers
+        end
+        @test !(is_marked && line === nothing)
+        stale = !is_marked && line !== nothing && declared[script].kind === :run
+        stale && @info "TRIPWIRE: a GATE-CUDA-ARM run line on a script with no CUDA marker (stale declaration)" script=relpath(script, root)
+        @test !stale
+    end
+    # Floor at the 2026-10-20 population (16 under validation/, 4 under
+    # profiling/), so an empty derivation cannot pass vacuously.
+    @test length(marked) >= 20
+    runnable = [s for s in marked if haskey(declared, s) && declared[s].kind === :run]
+    excluded = [s for s in marked if haskey(declared, s) && declared[s].kind === :excluded]
+    for script in excluded
+        println("    ", relpath(script, root), ": excluded -- ", declared[script].reason)
+    end
+    @test length(runnable) >= 15
+    # The README's section on this arm (its table of reduced sizes and wall
+    # times, its named exclusions) is held to the derived list: a script the
+    # arm runs or excludes that the section does not name is a drift between
+    # the documentation and the derivation (AGENTS.md: derive, never hand-copy,
+    # and add a coverage tripwire).
+    readme = read(joinpath(root, "validation", "README.md"), String)
+    heading = findfirst("## The gate's CUDA arm", readme)
+    @test heading !== nothing
+    if heading !== nothing
+        rest = readme[first(heading):end]
+        next_heading = findnext(r"\n## ", rest, 2)
+        section = next_heading === nothing ? rest : rest[1:first(next_heading)]
+        for script in vcat(runnable, excluded)
+            named = occursin(basename(script), section)
+            named || @info "TRIPWIRE: validation/README.md's CUDA-arm section does not name a derived script" script=relpath(script, root)
+            @test named
+        end
+    end
+    if CUDA_TESTS_ACTIVE
+        preload_dir = mktempdir()
+        preload = joinpath(preload_dir, "preload.jl")
+        write(preload, "using Octopus\n")
+        # Each script is its own process (a package load, its CUDA kernel
+        # compiles, then a small run), so the arm runs a few at a time on a
+        # node with cores to spare: the wall falls towards the sum of the
+        # scripts' own times over the worker count with no verdict changing,
+        # and a small machine runs them one at a time. At the reduced sizes a
+        # process holds a few hundred MB of device memory. The scripts write
+        # under @TMP@ or under distinct repository paths (the `outputs` they
+        # declare), so no two share a file. The @test calls run in this task
+        # after the processes finish: a @test inside a worker task would
+        # report to the fallback testset, not to this one.
+        nworkers = clamp(Sys.CPU_THREADS ÷ (4 * Threads.nthreads()), 1, 4)
+        println("    CUDA arm: ", length(runnable), " scripts, ", nworkers, " at a time")
+        function run_script(script)
+            spec = declared[script]
+            name = relpath(script, root)
+            mktempdir() do tmp
+                sub(v) = replace(v, "@TMP@" => tmp)
+                env = [k => sub(v) for (k, v) in spec.env]
+                args = sub.(spec.args)
+                base = `$(Base.julia_cmd()) --startup-file=no --threads=$(Threads.nthreads()) --project=$(root) -L $(preload) $(script) $(args)`
+                cmd = isempty(env) ? base : addenv(base, env...)
+                buf = IOBuffer()
+                t0 = time()
+                proc = run(pipeline(cmd; stdout=buf, stderr=buf); wait=false)
+                watchdog = Timer(900) do _
+                    process_running(proc) && kill(proc)
+                end
+                wait(proc)
+                close(watchdog)
+                dt = time() - t0
+                text = String(take!(buf))
+                written = [out => isfile(joinpath(root, out)) for out in spec.outputs]
+                for out in spec.outputs
+                    rm(joinpath(root, out); force=true)
+                end
+                # One line per script in the gate's log, so the record names
+                # what ran and how long it took (the budget is measured here).
+                println("    ", name, ": exit ", proc.exitcode, ", ", round(dt; digits=1), " s")
+                (; name, spec, ok=success(proc), exitcode=proc.exitcode, dt, text, written)
+            end
+        end
+        t_arm = time()
+        results = asyncmap(run_script, runnable; ntasks=nworkers)
+        arm_wall = time() - t_arm
+        for r in results
+            @testset let script = r.name
+                r.ok || @info "CUDA-arm script failed" script=r.name exitcode=r.exitcode last(r.text, 3000)
+                @test r.ok
+                found = occursin(r.spec.verdict, r.text)
+                found || @info "CUDA-arm script did not print its verdict token" script=r.name verdict=r.spec.verdict last(r.text, 2000)
+                @test found
+                for (out, exists) in r.written
+                    exists || @info "CUDA-arm script did not write a declared output" script=r.name output=out
+                    @test exists
+                end
+            end
+        end
+        println("    CUDA arm wall time: ", round(arm_wall; digits=1), " s for ", length(runnable),
+                " scripts (", nworkers, " at a time; their own times sum to ",
+                round(sum(r.dt for r in results); digits=1), " s)")
+        rm(preload_dir; recursive=true, force=true)
+    else
+        println("    NO CUDA DEVICE: the gate's CUDA arm did not run these CUDA-requiring scripts:")
+        for script in runnable
+            println("      ", relpath(script, root))
+        end
+        @test_skip "CUDA device not available: the CUDA-requiring validation scripts were not run (CI has no GPU; the GPU machine's gate is the only check)"
+    end
+end
+end # _lane_gate("CUDA-requiring validation scripts run in the gate's CUDA arm")
+
 # Lane accounting (docs/design/testing_lanes.md): a skipped check only stops
 # counting when the skip is visible. Silence here would be the F2 failure mode.
 if !_lane_full()

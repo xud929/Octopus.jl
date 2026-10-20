@@ -9,6 +9,82 @@ and benchmarks. Plain `Pkg.test` at `--threads=4` is the full gate and
 `lane=fast` is a development checkpoint; the commands are in `AGENTS.md`
 (Verification Matrix) and `docs/guides/development_workflow.md`.
 
+## The gate's CUDA arm (CUDA-requiring scripts)
+
+CI has no GPU, so a script that requires a CUDA device is run by nobody unless
+the GPU machine's gate runs it: three committed scripts died on the 2026-08-18
+retirement of a constructor and nothing executing noticed for two months
+(comprehensive audit 2026-10-18, A-4, F-200, F-236). Since 2026-10-20 the full
+lane's last testset, "CUDA-requiring validation scripts run in the gate's CUDA
+arm" (`test/runtests.jl`), runs every CUDA-capable script of `validation/` and
+`profiling/` in a subprocess at a reduced size when the test process has a
+device, and records a visible skip naming them when it has none (CI). The
+subprocess loads Octopus as a package (`-L` with `using Octopus`, so each
+script's `isdefined(Main, :Octopus)` guard skips the source include) with the
+gate's own flags (`--check-bounds=yes`) and thread count.
+
+The list is derived, not kept: a script is CUDA-capable when its code carries a
+`CUDA.functional() || error/return` refusal, the `OCTOPUS_REQUIRE_GPU_CONTRACT`
+parser `Octopus._require_gpu_contract()`, a leg behind
+`_contract_backends_available(CUDABackend)`, or a harness include that defaults
+`OCTOPUS_USE_GPU` to 1. Every such script carries one machine-readable header
+line that the testset reads,
+
+```text
+GATE-CUDA-ARM: env K=V ... ; verdict "<substring of its stdout>" [; outputs <repo-relative path> ...]
+GATE-CUDA-ARM: args k=v ... ; verdict "<substring of its stdout>"
+GATE-CUDA-ARM: excluded -- <reason>
+```
+
+whose `env` is the reduced size and the switch that selects or requires the
+CUDA leg (`args` instead for a driver that takes key=value arguments; `@TMP@`
+in a value is a fresh temporary directory, removed after the run), whose
+`verdict` must appear in the run's output beside exit 0, and whose
+`outputs` must exist after the run and are removed by the testset so a gate run
+leaves nothing beside a study's files. A CUDA-capable script without the line
+fails the testset by name; a run line on a script with no marker fails as
+stale; an `excluded` line is printed, so an exclusion is a decision on record
+(today the two CUPTI profiler wrappers, `profiling/profile_strong_strong_cuda.jl`
+and `profiling/cuda_device_profile.jl`, which need the external profiler and
+read nothing a gate could assert). The testset also fails by name on a derived
+script this section does not list, so the table below cannot drift from the
+derivation. The script's own
+switch for insisting on its CUDA leg is `OCTOPUS_REQUIRE_GPU_CONTRACT=1`
+(`lattice_cells.jl` and `near_round_gaussian_transition.jl` honour it since
+2026-10-20; `tracking_backend_consistency.jl` and the contract runners did).
+
+Reduced sizes and wall times as the testset measured them on 2026-10-20
+(RTX 4500 Ada, the owner's 12 GB kernel resident, `--check-bounds=yes`,
+`--threads=4`, 4 scripts at a time on the 128-core node, one package load
+of about 15 s in every figure; a script's wall is its own process's, under that
+concurrency). The arm's wall was 407.1 s (6 min 47 s) for 18 scripts whose own
+times sum to 1482.1 s; the budget rule in `AGENTS.md` is ten minutes for the
+whole arm:
+
+| script | reduced size (the header's `env`) | wall |
+|---|---|---|
+| `beam_optics_interface_consistency.jl` | require the GPU leg | 23.3 s |
+| `eic_emittance_benchmark.jl` | 2 turns, 2000 per beam, CUDA | 89.6 s |
+| `high_energy_weakstrong_limit.jl` | 4000 particles, 3 slices, grid 48, spectral (63,255), CUDA spectral leg | 73.7 s |
+| `lattice_cells.jl` | 512 particles, 2 turns, 200 drift turns, GPU leg required | 184.6 s |
+| `moment_observer_backend_consistency.jl` | 20000 particles | 13.4 s |
+| `near_round_gaussian_transition.jl` | the full sweep, parity required | 70.6 s |
+| `pic_option_consistency.jl` | GPU, 4 turns, 2000 particles, grid 32, 5 slices, tag `cuda_arm_gate` | 90.2 s |
+| `soft_gaussian_pic_comparison.jl` | 4000 particles, 5 slices, grid 32 | 62.9 s |
+| `strong_strong_diagnostics_benchmark.jl` | 4000 per beam, 12 turns, mode `both` | 91.6 s |
+| `strong_strong_gaussian_backend_consistency.jl` | 1000 particles, 1 turn, GPU leg required | 70.0 s |
+| `strong_strong_observer_plan_consistency.jl` | 1024 particles, GPU leg required | 42.3 s |
+| `strong_strong_pic_cache_backend_consistency.jl` | 1000 particles, 2 turns (the cache contract refuses one: nothing is reused), GPU leg required | 92.5 s |
+| `strong_strong_pic_extreme_benchmark.jl` | 4000 per beam, 20 turns | 86.3 s |
+| `strong_strong_spectral_comparison.jl` | CUDA, 4000 particles, 2 turns, 5 slices, grid (64,256) | 94.9 s |
+| `tracking_backend_consistency.jl` | 2000 particles, GPU legs required | 132.0 s |
+| `tracking_context_policy_consistency.jl` | GPU legs required | 41.2 s |
+| `profiling/benchmark_strong_strong_pic.jl` | 2000 per beam, grid 32, 5 slices, 1 turn, 1 repeat | 120.6 s |
+| `profiling/crab_cavity_noise_backends.jl` | crab harness, 2000 macroparticles, 30 turns, arms `threads:4` and `cuda` | 102.4 s |
+
+The two benchmarks' timings at these sizes are run receipts, not performance
+records.
+
 ## Near-Round Gaussian Transition
 
 `near_round_gaussian_transition.jl` validates the precision-scaled smooth
@@ -16,11 +92,25 @@ transition between the near-round potential expansion and the elliptical
 Bassetti-Erskine evaluator. It compares force and principal covariance
 response with the fixed-interval Gaussian integral, checks exact flat-beam core
 gradients, estimates value and first-derivative gaps at both blend endpoints,
-measures six-dimensional symplecticity, and reports CPU/CUDA parity when CUDA
+measures six-dimensional symplecticity, and checks CPU/CUDA parity when CUDA
 is available.
+
+Gated, with the bounds and their derivation in the script's main block: the
+Float64 force and response relative errors, the observed/nominal conditioning
+ratio of both types, and -- since 2026-10-20 (comprehensive audit 2026-10-18,
+F-238; three of about fifteen metrics were gated and the rest printed) -- the
+Float64 core-gradient error, the 6D symplectic residual and all eight endpoint
+continuity gaps, which are the only instrument that sees the first and last
+few percent of the blend interval. The script then re-feeds the recorded x1.1
+evaluator defect (Phase 12 of `docs/comprehensive_audit.md`) over a mid-blend
+window and over both endpoint windows and requires the metrics to see it, on
+every run. `OCTOPUS_NEAR_ROUND_DEFECT=mid|inner_edge|outer_edge` injects the
+same defect into the main sweeps so a gate can be shown red;
+`OCTOPUS_REQUIRE_GPU_CONTRACT=1` makes a missing device fail the parity leg.
 
 ```bash
 julia --project=. validation/near_round_gaussian_transition.jl
+OCTOPUS_NEAR_ROUND_DEFECT=inner_edge julia --project=. validation/near_round_gaussian_transition.jl   # exits 1 at the inner continuity gate
 ```
 
 The derivation, implementation constants, and recorded reference run are in
@@ -183,10 +273,14 @@ julia --project=. validation/strong_strong_spectral_comparison.jl
 
 Outputs are written as TSV files under
 `result/strong_strong_spectral_comparison*`. Set
-`OCTOPUS_SPECTRAL_COMPARE_BACKEND=cuda` for CUDA runs; grid-free is CPU-only.
-`OCTOPUS_SPECTRAL_COMPARE_GRID` is a mesh-and-mode shape for the grid solver,
-while `OCTOPUS_SPECTRAL_COMPARE_FREE_GRID` is a direct mode-count shape for the
-grid-free solver.
+`OCTOPUS_SPECTRAL_COMPARE_BACKEND=cuda` for CUDA runs; grid-free and the
+field micro-profile are CPU-only, and on CUDA the summary says both were NOT
+run (`free_grid = requested ... but NOT RUN`, `field_microprofile_rows = none`)
+where it used to print the request flag as if the arm had run (comprehensive
+audit 2026-10-18, F-227); the gate's CUDA arm runs the CUDA backend at 4000
+particles. `OCTOPUS_SPECTRAL_COMPARE_GRID` is a mesh-and-mode shape for the
+grid solver, while `OCTOPUS_SPECTRAL_COMPARE_FREE_GRID` is a direct mode-count
+shape for the grid-free solver.
 
 ## Counter RNG
 
@@ -253,10 +347,12 @@ bit-identical on every branch the production line does not exercise.
 
 `tracking_backend_consistency.jl` runs `ElementTrackingBackendConsistencyContract`
 on a deterministic tracking line that carries **every element kind declaring
-that contract** -- 29 of them: the whole thick-magnet family, every thin
-element, patch, marker, aperture, RF cavity, and stochastic `LumpedRad`. It
-always runs CPU/CPU and runs CPU/GPU when CUDA is visible or explicitly
-requested.
+that contract** (30 at the 2026-10-18 count; the script's own coverage
+tripwire holds the number, this page used to say 29): the whole thick-magnet
+family, every thin element, patch, marker, aperture, both cavities, and
+stochastic `LumpedRad`. It always runs CPU/CPU and runs CPU/GPU when CUDA is
+visible or explicitly requested; the gate's CUDA arm runs it with the GPU
+legs required at 2000 particles.
 
 The line is not a hand-picked sample, and must not become one again. It carried
 11 kinds while 18 declaring kinds went untracked (2026-08-05 audit, U21-5), so
@@ -716,29 +812,38 @@ OCTOPUS_SOFT_SIGMA_XY=true julia --project=. validation/soft_gaussian_pic_compar
 `high_energy_weakstrong_limit.jl` checks the limiting case where the electron
 energy is effectively infinite, so the electron beam is a frozen source. It
 compares the soft-Gaussian strong-strong collision to an explicit frozen-source
-weak-strong reference, compares PIC to the same reference with grid/model
-tolerances, and verifies that spectral grid and grid-free strong-strong maps
-collapse to frozen-source spectral weak-strong references. The spectral grid
-default is `(128,1024)` (the earlier flat-beam setting; the currently
-recommended production grid is `(127,383)` with `domain_factor=8`, see
-`?SpectralPoissonSolver`); the grid-free direct reference defaults to
-`(48,48)`. Set `OCTOPUS_HIGH_ENERGY_SPECTRAL_CUDA=1` to
-also check the CUDA spectral grid path when CUDA is functional.
+weak-strong reference built from the same slice arithmetic (so its luminosity
+agreement is a same-arithmetic identity, as the contract docstring says),
+compares PIC to the same reference with grid/model tolerances, and verifies
+that spectral grid and grid-free strong-strong maps collapse to frozen-source
+spectral weak-strong references. Every arm asserts that the infinite-energy
+electron beam came out unchanged (the Gaussian arm reported that number without
+a gate and the PIC arm had no electron check until 2026-10-20; comprehensive
+audit 2026-10-18, F-239). The spectral grid default is `(127,1023)` -- the
+earlier `(128,1024)` at the odd sizes the solver's DST rule asks for, which
+made every default run emit four "DST slow" warnings; the recommended
+production grid is `(127,383)` with `domain_factor=8`, see
+`?SpectralPoissonSolver`, while this script keeps `domain_factor=16` for its
+model-error record; the grid-free direct reference defaults to `(48,48)`. Set
+`OCTOPUS_HIGH_ENERGY_SPECTRAL_CUDA=1` to also check the CUDA spectral grid path
+when CUDA is functional; the gate's CUDA arm runs that leg at a reduced size.
 
 ```bash
 julia --project=. validation/high_energy_weakstrong_limit.jl
 OCTOPUS_HIGH_ENERGY_SPECTRAL_CUDA=1 julia --project=. validation/high_energy_weakstrong_limit.jl
 ```
 
-`symplecticity_validation.jl` computes finite-difference Jacobians for the 12
-cases `SymplecticityContract` declares -- which it derives rather than copies --
-and reports `norm(J' * S * J - S, Inf)`. That is **not** every six-dimensional
-symplectic runtime map: it covers 7 of the 22 registered kinds declaring
-`Symplectic6DMap`, plus the beam-beam and Lorentz maps. The thick lattice-magnet
-family is covered against PTC instead (a different claim), and the thin kickers,
-marker and thin RF cavity by neither. See the script header. (This entry read
-"for all current six-dimensional symplectic runtime maps" until the 2026-08-05_b
-audit counted it, U24-3.)
+`symplecticity_validation.jl` computes finite-difference Jacobians for the
+cases `SymplecticityContract` declares -- derived from the contract, not
+copied (27 at the 2026-10-18 count: the linear maps, both strong beams, every
+thick magnet, the thin kickers, the marker, both cavities) -- and reports
+`norm(J' * S * J - S, Inf)`. A structural tripwire in the script and the
+contract requires every registered kind declaring `Symplectic6DMap` to have a
+case (0 uncovered of 22 at that count). (This entry said "12 cases", "7 of the
+22 registered kinds" and "the thin kickers, marker and thin RF cavity by
+neither" from the 2026-08-05_b audit's U24-3 until 2026-10-20, describing the
+coverage before the repairs that audit prompted; comprehensive audit
+2026-10-18, F-229.)
 
 ```bash
 julia --project=. validation/symplecticity_validation.jl
@@ -799,9 +904,14 @@ julia --project=. validation/strong_strong_diagnostics_benchmark.jl
 Select another measurement mode with
 `OCTOPUS_DIAGNOSTIC_BENCHMARK_MODE=luminosity`, `luminosity_io`, `moments`, or
 `both`. Set `OCTOPUS_SOLVER=gaussian` to benchmark the soft-Gaussian source
-moment path with the same tracking and diagnostic workload. Production-size
-diagnostic benchmarks are manual runs and are not part of the fast package
-test suite.
+moment path with the same tracking and diagnostic workload; its summary records
+`cuda_pic_launch_families = not applicable` where the PIC-family solvers record
+one `cuda_pic_<family>_threads` pair per launch family (until 2026-10-20 the
+Gaussian mode errored at that loop AFTER the measured run; comprehensive audit
+2026-10-18, F-207). The summary's `turns` row is the effective run length and
+`git_commit` is read from this tree. Production-size diagnostic benchmarks are
+manual runs; the gate's CUDA arm runs this script at 4000 particles per beam
+for 12 turns in mode `both`.
 
 Outputs, under `result/`: `pic_diagnostics_<mode>_turn_times.tsv` and
 `pic_diagnostics_<mode>_summary.tsv`. The tracking harness this script includes
@@ -832,7 +942,9 @@ audit 2026-10-18, A-4) while the check it wraps kept passing: a CUDA-only
 script is run by nothing but the GPU machine's gate, so a constructor
 retirement must re-walk `validation/` and `profiling/` (the suite's
 "No committed script constructs a retired observer or task spelling"
-testset now scans them for the retired spellings).
+testset now scans them for the retired spellings, and since 2026-10-20 the
+gate's CUDA arm runs this script, at 20000 particles, with every other
+CUDA-requiring script -- the section at the top of this page).
 
 `strong_strong_luminosity_schedule_output.jl` verifies that the run
 artifact's per-collision luminosity channels omit unscheduled turns while
@@ -855,9 +967,14 @@ at each sample's own collision point `sigma(z) = (c - z)/2`. The two-node
 (`slice_interpolation=:linear`) and three-node (`:quadratic`) schemes are
 compared against it on the **same** grid, deposition and Green kernel, so the
 transverse PIC error cancels and only the longitudinal interpolation error
-remains -- which is what separates it from the slicing error. A second pass
-repeats `:linear` with per-slice grids to measure the transverse jump that
-grid resizing introduces.
+remains -- which is what separates it from the slicing error. Four further
+passes measure the transverse jump that grid construction introduces, one per
+`grid_mode` value of `_jumps.tsv`: `per_slice_grid` (production's per-field-slice
+grids), `source_slice_grid` (sized from the source slice instead),
+`node_grid` (one grid per shared node, `_pic_node_grid!`) and
+`node_source_evolution` (the physical residual the node grid leaves); the
+script header explains each. (This entry described "a second pass" until
+2026-10-20; comprehensive audit 2026-10-18, F-225.)
 
 For a flat beam `Delta p_y` is the observable that matters: `E_y` varies on the
 scale `sigma_y << sigma_x`, so its curvature in the drift variable is larger by
@@ -865,7 +982,19 @@ roughly the aspect ratio.
 
 ```bash
 julia --threads=4 --project=. validation/slice_longitudinal_zscan.jl
+OCTOPUS_ZSCAN_SOURCE_SLICES=4,6 julia --threads=4 --project=. validation/slice_longitudinal_zscan.jl
 ```
+
+Overrides: `OCTOPUS_ZSCAN_NPART`, `OCTOPUS_ZSCAN_GRID`, `OCTOPUS_ZSCAN_NSLICES`
+(at least 3, the number of adjacent field slices swept; a smaller value is
+refused by name where it used to die with a raw `BoundsError`),
+`OCTOPUS_ZSCAN_DEPOSIT`, and `OCTOPUS_ZSCAN_SOURCE_SLICES` (the source slices to
+scan; the default derives the centre and one off-centre slice from the slice
+count, `(4, 5)` for 7). The theory note's section 10 tables record source
+slices 4 and 6, and slice 6 had no committed setting that reached it between
+the 2026-08-05 U24-8 fix and 2026-10-20 (comprehensive audit 2026-10-18,
+F-224): the second command above reproduces those rows. The same `nslices >= 3`
+rule holds for `gaussian_pic_zscan.jl`'s `OCTOPUS_GPIC_ZSCAN_NSLICES`.
 
 Outputs under `result/`: `slice_longitudinal_zscan.tsv` (per-sample curves,
 plot ready), `_summary.tsv` (per component and scheme), `_jumps.tsv`
@@ -927,7 +1056,15 @@ different prefix.
 
 Outputs under `result/`: `emittance_growth_<tag>.tsv` (per-turn emittances),
 `emittance_growth_<tag>.meta.tsv` (one summary row per run), and
-`emittance_growth_summary.tsv` (per-arm aggregate).
+`emittance_growth_summary.tsv` (per-arm aggregate). The default tag is
+`<scheme>_n<nslices>_<deposit>[_<gridmode>]_s<seed>`, the grid mode named
+when it is not `slice_pair`: until 2026-10-20 both non-default grid modes
+mapped to one literal `_srcgrid`, so arms F and G at one seed overwrote each
+other silently and the aggregator could not notice (comprehensive audit
+2026-10-18, F-224). The meta row carries `dropped_particles`, the charge the
+interaction mesh dropped over the run (summed from the solver's own warnings;
+the `:node` and `:source_slice` arms do not guarantee coverage), and the
+aggregate reports its total per arm beside the rates (F-225).
 
 ## PIC Grid Extent Stability
 
@@ -1054,13 +1191,21 @@ with the production PIC solver versus flatness (Y = 1.19 round rising to
 renders result/yokoya_vs_aspect.png, yokoya_vs_xi.png, and
 eic_coherent_modes.png from the TSVs.
 
-All four coherent-mode scripts on this page (the simulation driver above,
+All five coherent-mode scripts on this page (the simulation driver above,
 the two theory companions, the EIC comparison and the BeamBeam3D anchor)
 characterize: they write tables and print diagnostics without exiting
 nonzero on a physics disagreement. The Vlasov script's numbered self-checks
-print PASS/FAIL and warn which rows are then unusable; its one hard stop is
-the kernel-sign criterion, whose failure poisons every table (2026-08-05
-audit, U19-4/9/10).
+print PASS/FAIL and warn which rows are then unusable, and the run FAILS at
+its end -- after every table is written and flagged -- if any self-check
+failed or any aspect row is not a mode (U22-11; `OCTOPUS_VLASOV_ALLOW_SELF_CHECK_FAILURE=1`
+reduces that to a warning); the kernel-sign criterion stops it at once. (This
+paragraph said "all four" of five and "its one hard stop" until 2026-10-20;
+comprehensive audit 2026-10-18, F-239.) For unequal beams the asymmetric
+normaliser uses each source's own other-plane sigma, as `xi_bb` does; until
+2026-10-20 it used the rms mean of both beams' sigmas, which inflated the
+electron's effective detuning on the EIC y plane by about 5 % and deflated the
+proton's by about 5 % while the tunes shifts were built with the source's
+sizes (F-237); the symmetric scans are unchanged.
 
 ```bash
 julia --project=. validation/coherent_mode_vlasov_theory.jl
@@ -1193,10 +1338,10 @@ and `pic_option_<tag>.h5` (the task's run artifact in append mode, whose
 `result/pic_option_consistency_summary.tsv`, and refuses to compare an arm
 whose particle count, turn count, grid, slice count or timing window differs
 from its baseline -- it names the mismatch instead (U25-8, U25-11).
-
-Outputs under `result/`: `pic_option_<tag>.tsv` (per-turn series),
-`.coords.tsv` (coordinate dumps), `.meta.tsv` (options and timing),
-`pic_option_consistency_summary.tsv` (cross-option comparison).
+`OCTOPUS_OPT_BACKEND=gpu` without a functional device is refused by name
+before any work (it used to die at the first device allocation). The gate's
+CUDA arm runs the GPU backend under the tag `cuda_arm_gate` at 2000 particles
+and removes its files, so a gate run never sits beside a study's arms.
 
 ## Gaussian Longitudinal Slicing Convergence
 
@@ -1326,17 +1471,23 @@ stability scan rather than hand-tuned, and the chosen working point is reported.
 
 ```bash
 julia --project=. validation/lattice_cells.jl
+OCTOPUS_REQUIRE_GPU_CONTRACT=1 julia --project=. validation/lattice_cells.jl
 ```
 
-Overrides: `OCTOPUS_LATTICE_N`, `OCTOPUS_LATTICE_TURNS`, `OCTOPUS_LATTICE_LONG`.
-Outputs `result/lattice_cells.tsv`. Derivations for every map:
+Overrides: `OCTOPUS_LATTICE_N`, `OCTOPUS_LATTICE_TURNS`, `OCTOPUS_LATTICE_LONG`,
+and `OCTOPUS_REQUIRE_GPU_CONTRACT=1`, under which a skipped CPU/CUDA leg fails
+the run instead of printing `cpu/cuda skipped` and closing with
+"backend-consistent" (which it did until 2026-10-20; comprehensive audit
+2026-10-18, F-229); the closing line now says which legs ran. The gate's CUDA
+arm runs it with the leg required. Outputs `result/lattice_cells.tsv`.
+Derivations for every map:
 `../docs/theory/lattice_hamiltonian_and_conventions.md`.
 
 ## Twiss Benchmark Against MAD-X Twiss
 
-**Script:** validation/twiss_madx_benchmark.jl (744 lines, consumer) and
-validation/generate_madx_twiss_reference.jl (495 lines, generator).
-**Shared fixture module:** validation/twiss_benchmark_cells.jl (533 lines).
+**Script:** validation/twiss_madx_benchmark.jl (consumer) and
+validation/generate_madx_twiss_reference.jl (generator).
+**Shared fixture module:** validation/twiss_benchmark_cells.jl.
 **Committed tables:** validation/reference/twiss_madx_5.03.06.tsv (92 lines: a
 67-line header, one column row, 24 data rows, 56 columns) and
 validation/reference/twiss_benchmark_maps.tsv (66 lines: a 20-line header, one
@@ -1465,8 +1616,8 @@ section 13.10 (the rolled FODO constant); ../docs/design/twiss_dispersion_analys
 
 ## Twiss Benchmark Against PTC ptc_twiss
 
-**Script:** validation/twiss_ptc_benchmark.jl (736 lines, consumer) and
-validation/generate_ptc_twiss_reference.jl (523 lines, generator); fixtures
+**Script:** validation/twiss_ptc_benchmark.jl (consumer) and
+validation/generate_ptc_twiss_reference.jl (generator); fixtures
 from validation/twiss_benchmark_cells.jl and the maps table
 validation/reference/twiss_benchmark_maps.tsv.
 **Committed table:** validation/reference/ptc_twiss_madx_5.03.06.tsv (27
@@ -1583,8 +1734,8 @@ regenerate digest.
 
 ## Twiss Benchmark Against Xsuite
 
-**Script:** validation/twiss_xsuite_benchmark.jl (920 lines, consumer) and
-validation/generate_xsuite_twiss_reference.py (576 lines, generator);
+**Script:** validation/twiss_xsuite_benchmark.jl (consumer) and
+validation/generate_xsuite_twiss_reference.py (generator);
 fixtures from validation/twiss_benchmark_cells.jl through the maps table
 validation/reference/twiss_benchmark_maps.tsv.
 **Committed table:** validation/reference/xsuite_twiss_xtrack_0.112.0.tsv
@@ -1761,7 +1912,13 @@ The multipliers are frozen on the contract's default 20 + 5 maps (the
 freezing set, kept by owner decision 2026-09-14 with the M3 table in hand);
 the script's larger set can put a row above one tenth of its budget or, on a
 map that exposes an analysis defect, over it (the gate then exits non-zero
-naming the row). Derivations:
+naming the row). It DOES on the current tree: the documented default run
+exits 1 on `c_scaling_invariance` (dense 6x6 map 98 at 1.11 of its frozen
+multiplier, the native arm; the Haswell arm is recorded exit 0), the ledgered
+state the owner kept with the freezing set (`docs/todo.md`, the
+`c_scaling_invariance` row; comprehensive audit 2026-10-18, A-1 / F-229), so
+a red default run on `main` is the recorded state, not a regression, until
+that row closes. Derivations:
 `../docs/theory/twiss_dispersion.md`; the design and its verification table:
 `../docs/design/twiss_dispersion_analysis.md`. The script runs the contract
 once and prints its metrics: the contract `TwissDispersionIdentityContract` is
@@ -1939,16 +2096,32 @@ write TSVs under `result/`.
   against BeamBeam3D (Table 3): head-on, crossing angle AND both crab
   families zeroed, 15 slices, 128^2 mesh, damping shortened to 400 turns.
   The BeamBeam3D decks and outputs are archived in the paper repository
-  under `data/bb3d_decks/`.
+  under `data/bb3d_decks/`. Its `MESHSCAN` receipt compares the final
+  emittances with the pre-run ones (both sides were the final state until
+  2026-10-20, so the four percentages were 0.0 by construction;
+  comprehensive audit 2026-10-18, F-237), and its header lists every variable
+  it reads under a load-time check (it carried the strong-strong harness's
+  header verbatim; F-239). The gate's CUDA arm runs it at 2 turns of 2000
+  per beam.
 - `emit_xcode.jl` — per-turn geometric emittance at the coherent-mode
   benchmark point, for overlay on BeamBeam3D `fort.24`.
 - `noise_floor_meshswap.jl` — plain PIC at 64^2 against the hybrid at 128^2
   at the production 11:1 aspect; also regenerates Table 1
   (`flat_beam_noise_floor.tsv`) bit-for-bit with `picgrid`/`hybgrid` at the
-  production assignment.
+  production assignment. Its round-beam correctness gate COMPARES since
+  2026-10-20: the deterministic row against the review's Section 6.4 C
+  columns for this mesh assignment, within half a unit in the reference's
+  second significant figure, exit 1 naming the column otherwise (the "gate"
+  was a println quoting the other assignment's columns; comprehensive audit
+  2026-10-18, F-226).
 - `kick_decomposition.jl` — the systematic/fluctuation decomposition of the
   flat-beam kick error (Sec. 4.1), with the Rademacher-bootstrap bias floor;
-  realization and bootstrap counts from `OCTOPUS_KD_R` / `OCTOPUS_KD_NBOOT`.
+  realization and bootstrap counts from `OCTOPUS_KD_R` / `OCTOPUS_KD_NBOOT`,
+  the seed from `OCTOPUS_KD_SEED`; the output is
+  `result/kick_decomposition_R<R>[_seed<seed>].tsv` (the name carried a
+  hard-coded `R100` whatever `R` was, and the file carried a 160-line dead
+  copy of the mesh-swap script under that script's header until 2026-10-20;
+  comprehensive audit 2026-10-18, F-226, F-227).
 
 The CUDA device-time decomposition driver (`cuda_device_profile.jl`, Table 6)
 moved to `profiling/` — it is a performance harness, not a validation.

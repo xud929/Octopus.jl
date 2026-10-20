@@ -402,6 +402,19 @@ println("execution policy = ", nameof(typeof(policy)),
         config.execution === :auto ?
             (cuda_ok ? "  (auto: a CUDA device is available)" :
                        "  (auto: no CUDA device, running on CPU threads)") : "")
+# `gpu_device` reaches `CUDAExecutionPolicy(device = ...)` alone and `threads`
+# the two CPU policies alone, so a value set where the chosen policy cannot
+# read it is a configuration nothing read (comprehensive audit 2026-10-18,
+# F-204: this example refused an unread `ranks` and `execution` and guarded
+# neither of these two). Refused by name, like `ranks` above.
+policy isa CUDAExecutionPolicy || config.gpu_device === nothing || error(
+    "config.gpu_device = $(repr(config.gpu_device)) is read only when the run executes on CUDA; " *
+    "this run's policy is $(nameof(typeof(policy))) (config.execution = $(repr(config.execution))), " *
+    "so the device index would go unread")
+!(policy isa CUDAExecutionPolicy) || config.threads === :auto || error(
+    "config.threads = $(repr(config.threads)) is read only by the CPU policies (:threads, " *
+    ":multiprocess, or :auto without a functional device); this run executes on CUDA, so the " *
+    "worker count would go unread")
 set_global_rng!(seed = input.seed, method = :philox)
 
 wb = input.weak_beam

@@ -78,9 +78,18 @@ Further switches this header once omitted (2026-08-05 audit, U18-2), all read
 below with the defaults shown at their read sites: OCTOPUS_CPU_THREADS,
 OCTOPUS_N_MACRO, OCTOPUS_PROTON_ENERGY_GEV, OCTOPUS_CUDA_NVTX,
 OCTOPUS_DISABLE_MOMENTS, OCTOPUS_DISABLE_LUMINOSITY_OUTPUT,
-OCTOPUS_MOMENT_CAPACITY, OCTOPUS_SPECTRAL_FIELD_PRECISION, OCTOPUS_GPIC_GRID,
-OCTOPUS_TURN_TIMING_PATH (a relative value resolves against `test/result/`,
-beside this harness -- NOT against the caller's cwd),
+OCTOPUS_MOMENT_CAPACITY (the artifact's row capacity; 0 disables the moment
+output, a negative value is refused), OCTOPUS_RESULT_DIR (the output root,
+`test/result` beside the tests by default; the suite's example runner and the
+MPI harness testset set it so their runs never collide with a developer's),
+OCTOPUS_SPECTRAL_FIELD_PRECISION, OCTOPUS_GPIC_GRID,
+OCTOPUS_TURN_TIMING_PATH (with OCTOPUS_RECORD_TURN_TIMES=1: the per-turn series
+as a TSV, header `turn<TAB>seconds`, turn 1..T of this call, written by rank 0
+only; a relative value resolves against the REPOSITORY ROOT, as the weak-strong
+and crab harnesses resolve theirs -- NOT against the caller's cwd, and not into
+OCTOPUS_RESULT_DIR; before 2026-10-20 this harness alone resolved it against
+`test/` and numbered turns from 0, one quantity under three conventions,
+comprehensive audit 2026-10-18 F-206),
 OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_MIN_RATIO,
 OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_GROWTH,
 OCTOPUS_CUDA_PIC_GATHER_SCATTER_THREADS, OCTOPUS_CUDA_PIC_DEPOSITION_THREADS,
@@ -92,7 +101,25 @@ OCTOPUS_CUDA_PIC_LUMINOSITY_THREADS.
 CUDA_PIC_SLICE_PAIR green-cache aliases" and "the per-kernel CUDA_PIC_*_THREADS
 overrides", which are neither greppable nor copy-pasteable and also dropped the
 OCTOPUS_ prefix, so eight variables stayed effectively undocumented --
-2026-08-05_b audit, U21-23.)
+2026-08-05_b audit, U21-23.) This list cannot drift any more: the `let` block
+after `env_bool` below compares every OCTOPUS_* name in this header with every
+OCTOPUS_* string literal the body reads and errors at load on a difference in
+either direction (the pattern of profiling/benchmark_strong_strong_pic.jl;
+comprehensive audit 2026-10-18 F-206).
+
+Refused by name, because a non-default request this harness would silently
+drop is a defect rather than a typo (the crab harness's rule, brought here
+2026-10-20 for the six variables the 2026-10-18 audit found read only inside a
+branch whose switch is off by default, F-205): OCTOPUS_CUDA_DEVICE,
+OCTOPUS_CUDA_THREADS, OCTOPUS_CUDA_BLOCKS and the seven
+OCTOPUS_CUDA_PIC_*_THREADS overrides named above without OCTOPUS_USE_GPU=1
+(the CPU policies read no launch geometry, and `backend_configurations` is
+built only for the CUDA run); OCTOPUS_RANKS without OCTOPUS_USE_MPI=1 (read by
+the multi-process arm alone -- and `mpiexec -n P` with the switch off would run
+P whole simulations on one artifact path); OCTOPUS_TURN_TIMING_PATH without
+OCTOPUS_RECORD_TURN_TIMES=1, or set but empty; OCTOPUS_MOMENT_CAPACITY below
+zero (it used to be silently replaced by the default 1024); OCTOPUS_MP (below);
+and OCTOPUS_USE_GPU=1 together with OCTOPUS_USE_MPI=1.
 
 The `.h5` run artifact is NOT byte-reproducible across two identical runs, so
 no byte-level regression check can be built on it (2026-08-05_b audit, U21-28).
@@ -161,11 +188,14 @@ Print statistics for the default slice-pair Green cache:
 
     OCTOPUS_USE_GPU=1 OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_PIC_GREEN_CACHE=slice_pair OCTOPUS_PIC_CACHE_STATS=1 julia --project=. test/examples/strong_strong_tracking.jl
 
-Test the indexed CUDA wavefront path. It skips compact gather/scatter and
-deposits/kicks through slice index vectors while leaving canonical particle
-order unchanged:
+Disable the indexed CUDA wavefront path for comparison. It is the DEFAULT
+(the solver's `cuda_indexed_wavefront` defaults to true, and so does this
+harness): it skips compact gather/scatter and deposits/kicks through slice
+index vectors while leaving canonical particle order unchanged. The A/B value
+is therefore 0; this header used to show `=1`, the default, as the way to
+"test" the path (comprehensive audit 2026-10-18, F-206):
 
-    OCTOPUS_USE_GPU=1 OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT=1 julia --project=. test/examples/strong_strong_tracking.jl
+    OCTOPUS_USE_GPU=1 OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT=0 julia --project=. test/examples/strong_strong_tracking.jl
 
 Log CUDA memory every N turns:
 
@@ -197,6 +227,10 @@ layout under the repo-root `result/`):
 - `test/result/<seed>/pic_hcc.h5` : `/luminosity/ip`, `/moments/electron`
   and `/moments/proton`, and the `/execution` ledger; read through one
   handle, `read(TaskOutput(path), kind; name = ...)`.
+
+plus, with OCTOPUS_RECORD_TURN_TIMES=1 and OCTOPUS_TURN_TIMING_PATH set, the
+per-turn TSV at that path (relative to the repository root), announced on
+stdout as `turn_timing_path = <path>`.
 =#
 
 """
@@ -223,6 +257,25 @@ function env_bool(key::AbstractString, default::Bool)
     lowered in ("1", "true", "yes", "on") && return true
     lowered in ("0", "false", "no", "off") && return false
     error("$(key)=$(repr(raw)) is not a boolean; use 1/0, true/false, yes/no or on/off")
+end
+
+# The header's OCTOPUS_* list against what this file reads, so the two cannot
+# drift (the weak-strong twin's header omitted three variables it read and
+# this one omitted OCTOPUS_RESULT_DIR until 2026-10-20; comprehensive audit
+# 2026-10-18 F-206; the pattern is profiling/benchmark_strong_strong_pic.jl).
+# The header is the text above the first `=#`; a name is read when the body
+# spells it as a string literal, which every `get(ENV, ...)`, `haskey(ENV,
+# ...)` and `env_bool(...)` here does. A glob in the header (`OCTOPUS_X_*_Y`)
+# leaves a token ending in `_`, which is not a name and is ignored.
+let text = read(@__FILE__, String)
+    header, body = split(text, "=#"; limit=2)
+    names(s, pattern) = Set(String(m.captures[1]) for m in eachmatch(pattern, s)
+                            if !endswith(m.captures[1], "_"))
+    named = names(header, r"(OCTOPUS_[A-Z0-9_]+)")
+    read_names = names(body, r"\"(OCTOPUS_[A-Z0-9_]+)\"")
+    named == read_names || error("harness header drift: named but never read " *
+        string(sort!(collect(setdiff(named, read_names)))) * "; read but not named " *
+        string(sort!(collect(setdiff(read_names, named)))))
 end
 
 # OCTOPUS_USE_MPI=1 runs this harness divided across MPI ranks -- one Octopus
@@ -305,6 +358,27 @@ end
 # = <digits>` on one line.
 const HARNESS_DEFAULT_SEED = 123456789
 
+# Derived once, read everywhere (comprehensive audit 2026-10-18, F-206): the
+# half crossing angle was typed four times in the `input` block, each beam's
+# longitudinal beta sigma_z/sigma_delta twice and the crab kick
+# tan(theta)/sqrt(beta_cc beta*) three times, so editing `crossing_angle`
+# left the crab kicks at 12.5 mrad and editing sigma_z left beta_z behind.
+# The same literals, read from one place: the arithmetic is unchanged bit for
+# bit. The clean example (examples/strong_strong_tracking.jl) is built the
+# same way.
+half_crossing_angle = 12.5e-3
+electron_sigma = (106.0e-6, 9.5e-6, 0.7e-2)
+electron_sigma_delta = 5.5e-4
+electron_beta_star = (0.55, 0.056)
+electron_crab_beta_x = 150.0
+proton_sigma = (95.0e-6, 8.5e-6, 6.0e-2)
+proton_sigma_delta = 6.6e-4
+proton_beta_star = (0.8, 0.072)
+proton_crab_beta_x = 1300.0
+electron_beta_z = electron_sigma[3] / electron_sigma_delta
+proton_beta_z = proton_sigma[3] / proton_sigma_delta
+crab_kick(beta_cc, beta_star) = tan(half_crossing_angle) / sqrt(beta_cc * beta_star)
+
 input = (
     case_name = "pic_hcc",
     # OCTOPUS_RESULT_DIR lets concurrent or comparative runs write somewhere of
@@ -317,7 +391,7 @@ input = (
     result_dir = get(ENV, "OCTOPUS_RESULT_DIR", joinpath(@__DIR__, "..", "result")),
     seed = HARNESS_DEFAULT_SEED,
     default_demo_macroparticles = 200,
-    crossing_angle = 12.5e-3,
+    crossing_angle = half_crossing_angle,
 
     electron = (
         charge = -1.0,
@@ -332,14 +406,14 @@ input = (
         # (2026-08-05_b audit, U21-24); the clean `examples/` counterpart keeps
         # the production numbers in its `config` block, where they ARE read.
         cutoff = 5.0,
-        sigma = (106.0e-6, 9.5e-6, 0.7e-2),
-        beta = (0.55, 0.056, 0.7e-2 / 5.5e-4),
+        sigma = electron_sigma,
+        beta = (electron_beta_star..., electron_beta_z),
         alpha = (0.0, 0.0, 0.0),
-        crab_beta = (150.0, 30.0, 0.7e-2 / 5.5e-4),
+        crab_beta = (electron_crab_beta_x, 30.0, electron_beta_z),
         tune = (0.08, 0.14, -0.069),
         chromaticity = (1.0, 1.0),
         crab_frequency = 394.0e6,
-        crab_strength_x = (tan(12.5e-3) / sqrt(150.0 * 0.55), 0.0, 0.0),
+        crab_strength_x = (crab_kick(electron_crab_beta_x, electron_beta_star[1]), 0.0, 0.0),
         crab_strength_y = (0.0, 0.0, 0.0),
         crab_phase = (0.0, 0.0, 0.0),
         radiation_damping_turns = (4000.0, 4000.0, 2000.0),
@@ -351,16 +425,18 @@ input = (
         energy = 275.0e9,
         n_particle = 0.6881e11,
         cutoff = 5.0,
-        sigma = (95.0e-6, 8.5e-6, 6.0e-2),
-        beta = (0.8, 0.072, 6.0e-2 / 6.6e-4),
+        sigma = proton_sigma,
+        beta = (proton_beta_star..., proton_beta_z),
         alpha = (0.0, 0.0, 0.0),
-        crab_beta = (1300.0, 30.0, 6.0e-2 / 6.6e-4),
+        crab_beta = (proton_crab_beta_x, 30.0, proton_beta_z),
         tune = (0.228, 0.210, -0.01),
         chromaticity = (2.0, 2.0),
         crab_frequency = 197.0e6,
+        # The two-harmonic compensation scheme, weights (4/3, -1/3, 0) on the
+        # one derived kick.
         crab_strength_x = (
-            tan(12.5e-3) / sqrt(1300.0 * 0.8) * 4.0 / 3.0,
-            -tan(12.5e-3) / sqrt(1300.0 * 0.8) / 3.0,
+            crab_kick(proton_crab_beta_x, proton_beta_star[1]) * 4.0 / 3.0,
+            -crab_kick(proton_crab_beta_x, proton_beta_star[1]) / 3.0,
             0.0,
         ),
         crab_strength_y = (0.0, 0.0, 0.0),
@@ -417,6 +493,23 @@ if use_gpu
     import CUDA
     CUDA.functional(false) || error("OCTOPUS_USE_GPU=1 requested, but CUDA.functional(false) is false.")
 end
+# The launch geometry reaches `CUDAExecutionPolicy` alone, so with the GPU
+# switch off these three were parsed by nobody: `OCTOPUS_CUDA_BLOCKS=banana`
+# ran to completion on CPU threads, exit 0, without a word (comprehensive
+# audit 2026-10-18, F-205). A set variable nothing reads is the
+# config-that-was-never-read defect class, not a typo, so each is refused by
+# name where it would go unread (the crab harness's rule).
+for key in ("OCTOPUS_CUDA_DEVICE", "OCTOPUS_CUDA_THREADS", "OCTOPUS_CUDA_BLOCKS")
+    use_gpu || !haskey(ENV, key) || error(
+        "$(key)=$(repr(ENV[key])) without OCTOPUS_USE_GPU=1: the CPU policies read no " *
+        "launch geometry, so the value would be silently dropped. Set OCTOPUS_USE_GPU=1 " *
+        "or unset it.")
+end
+use_mpi || !haskey(ENV, "OCTOPUS_RANKS") || error(
+    "OCTOPUS_RANKS=$(repr(ENV["OCTOPUS_RANKS"])) without OCTOPUS_USE_MPI=1: the rank count is " *
+    "read only by the multi-process arm, so it would go unread -- and under a " *
+    "launcher a single-process run on every rank is P whole simulations racing " *
+    "on one artifact path. Set OCTOPUS_USE_MPI=1 for a divided run.")
 policy = if use_gpu
     cuda_device_env = get(ENV, "OCTOPUS_CUDA_DEVICE", "")
     cuda_device = isempty(cuda_device_env) ? nothing : parse(Int, cuda_device_env)
@@ -460,8 +553,13 @@ weak_strong_limit = env_bool("OCTOPUS_WEAK_STRONG_LIMIT", false)
 function _energy_env(name, default_eV)
     haskey(ENV, name) || return default_eV
     gev = parse(Float64, ENV[name])
-    (isfinite(gev) || gev > 0) || error("$(name) must be a positive number of GeV; got $(gev)")
-    gev > 0 || error("$(name) must be positive; got $(gev) GeV")
+    # `&&`, not `||`: the first version wrote `(isfinite(gev) || gev > 0)`,
+    # which is false only for NaN, so `=Inf` passed this clause and the
+    # harness's own message never fired for the case it names (the library's
+    # "E0 must be finite" refusal caught it instead; comprehensive audit
+    # 2026-10-18, F-206).
+    (isfinite(gev) && gev > 0) ||
+        error("$(name) must be a finite, positive number of GeV; got $(gev)")
     return gev * 1.0e9
 end
 
@@ -549,6 +647,17 @@ pic_luminosity_schedule =
     pic_luminosity_every == 1 ? nothing :
     EveryNSteps(step = pic_luminosity_every)
 record_turn_times = env_bool("OCTOPUS_RECORD_TURN_TIMES", false)
+# OCTOPUS_TURN_TIMING_PATH is read inside `if record_turn_times` below, so set
+# without the switch it was a path nothing wrote and nothing mentioned
+# (comprehensive audit 2026-10-18, F-205); set but empty it would write
+# nothing and say nothing. Both refused by name, as the crab harness does.
+turn_timing_path = get(ENV, "OCTOPUS_TURN_TIMING_PATH", "")
+haskey(ENV, "OCTOPUS_TURN_TIMING_PATH") && isempty(strip(turn_timing_path)) && error(
+    "OCTOPUS_TURN_TIMING_PATH is set but empty: name a file for the per-turn series " *
+    "or unset the variable; an empty path would write nothing and say nothing.")
+record_turn_times || !haskey(ENV, "OCTOPUS_TURN_TIMING_PATH") || error(
+    "OCTOPUS_TURN_TIMING_PATH=$(repr(turn_timing_path)) without OCTOPUS_RECORD_TURN_TIMES=1: " *
+    "no per-turn series is recorded, so nothing would be written there.")
 diagnostics = StrongStrongDiagnostics(;
     record_turn_times,
     memory_log_every = parse(Int, get(ENV, "OCTOPUS_CUDA_MEMORY_LOG_EVERY", "0")),
@@ -566,6 +675,13 @@ disable_collision = env_bool("OCTOPUS_DISABLE_COLLISION", false)
 # library-level capacity=0 spelling retired with the per-observer capacity.
 moment_capacity = parse(Int, get(ENV, "OCTOPUS_MOMENT_CAPACITY",
                                  string(input.output.capacity)))
+# A negative value used to be neither refused nor applied: the moments stayed
+# on and the artifact took the default 1024, with no capacity line in the dump
+# to say so (comprehensive audit 2026-10-18, F-206).
+moment_capacity >= 0 || error(
+    "OCTOPUS_MOMENT_CAPACITY=$(moment_capacity) must be 0 (disable the moment output) " *
+    "or a positive artifact row capacity; a negative value was silently replaced by " *
+    "the default $(input.output.capacity) before 2026-10-20.")
 disable_moments = disable_moments || moment_capacity == 0
 artifact_capacity = moment_capacity > 0 ? moment_capacity : input.output.capacity
 optional_cuda_pic_threads(key) = haskey(ENV, key) ? parse(Int, ENV[key]) : nothing
@@ -676,6 +792,14 @@ elseif solver_name == "gaussian"
         batch_mode = pic_batch_mode,
     )
 elseif solver_name == "gaussian_pic"
+    # The same keyword set as the `pic` branch below: `GaussianPICPoissonSolver`
+    # forwards every keyword to its inner `PICPoissonSolver`, so the four
+    # cache and luminosity options reach it exactly as they reach plain PIC.
+    # Until 2026-10-20 this branch omitted them while the configuration dump
+    # below printed the harness variables as applied, so
+    # `OCTOPUS_PIC_LUMINOSITY_DEPOSIT_METHOD=TSC` printed `TSC` requested and
+    # `CIC` resolved on one screen and the solver held its defaults
+    # (comprehensive audit 2026-10-18, F-203).
     GaussianPICPoissonSolver(;
         slicing = slicing,
         luminosity_scale = input.solver.luminosity_scale,
@@ -683,6 +807,8 @@ elseif solver_name == "gaussian_pic"
         deposit_method = input.solver.pic_deposit_method,
         green_type = input.solver.pic_green_type,
         green_cache = pic_green_cache,
+        slice_pair_green_min_ratio = pic_slice_pair_green_min_ratio,
+        slice_pair_green_growth = pic_slice_pair_green_growth,
         longitudinal_kick = pic_longitudinal_kick,
         batch_mode = pic_batch_mode,
         cuda_async = cuda_pic_async,
@@ -690,6 +816,8 @@ elseif solver_name == "gaussian_pic"
         cuda_wavefront_fft = cuda_pic_wavefront_fft,
         cuda_indexed_wavefront = cuda_pic_indexed_wavefront,
         luminosity_schedule = pic_luminosity_schedule,
+        luminosity_grid = pic_luminosity_grid,
+        luminosity_deposit_method = pic_luminosity_deposit_method,
         backend_configurations = cuda_pic_backend_configurations,
     )
 else
@@ -740,6 +868,17 @@ let launch_keys = ("OCTOPUS_CUDA_PIC_GATHER_SCATTER_THREADS",
               "which has no backend_configurations field: these per-kernel launch " *
               "overrides reach only the pic and gaussian_pic solvers, so the value " *
               "would be parsed and discarded. Drop them, or select a PIC solver.")
+    end
+    # The same refusal on the other axis: `cuda_pic_backend_configurations` is
+    # built only for the CUDA run, so on CPU threads the seven values were
+    # parsed, range-checked and dropped (comprehensive audit 2026-10-18,
+    # F-205: `OCTOPUS_CUDA_PIC_DEPOSITION_THREADS=512` on CPU, exit 0,
+    # `solver.backend_configurations == ()`).
+    if !isempty(requested) && !use_gpu
+        error("$(join(requested, ", ")) set without OCTOPUS_USE_GPU=1: the per-kernel " *
+              "CUDA launch overrides reach the solver only through the CUDA run's " *
+              "backend_configurations, so on CPU threads the value would be parsed " *
+              "and discarded. Set OCTOPUS_USE_GPU=1 or drop them.")
     end
 end
 
@@ -952,26 +1091,28 @@ end
 if record_turn_times
     timings = turn_timings(task)
     println("turn_timings_seconds = ", join(timings, ','))
-    timing_path = get(ENV, "OCTOPUS_TURN_TIMING_PATH", "")
     # One path, P ranks: without this gate every rank opens the same TSV for
     # writing and the file is whichever rank finished last, interleaved with
     # whichever had not. The stdout line above is per-rank on purpose (each
     # rank's own wall clock is real data); the FILE has one owner.
-    if !isempty(timing_path) && writes_files
-        # A relative path resolves against this harness's own result
-        # directory, not the caller's cwd: the header's documented example
-        # (result/pic_turn_times.tsv) used to land in repo-root result/,
-        # contradicting the same header's claim that this harness keeps its
-        # outputs beside the tests (2026-08-05 audit, U18-5).
-        isabspath(timing_path) ||
-            (timing_path = joinpath(@__DIR__, "..", timing_path))
-        mkpath(dirname(timing_path))
-        open(timing_path, "w") do io
+    if !isempty(turn_timing_path) && writes_files
+        # ONE convention for the three harnesses (comprehensive audit
+        # 2026-10-18, F-206): a relative path resolves against the repository
+        # root, as the weak-strong and crab harnesses resolve theirs, and the
+        # rows are turn 1..T of this call. This harness alone resolved against
+        # `test/` (its header said `test/result/`, true only for a path that
+        # happened to begin with `result/`) and numbered the turns from 0; a
+        # consumer reading one harness's TSV misread the next.
+        full = isabspath(turn_timing_path) ? turn_timing_path :
+               joinpath(@__DIR__, "..", "..", turn_timing_path)
+        mkpath(dirname(full))
+        open(full, "w") do io
             println(io, "turn\tseconds")
             for (turn, seconds) in enumerate(timings)
-                println(io, turn - 1, '\t', seconds)
+                println(io, turn, '\t', seconds)
             end
         end
+        println("turn_timing_path = ", full)
     end
 end
 
