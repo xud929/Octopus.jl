@@ -27354,6 +27354,86 @@ end
     @test count_dead(plain_beam) == 0
 end
 
+@testset "A Float32 beam with an artifact reuses its loss record across execute! calls" begin
+    # 2026-10-18 comprehensive audit, F-117. `LossRecord(names, n, rep)` widens
+    # the per-particle slots to `promote_type(eltype(rep.x), Float64)` so the
+    # turn row stays exact past 2^24 turns, while `_loss_record_matches_rep`
+    # compared the slot eltype with the COORDINATE eltype. A Float32 record
+    # with slots therefore never matched the rep it was built for, and a
+    # Float32 beam with an artifact (slots wanted) got a fresh record on every
+    # `execute!`: the cumulative counts restarted, the earlier losses became
+    # unattributed deaths with the "no aperture responsible" warning, and the
+    # artifact's /losses group held only the last call's rows. Measured on
+    # the unfixed tree: counts [1] after the second call, summary
+    # (dead, logged, unattributed) = (2, 1, 1), /losses 1 row; the Float64
+    # beam with an artifact and the Float32 beam without one (counters only)
+    # both reused the record and reported (2, 2, 0). The slot eltype is now
+    # derived from one place (`_loss_slot_eltype`) by the allocator and the
+    # matcher alike, and the round trip below is the tripwire: a record
+    # freshly allocated for a rep matches that rep, whatever the coordinate
+    # type, so the two cannot drift apart again without this going red.
+    #
+    # Self-contained fixtures (no suite-level helper), so the block runs under
+    # the stage runner as it runs here. Particle 2 is outside the 1.5e-4
+    # aperture at turn 0; particle 3 drifts past it by turn 1 (1.4e-4 + 0.5 *
+    # 4e-5 = 1.6e-4); particle 1 never leaves.
+    mkrep(T) = Phase6DRep(T[1e-4, 2e-4, 1.4e-4], T[0, 0, 4e-5], T[3e-5, 0, 0],
+                          zeros(T, 3), T[1e-2, -1e-2, 0], zeros(T, 3))
+    mkline(T) = (ApertureSpec{T}(shape=:rectangle, x_limit=1.5e-4, y_limit=1.0, name="tight"),
+                 DriftSpec{T}(L=0.5))
+
+    # The allocator/matcher round trip for both coordinate types the allocator
+    # widens from: the slots are Float64 either way (the turn-row rule), and
+    # the record matches the rep it was allocated for either way; a
+    # counters-only record has no slot eltype to disagree about.
+    for T in (Float32, Float64)
+        rep = mkrep(T)
+        record = LossRecord(["tight"], 3, rep)
+        @test eltype(record.slots) === Float64
+        @test Octopus._loss_record_matches_rep(record, rep)
+        @test Octopus._loss_record_matches_rep(LossRecord(["tight"], 3, rep; log=false), rep)
+    end
+
+    # Task level: the record survives a second `execute!` for both coordinate
+    # types, the counts accumulate, the summary reconciles, and the artifact's
+    # /losses group carries both losses with the turns they happened on.
+    for T in (Float32, Float64)
+        path = tempname() * ".h5"
+        task = TrackingTask(mkline(T); artifact=path)
+        rep = mkrep(T)
+        execute!(task, rep; turns=1)
+        first_record = loss_record(task)
+        @test loss_counts(first_record) == [1]
+        execute!(task, rep; turns=1)
+        @test loss_record(task) === first_record
+        @test loss_counts(loss_record(task)) == [2]
+        summary = loss_summary(rep, task)
+        @test (summary.dead, summary.logged, summary.unattributed) == (2, 2, 0)
+        written = read(TaskOutput(path), :losses)
+        @test written.particle_id == [2, 3]
+        @test written.turn == [0, 1]
+        @test written.element_id == [1, 1]
+    end
+
+    # The backend-change reallocation the matcher's docstring promises stays:
+    # a device record matches the device rep it was built for, for either
+    # coordinate type, and a record built on one backend never matches a rep
+    # on the other.
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        for T in (Float32, Float64)
+            host = mkrep(T)
+            device = Phase6DRep((Octopus.CUDA.CuArray(a) for a in coordinate_arrays(host))...)
+            device_record = LossRecord(["tight"], 3, device)
+            @test eltype(device_record.slots) === Float64
+            @test Octopus._loss_record_matches_rep(device_record, device)
+            @test !Octopus._loss_record_matches_rep(device_record, host)
+            @test !Octopus._loss_record_matches_rep(LossRecord(["tight"], 3, host), device)
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 @testset "PIC kbb override uses physical units" begin
     function kbb_pair()
         set_global_rng!(seed=42, method=:philox)

@@ -89,6 +89,32 @@ if _HAS_ADAPT
 end
 
 """
+    _loss_slot_eltype(rep) -> Type
+
+The element type of a loss record's per-particle `slots` for a beam stored as
+`rep`: `promote_type(eltype(rep.x), Float64)`, **not** the coordinate type.
+
+Two of the eight rows hold INTEGERS -- the turn and the element id -- and the
+turn is not small: a Float32 record narrows `ctx.turn` and starts reporting
+wrong turn numbers past 16,777,216 (`Float32(16777217) == 1.6777216f7`, off by
+one; `Float32(16777219)`, off by three), silently, in exactly the runs that
+reach 1e7 turns -- lifetime and dynamic-aperture studies (2026-08-05_b audit,
+U15-11). Widening the record is lossless for the six coordinate rows, costs 8
+extra bytes per particle only when logging is on, and leaves Float64 beams --
+the overwhelming majority -- byte-for-byte unchanged. An exotic coordinate type
+(Dual, BigFloat) still promotes to itself.
+
+This is the ONE place the rule lives. The allocator (`LossRecord(names, n,
+rep)`) and the reuse test (`_loss_record_matches_rep`) both read it: when the
+matcher restated the rule as "the coordinate eltype", a Float32 record with
+slots never matched the rep it was built for, and a Float32 beam with a run
+artifact got a fresh record on every `execute!` -- cumulative counts reset,
+the earlier losses reported as unattributed, the artifact's `/losses` group
+holding only the last call's rows (2026-10-18 comprehensive audit, F-117).
+"""
+_loss_slot_eltype(rep::Phase6DRep) = promote_type(eltype(rep.x), Float64)
+
+"""
     LossRecord(names, nparticles, rep; log=true)
 
 Allocate a loss record for one beam, on the same backend as `rep`.
@@ -100,17 +126,10 @@ per-particle forensics.
 """
 function LossRecord(names::Vector{String}, nparticles::Integer, rep::Phase6DRep;
                     log::Bool=true)
-    # `promote_type(..., Float64)`, not the coordinate type. Two of the eight
-    # rows hold INTEGERS -- the turn and the element id -- and the turn is not
-    # small: a Float32 record narrows `ctx.turn` and starts reporting wrong turn
-    # numbers past 16,777,216 (`Float32(16777217) == 1.6777216f7`, off by one;
-    # `Float32(16777219)`, off by three), silently, in exactly the runs that
-    # reach 1e7 turns -- lifetime and dynamic-aperture studies (2026-08-05_b
-    # audit, U15-11). Widening the record is lossless for the six coordinate
-    # rows, costs 8 extra bytes per particle only when logging is on, and leaves
-    # Float64 beams -- the overwhelming majority -- byte-for-byte unchanged.
-    # An exotic coordinate type (Dual, BigFloat) still promotes to itself.
-    T = promote_type(eltype(rep.x), Float64)
+    # The slot eltype is `_loss_slot_eltype(rep)`, the Float64-floor widening
+    # (why: its docstring), read from the one place `_loss_record_matches_rep`
+    # reads it from too.
+    T = _loss_slot_eltype(rep)
     na = max(length(names), 1)
     on_cuda = _HAS_CUDA && rep.x isa CUDA.CuArray
     counts = on_cuda ? CUDA.zeros(Int32, na) : zeros(Int32, na)
@@ -126,17 +145,23 @@ end
 
 """
 True when `record`'s arrays live where `LossRecord(names, n, rep)` would place
-them, with the eltype its slots would carry. The task-level `fits` test uses
-this so a task re-run on the other backend reallocates instead of handing host
-arrays to a CUDA kernel (a `KernelError`) or device arrays to the CPU bump (a
-`MethodError`) -- the docstring always promised reallocation on a backend
-change, but the check compared only shape (audit part 7, T2).
+them, with the eltype its slots would carry -- `_loss_slot_eltype(rep)`, the
+allocator's own rule, so a record freshly allocated for `rep` always matches
+`rep`. The task-level `fits` test uses this so a task re-run on the other
+backend reallocates instead of handing host arrays to a CUDA kernel (a
+`KernelError`) or device arrays to the CPU bump (a `MethodError`) -- the
+docstring always promised reallocation on a backend change, but the check
+compared only shape (audit part 7, T2). The eltype half then restated the
+allocator's rule as `eltype(rep.x)`, which the allocator widens past for a
+Float32 beam, so a Float32 record with slots never matched and a Float32 beam
+with an artifact lost its cumulative record on every `execute!` (2026-10-18
+comprehensive audit, F-117).
 """
 function _loss_record_matches_rep(record::LossRecord, rep::Phase6DRep)
     rep_on_cuda = _HAS_CUDA && rep.x isa CUDA.CuArray
     record_on_cuda = !(record.counts isa Array)
     rep_on_cuda == record_on_cuda || return false
-    return record.slots === nothing || eltype(record.slots) == eltype(rep.x)
+    return record.slots === nothing || eltype(record.slots) == _loss_slot_eltype(rep)
 end
 
 """
