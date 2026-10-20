@@ -49,6 +49,21 @@ Membership is a judgment renewed by measurement, not a property a tripwire
 can check: when a new testset lands, the question "does it belong behind a
 gate?" is part of its review, and this note's numbers are the precedent.
 
+Added 2026-10-20 (fix batch 2 of the 2026-10-18 comprehensive audit), the
+last section of the file: "CUDA-requiring validation scripts run in the gate's
+CUDA arm". It runs every CUDA-capable script of `validation/` and `profiling/`
+in a subprocess at the reduced size its own `GATE-CUDA-ARM:` header line
+declares, asserting exit 0 and the script's verdict token, when the test
+process has a device; on a CPU-only process (CI) it prints the scripts it did
+not run and records a `@test_skip`. The list is derived from the scripts'
+CUDA refusals and `OCTOPUS_REQUIRE_GPU_CONTRACT` reads, both directions
+tripwired (`validation/README.md`, "The gate's CUDA arm"). It is full-lane
+because it is the only place these scripts execute at all: CI has no GPU,
+and three of them had been dead for two months (A-4, F-200, F-236). Its
+measured cost on the GPU node is in the README's table (the owner's budget
+rule: the gate may not grow by more than ten minutes); on CI it costs one
+directory scan.
+
 ## 3. When the full gate is mandatory
 
 The fast lane is a checkpoint **during** development. The full gate is the
@@ -59,6 +74,7 @@ following change classes no amount of fast-lane green substitutes — each row i
 | change class | minimum bar | the receipt |
 |---|---|---|
 | anything reachable from CUDA kernels (`*_cuda.jl`, fused device paths, throws in device code) | full gate **with CUDA active** | the dominant recorded failure class; CI has no GPU, so a local GPU run is the *only* CUDA gate |
+| a CUDA-requiring script under `validation/` or `profiling/`, or a retirement whose blast radius reaches one | full gate **with CUDA active** | the CUDA arm section runs them; three scripts were dead for two months with every CPU gate green (2026-10-18 audit, A-4, F-200, F-236) |
 | concurrency surfaces (worker closures, reductions, chunk grids, counter RNG) | full gate | the `Core.Box` class; thread-count invariance history (U5-1/2, U16-3) |
 | acceptance/rejection semantics, contracts, tolerances, aperture/loss | full gate | blast-radius rule; F2 aborted ~4,660 test lines silently |
 | symbol removal/rename or arity change | full gate, after a repo-wide grep | U3-2 capped 4 of 12 launches; U1-6 left 4 stale call sites in the sibling file |

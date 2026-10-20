@@ -3,11 +3,18 @@ Validate the shared three-plane Beam optics interface. With identical counter
 RNG input, legacy `(alpha_x, alpha_y)` construction must exactly match
 `(alpha_x, alpha_y, 0)`. Sigma- and emittance-based construction must agree,
 and a nonzero longitudinal alpha must add exactly `-alpha_z*z/beta_z` to pz.
-The checks run on CPU and CUDA when CUDA is available and write no files.
+The checks run on CPU and CUDA when CUDA is available and write no files;
+with OCTOPUS_REQUIRE_GPU_CONTRACT=1 a missing device fails the run.
 
 Run from the project root:
 
     julia --project=. validation/beam_optics_interface_consistency.jl
+
+The gate's CUDA arm runs this script with the GPU leg required (the testset
+"CUDA-requiring validation scripts run in the gate's CUDA arm" in
+test/runtests.jl reads the line below; validation/README.md):
+
+GATE-CUDA-ARM: env OCTOPUS_REQUIRE_GPU_CONTRACT=1 ; verdict "CUDABackend: shared beam optics interface passed"
 =#
 
 if !isdefined(Main, :Octopus)

@@ -17,6 +17,23 @@ Run from the project root, for example:
     julia --project=. validation/strong_strong_diagnostics_benchmark.jl
 
 Set OCTOPUS_SOLVER=gaussian to exercise the soft-Gaussian source-moment path.
+The per-kernel CUDA PIC launch families are a PIC-family property: the PIC and
+Gaussian-PIC solvers report one `cuda_pic_<family>_threads` entry per family
+and the summary records each; the soft-Gaussian solver has no
+`backend_configurations` and its summary row says `not applicable` instead.
+(Until 2026-10-20 the family loop ran for every CUDA policy and the Gaussian
+mode errored at it AFTER the measured run; comprehensive audit 2026-10-18,
+F-207.) The `turns` row and the printed sample window are the EFFECTIVE run
+length, `OCTOPUS_TURNS` as the harness read it (a pre-set `OCTOPUS_TURNS`
+wins over OCTOPUS_DIAGNOSTIC_BENCHMARK_TURNS), and `git_commit` is read from
+this script's own tree, so the summary is provenance of the run that
+happened wherever it was launched from.
+
+The gate's CUDA arm runs this benchmark at a reduced size (the testset
+"CUDA-requiring validation scripts run in the gate's CUDA arm" in
+test/runtests.jl reads the line below; see validation/README.md):
+
+GATE-CUDA-ARM: env OCTOPUS_N_MACRO_ELE=4000 OCTOPUS_N_MACRO_PRO=4000 OCTOPUS_DIAGNOSTIC_BENCHMARK_TURNS=12 OCTOPUS_DIAGNOSTIC_BENCHMARK_SAMPLE_TURNS=4 OCTOPUS_DIAGNOSTIC_BENCHMARK_MODE=both OCTOPUS_RESULT_DIR=@TMP@ ; verdict "diagnostic_summary = " ; outputs result/pic_diagnostics_both_turn_times.tsv result/pic_diagnostics_both_summary.tsv
 
 Outputs (2026-08-05_b audit, U25-8 -- this header named none of them):
 
@@ -110,8 +127,15 @@ file_size(path) = isfile(path) ? filesize(path) : 0
 artifact_bytes = (luminosity_file_enabled || moments_enabled) ?
                  file_size(artifact_path) : 0
 
+# The EFFECTIVE run length: `turns` above is this script's own variable, and a
+# pre-set OCTOPUS_TURNS wins over it (the guard above only prevents the
+# BoundsError), so the summary used to name a configuration the run did not
+# use (comprehensive audit 2026-10-18, F-207 / U40-5).
+effective_turns = parse(Int, ENV["OCTOPUS_TURNS"])
+length(timings) == effective_turns || error(
+    "the harness recorded $(length(timings)) turn timings against OCTOPUS_TURNS=$(effective_turns)")
 println("diagnostic_mode = ", mode)
-println("sample_turns = ", turns - sample_turns, ":", turns - 1)
+println("sample_turns = ", effective_turns - sample_turns, ":", effective_turns - 1)
 println("sample_mean_seconds = ", sample_mean)
 println("sample_median_seconds = ", sample_median)
 println("sample_min_seconds = ", minimum(sample))
@@ -120,10 +144,13 @@ println("artifact_bytes = ", artifact_bytes)
 
 summary_path = joinpath(result_dir, "pic_diagnostics_$(mode)_summary.tsv")
 configuration_rows = Pair{String,Any}[
-    "git_commit" => readchomp(`git rev-parse HEAD`),
+    # This script's tree, not the caller's cwd: launched from elsewhere the
+    # bare `git rev-parse` either died after the measured run or recorded
+    # another repository's commit (comprehensive audit 2026-10-18, U40-15).
+    "git_commit" => readchomp(`git -C $(dirname(@__DIR__)) rev-parse HEAD`),
     "mode" => mode,
     "solver" => nameof(typeof(solver)),
-    "turns" => turns,
+    "turns" => effective_turns,
     "sample_turns" => sample_turns,
     "sample_mean_seconds" => sample_mean,
     "sample_median_seconds" => sample_median,
@@ -144,16 +171,36 @@ if policy isa CUDAExecutionPolicy
     # never appeared, and a family that stopped being reported vanished without
     # a word. Either way the summary claimed complete provenance while missing a
     # launch parameter that shaped the timings it records.
-    for family in Octopus._CUDA_PIC_LAUNCH_FAMILIES
-        option = Symbol(:cuda_pic_, family, :_threads)
-        matches = filter(item -> item.name === option, config_entries)
-        isempty(matches) && error(
-            "CUDA PIC launch family $(family) is in Octopus._CUDA_PIC_LAUNCH_FAMILIES " *
-            "but configuration_report did not report $(option): the benchmark " *
-            "summary would silently omit it.")
-        entry = only(matches)
-        push!(configuration_rows, string(option, "_requested") => entry.requested)
-        push!(configuration_rows, string(option, "_resolved") => entry.resolved)
+    #
+    # For the PIC-family solvers only: the launch families are fields of
+    # `PICPoissonSolver` (reached by `pic` and `gaussian_pic`), and the
+    # soft-Gaussian solver's `configuration_report` carries none of the seven
+    # `cuda_pic_*` entries by design. The U25-6 derivation assumed a PIC solver
+    # and so made the documented OCTOPUS_SOLVER=gaussian mode error HERE, after
+    # the whole measured run (comprehensive audit 2026-10-18, F-207). The
+    # summary now says so instead of claiming or crashing.
+    if solver isa Union{PICPoissonSolver,GaussianPICPoissonSolver}
+        for family in Octopus._CUDA_PIC_LAUNCH_FAMILIES
+            option = Symbol(:cuda_pic_, family, :_threads)
+            matches = filter(item -> item.name === option, config_entries)
+            isempty(matches) && error(
+                "CUDA PIC launch family $(family) is in Octopus._CUDA_PIC_LAUNCH_FAMILIES " *
+                "but configuration_report did not report $(option): the benchmark " *
+                "summary would silently omit it.")
+            entry = only(matches)
+            push!(configuration_rows, string(option, "_requested") => entry.requested)
+            push!(configuration_rows, string(option, "_resolved") => entry.resolved)
+        end
+    else
+        # Loud, not silent: a reader of the summary must see that the launch
+        # families were not applicable rather than wonder why they are missing.
+        any(item -> startswith(string(item.name), "cuda_pic_"), config_entries) && error(
+            "$(nameof(typeof(solver))) reported cuda_pic_* launch entries: the family " *
+            "loop above assumed it has none; teach this script the solver's launch surface.")
+        push!(configuration_rows, "cuda_pic_launch_families" =>
+            "not applicable ($(nameof(typeof(solver))) has no backend_configurations)")
+        println("cuda_pic_launch_families = not applicable (", nameof(typeof(solver)),
+                " has no backend_configurations)")
     end
 end
 open(summary_path, "w") do io

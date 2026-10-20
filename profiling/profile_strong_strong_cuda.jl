@@ -29,6 +29,14 @@ For an Nsight Systems timeline, use for example:
 
 - `cuda`: use CUDA.jl's internal `CUDA.@profile` summary.
 - `none`: run normally with NVTX ranges; use this under Nsight Systems.
+
+Not run by the gate's CUDA arm (the testset "CUDA-requiring validation scripts
+run in the gate's CUDA arm" in test/runtests.jl reads the line below): this is
+a CUPTI profiler wrapper around test/examples/strong_strong_tracking.jl, and
+the harness itself runs in the suite's example-runner testset and, on CUDA,
+through the two benchmark scripts of the arm.
+
+GATE-CUDA-ARM: excluded -- a CUDA.@profile wrapper around the strong-strong harness, which the arm runs through its benchmarks
 =#
 
 profile_mode = lowercase(get(ENV, "OCTOPUS_PROFILE_MODE", "cuda"))

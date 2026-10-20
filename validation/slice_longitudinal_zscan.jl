@@ -68,12 +68,26 @@ From the project root:
 julia --threads=4 --project=. validation/slice_longitudinal_zscan.jl
 ```
 
-Overrides: `OCTOPUS_ZSCAN_NPART`, `OCTOPUS_ZSCAN_GRID`, `OCTOPUS_ZSCAN_NSLICES`,
-`OCTOPUS_ZSCAN_DEPOSIT` (`CIC` or `TSC`). Non-`CIC` deposition writes to its own
-file stem so runs do not clobber each other:
+Overrides: `OCTOPUS_ZSCAN_NPART`, `OCTOPUS_ZSCAN_GRID`, `OCTOPUS_ZSCAN_NSLICES`
+(at least 3, the number of adjacent field slices the scan sweeps; a smaller
+value is refused by name -- it used to die with a raw `BoundsError`,
+comprehensive audit 2026-10-18 F-225), `OCTOPUS_ZSCAN_DEPOSIT` (`CIC` or `TSC`),
+and `OCTOPUS_ZSCAN_SOURCE_SLICES` (comma-separated slice indices in
+`1:nslices`; default: the centre slice and one off-centre slice derived from
+the slice count, `(4, 5)` for the default 7). Non-`CIC` deposition writes to
+its own file stem so runs do not clobber each other:
 
 ```bash
 OCTOPUS_ZSCAN_DEPOSIT=TSC julia --threads=4 --project=. validation/slice_longitudinal_zscan.jl
+```
+
+The theory note's section 10 tables (`docs/theory/slice_longitudinal_interpolation.md`)
+record source slices 4 and 6 of the default 7; slice 6 had no committed setting
+that reached it after the 2026-08-05 U24-8 fix derived `(4, 5)` from the slice
+count (comprehensive audit 2026-10-18, F-224). Those rows are reproduced with
+
+```bash
+OCTOPUS_ZSCAN_SOURCE_SLICES=4,6 julia --threads=4 --project=. validation/slice_longitudinal_zscan.jl
 ```
 
 Outputs (under `result/`)
@@ -119,15 +133,33 @@ config = (
     # OCTOPUS_ZSCAN_NSLICES override crash with a raw `BoundsError: attempt to
     # access 5-element Vector{Vector{Int64}} at index [6]` for any value below 6.
     source_slices   = let ns = _envi("OCTOPUS_ZSCAN_NSLICES", 7)
-        centre = max(1, (ns + 1) ÷ 2)
-        off = min(ns, centre + max(1, ns ÷ 4))
-        centre == off ? (centre,) : (centre, off)
+        if haskey(ENV, "OCTOPUS_ZSCAN_SOURCE_SLICES")
+            # The theory note's slice-6 rows are reached this way (header;
+            # comprehensive audit 2026-10-18, F-224).
+            text = ENV["OCTOPUS_ZSCAN_SOURCE_SLICES"]
+            chosen = [parse(Int, strip(s)) for s in split(text, ',')]
+            all(s -> 1 <= s <= ns, chosen) || error(
+                "OCTOPUS_ZSCAN_SOURCE_SLICES=$(repr(text)) must name slices in 1:$(ns) " *
+                "(OCTOPUS_ZSCAN_NSLICES=$(ns))")
+            Tuple(chosen)
+        else
+            centre = max(1, (ns + 1) ÷ 2)
+            off = min(ns, centre + max(1, ns ÷ 4))
+            centre == off ? (centre,) : (centre, off)
+        end
     end,
     scan_slices     = 3,         # number of adjacent field slices to sweep
     samples_per_slice = 61,      # z samples per field slice
     boundary_eps_frac = 1.0e-6,  # boundary probe offset, as a fraction of slice width
     seed            = 20260725,
 )
+# The scan sweeps `scan_slices` adjacent field slices, so a slice count below
+# that indexed past the boundary vector: `OCTOPUS_ZSCAN_NSLICES=2` died with
+# `BoundsError: attempt to access 3-element Vector{Float64} at index [4]`
+# (comprehensive audit 2026-10-18, F-225). Named here instead.
+config.nslices >= config.scan_slices || error(
+    "OCTOPUS_ZSCAN_NSLICES=$(config.nslices) must be at least $(config.scan_slices), the " *
+    "number of adjacent field slices the scan sweeps")
 
 result_dir = normpath(joinpath(@__DIR__, "..", "result"))
 mkpath(result_dir)

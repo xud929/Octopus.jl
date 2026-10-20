@@ -34,6 +34,20 @@ the prefix -- 2026-08-05_b audit, U24-12):
     <prefix>_moments.tsv                final six-dimensional beam moments
     <prefix>_coordinate_differences.tsv per-particle coordinate deltas against PIC
     <prefix>_field_microprofile.tsv     field samples along a line through the core
+
+On OCTOPUS_SPECTRAL_COMPARE_BACKEND=cuda the grid-free solver (`method =
+:grid_free`, CPU-only) and the field micro-profile are NOT run, and the
+summary says so (`free_grid = requested ... but NOT RUN`, `field_microprofile_rows
+= none`); the timing TSV then has three rows and the micro-profile TSV its header
+only. The summary used to print the request flag as if the arm had run
+(comprehensive audit 2026-10-18, F-227). The CUDA arm itself refuses to run
+without a functional device.
+
+The gate's CUDA arm runs the CUDA backend at a reduced size (the testset
+"CUDA-requiring validation scripts run in the gate's CUDA arm" in
+test/runtests.jl reads the line below; validation/README.md):
+
+GATE-CUDA-ARM: env OCTOPUS_SPECTRAL_COMPARE_BACKEND=cuda OCTOPUS_SPECTRAL_COMPARE_N=4000 OCTOPUS_SPECTRAL_COMPARE_TURNS=2 OCTOPUS_SPECTRAL_COMPARE_NSLICES=5 OCTOPUS_SPECTRAL_COMPARE_GRID=64,256 OCTOPUS_SPECTRAL_COMPARE_FREE_GRID=24,24 OCTOPUS_SPECTRAL_COMPARE_OUTPUT=@TMP@/spectral_comparison ; verdict "backend = cuda"
 =#
 
 if !isdefined(Main, :Octopus)
@@ -274,7 +288,18 @@ function main()
     println("  turns = ", TURNS)
     println("  slices = ", NSLICES)
     println("  grid = ", GRID)
-    println("  free_grid = ", INCLUDE_GRID_FREE ? string(FREE_GRID) : "disabled")
+    # What RAN, not what was requested: the grid-free arm and the field
+    # micro-profile are CPU-only (`method = :grid_free` has no CUDA route), so
+    # on the CUDA backend both are omitted -- and this line used to print the
+    # request flag, `free_grid = (24, 24)` beside a timing TSV with no
+    # grid-free row and a header-only micro-profile (comprehensive audit
+    # 2026-10-18, F-227 / U44-12).
+    grid_free_ran = any(r -> r.name === :spectral_grid_free, results)
+    println("  free_grid = ", grid_free_ran ? string(FREE_GRID) :
+            INCLUDE_GRID_FREE ? "requested $(FREE_GRID) but NOT RUN: method = :grid_free is CPU-only and the backend is $(BACKEND_NAME)" :
+            "disabled")
+    println("  field_microprofile_rows = ", backend === CPUThreadsBackend ? "the spectral solvers" :
+            "none (the micro-profile is CPU-only; header row written)")
     println("  timing = ", timing_path)
     println("  luminosity = ", lum_path)
     println("  moments = ", moment_path)

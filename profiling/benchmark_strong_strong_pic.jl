@@ -58,6 +58,28 @@ script reads (the list is checked against the read sites at load; the
 The tab-separated summary is written to
 `result/strong_strong_pic_benchmark.tsv`. Set
 `OCTOPUS_BENCH_PROFILE_FASTEST=0` to skip the final CUDA phase profile.
+
+Physics verdict, like with like (2026-10-20, fix batch 2 of the 2026-10-18
+comprehensive audit). Every row -- CPU and CUDA -- is judged against the FIRST
+CPU row with the SAME `green_cache` at `OCTOPUS_BENCH_PHYSICS_RTOL` (coordinate
+relative L2 and luminosity), and the summary's `reference` column names it. The
+slice-pair cache is a discretisation choice (cached Green grids expanded by the
+growth factor and reused across pairs), so judged against the `:none` CPU row
+the `solver_default` row read 1.76e-4 "inconsistent" on both backends
+identically (unit X, fix batch 2026-10-19) -- the cache's discretisation, not a
+kernel. That difference is now printed as INFO (CPU slice-pair against CPU
+`:none`) and not gated; a row inconsistent with its own-cache reference fails
+the run with exit 1 after the summary is written (`BENCH-PHYSICS ...
+verdict=FAIL`), where the column used to be written and read by nothing. The
+CPU rows run first (they are the references); a `OCTOPUS_BENCH_CPU_CONFIGS`
+selection that leaves a cache without its CPU reference is refused by name.
+
+The gate's CUDA arm runs this benchmark at a reduced size (the testset
+"CUDA-requiring validation scripts run in the gate's CUDA arm" in
+test/runtests.jl reads the line below; validation/README.md); its timings at
+that size are a run receipt, not a performance record:
+
+GATE-CUDA-ARM: env OCTOPUS_BENCH_N_MACRO=2000 OCTOPUS_BENCH_GRID=32 OCTOPUS_BENCH_SLICES=5 OCTOPUS_BENCH_TURNS=1 OCTOPUS_BENCH_REPEATS=1 OCTOPUS_BENCH_WARMUP_TURNS=1 OCTOPUS_BENCH_PROFILE_FASTEST=0 OCTOPUS_BENCH_RESULT_PATH=@TMP@/strong_strong_pic_benchmark.tsv ; verdict "BENCH-PHYSICS rows=14 consistent=14"
 =#
 
 if !isdefined(Main, :Octopus)
@@ -273,28 +295,9 @@ function run_configuration(cfg, backend, base1, base2, tempdir)
     end
     med = median_value(times)
     return (name=cfg.name, backend=backend === CUDABackend ? "cuda" : "cpu",
+            green_cache=cfg.green_cache,
             seconds=med, seconds_per_turn=med / TURNS, samples=times,
             luminosity=luminosity, beam1=final1, beam2=final2)
-end
-
-function print_result(result, reference=nothing)
-    if reference === nothing
-        max_abs = 0.0
-        rel = 0.0
-        lum_rel = 0.0
-    else
-        max1, rel1 = coordinate_error(result.beam1, reference.beam1)
-        max2, rel2 = coordinate_error(result.beam2, reference.beam2)
-        max_abs = max(max1, max2)
-        rel = max(rel1, rel2)
-        lum_rel = abs(result.luminosity - reference.luminosity) /
-                  max(abs(reference.luminosity), eps(Float64))
-    end
-    println(rpad(result.name, 38),
-            " median=", round(result.seconds_per_turn; digits=6), " s/turn",
-            " samples=", join(round.(result.samples; digits=4), ","),
-            " max_abs=", max_abs, " coord_rel=", rel, " lum_rel=", lum_rel)
-    return max_abs, rel, lum_rel
 end
 
 function errors_against(result, reference)
@@ -305,16 +308,54 @@ function errors_against(result, reference)
     return max(max1, max2), max(rel1, rel2), lum_rel
 end
 
-function write_summary(path, results, cpu_reference)
+# LIKE WITH LIKE (fix batch 2 of the 2026-10-18 comprehensive audit,
+# 2026-10-20): a row's physics reference is the FIRST CPU row with the same
+# `green_cache`. The slice-pair cache is a discretisation choice -- its cached
+# Green grids are expanded by `slice_pair_green_growth` and reused across pairs,
+# so they are not the `:none` route's per-pair grids -- and the verdict here is
+# about backend and schedule agreement at `PHYSICS_RTOL`, not about the cache's
+# own discretisation. Judged against the `:none` CPU row, `solver_default`
+# (`:slice_pair`) read 1.76e-4 "inconsistent" on BOTH backends identically
+# (unit X's observation, fix batch 2026-10-19): a verdict that cannot
+# distinguish a wrong kernel from a different discretisation. The cache's
+# discretisation difference is printed as INFO below, not gated. A selection
+# (OCTOPUS_BENCH_CPU_CONFIGS) that leaves a cache value without its CPU
+# reference is refused by name rather than judged against the wrong one.
+function reference_for(result, cpu_results)
+    index = findfirst(r -> r.green_cache === result.green_cache, cpu_results)
+    index === nothing && error(
+        "no CPU reference row with green_cache = $(repr(result.green_cache)) for " *
+        "$(result.name): include a CPU configuration with that cache in " *
+        "OCTOPUS_BENCH_CPU_CONFIGS (every row is judged against the CPU row of its own cache)")
+    return cpu_results[index]
+end
+
+function print_result(result, reference)
+    max_abs, rel, lum_rel = errors_against(result, reference)
+    println(rpad(result.name, 38),
+            " median=", round(result.seconds_per_turn; digits=6), " s/turn",
+            " samples=", join(round.(result.samples; digits=4), ","),
+            " max_abs=", max_abs, " coord_rel=", rel, " lum_rel=", lum_rel,
+            " vs ", reference.name)
+    return max_abs, rel, lum_rel
+end
+
+consistent_with(result, reference) = begin
+    _, rel, lum_rel = errors_against(result, reference)
+    rel <= PHYSICS_RTOL && lum_rel <= PHYSICS_RTOL
+end
+
+function write_summary(path, results, cpu_results)
     mkpath(dirname(path))
     open(path, "w") do io
-        println(io, "backend\tconfiguration\tseconds_per_turn\tmedian_seconds\tsamples_seconds\tmax_coordinate_abs_vs_cpu_reference\tcoordinate_rel_vs_cpu_reference\tluminosity_rel_vs_cpu_reference\tphysics_consistent\tluminosity")
+        println(io, "backend\tconfiguration\tgreen_cache\treference\tseconds_per_turn\tmedian_seconds\tsamples_seconds\tmax_coordinate_abs_vs_reference\tcoordinate_rel_vs_reference\tluminosity_rel_vs_reference\tphysics_consistent\tluminosity")
         for result in results
-            max_abs, rel, lum_rel = errors_against(result, cpu_reference)
+            reference = reference_for(result, cpu_results)
+            max_abs, rel, lum_rel = errors_against(result, reference)
             consistent = rel <= PHYSICS_RTOL && lum_rel <= PHYSICS_RTOL
-            println(io, join((result.backend, result.name, result.seconds_per_turn,
-                result.seconds, join(result.samples, ","), max_abs, rel, lum_rel,
-                consistent, result.luminosity), '\t'))
+            println(io, join((result.backend, result.name, result.green_cache, reference.name,
+                result.seconds_per_turn, result.seconds, join(result.samples, ","),
+                max_abs, rel, lum_rel, consistent, result.luminosity), '\t'))
         end
     end
 end
@@ -359,7 +400,19 @@ cuda_configs = selected_configs(CUDA_CONFIGS, "OCTOPUS_BENCH_CUDA_CONFIGS")
 cpu_configs = selected_configs(CPU_CONFIGS, "OCTOPUS_BENCH_CPU_CONFIGS")
 
 mktempdir() do tempdir
-    println("\nCUDA configurations")
+    # CPU first: its rows are the references every row is judged against.
+    println("\nCPU configurations (each row against the first CPU row of its own green_cache)")
+    cpu_results = Any[]
+    for cfg in cpu_configs
+        GC.gc(true)
+        result = run_configuration(cfg, CPUThreadsBackend, base1, base2, tempdir)
+        push!(cpu_results, result)
+        push!(all_results, result)
+        print_result(result, reference_for(result, cpu_results))
+    end
+    isempty(cpu_results) && error("OCTOPUS_BENCH_CPU_CONFIGS selected no CPU configuration; the CPU rows are the references")
+
+    println("\nCUDA configurations (each row against the CPU row of its own green_cache)")
     cuda_results = Any[]
     for cfg in cuda_configs
         GC.gc(true)
@@ -367,36 +420,32 @@ mktempdir() do tempdir
         result = run_configuration(cfg, CUDABackend, base1, base2, tempdir)
         push!(cuda_results, result)
         push!(all_results, result)
-        print_result(result, isempty(cuda_results) ? nothing : cuda_results[1])
+        print_result(result, reference_for(result, cpu_results))
     end
 
-    println("\nCPU configurations")
-    cpu_results = Any[]
-    for cfg in cpu_configs
-        GC.gc(true)
-        result = run_configuration(cfg, CPUThreadsBackend, base1, base2, tempdir)
-        push!(cpu_results, result)
-        push!(all_results, result)
-        print_result(result, isempty(cpu_results) ? nothing : cpu_results[1])
+    # The cache's own discretisation, reported and not gated: the slice-pair
+    # CPU reference against the :none CPU reference, when both exist.
+    let none = findfirst(r -> r.green_cache === :none, cpu_results),
+        pair = findfirst(r -> r.green_cache === :slice_pair, cpu_results)
+        if none !== nothing && pair !== nothing
+            _, rel, lum_rel = errors_against(cpu_results[pair], cpu_results[none])
+            println("\nINFO slice-pair cache discretisation (CPU ", cpu_results[pair].name,
+                    " vs CPU ", cpu_results[none].name, ", not gated): coord_rel=", rel,
+                    " lum_rel=", lum_rel)
+        end
     end
 
     raw_fastest_cuda = cuda_results[argmin(getproperty.(cuda_results, :seconds_per_turn))]
-    cpu_reference = cpu_results[1]
     raw_fastest_cpu = cpu_results[argmin(getproperty.(cpu_results, :seconds_per_turn))]
-    consistent_cpu = filter(cpu_results) do result
-        _, rel, lum_rel = errors_against(result, cpu_reference)
-        rel <= PHYSICS_RTOL && lum_rel <= PHYSICS_RTOL
-    end
+    consistent_cpu = filter(r -> consistent_with(r, reference_for(r, cpu_results)), cpu_results)
     fastest_cpu = consistent_cpu[argmin(getproperty.(consistent_cpu, :seconds_per_turn))]
-    consistent_cuda = filter(cuda_results) do result
-        _, rel, lum_rel = errors_against(result, cpu_reference)
-        rel <= PHYSICS_RTOL && lum_rel <= PHYSICS_RTOL
-    end
+    consistent_cuda = filter(r -> consistent_with(r, reference_for(r, cpu_results)), cuda_results)
     fastest_cuda = isempty(consistent_cuda) ? nothing :
         consistent_cuda[argmin(getproperty.(consistent_cuda, :seconds_per_turn))]
     comparison_cuda = fastest_cuda === nothing ? raw_fastest_cuda : fastest_cuda
     speedup = fastest_cpu.seconds_per_turn / comparison_cuda.seconds_per_turn
-    max_abs, coord_rel, lum_rel = errors_against(comparison_cuda, cpu_reference)
+    comparison_reference = reference_for(comparison_cuda, cpu_results)
+    max_abs, coord_rel, lum_rel = errors_against(comparison_cuda, comparison_reference)
 
     println("\nFastest configurations")
     println("  raw CUDA = ", raw_fastest_cuda.name, " at ", raw_fastest_cuda.seconds_per_turn, " s/turn")
@@ -408,12 +457,23 @@ mktempdir() do tempdir
     println("  raw CPU = ", raw_fastest_cpu.name, " at ", raw_fastest_cpu.seconds_per_turn, " s/turn")
     println("  validated CPU = ", fastest_cpu.name, " at ", fastest_cpu.seconds_per_turn, " s/turn")
     println("  compared CUDA speedup over CPU = ", speedup, "x")
-    println("  CPU/GPU max coordinate abs error = ", max_abs)
+    println("  CPU/GPU max coordinate abs error = ", max_abs, " (", comparison_cuda.name, " vs ", comparison_reference.name, ")")
     println("  CPU/GPU coordinate relative L2 error = ", coord_rel)
     println("  CPU/GPU luminosity relative error = ", lum_rel)
 
-    write_summary(RESULT_PATH, all_results, cpu_reference)
+    write_summary(RESULT_PATH, all_results, cpu_results)
     println("  summary = ", RESULT_PATH)
+    # The physics verdict is a VERDICT: a row inconsistent with the CPU row of
+    # its own cache is a backend or schedule disagreement, and the run says so
+    # with exit 1 after the summary is written. Before 2026-10-20 the column
+    # was written and nothing read it.
+    inconsistent = [r.backend * "/" * r.name for r in all_results
+                    if !consistent_with(r, reference_for(r, cpu_results))]
+    println("BENCH-PHYSICS rows=", length(all_results), " consistent=",
+            length(all_results) - length(inconsistent), " tolerance=", PHYSICS_RTOL,
+            " verdict=", isempty(inconsistent) ? "PASS" : "FAIL")
+    isempty(inconsistent) || error("physics_consistent is false for " * join(inconsistent, ", ") *
+                                   " against the CPU row of the same green_cache (tolerance $(PHYSICS_RTOL))")
 
     if PROFILE_FASTEST && fastest_cuda !== nothing
         println("\nCUDA phase profile for validated fastest configuration (one steady-state turn):")

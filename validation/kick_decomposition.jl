@@ -1,30 +1,57 @@
 #=
-Shot-noise floor versus systematic floor at flat (production 11:1) aspect
-ratio -- the flat-beam counterpart of Section 6.4 C of
-docs/history/poisson_solver_review_2026_07_24.md (which is round-beam only).
+Kick-error SYSTEMATIC versus FLUCTUATION decomposition of the PIC solver
+(referee round 13, R2 M3, of the 2026 Octopus paper).
 
-Method (identical to the review, Section 6.1): per-point transverse-kick
-error |K_num - K_exact| normalized by max|K_exact| over an 81x81 field grid
-spanning +-4 sigma; median reported. Reference is the exact Bassetti-Erskine
-kick (gaussian_beambeam_kick). Sources: deterministic 400x400 Gaussian
-quantile lattice (systematic floor, no shot noise) and randomly sampled
-Gaussians at 1e4 / 1e5 / 1e6 macroparticles.
+For a fixed macroparticle count, draw R independent source realizations of a
+Gaussian beam and, at each of the 81x81 field points spanning +-4 sigma, split
+the kick error against the exact Bassetti-Erskine kick into
 
-Solvers, "as used" (no fitted constants), production-faithful moment usage
-(sampled moments feed the soft-Gaussian solver and the hybrid's subtraction):
-  - soft-Gaussian     : Bassetti-Erskine of the measured sample moments
-  - PIC CIC 128^2     : integrated-log Green FFT (production config)
-  - hybrid CIC 64^2   : erf-integrated Gaussian subtraction + BE add-back
-  - spectral :grid    : round (127,127)/d16, flat (127,383)/d8 (recommended)
+    bias        = mean over realizations   (systematic: mesh discretization)
+    fluctuation = std  over realizations   (sampling noise reaching the kick)
 
-The round-beam case is run first as a correctness gate against the review's
-recorded numbers; the flat case (sig_x/sig_y = 11) is the new result.
+per mesh (64^2, 128^2, 256^2), per deposition kernel (CIC, TSC) and per aspect
+ratio (round, flat 11:1), on identical sources. The paper's noise-floor
+dichotomy is about the second quantity and had only ever measured the median
+of the total; this measures both. The sampling floor of the BIAS statistic is
+measured rather than assumed, by a sign-flip (Rademacher) bootstrap of the
+centred residuals (`bias_floor_bootstrap`; the uncentred bootstrap and the
+Rayleigh comparator `f sqrt(ln 2 / R)` are recorded beside it).
 
-Run from this folder (CPU, ~2-4 min after compilation):
+Reference model: the exact Bassetti-Erskine kick (`gaussian_beambeam_kick`).
+Solver: `PICPoissonSolver` on its production path (`_pic_interaction_grids`,
+`_pic_solve_field`, `_pic_interpolate_kick`), integrated-log Green kernel, CIC
+and TSC. Every metric is the median over field points, normalized by the peak
+exact kick. This is a CHARACTERIZATION: every number is printed and written to
+the TSV, nothing is gated.
+
+Inputs (environment; every OCTOPUS_KD_* name here is checked against the reads
+at load, both directions):
+
+    OCTOPUS_KD_R=100          source realizations per row
+    OCTOPUS_KD_NBOOT=200      bootstrap draws of the bias floor
+    OCTOPUS_KD_SEED=20260728  the ensemble seed; the default reproduces the
+                              archived draw bit for bit
+
+Output: `result/kick_decomposition_R<R>.tsv`, with `_seed<seed>` appended for
+a seed other than the default -- the archived file is
+`result/kick_decomposition_R100.tsv` (its rows: family, grid, deposit, n_macro,
+R, bias, fluctuation, total_median, bias_floor_bootstrap, bias_floor_rayleigh,
+bias_floor_bootstrap_uncentered), plus the printed table. The name used to
+carry a hard-coded `R100` whatever OCTOPUS_KD_R was, so a reduced run
+overwrote the archived name with non-R100 rows (comprehensive audit
+2026-10-18, F-227).
+
+Run from the project root (CPU; the archived R = 100, NBOOT = 200 takes about
+an hour; R = 4, NBOOT = 10 a few minutes):
 
     julia --startup-file=no --project=. validation/kick_decomposition.jl
 
-Output: data/flat_beam_noise_floor.tsv plus a printed table.
+History: this file was derived from validation/noise_floor_meshswap.jl and
+until 2026-10-20 carried that script's header (a four-solver table, a
+"round-beam correctness gate", a `data/` output) and a 160-line byte-identical
+dead copy of its body -- the soft-Gaussian, hybrid and spectral helpers, called
+by nothing here; only `pic_kicks` was live (comprehensive audit 2026-10-18,
+F-226).
 =#
 
 const OCTOPUS_ROOT = normpath(joinpath(@__DIR__, ".."))
@@ -35,67 +62,30 @@ if !isdefined(Main, :Octopus)
 end
 using .Octopus
 const O = Octopus
-using SpecialFunctions: erf, erfinv
-using FFTW
 using Random
 using Statistics
 using Printf
 
-# --- node-centered erf Gaussian deposition profile ---------------------------
-# (as in validation/gaussian_pic_field_validation.jl, docs Section 5)
-gval(x, mu, s) = exp(-(x - mu)^2 / (2s^2)) / (s * sqrt(2pi))
-m0(A, B, mu, s) = 0.5 * (erf((B - mu) / (s * sqrt(2))) - erf((A - mu) / (s * sqrt(2))))
-function m1(A, B, mu, s, xi)
-    d = mu - xi
-    return d * m0(A, B, mu, s) - s^2 * (gval(B, mu, s) - gval(A, mu, s))
-end
-function m2(A, B, mu, s, xi)
-    d = mu - xi
-    return (s^2 + d^2) * m0(A, B, mu, s) -
-           s^2 * ((B - mu) * gval(B, mu, s) - (A - mu) * gval(A, mu, s)) -
-           2 * d * s^2 * (gval(B, mu, s) - gval(A, mu, s))
-end
-function gauss_profile(nodes, h, mu, s, method::Symbol)
-    g = similar(nodes)
-    for (k, xi) in pairs(nodes)
-        if method === :CIC
-            g[k] = m0(xi - h, xi + h, mu, s) +
-                   (m1(xi - h, xi, mu, s, xi) - m1(xi, xi + h, mu, s, xi)) / h
-        else
-            Lw = (xi - 1.5h, xi - 0.5h); C = (xi - 0.5h, xi + 0.5h); Rw = (xi + 0.5h, xi + 1.5h)
-            g[k] = 0.75 * m0(C..., mu, s) - m2(C..., mu, s, xi) / h^2 +
-                   1.125 * (m0(Lw..., mu, s) + m0(Rw..., mu, s)) +
-                   1.5 * (m1(Lw..., mu, s, xi) - m1(Rw..., mu, s, xi)) / h +
-                   0.5 * (m2(Lw..., mu, s, xi) + m2(Rw..., mu, s, xi)) / h^2
-        end
-    end
-    return g
+# The header's OCTOPUS_KD_* list against what this file reads, so the two cannot
+# drift (the three names were read and undocumented until 2026-10-20,
+# comprehensive audit 2026-10-18 F-227; the pattern is
+# profiling/benchmark_strong_strong_pic.jl).
+let text = read(@__FILE__, String)
+    header, body = split(text, "=#"; limit=2)
+    named = Set(m.match for m in eachmatch(r"OCTOPUS_KD_[A-Z_]+", header))
+    read_names = Set(m.match for m in eachmatch(r"OCTOPUS_KD_[A-Z_]+", body))
+    named == read_names || error("header drift: named but never read " *
+        string(sort!(collect(setdiff(named, read_names)))) * "; read but not named " *
+        string(sort!(collect(setdiff(read_names, named)))))
 end
 
-# --- sources ------------------------------------------------------------------
-function quantile_grid(sigx, sigy, n)
-    u = ((1:n) .- 0.5) ./ n
-    q = sqrt(2.0) .* erfinv.(2.0 .* u .- 1.0)
-    x = Vector{Float64}(undef, n * n); y = similar(x)
-    k = 1
-    for yy in q, xx in q
-        x[k] = sigx * xx; y[k] = sigy * yy; k += 1
-    end
-    return x, y
-end
-
-sample_moments(v) = (m = mean(v); (m, sqrt(mean(abs2, v .- m))))
-
-# --- solver field evaluations ---------------------------------------------------
-function solve_from_charge(solver, charge, source_grid, field_grid, nx, ny)
-    green_fft = O._pic_green_fft(solver, Float64, source_grid, field_grid)
-    sp = Complex{Float64}.(charge)
-    fft!(sp); sp .*= green_fft; ifft!(sp)
-    phi = real.(sp[1:nx, 1:ny])
-    hx = source_grid.width / (nx - 1); hy = source_grid.height / (ny - 1)
-    Ex, Ey = O._pic_field(phi, hx, hy)
-    return phi, Ex, Ey
-end
+const KD_R = parse(Int, get(ENV, "OCTOPUS_KD_R", "100"))
+const KD_NBOOT = parse(Int, get(ENV, "OCTOPUS_KD_NBOOT", "200"))
+# Replicate ensembles must not overwrite the archived draw: only the default
+# seed writes the unsuffixed file.
+const KD_SEED = parse(Int, get(ENV, "OCTOPUS_KD_SEED", "20260728"))
+KD_R >= 2 || error("OCTOPUS_KD_R=$(KD_R): the fluctuation is a standard deviation over realizations and needs at least 2")
+KD_NBOOT >= 1 || error("OCTOPUS_KD_NBOOT=$(KD_NBOOT) must be at least 1")
 
 # PIC on its production path (grids, deposit, Green FFT, interpolation).
 function pic_kicks(sx, sy, xf, yf; grid, method)
@@ -115,79 +105,6 @@ function pic_kicks(sx, sy, xf, yf; grid, method)
     end
     return kx, ky
 end
-
-# Gaussian-subtracted hybrid: deposit, subtract the erf-integrated reference
-# Gaussian of the MEASURED moments, residual Green-FFT solve, add back the
-# exact BE kick of those measured moments (production-faithful control variate).
-function hybrid_kicks(sx, sy, xf, yf, mux, sigxm, muy, sigym; grid, method,
-                      margin_sigma = 5.0)
-    solver = PICPoissonSolver(; grid = (grid, grid), deposit_method = method,
-                              green_type = :integrated)
-    nx = ny = grid
-    ns = length(sx)
-    # Pad the source grid to +-margin_sigma so the erf-integrated reference
-    # Gaussian is not truncated (as in validation/gaussian_pic_field_validation.jl).
-    sxmin = min(minimum(sx), mux - margin_sigma * sigxm)
-    sxmax = max(maximum(sx), mux + margin_sigma * sigxm)
-    symin = min(minimum(sy), muy - margin_sigma * sigym)
-    symax = max(maximum(sy), muy + margin_sigma * sigym)
-    sgrid, fgrid = O._pic_interaction_grids(solver,
-        sxmin, sxmax, symin, symax,
-        min(minimum(xf), sxmin), max(maximum(xf), sxmax),
-        min(minimum(yf), symin), max(maximum(yf), symax))
-    hx = sgrid.width / (nx - 1); hy = sgrid.height / (ny - 1)
-    Q = zeros(2nx, 2ny)
-    O._pic_deposit!(Q, method, sx, sy, sgrid.x0, sgrid.y0, hx, hy, nx, ny)
-    xn = [sgrid.x0 + (i - 1) * hx for i in 1:nx]
-    yn = [sgrid.y0 + (j - 1) * hy for j in 1:ny]
-    gx = gauss_profile(xn, hx, mux, sigxm, method)
-    gy = gauss_profile(yn, hy, muy, sigym, method)
-    for j in 1:ny, i in 1:nx
-        Q[i, j] -= ns * gx[i] * gy[j]
-    end
-    phi, Ex, Ey = solve_from_charge(solver, Q, sgrid, fgrid, nx, ny)
-    kx = Vector{Float64}(undef, length(xf)); ky = similar(kx)
-    for k in eachindex(xf)
-        ex, ey, _ = O._pic_interpolate_kick(solver, fgrid, xf[k], yf[k],
-                                            phi, Ex, Ey, phi, Ex, Ey, 1.0, 0.0)
-        bkx, bky = gaussian_beambeam_kick(sigxm, sigym, xf[k] - mux, yf[k] - muy)
-        kx[k] = 2ex / ns + bkx; ky[k] = 2ey / ns + bky
-    end
-    return kx, ky
-end
-
-# Spectral sine-series :grid path, production box rule (square, sized to the
-# larger rms; _spectral_field_grid output is already in the BE convention).
-function spectral_kicks(sx, sy, xf, yf; N, dfac)
-    smax = max(sqrt(mean(abs2, sx .- mean(sx))), sqrt(mean(abs2, sy .- mean(sy))))
-    emax = max(maximum(abs, sx), maximum(abs, sy),
-               maximum(abs, xf), maximum(abs, yf))
-    L = max(dfac * smax, 1.05 * emax)
-    Ex, Ey = O._spectral_field_grid(sx, sy, xf, yf, L, L, N[1], N[2])
-    return Ex, Ey
-end
-
-# --- one case: medians of the four solvers -------------------------------------
-function case_medians(sx, sy, xf, yf, kex, key, gnorm;
-                      picgrid, hybgrid, spN, spdfac)
-    mux, sigxm = sample_moments(sx)
-    muy, sigym = sample_moments(sy)
-    med(kx, ky) = median([hypot(kx[k] - kex[k], ky[k] - key[k])
-                          for k in eachindex(kx)]) / gnorm
-    # soft-Gaussian: BE of the measured moments
-    gkx = similar(kex); gky = similar(key)
-    for k in eachindex(xf)
-        gkx[k], gky[k] = gaussian_beambeam_kick(sigxm, sigym,
-                                                xf[k] - mux, yf[k] - muy)
-    end
-    m_gauss = med(gkx, gky)
-    m_pic = med(pic_kicks(sx, sy, xf, yf; grid = picgrid, method = :CIC)...)
-    m_hyb = med(hybrid_kicks(sx, sy, xf, yf, mux, sigxm, muy, sigym;
-                             grid = hybgrid, method = :CIC)...)
-    m_spec = med(spectral_kicks(sx, sy, xf, yf; N = spN, dfac = spdfac)...)
-    return (m_gauss, m_pic, m_hyb, m_spec)
-end
-
 
 # ---------------------------------------------------------------------------
 # Kick-error SYSTEMATIC vs FLUCTUATION decomposition (referee round 13, R2 M3).
@@ -238,7 +155,7 @@ function decompose(sigx, sigy; grid, method, n, R, seed)
     # large -- exactly the rows where the floor matters least, but it biases the
     # comparison.  Centering first removes the systematic exactly, leaving a
     # pure fluctuation null.
-    nboot = parse(Int, get(ENV, "OCTOPUS_KD_NBOOT", "200"))
+    nboot = KD_NBOOT
     brng = MersenneTwister(seed + 991)
     mx = [sum(@view ex[k, :]) / R for k in eachindex(xf)]
     my = [sum(@view ey[k, :]) / R for k in eachindex(xf)]
@@ -265,22 +182,20 @@ function decompose(sigx, sigy; grid, method, n, R, seed)
     return b, f, median(tot) / gnorm, floor_boot, floor_rayleigh, floor_boot_uncentered
 end
 
-# Replicate ensembles must not overwrite the archived draw: only the default
-# seed writes kick_decomposition_R100.tsv.
-const KD_SEED = parse(Int, get(ENV, "OCTOPUS_KD_SEED", "20260728"))
+# The file name says what the rows hold: the realization count, and the seed
+# when it is not the archived one (header).
 const OUT2 = joinpath(@__DIR__, "..", "result",
-                      KD_SEED == 20260728 ? "kick_decomposition_R100.tsv" :
-                      "kick_decomposition_R100_seed$(KD_SEED).tsv")
+                      "kick_decomposition_R$(KD_R)" *
+                      (KD_SEED == 20260728 ? "" : "_seed$(KD_SEED)") * ".tsv")
 open(OUT2, "w") do io
     println(io, "# Kick-error systematic/fluctuation split, 81x81 field grid +-4 sigma,")
     println(io, "# median over field points, normalized by peak exact kick.")
-    println(io, "# R independent source realizations per row.")
+    println(io, "# R independent source realizations per row (R = $(KD_R), seed = $(KD_SEED), bootstrap draws = $(KD_NBOOT)).")
     println(io, "family\tgrid\tdeposit\tn_macro\tR\tbias\tfluctuation\ttotal_median\tbias_floor_bootstrap\tbias_floor_rayleigh\tbias_floor_bootstrap_uncentered")
     for (fam, sx, sy) in (("round", 2.0e-3, 2.0e-3), ("flat11", 2.0e-3, 2.0e-3 / 11))
         for grid in (64, 128, 256)
             for method in (:CIC, :TSC)
                 n = 100_000
-                R = parse(Int, get(ENV, "OCTOPUS_KD_R", "100"))
                 # The ensemble seed was hardcoded, so every archived row came
                 # from ONE source-realization draw and carried no uncertainty.
                 # Referee replication showed that draw is not representative:
@@ -289,10 +204,10 @@ open(OUT2, "w") do io
                 # spread across ensembles can be measured and quoted; the
                 # default reproduces the archived file bit-for-bit.
                 b, f, t, fl, flr, flu = decompose(sx, sy; grid = grid, method = method,
-                                                  n = n, R = R, seed = KD_SEED)
+                                                  n = n, R = KD_R, seed = KD_SEED)
                 @printf("%-7s %4d^2 %s n=%.0e  bias=%.3e  fluct=%.3e  total=%.3e\n",
                         fam, grid, method, n, b, f, t)
-                println(io, fam, "\t", grid, "\t", method, "\t", n, "\t", R,
+                println(io, fam, "\t", grid, "\t", method, "\t", n, "\t", KD_R,
                         "\t", b, "\t", f, "\t", t, "\t", fl, "\t", flr, "\t", flu)
                 flush(io)
             end

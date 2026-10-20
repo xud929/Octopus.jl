@@ -10,6 +10,13 @@ coordinates.
 Run from the project root:
 
     julia --threads=4 --project=. validation/tracking_context_policy_consistency.jl
+
+OCTOPUS_REQUIRE_GPU_CONTRACT=1 makes a missing device fail the run (U25-10).
+The gate's CUDA arm runs this script with the GPU legs required (the testset
+"CUDA-requiring validation scripts run in the gate's CUDA arm" in
+test/runtests.jl reads the line below; validation/README.md):
+
+GATE-CUDA-ARM: env OCTOPUS_REQUIRE_GPU_CONTRACT=1 ; verdict "tracking context/policy consistency validation passed"
 =#
 
 if !isdefined(Main, :Octopus)

@@ -7,7 +7,9 @@ data/bb3d_decks/eicdamp/ of the paper repository
 (https://github.com/xud929/2026_octopus_cpc).  10 GeV electrons against 275 GeV protons at the
 production constants of Sec. 6.1, 15 normal-quantile slices, 128^2 mesh,
 1e5 macroparticles per beam (matching BeamBeam3D), 8192 turns, electron
-radiation damping shortened 4000 -> 400 turns.
+radiation damping shortened 4000 -> 400 turns (`radiation_damping_turns =
+(400, 400, 200)` in the `input` block below -- the one place the damping
+lives; the MESHSCAN receipt prints it from there).
 
 Emittance vs turn is read from the run artifact's moment groups
 (`MomentOutput(path; name = "electron"/"proton")`), NOT by
@@ -25,137 +27,72 @@ Run:
 BeamBeam3D side: the eicdamp deck, `mpirun -n 2 ./xmain` (use the system
 OpenMPI, not a conda one).  Emittance is column 7 of fort.24/25 (beam 1
 x/y) and fort.34/35 (beam 2 x/y).
-=#
 
-#=
-Strong-strong tracking example with two live beams.
+This file is an adapted copy of test/examples/strong_strong_tracking.jl (the
+head-on EIC case with its own `input` block and the single multi-turn
+`execute!`); it carried that harness's whole header verbatim under this one
+until 2026-10-20 (the harness's run command, its `test/result/` outputs; the
+header described another file -- comprehensive audit 2026-10-18, F-239), and it
+did not receive the harness's later fixes: `env_bool`, one boolean grammar for
+every switch (`OCTOPUS_USE_GPU=true` ran on the CPU here), is now its too.
 
-This is the CONFIGURABLE development/testing harness: it exposes the solver
-A/B selection, CUDA launch tuning, per-phase timing, and diagnostic/output
-toggles through OCTOPUS_* environment variables, for use while developing the
-solvers. For the clean, production-shaped example meant as a user guideline
-(a small edit-these config block, no environment variables), see
-examples/strong_strong_tracking.jl.
+Every environment variable this file reads, with its default (checked against
+the body's reads at load, both directions; the OCTOPUS_* switches are the
+strong-strong harness's and keep its meanings, see its header):
 
-Run from the Octopus project root:
+  run size and output
+    OCTOPUS_TURNS (2), OCTOPUS_N_MACRO (200 per beam) or OCTOPUS_N_MACRO_ELE /
+    OCTOPUS_N_MACRO_PRO, EIC_TAG (pic_hcc; the artifact is
+    result/<EIC_TAG>.h5), EIC_MOMENT_STEP (1), EIC_EMIT_OUT
+    (result/eic_emit_octopus_matched.tsv), SST_SEED (1), SST_GRID (128, the
+    PIC mesh per side)
+  device
+    OCTOPUS_USE_GPU (0), OCTOPUS_CUDA_DEVICE, OCTOPUS_CUDA_THREADS (256),
+    OCTOPUS_CUDA_BLOCKS (auto), OCTOPUS_CPU_THREADS (auto)
+  physics switches
+    OCTOPUS_WEAK_STRONG_LIMIT (0), OCTOPUS_ELECTRON_ENERGY_GEV,
+    OCTOPUS_PROTON_ENERGY_GEV, OCTOPUS_DISABLE_COLLISION (0)
+  solver
+    OCTOPUS_SOLVER (pic), OCTOPUS_SPECTRAL_GRID (127,383),
+    OCTOPUS_SPECTRAL_DOMAIN_FACTOR (8.0), OCTOPUS_SPECTRAL_FIELD_PRECISION
+    (double), OCTOPUS_GPIC_GRID (64,64), OCTOPUS_PIC_GREEN_CACHE (slice_pair),
+    OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO and
+    OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_MIN_RATIO (0.50),
+    OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH and
+    OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_GROWTH (0.25),
+    OCTOPUS_PIC_LONGITUDINAL_KICK (1), OCTOPUS_PIC_BATCH_MODE (wavefront),
+    OCTOPUS_CUDA_PIC_ASYNC (1), OCTOPUS_CUDA_PIC_BATCH_FFT (1),
+    OCTOPUS_CUDA_PIC_WAVEFRONT_FFT (1), OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT (1),
+    OCTOPUS_PIC_LUMINOSITY_EVERY (1), OCTOPUS_PIC_LUMINOSITY_GRID,
+    OCTOPUS_PIC_LUMINOSITY_DEPOSIT_METHOD (INHERIT),
+    OCTOPUS_CUDA_PIC_GATHER_SCATTER_THREADS, OCTOPUS_CUDA_PIC_DEPOSITION_THREADS,
+    OCTOPUS_CUDA_PIC_KICK_THREADS, OCTOPUS_CUDA_PIC_FIELD_THREADS,
+    OCTOPUS_CUDA_PIC_SPECTRAL_THREADS, OCTOPUS_CUDA_PIC_GREEN_THREADS,
+    OCTOPUS_CUDA_PIC_LUMINOSITY_THREADS
+  diagnostics and output switches
+    OCTOPUS_RECORD_TURN_TIMES (0), OCTOPUS_TURN_TIMING_PATH,
+    OCTOPUS_CUDA_MEMORY_LOG_EVERY (0), OCTOPUS_CUDA_PIC_TIMING (0),
+    OCTOPUS_CUDA_PIC_TIMING_DETAIL (0), OCTOPUS_PIC_CACHE_STATS (0),
+    OCTOPUS_CUDA_NVTX (0), OCTOPUS_DISABLE_MOMENTS (0),
+    OCTOPUS_DISABLE_LUMINOSITY_OUTPUT (0), OCTOPUS_MOMENT_CAPACITY (100)
 
-    julia --project=. test/examples/strong_strong_tracking.jl
+The MESHSCAN receipt compares the emittances AFTER the run with the ones
+BEFORE it (`_ele_i`, `_pro_i`, the turn-0 row of the TSV); until 2026-10-20
+both sides were evaluated on the final state, so its four growth percentages
+were 0.0 by construction (comprehensive audit 2026-10-18, F-237), and its
+`damp=` field printed an environment variable nothing read. The moment schedule
+runs for the whole run (no `stop`); it used to stop at a hard-coded 50000
+turns under a configurable run length (F-239).
 
-This script is direct Julia construction of a realistic crab-crossing
-electron-proton strong-strong case. The default run is intentionally small for
-interactive testing. Use environment variables for larger runs:
+Outputs: result/<EIC_TAG>.h5 (the run artifact: /luminosity/ip,
+/moments/electron, /moments/proton, /execution) and the two-row emittance TSV
+at EIC_EMIT_OUT.
 
-    OCTOPUS_TURNS=100 OCTOPUS_N_MACRO_ELE=2560000 OCTOPUS_N_MACRO_PRO=1024000 julia --project=. test/examples/strong_strong_tracking.jl
+The gate's CUDA arm runs this benchmark at a reduced size (the testset
+"CUDA-requiring validation scripts run in the gate's CUDA arm" in
+test/runtests.jl reads the line below; validation/README.md):
 
-Use CUDA for beam construction and tracking:
-
-    OCTOPUS_USE_GPU=1 julia --project=. test/examples/strong_strong_tracking.jl
-
-Select a CUDA device explicitly:
-
-    OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_DEVICE=1 julia --project=. test/examples/strong_strong_tracking.jl
-
-This example uses the PIC solver by default. Select the Poisson solver with
-OCTOPUS_SOLVER (pic | spectral | gaussian | gaussian_pic); an unrecognized name
-is an error. The spectral grid/box can be overridden with
-OCTOPUS_SPECTRAL_GRID="nx,ny" and OCTOPUS_SPECTRAL_DOMAIN_FACTOR for A/B timing:
-
-    OCTOPUS_USE_GPU=1 OCTOPUS_SOLVER=spectral OCTOPUS_N_MACRO_ELE=2560000 OCTOPUS_N_MACRO_PRO=1024000 OCTOPUS_RECORD_TURN_TIMES=1 julia --project=. test/examples/strong_strong_tracking.jl
-
-The soft-Gaussian solver is also available as a commented alternative below the
-solver construction.
-
-Run the high-energy weak-strong limiting case by making the electron beam
-effectively rigid. Energies are supplied in GeV for these convenience knobs:
-
-    OCTOPUS_WEAK_STRONG_LIMIT=1 julia --project=. test/examples/strong_strong_tracking.jl
-    OCTOPUS_ELECTRON_ENERGY_GEV=1e100 julia --project=. test/examples/strong_strong_tracking.jl
-
-Disable the beam-beam collision while retaining both complete ring lines:
-
-    OCTOPUS_DISABLE_COLLISION=1 julia --project=. test/examples/strong_strong_tracking.jl
-
-Control the PIC longitudinal potential-difference kick. It is enabled by default:
-
-    OCTOPUS_PIC_LONGITUDINAL_KICK=1 julia --project=. test/examples/strong_strong_tracking.jl
-    OCTOPUS_PIC_LONGITUDINAL_KICK=0 julia --project=. test/examples/strong_strong_tracking.jl
-
-Select the slice-pair schedule -- every solver's `batch_mode`, read on CPU and CUDA
-(the spectral 6D loop reads it on CPU; its CUDA route has one schedule and says so):
-
-    OCTOPUS_PIC_BATCH_MODE=sequential julia --project=. test/examples/strong_strong_tracking.jl
-    OCTOPUS_PIC_BATCH_MODE=wavefront julia --project=. test/examples/strong_strong_tracking.jl
-
-Compute PIC luminosity every N turns. Use 0 to disable luminosity computation:
-
-    OCTOPUS_PIC_LUMINOSITY_EVERY=10 julia --project=. test/examples/strong_strong_tracking.jl
-
-Select an independent luminosity grid or deposition method. `INHERIT` (the
-default) follows the force `deposit_method`; `CIC` and `TSC` override it:
-
-    OCTOPUS_PIC_LUMINOSITY_GRID=128,128 OCTOPUS_PIC_LUMINOSITY_DEPOSIT_METHOD=TSC julia --project=. test/examples/strong_strong_tracking.jl
-
-The persistent slice-pair Green cache is the default for CPU and CUDA task
-execution. Disable it to run an uncached reference comparison:
-
-    OCTOPUS_PIC_GREEN_CACHE=slice_pair julia --project=. test/examples/strong_strong_tracking.jl
-    OCTOPUS_PIC_GREEN_CACHE=none julia --project=. test/examples/strong_strong_tracking.jl
-
-Tune the slice-pair Green cache. `GROWTH=0.20` builds cached
-grids 1.20 times larger than the current request:
-
-    OCTOPUS_PIC_GREEN_CACHE=slice_pair OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO=0.50 OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH=0.20 julia --project=. test/examples/strong_strong_tracking.jl
-
-Disable CUDA PIC asynchronous field solves for comparison:
-
-    OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_PIC_ASYNC=0 julia --project=. test/examples/strong_strong_tracking.jl
-
-Disable CUDA PIC batched FFT field solves for comparison:
-
-    OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_PIC_BATCH_FFT=0 julia --project=. test/examples/strong_strong_tracking.jl
-
-Disable CUDA PIC wavefront-level batched FFTs for comparison:
-
-    OCTOPUS_USE_GPU=1 OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_WAVEFRONT_FFT=0 julia --project=. test/examples/strong_strong_tracking.jl
-
-Print statistics for the default slice-pair Green cache:
-
-    OCTOPUS_USE_GPU=1 OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_PIC_GREEN_CACHE=slice_pair OCTOPUS_PIC_CACHE_STATS=1 julia --project=. test/examples/strong_strong_tracking.jl
-
-Test the indexed CUDA wavefront path. It skips compact gather/scatter and
-deposits/kicks through slice index vectors while leaving canonical particle
-order unchanged:
-
-    OCTOPUS_USE_GPU=1 OCTOPUS_PIC_BATCH_MODE=wavefront OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT=1 julia --project=. test/examples/strong_strong_tracking.jl
-
-Log CUDA memory every N turns:
-
-    OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_MEMORY_LOG_EVERY=10 julia --project=. test/examples/strong_strong_tracking.jl
-
-Print CUDA PIC phase timings:
-
-    OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_PIC_TIMING=1 julia --project=. test/examples/strong_strong_tracking.jl
-
-Record synchronized complete-turn timings and optionally write them as TSV:
-
-    OCTOPUS_USE_GPU=1 OCTOPUS_RECORD_TURN_TIMES=1 OCTOPUS_TURN_TIMING_PATH=result/pic_turn_times.tsv julia --project=. test/examples/strong_strong_tracking.jl
-
-Benchmark fused CUDA launch geometry through the public policy interface. PIC
-family overrides are optional and otherwise inherit `CUDA_THREADS`:
-
-    OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_THREADS=256 OCTOPUS_CUDA_BLOCKS=auto julia --project=. test/examples/strong_strong_tracking.jl
-    OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_PIC_DEPOSITION_THREADS=128 julia --project=. test/examples/strong_strong_tracking.jl
-
-Print additive field subphase timings. This disables async PIC field solves for
-diagnosis:
-
-    OCTOPUS_USE_GPU=1 OCTOPUS_CUDA_PIC_TIMING=1 OCTOPUS_CUDA_PIC_TIMING_DETAIL=1 julia --project=. test/examples/strong_strong_tracking.jl
-
-Output is written to `test/result/` (this harness keeps its outputs beside the
-tests; the clean `examples/` counterpart writes to the repo-root `result/`):
-
-- `test/result/pic_hcc.h5` : the run artifact -- /luminosity/ip,
-  /moments/electron, /moments/proton, /execution
+GATE-CUDA-ARM: env OCTOPUS_USE_GPU=1 OCTOPUS_TURNS=2 OCTOPUS_N_MACRO=2000 EIC_TAG=cuda_arm_gate EIC_EMIT_OUT=@TMP@/eic_emit.tsv ; verdict "MESHSCAN " ; outputs result/cuda_arm_gate.h5
 =#
 
 if !isdefined(Main, :Octopus)
@@ -163,11 +100,41 @@ if !isdefined(Main, :Octopus)
 end
 using .Octopus
 
+"""
+Parse a boolean switch, rejecting anything it does not recognise: the
+strong-strong harness's one grammar (its U21-15/U21-16 fix), which this copy
+did not receive until 2026-10-20 -- `OCTOPUS_USE_GPU` was read as `== "1"`
+beside the `in ("1", "true", ...)` grammar of every other switch, so
+`OCTOPUS_USE_GPU=true` ran on the CPU (comprehensive audit 2026-10-18, F-239).
+"""
+function env_bool(key::AbstractString, default::Bool)
+    raw = get(ENV, key, default ? "1" : "0")
+    lowered = lowercase(strip(raw))
+    lowered in ("1", "true", "yes", "on") && return true
+    lowered in ("0", "false", "no", "off") && return false
+    error("$(key)=$(repr(raw)) is not a boolean; use 1/0, true/false, yes/no or on/off")
+end
+
+# The header's variable list against what this file reads, so the two cannot
+# drift (the pattern of profiling/benchmark_strong_strong_pic.jl; this file's
+# header described another file until 2026-10-20, F-239). The header is the
+# text above the first `=#`; a name is read when the body spells it as a string
+# literal. A glob leaves a token ending in `_`, which is ignored.
+let text = read(@__FILE__, String)
+    header, body = split(text, "=#"; limit=2)
+    names(s, pattern) = Set(String(m.captures[1]) for m in eachmatch(pattern, s)
+                            if !endswith(m.captures[1], "_"))
+    named = names(header, r"\b((?:OCTOPUS|EIC|SST)_[A-Z0-9_]+)")
+    read_names = names(body, r"\"((?:OCTOPUS|EIC|SST)_[A-Z0-9_]+)\"")
+    named == read_names || error("header drift: named but never read " *
+        string(sort!(collect(setdiff(named, read_names)))) * "; read but not named " *
+        string(sort!(collect(setdiff(read_names, named)))))
+end
+
 input = (
     case_name = "pic_hcc",
     result_dir = joinpath(@__DIR__, "..", "result"),
     seed = parse(Int, get(ENV, "SST_SEED", "1")),
-    total_turns = 50000,
     default_demo_macroparticles = 200,
     crossing_angle = 0.0,
 
@@ -241,7 +208,7 @@ n_macro_ele = parse(Int, get(ENV, "OCTOPUS_N_MACRO_ELE",
 n_macro_pro = parse(Int, get(ENV, "OCTOPUS_N_MACRO_PRO",
                              isempty(common_n_macro) ? string(input.default_demo_macroparticles) : common_n_macro))
 
-use_gpu = get(ENV, "OCTOPUS_USE_GPU", "0") == "1"
+use_gpu = env_bool("OCTOPUS_USE_GPU", false)
 if use_gpu
     import CUDA
     CUDA.functional(false) || error("OCTOPUS_USE_GPU=1 requested, but CUDA.functional(false) is false.")
@@ -263,8 +230,7 @@ set_global_rng!(seed = input.seed, method = :philox)
 
 ele = input.electron
 pro = input.proton
-weak_strong_limit = get(ENV, "OCTOPUS_WEAK_STRONG_LIMIT", "0") in
-                    ("1", "true", "TRUE", "yes", "YES")
+weak_strong_limit = env_bool("OCTOPUS_WEAK_STRONG_LIMIT", false)
 electron_energy = if haskey(ENV, "OCTOPUS_ELECTRON_ENERGY_GEV")
     parse(Float64, ENV["OCTOPUS_ELECTRON_ENERGY_GEV"]) * 1.0e9
 elseif weak_strong_limit
@@ -318,12 +284,12 @@ pic_slice_pair_green_min_ratio = parse(Float64, get(ENV, "OCTOPUS_PIC_SLICE_PAIR
 pic_slice_pair_green_growth = parse(Float64, get(ENV, "OCTOPUS_PIC_SLICE_PAIR_GREEN_GROWTH",
                                                  get(ENV, "OCTOPUS_CUDA_PIC_SLICE_PAIR_GREEN_GROWTH",
                                                      string(input.solver.pic_slice_pair_green_growth))))
-pic_longitudinal_kick = get(ENV, "OCTOPUS_PIC_LONGITUDINAL_KICK", "1") in ("1", "true", "TRUE", "yes", "YES")
+pic_longitudinal_kick = env_bool("OCTOPUS_PIC_LONGITUDINAL_KICK", true)
 pic_batch_mode = Symbol(lowercase(get(ENV, "OCTOPUS_PIC_BATCH_MODE", "wavefront")))
-cuda_pic_async = get(ENV, "OCTOPUS_CUDA_PIC_ASYNC", "1") in ("1", "true", "TRUE", "yes", "YES")
-cuda_pic_batch_fft = get(ENV, "OCTOPUS_CUDA_PIC_BATCH_FFT", "1") in ("1", "true", "TRUE", "yes", "YES")
-cuda_pic_wavefront_fft = get(ENV, "OCTOPUS_CUDA_PIC_WAVEFRONT_FFT", "1") in ("1", "true", "TRUE", "yes", "YES")
-cuda_pic_indexed_wavefront = get(ENV, "OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT", "1") in ("1", "true", "TRUE", "yes", "YES")
+cuda_pic_async = env_bool("OCTOPUS_CUDA_PIC_ASYNC", true)
+cuda_pic_batch_fft = env_bool("OCTOPUS_CUDA_PIC_BATCH_FFT", true)
+cuda_pic_wavefront_fft = env_bool("OCTOPUS_CUDA_PIC_WAVEFRONT_FFT", true)
+cuda_pic_indexed_wavefront = env_bool("OCTOPUS_CUDA_PIC_INDEXED_WAVEFRONT", true)
 pic_luminosity_every = parse(Int, get(ENV, "OCTOPUS_PIC_LUMINOSITY_EVERY", "1"))
 pic_luminosity_grid = if haskey(ENV, "OCTOPUS_PIC_LUMINOSITY_GRID")
     values = parse.(Int, split(ENV["OCTOPUS_PIC_LUMINOSITY_GRID"], ','))
@@ -343,26 +309,18 @@ pic_luminosity_schedule =
     pic_luminosity_every == 0 ? AtTurns(Int[]) :
     pic_luminosity_every == 1 ? nothing :
     EveryNSteps(step = pic_luminosity_every)
-record_turn_times = get(ENV, "OCTOPUS_RECORD_TURN_TIMES", "0") in
-                    ("1", "true", "TRUE", "yes", "YES")
+record_turn_times = env_bool("OCTOPUS_RECORD_TURN_TIMES", false)
 diagnostics = StrongStrongDiagnostics(;
     record_turn_times,
     memory_log_every = parse(Int, get(ENV, "OCTOPUS_CUDA_MEMORY_LOG_EVERY", "0")),
-    pic_timing = get(ENV, "OCTOPUS_CUDA_PIC_TIMING", "0") in
-                 ("1", "true", "TRUE", "yes", "YES"),
-    pic_timing_detail = get(ENV, "OCTOPUS_CUDA_PIC_TIMING_DETAIL", "0") in
-                        ("1", "true", "TRUE", "yes", "YES"),
-    cache_stats = get(ENV, "OCTOPUS_PIC_CACHE_STATS", "0") in
-                  ("1", "true", "TRUE", "yes", "YES"),
-    nvtx = get(ENV, "OCTOPUS_CUDA_NVTX", "0") in
-           ("1", "true", "TRUE", "yes", "YES"),
+    pic_timing = env_bool("OCTOPUS_CUDA_PIC_TIMING", false),
+    pic_timing_detail = env_bool("OCTOPUS_CUDA_PIC_TIMING_DETAIL", false),
+    cache_stats = env_bool("OCTOPUS_PIC_CACHE_STATS", false),
+    nvtx = env_bool("OCTOPUS_CUDA_NVTX", false),
 )
-disable_moments = get(ENV, "OCTOPUS_DISABLE_MOMENTS", "0") in
-                  ("1", "true", "TRUE", "yes", "YES")
-disable_luminosity_output = get(ENV, "OCTOPUS_DISABLE_LUMINOSITY_OUTPUT", "0") in
-                            ("1", "true", "TRUE", "yes", "YES")
-disable_collision = get(ENV, "OCTOPUS_DISABLE_COLLISION", "0") in
-                    ("1", "true", "TRUE", "yes", "YES")
+disable_moments = env_bool("OCTOPUS_DISABLE_MOMENTS", false)
+disable_luminosity_output = env_bool("OCTOPUS_DISABLE_LUMINOSITY_OUTPUT", false)
+disable_collision = env_bool("OCTOPUS_DISABLE_COLLISION", false)
 # OCTOPUS_MOMENT_CAPACITY sets the ARTIFACT capacity; 0 keeps its harness
 # meaning of "disable moment output" (the library capacity=0 spelling
 # retired with the per-observer capacity, 2026-08-18).
@@ -598,9 +556,12 @@ collision_elements = disable_collision ? () : (ip,)
 
 mkpath(input.result_dir)
 artifact_path = joinpath(input.result_dir, input.output.artifact_file)
+# No `stop`: the schedule covers the whole run, whatever OCTOPUS_TURNS says. It
+# used to stop at a hard-coded `total_turns = 50000` while the run length came
+# from the environment, so a longer run silently stopped recording moments
+# (comprehensive audit 2026-10-18, F-239).
 moment_schedule = EveryNSteps(;
     start = input.output.moment_start,
-    stop = input.total_turns,
     step = input.output.moment_step,
 )
 electron_observers = disable_moments ? () : (
@@ -690,15 +651,20 @@ open(emit_path, "w") do io
     e = _emit(beam_ele); p = _emit(beam_pro)
     println(io, turns, "\t", e[1], "\t", e[2], "\t", p[1], "\t", p[2])
 end
-_e0 = _emit(beam_pro); _ele0 = _emit(beam_ele)
+# Two states, not one: the "before" is the pre-run emittance (`_pro_i`,
+# `_ele_i`, the TSV's turn-0 row), the "after" the final state. Both sides
+# used to be evaluated after `execute!`, so every percentage was 0.0 by
+# construction whatever the run did (comprehensive audit 2026-10-18, F-237);
+# `damp=` printed `SST_DAMP`, a variable nothing read, and now prints the
+# damping turns the electron line was built with.
 _e1 = _emit(beam_pro)
 _ele1 = _emit(beam_ele)
-println("MESHSCAN seed=", input.seed, " grid=", get(ENV, "SST_GRID", "128"),
-        " damp=", get(ENV, "SST_DAMP", "100.0"), " turns=", turns,
-        " pro_ex_growth_pct=", 100*(_e1[1]/_e0[1] - 1),
-        " pro_ey_growth_pct=", 100*(_e1[2]/_e0[2] - 1),
-        " ele_ex_growth_pct=", 100*(_ele1[1]/_ele0[1] - 1),
-        " ele_ey_growth_pct=", 100*(_ele1[2]/_ele0[2] - 1))
+println("MESHSCAN seed=", input.seed, " grid=", input.solver.pic_grid[1],
+        " damp=", ele.radiation_damping_turns, " turns=", turns,
+        " pro_ex_growth_pct=", 100*(_e1[1]/_pro_i[1] - 1),
+        " pro_ey_growth_pct=", 100*(_e1[2]/_pro_i[2] - 1),
+        " ele_ex_growth_pct=", 100*(_ele1[1]/_ele_i[1] - 1),
+        " ele_ey_growth_pct=", 100*(_ele1[2]/_ele_i[2] - 1))
 
 if record_turn_times
     timings = turn_timings(task)

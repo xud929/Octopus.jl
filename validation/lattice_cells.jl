@@ -46,6 +46,22 @@ Environment
     OCTOPUS_LATTICE_N       particles for the backend comparison (default 4096)
     OCTOPUS_LATTICE_TURNS   turns for the backend comparison (default 4)
     OCTOPUS_LATTICE_LONG    turns for the invariant-drift check (default 2000)
+    OCTOPUS_REQUIRE_GPU_CONTRACT=1
+                            the CPU/CUDA leg must RUN: a skipped CUDA contract
+                            (no device) fails the run instead of printing
+                            `cpu/cuda skipped` and closing with
+                            "backend-consistent" (which it did until
+                            2026-10-20; comprehensive audit 2026-10-18,
+                            F-229). Without it the skip stays visible in the
+                            table and the TSV, and the closing line says
+                            which legs ran. The one parser is
+                            `Octopus._require_gpu_contract()`.
+
+The gate's CUDA arm runs this script with the leg required (the testset
+"CUDA-requiring validation scripts run in the gate's CUDA arm" in
+test/runtests.jl reads the line below; validation/README.md):
+
+GATE-CUDA-ARM: env OCTOPUS_REQUIRE_GPU_CONTRACT=1 OCTOPUS_LATTICE_N=512 OCTOPUS_LATTICE_TURNS=2 OCTOPUS_LATTICE_LONG=200 ; verdict "backend-consistent on CPU/CPU and CPU/CUDA" ; outputs result/lattice_cells.tsv
 """
 
 # Guarded like every other script in `validation/`: without it this file
@@ -274,6 +290,14 @@ for (r, b) in zip(rows, backend_rows)
               "$(INVARIANT_DRIFT_MAX): the map is symplectic per turn but not stably so")
     b[2] == "passed" || error("cell $(r[1]) CPU/CPU backend contract: $(b[2])")
     b[3] in ("passed", "skipped") || error("cell $(r[1]) CPU/CUDA backend contract: $(b[3])")
+    # Assertable, not just visible: with OCTOPUS_REQUIRE_GPU_CONTRACT=1 a
+    # skipped CUDA leg is a failure, not a row (header; U25-10's rule, which
+    # this script did not apply until 2026-10-20).
+    b[3] == "skipped" && Octopus._require_gpu_contract() && error(
+        "cell $(r[1]) CPU/CUDA backend contract was required (OCTOPUS_REQUIRE_GPU_CONTRACT=1) " *
+        "but skipped: no CUDA device is visible to this process")
 end
+cuda_legs_ran = all(b -> b[3] == "passed", backend_rows)
 println("all cells gated: symplectic, linearly stable, invariant-conserving, ",
-        "and backend-consistent")
+        "and backend-consistent ", cuda_legs_ran ? "on CPU/CPU and CPU/CUDA" :
+        "on CPU/CPU (the CPU/CUDA leg was skipped: no device)")

@@ -5,6 +5,14 @@ change tracking. This guards the per-block tracking-plan cache key.
 Run from the project root:
 
     julia --threads=4 --project=. validation/strong_strong_observer_plan_consistency.jl
+
+Overrides: OCTOPUS_OBSERVER_PLAN_N (2048), OCTOPUS_OBSERVER_PLAN_TURNS (1),
+OCTOPUS_OBSERVER_PLAN_RTOL (1e-12); OCTOPUS_REQUIRE_GPU_CONTRACT=1 makes a
+missing device fail the run. The gate's CUDA arm runs this script with the GPU
+leg required (the testset "CUDA-requiring validation scripts run in the gate's
+CUDA arm" in test/runtests.jl reads the line below; validation/README.md):
+
+GATE-CUDA-ARM: env OCTOPUS_REQUIRE_GPU_CONTRACT=1 OCTOPUS_OBSERVER_PLAN_N=1024 ; verdict "CUDABackend: max errors = "
 =#
 
 if !isdefined(Main, :Octopus)

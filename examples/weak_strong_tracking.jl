@@ -170,7 +170,19 @@ if config.execution === :auto || config.execution === :cuda
     config.execution === :cuda && !cuda_ok && error(
         "config.execution = :cuda, but CUDA.functional(false) is false: no " *
         "usable device. Use :auto to fall back to CPU threads, or :threads.")
+elseif !(config.execution in (:threads, :multiprocess))
+    # Every other symbol used to fall through to CPU threads with exit 0 and
+    # the "execution policy = CPUThreadsExecutionPolicy" line as the only
+    # trace: `execution = :gpu` ran on the CPU (comprehensive audit
+    # 2026-10-18, F-204). The crab-cavity example refused it first; this is
+    # its rule.
+    error("config.execution = $(repr(config.execution)) is not one of :auto, :cuda, :threads, :multiprocess")
 end
+# `ranks` is read by `:multiprocess` alone; set anywhere else it would be a
+# configuration nothing read, which this repository counts as a defect.
+config.execution === :multiprocess || config.ranks === :auto || error(
+    "config.ranks = $(repr(config.ranks)) is read only under config.execution = :multiprocess; " *
+    "under $(repr(config.execution)) it would go unread")
 
 policy = if config.execution === :multiprocess
     # One Octopus process per MPI rank, each with its own CPU logical workers.
@@ -201,6 +213,19 @@ println("execution policy = ", nameof(typeof(policy)),
         config.execution === :auto ?
             (cuda_ok ? "  (auto: a CUDA device is available)" :
                        "  (auto: no CUDA device, running on CPU threads)") : "")
+# `gpu_device` reaches `CUDAExecutionPolicy(device = ...)` alone and `threads`
+# the two CPU policies alone, so a value set where the chosen policy cannot
+# read it is a configuration nothing read (comprehensive audit 2026-10-18,
+# F-204: none of the three examples guarded these two fields). Refused by
+# name, like `ranks` above, instead of being dropped.
+policy isa CUDAExecutionPolicy || config.gpu_device === nothing || error(
+    "config.gpu_device = $(repr(config.gpu_device)) is read only when the run executes on CUDA; " *
+    "this run's policy is $(nameof(typeof(policy))) (config.execution = $(repr(config.execution))), " *
+    "so the device index would go unread")
+!(policy isa CUDAExecutionPolicy) || config.threads === :auto || error(
+    "config.threads = $(repr(config.threads)) is read only by the CPU policies (:threads, " *
+    ":multiprocess, or :auto without a functional device); this run executes on CUDA, so the " *
+    "worker count would go unread")
 set_global_rng!(seed = input.seed, method = :philox)
 
 wb = input.weak_beam

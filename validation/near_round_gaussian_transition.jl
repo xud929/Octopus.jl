@@ -16,6 +16,33 @@ Metrics:
     gaps at both blend endpoints, six-dimensional symplecticity, and CPU/CUDA
     parity when CUDA is available.
 
+Gated (the run exits 1 naming the metric): the Float64 force and response
+relative errors, the observed/nominal conditioning ratio of both types, and
+-- since 2026-10-20, comprehensive audit 2026-10-18 F-238 -- the Float64
+core-gradient error, the 6D symplectic residual and all eight endpoint
+continuity gaps, each against a bound stated with its derivation in the main
+block; CPU/CUDA parity when a device is functional, and with
+OCTOPUS_REQUIRE_GPU_CONTRACT=1 a missing device fails the run (the one
+parser is `Octopus._require_gpu_contract()`). The Float32 errors are
+reported. The main block then re-feeds the recorded defect (a x1.1 evaluator
+error over a window of the blend) and requires the instrument to see it, in
+the gated metric for a mid-blend window and in the continuity gaps for the
+two endpoint windows that the sweep's sampling cannot reach (Phase 12 of
+docs/comprehensive_audit.md).
+
+Overrides: OCTOPUS_REQUIRE_GPU_CONTRACT (above) and OCTOPUS_NEAR_ROUND_DEFECT
+= none (default) | mid | inner_edge | outer_edge, which injects the x1.1
+evaluator error into the main sweeps over t in [0.30, 0.40], [0.01, 0.04] or
+[0.96, 0.99] so that a gate can be shown red: `mid` fails the Float64 force
+gate, the two edges fail the continuity-gap gates and nothing else (the
+sweep's sampling does not reach them).
+
+The gate's CUDA arm runs this script with the parity leg required (the
+testset "CUDA-requiring validation scripts run in the gate's CUDA arm" in
+test/runtests.jl reads the line below; validation/README.md):
+
+GATE-CUDA-ARM: env OCTOPUS_REQUIRE_GPU_CONTRACT=1 ; verdict "CUDA parity Float64: max relative error"
+
 The transition scan uses mean variance s^2 = 1.  Errors are therefore already
 in the natural force (1/s) and covariance-response (1/s^2) scales.
 =#
@@ -59,12 +86,37 @@ function _transition_reference(sig1, sig2, x, y)
     )
 end
 
+# Phase-12 instrument validation (docs/comprehensive_audit.md): the recorded
+# defect is FED to the sweep by the script itself and the metrics must see it.
+# `_INJECTION[]` is `nothing` for the clean sweep, or `(lo, hi, factor)`: at a
+# blend fraction t = (eta - inner)/(outer - inner) inside [lo, hi] the
+# evaluator's result is multiplied by `factor`, a relative error of
+# `factor - 1` confined to that window. Every evaluation of the sweep and of
+# the continuity probes goes through `_kick_response`, so the injection
+# reaches whatever the clean run measures. Until 2026-10-20 this validation
+# existed only as a comment describing a one-off measurement whose recorded
+# magnitude ("caught at 1.0000e-03") did not match its recorded defect (a
+# x1.1 error is 1.0e-1), and nothing re-fed it (comprehensive audit
+# 2026-10-18, F-238 / U43-5).
+const _INJECTION = Ref{Union{Nothing,Tuple{Float64,Float64,Float64}}}(nothing)
+
+function _kick_response(::Type{T}, eta, sig1, sig2, x, y) where {T}
+    value = collect(Octopus._gaussian_beambeam_kick_response(
+        one(T), sig1, sig2, T(x), T(y)))
+    injection = _INJECTION[]
+    if injection !== nothing
+        inner, outer = Octopus._near_round_eta_bounds(zero(T))
+        t = (Float64(eta) - Float64(inner)) / (Float64(outer) - Float64(inner))
+        injection[1] <= t <= injection[2] && (value .*= T(injection[3]))
+    end
+    return value
+end
+
 function _transition_value(::Type{T}, eta, x, y) where {T}
     etaT = T(eta)
     sig1 = sqrt(one(T) + etaT)
     sig2 = sqrt(one(T) - etaT)
-    return collect(Octopus._gaussian_beambeam_kick_response(
-        one(T), sig1, sig2, T(x), T(y)))
+    return _kick_response(T, etaT, sig1, sig2, x, y)
 end
 
 function _continuity_metrics(::Type{T}, boundary) where {T}
@@ -175,11 +227,15 @@ function run_near_round_transition_validation(::Type{T}) where {T<:AbstractFloat
     # {0, inner/4, inner, (inner+outer)/2, outer, 2*outer, 1e-3, 1e-2, 0.1, 0.5}
     # and every entry but `(inner+outer)/2` sits at or outside an endpoint, so
     # ~92% of the interval the branch switch actually blends over was never
-    # evaluated. Measured: injecting a x1.1 evaluator error over t in
+    # evaluated. Measured then: injecting a x1.1 evaluator error over t in
     # [0.30, 0.40] left the sweep at 6.1096e-12, bit-identical to baseline, and
     # left both continuity gaps identical too -- while the same injection at
-    # t in [0.45, 0.55] was caught at 1.0000e-03, which proves the metric works
-    # and the sampling was what failed.
+    # t in [0.45, 0.55] was caught, which proves the metric works and the
+    # sampling was what failed. (That record said "caught at 1.0000e-03"; a
+    # x1.1 error is a 1.0e-1 relative error and that is what the metric reads
+    # today, 1.0000e-01 for both windows -- comprehensive audit 2026-10-18,
+    # U43-5. The injection now runs in this script's main block, below, so the
+    # record is re-measured on every run rather than quoted.)
     #
     # 17 interior points put a sample within 0.03 of every t in (0, 1).
     blend_interior = T[inner + (outer - inner) * T(k / 18) for k in 1:17]
@@ -215,8 +271,7 @@ function run_near_round_transition_validation(::Type{T}) where {T<:AbstractFloat
         for q in q_values, angle in angles
             radius = sqrt(T(2) * q)
             x, y = radius * cos(angle), radius * sin(angle)
-            actual = Octopus._gaussian_beambeam_kick_response(
-                one(T), sig1, sig2, x, y)
+            actual = _kick_response(T, eta, sig1, sig2, x, y)
             reference = _transition_reference(sig1, sig2, x, y)
             force_error = hypot(
                 Float64(actual[1]) - reference[1],
@@ -405,17 +460,46 @@ end
 
 if abspath(PROGRAM_FILE) == @__FILE__
     println("Near-round Gaussian transition validation")
-    results = map((Float32, Float64)) do T
-        result = run_near_round_transition_validation(T)
-        print_near_round_transition_result(result)
-        result
+    # A documented defect injection for showing the gates red (the twiss
+    # benchmarks' OCTOPUS_STAGE8_DEFECT precedent): OCTOPUS_NEAR_ROUND_DEFECT =
+    # none (default) | mid | inner_edge | outer_edge applies the x1.1 evaluator
+    # error over t in [0.30, 0.40], [0.01, 0.04] or [0.96, 0.99] to the MAIN
+    # sweeps, so the run must fail at the metric that sees it (the force gate
+    # for `mid`, the continuity gaps alone for the two edges). Reset before the
+    # parity and Phase-12 blocks, which inject their own windows.
+    defect = get(ENV, "OCTOPUS_NEAR_ROUND_DEFECT", "none")
+    defect_windows = Dict("none" => nothing, "mid" => (0.30, 0.40, 1.1),
+                          "inner_edge" => (0.01, 0.04, 1.1), "outer_edge" => (0.96, 0.99, 1.1))
+    haskey(defect_windows, defect) || error(
+        "OCTOPUS_NEAR_ROUND_DEFECT must be one of none, mid, inner_edge, outer_edge; got $(repr(defect))")
+    _INJECTION[] = defect_windows[defect]
+    defect == "none" || println("DEFECT INJECTED (OCTOPUS_NEAR_ROUND_DEFECT=", defect,
+                                "): x1.1 over t in ", defect_windows[defect][1:2],
+                                "; the gate that sees it must fail below")
+    results = try
+        map((Float32, Float64)) do T
+            result = run_near_round_transition_validation(T)
+            print_near_round_transition_result(result)
+            result
+        end
+    finally
+        _INJECTION[] = nothing
     end
     for T in (Float32, Float64)
         parity = run_near_round_cuda_parity(T)
-        parity === nothing || println(
-            "CUDA parity ", T,
-            ": max relative error = ", parity.max_relative_error,
-            ", max natural-scale error = ", parity.max_natural_error)
+        if parity === nothing
+            # Assertable, not just visible (U25-10's rule): with
+            # OCTOPUS_REQUIRE_GPU_CONTRACT=1 a missing device fails the run;
+            # otherwise the skip is printed, where it used to print nothing.
+            Octopus._require_gpu_contract() && error(
+                "near-round CPU/CUDA parity for $(T) was required " *
+                "(OCTOPUS_REQUIRE_GPU_CONTRACT=1) but no CUDA device is functional")
+            println("CUDA parity ", T, ": skipped (no CUDA device)")
+        else
+            println("CUDA parity ", T,
+                    ": max relative error = ", parity.max_relative_error,
+                    ", max natural-scale error = ", parity.max_natural_error)
+        end
     end
     all(result -> all(isfinite, (
             result.max_force_relative_error,
@@ -449,7 +533,93 @@ if abspath(PROGRAM_FILE) == @__FILE__
             "Float64 near-round force error regressed: $(f64.max_force_relative_error)")
         f64.max_response_relative_error < 4.0e-8 || error(
             "Float64 near-round response error regressed: $(f64.max_response_relative_error)")
+        # The rest of the Float64 metrics, gated since 2026-10-20 (comprehensive
+        # audit 2026-10-18, F-238 / U43-4: of about fifteen metrics three were
+        # gated and the rest printed, and the endpoint continuity gaps are the
+        # ONLY instrument that sees the first and last few percent of the blend
+        # interval -- the main sweep samples t = k/18, so a defect confined to
+        # t in [0.01, 0.04] or [0.96, 0.99] leaves every gated number at its
+        # baseline and shows only in a gap; the Phase-12 block below proves
+        # it on every run).
+        #
+        # Bounds, with their derivation. The gated gaps are the RELATIVE ones
+        # (relative to the force or response scale at the endpoint; the
+        # natural-scale gaps are printed beside them), the quantities the
+        # Phase-12 block below measures under an injected defect: an evaluator
+        # error of relative size delta at one side of an endpoint shows as a
+        # gap of about delta (measured: x1.1 at the inner edge gives an inner
+        # force value gap of 1.0e-1, at the outer edge an outer gap of 2.0e-1).
+        # The clean relative gaps are roundoff carried through the evaluator,
+        # measured 2026-10-20 on this tree (the gate's CUDA arm, probe
+        # near_round_gpu_require): inner force / response value gaps 1.8e-15 /
+        # 9.4e-13, outer 9.5e-13 / 6.7e-9; inner force / response derivative
+        # gaps 2.0e-13 / 1.3e-11, outer 9.4e-11 / 5.2e-7. The response gaps are
+        # the larger because the response is the second-order quantity, whose
+        # relative roundoff carries the conditioning factor (64 nominal) and
+        # whose own gated error above is 1.2e-8 against 4.0e-8. Each bound sits
+        # at least 150x above its largest clean gap, where a CPU arm cannot move
+        # roundoff, and 1e3 to 1e8 below the injected defect: force value gap
+        # 1e-9 (1000x above 9.5e-13), response value gap 1e-6 (150x above
+        # 6.7e-9), force derivative gap 1e-7 (1000x above 9.4e-11), response
+        # derivative gap 1e-4 (200x above 5.2e-7). So a relative error down to
+        # about 1e-9 in the force and 1e-6 in the response at an endpoint is
+        # caught. The core-gradient error is exact arithmetic (2.2e-16
+        # measured; bound 1e-12), and the 6D symplectic residual is the
+        # finite-difference step's truncation (1.6e-10 measured at step 1e-5;
+        # bound 1e-8).
+        f64.max_core_gradient_error < 1.0e-12 || error(
+            "Float64 near-round core-gradient error regressed: $(f64.max_core_gradient_error)")
+        f64.symplectic_residual < 1.0e-8 || error(
+            "near-round 6D symplectic residual regressed: $(f64.symplectic_residual)")
+        for (side, gaps) in (("inner", f64.inner_continuity), ("outer", f64.outer_continuity))
+            gaps.force_value_gap < 1.0e-9 || error(
+                "Float64 $(side) endpoint force value gap regressed: $(gaps.force_value_gap)")
+            gaps.response_value_gap < 1.0e-6 || error(
+                "Float64 $(side) endpoint response value gap regressed: $(gaps.response_value_gap)")
+            gaps.force_derivative_gap < 1.0e-7 || error(
+                "Float64 $(side) endpoint force derivative gap regressed: $(gaps.force_derivative_gap)")
+            gaps.response_derivative_gap < 1.0e-4 || error(
+                "Float64 $(side) endpoint response derivative gap regressed: $(gaps.response_derivative_gap)")
+        end
     end
+
+    # Phase 12: feed the recorded defect to the instrument and require that it
+    # is seen -- in the gated metric for a mid-blend window, and in the ONLY
+    # instrument that reaches an endpoint window, the continuity gap. A
+    # x1.1 error is a 1.0e-1 relative error; the metrics must read at least
+    # half of it (the sampling puts a point within 0.03 of every t, so a
+    # window 0.1 wide is always sampled). The injected sweeps are Float64
+    # only; `_INJECTION[]` is reset before anything else runs.
+    println("Phase 12: the recorded x1.1 evaluator defect, re-fed")
+    phase12 = Tuple{String,Float64}[]
+    try
+        _INJECTION[] = (0.30, 0.40, 1.1)
+        injected_mid = run_near_round_transition_validation(Float64)
+        push!(phase12, ("force relative error, x1.1 over t in [0.30, 0.40]",
+                        injected_mid.max_force_relative_error))
+        _INJECTION[] = (0.01, 0.04, 1.1)
+        injected_inner = run_near_round_transition_validation(Float64)
+        push!(phase12, ("inner endpoint force value gap, x1.1 over t in [0.01, 0.04]",
+                        injected_inner.inner_continuity.force_value_gap))
+        push!(phase12, ("force relative error under the same edge injection (the sampling's blind spot, reported)",
+                        injected_inner.max_force_relative_error))
+        _INJECTION[] = (0.96, 0.99, 1.1)
+        injected_outer = run_near_round_transition_validation(Float64)
+        push!(phase12, ("outer endpoint force value gap, x1.1 over t in [0.96, 0.99]",
+                        injected_outer.outer_continuity.force_value_gap))
+    finally
+        _INJECTION[] = nothing
+    end
+    for (label, value) in phase12
+        println("  ", label, " = ", value)
+    end
+    seen(label) = phase12[findfirst(p -> startswith(p[1], label), phase12)][2]
+    seen("force relative error, x1.1") >= 0.05 || error(
+        "Phase 12: the gated force metric did not see a x1.1 defect over t in [0.30, 0.40]")
+    seen("inner endpoint force value gap") >= 0.05 || error(
+        "Phase 12: the inner continuity gap did not see a x1.1 defect over t in [0.01, 0.04]")
+    seen("outer endpoint force value gap") >= 0.05 || error(
+        "Phase 12: the outer continuity gap did not see a x1.1 defect over t in [0.96, 0.99]")
 
     # The CPU/CUDA split. The theory note lists "CPU versus CUDA evaluation" as
     # an axis on which C_BE varies, yet ONE constant serves both -- so the

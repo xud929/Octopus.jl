@@ -21,20 +21,33 @@ NOTE the mesh assignment above is the SWAPPED one -- plain PIC on the coarse
 mesh and the hybrid on the fine one -- which is the point of this control.
 Setting picgrid = 128, hybgrid = 64 in the two run_family calls below gives
 the PRODUCTION assignment, and in that configuration this same script
-regenerates Table 1 (data/flat_beam_noise_floor.tsv) bit-for-bit in all eight
-rows. That is the archived provenance of Table 1: each stochastic entry is
-the median over 5/5/3 independent draws at 1e4/1e5/1e6, taken per solver
-column, with the draws shared across the four columns of a row.
+regenerates Table 1 of the paper repository (its data/flat_beam_noise_floor.tsv)
+bit-for-bit in all eight rows. That is the archived provenance of Table 1: each
+stochastic entry is the median over 5/5/3 independent draws at 1e4/1e5/1e6,
+taken per solver column, with the draws shared across the four columns of a row.
 
-The round-beam case is run first as a correctness gate against the review's
-recorded numbers; the flat case (sig_x/sig_y = 11) is the new result.
+The round-beam case is run first as a correctness GATE: its deterministic row
+(the 400x400 quantile lattice, no shot noise, so seed-independent) is compared
+with the review's Section 6.4 C columns for THIS mesh assignment -- soft-G
+6.3e-5, PIC 64^2 8.0e-4, hybrid 128^2 1.8e-4, spectral (127,127) 1.2e-3 -- and
+the run exits 1 naming the column when a value lands outside half a unit in the
+reference's second significant figure, which is the precision the review quotes
+(|measured - reference| <= 0.05 * 10^floor(log10 reference); measured
+2026-10-20: 6.27e-5, 7.98e-4, 1.77e-4, 1.23e-3, at 0.4 to 0.6 of that
+tolerance). Until 2026-10-20 the "gate" was a println quoting the review's PIC
+128^2 / hybrid 64^2 columns -- the OTHER mesh assignment -- beside a run that
+executed this one, and compared nothing (comprehensive audit 2026-10-18,
+F-226). The stochastic rows differ from the review by sampling (one seed here
+against the review's draws) and are reported, not gated; the flat case
+(sig_x/sig_y = 11) is the new result and is reported.
 
-Run from this folder (CPU, ~2-4 min after compilation):
+Run from the project root (CPU, ~2-4 min after compilation):
 
     julia --startup-file=no --project=. validation/noise_floor_meshswap.jl
 
-Output: data/noise_floor_meshswap.tsv plus a printed table.
-        (With the production mesh assignment: data/flat_beam_noise_floor.tsv.)
+Output: result/noise_floor_meshswap.tsv plus a printed table. (The header
+named `data/` outputs until 2026-10-20; `data/` is the paper repository's
+directory, and this tree writes to `result/`.)
 =#
 
 const OCTOPUS_ROOT = normpath(joinpath(@__DIR__, ".."))
@@ -103,7 +116,12 @@ function solve_from_charge(solver, charge, source_grid, field_grid, nx, ny)
     fft!(sp); sp .*= green_fft; ifft!(sp)
     phi = real.(sp[1:nx, 1:ny])
     hx = source_grid.width / (nx - 1); hy = source_grid.height / (ny - 1)
-    Ex, Ey = O._pic_field(phi, hx, hy)
+    # The solver's own derivative order, not the `fourth=false` default: the
+    # U23-10 defect (a public `field_derivative` option silently ignored by a
+    # local copy of the solve) was fixed in two siblings and left standing
+    # here (comprehensive audit 2026-10-18, F-227). No numeric effect at the
+    # default `:second`.
+    Ex, Ey = O._pic_field(phi, hx, hy, O._pic_fourth_order(solver))
     return phi, Ex, Ey
 end
 
@@ -240,24 +258,46 @@ function run_family(name, sigx, sigy; picgrid, hybgrid, spN, spdfac, seed, io)
     println(@sprintf("%-14s  %10.2e  %10.2e  %10.2e  %10.2e",
                      "deterministic", m...))
     println(io, "deterministic\t", join(m, '\t'))
-    return nothing
+    return m
 end
 
+# The review's round-beam deterministic row (docs/history/poisson_solver_review_2026_07_24.md,
+# Section 6.4 C, "deterministic (systematic floor)") for THIS script's mesh
+# assignment: soft-Gaussian, PIC 64^2, hybrid 128^2, spectral (127,127)/d16.
+# The review quotes two significant figures, so the tolerance is half a unit in
+# the second figure of each reference (header). A column outside it fails the
+# run by name.
+const ROUND_GATE_REFERENCE = (soft_gaussian = 6.3e-5, pic = 8.0e-4, hybrid = 1.8e-4, spectral = 1.2e-3)
+half_unit_second_figure(ref) = 0.05 * 10.0^floor(log10(ref))
+function gate_round_deterministic(measured)
+    failures = String[]
+    for (name, ref, value) in zip(keys(ROUND_GATE_REFERENCE), ROUND_GATE_REFERENCE, measured)
+        tol = half_unit_second_figure(ref)
+        verdict = abs(value - ref) <= tol ? "PASS" : "FAIL"
+        @printf("  gate %-14s measured %.3e  reference %.1e  |diff| %.2e  tol %.1e  %s\n",
+                name, value, ref, abs(value - ref), tol, verdict)
+        verdict == "FAIL" && push!(failures,
+            "$(name): measured $(value) against the review's $(ref) (tolerance $(tol))")
+    end
+    return failures
+end
 
 out = joinpath(@__DIR__, "..", "result", "noise_floor_meshswap.tsv")
-open(out, "w") do io
+gate_failures = open(out, "w") do io
     println(io, "# Median |K_num - K_exact| / max|K_exact|, 81x81 field grid +-4 sigma")
     println(io, "family_case\tsoft_gaussian\tpic\thybrid\tspectral")
     # correctness gate: reproduce the review's round-beam Section 6.4 C
-    run_family("round (gate)", 2.0e-3, 2.0e-3;
+    round_deterministic = run_family("round (gate)", 2.0e-3, 2.0e-3;
                picgrid = 64, hybgrid = 128, spN = (127, 127), spdfac = 16.0,
                seed = 20260727, io)
+    println("\nround-beam deterministic row against the review's 6.4 C columns for PIC 64^2 / hybrid 128^2:")
+    failures = gate_round_deterministic(round_deterministic)
     # the new result: flat 11:1 (production electron aspect ratio)
     run_family("flat 11:1", 2.0e-3, 2.0e-3 / 11;
                picgrid = 64, hybgrid = 128, spN = (127, 383), spdfac = 8.0,
                seed = 20260727, io)
+    failures
 end
 println("\nwrote $(out)")
-println("review round-beam reference (6.4 C): soft-G 2.2e-3/9.3e-4/3.5e-4/6.3e-5,")
-println("PIC128 3.8e-3/1.2e-3/4.8e-4/4.1e-4, hyb64 3.6e-3/1.1e-3/4.5e-4/1.6e-4,")
-println("spectral 3.7e-3/1.6e-3/1.2e-3/1.2e-3 (rows 1e4/1e5/1e6/deterministic)")
+println("NOISE-FLOOR-MESHSWAP gate_checks=4 gate_failed=$(length(gate_failures)) verdict=$(isempty(gate_failures) ? "PASS" : "FAIL")")
+isempty(gate_failures) || error("round-beam correctness gate failed: " * join(gate_failures, "; "))

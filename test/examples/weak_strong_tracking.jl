@@ -68,6 +68,39 @@ CUDA checks:
     julia --project=. -e 'using CUDA; println(CUDA.functional()); println(CUDA.has_cuda_gpu())'
     julia --project=. -e 'using CUDA; CUDA.versioninfo()'
 
+Every OCTOPUS_* variable this harness reads, with its default (this list is
+checked against the body's reads at load, both directions, by the `let` block
+after `env_bool`; three of them were read and undocumented until 2026-10-20,
+comprehensive audit 2026-10-18 F-206):
+
+    OCTOPUS_TURNS             turns to track (2)
+    OCTOPUS_N_MACRO           macroparticles of the weak beam (10000)
+    OCTOPUS_USE_GPU           1|0 (0): CUDA storage and kernels
+    OCTOPUS_CUDA_DEVICE       CUDA device index (the current device); refused
+                              without OCTOPUS_USE_GPU=1, where nothing reads it
+    OCTOPUS_CPU_THREADS       CPU logical workers (auto); per RANK under MPI
+    OCTOPUS_USE_MPI           1|0 (0): divided across MPI ranks (the paragraphs
+                              above and below)
+    OCTOPUS_RANKS             with OCTOPUS_USE_MPI=1: the rank count the run must
+                              match (auto); refused without the switch, where it
+                              would go unread -- and `mpiexec -n P` with the
+                              switch off would run P whole simulations on one
+                              artifact path
+    OCTOPUS_RESULT_DIR        output root (test/result beside the tests); the
+                              suite's example runner and MPI harness testset set
+                              it so their runs never collide with a developer's
+    OCTOPUS_RECORD_TURN_TIMES 1|0 (0): clock every complete turn (the task's
+                              `record_turn_times`); every rank prints its series
+    OCTOPUS_TURN_TIMING_PATH  with OCTOPUS_RECORD_TURN_TIMES=1: write rank 0's
+                              series as a TSV, header turn<TAB>seconds, turn
+                              1..T of this call; a relative path resolves against
+                              the repository root (the strong-strong and crab
+                              harnesses use the same convention since
+                              2026-10-20), never into OCTOPUS_RESULT_DIR.
+                              Refused without OCTOPUS_RECORD_TURN_TIMES=1, and
+                              refused when set but empty
+    OCTOPUS_MP                refused on presence (the paragraph above)
+
 This file is the developer harness for realistic weak-strong tracking; the
 concise precedent is examples/weak_strong_tracking.jl. It covers:
 
@@ -87,6 +120,9 @@ the same layout under the repo-root `result/`):
   luminosity), `/moments/weak_beam` (scheduled first- and second-order
   moments), and the `/execution` ledger; read through one handle,
   `read(TaskOutput(path), kind; name = ...)`.
+
+plus, with OCTOPUS_RECORD_TURN_TIMES=1 and OCTOPUS_TURN_TIMING_PATH set, the
+per-turn TSV at that path, announced on stdout as `turn_timing_path = <path>`.
 =#
 
 """
@@ -109,6 +145,25 @@ function env_bool(key::AbstractString, default::Bool)
     lowered in ("1", "true", "yes", "on") && return true
     lowered in ("0", "false", "no", "off") && return false
     error("$(key)=$(repr(raw)) is not a boolean; use 1/0, true/false, yes/no or on/off")
+end
+
+# The header's OCTOPUS_* list against what this file reads, so the two cannot
+# drift (this header omitted OCTOPUS_RESULT_DIR, OCTOPUS_RECORD_TURN_TIMES and
+# OCTOPUS_TURN_TIMING_PATH until 2026-10-20; comprehensive audit 2026-10-18
+# F-206; the pattern is profiling/benchmark_strong_strong_pic.jl). The header
+# is the text above the first `=#`; a name is read when the body spells it as
+# a string literal, which every `get(ENV, ...)`, `haskey(ENV, ...)` and
+# `env_bool(...)` here does. A glob in the header (`OCTOPUS_X_*_Y`) leaves a
+# token ending in `_`, which is not a name and is ignored.
+let text = read(@__FILE__, String)
+    header, body = split(text, "=#"; limit=2)
+    names(s, pattern) = Set(String(m.captures[1]) for m in eachmatch(pattern, s)
+                            if !endswith(m.captures[1], "_"))
+    named = names(header, r"(OCTOPUS_[A-Z0-9_]+)")
+    read_names = names(body, r"\"(OCTOPUS_[A-Z0-9_]+)\"")
+    named == read_names || error("harness header drift: named but never read " *
+        string(sort!(collect(setdiff(named, read_names)))) * "; read but not named " *
+        string(sort!(collect(setdiff(read_names, named)))))
 end
 
 # OCTOPUS_USE_MPI=1 runs this harness divided across MPI ranks -- one Octopus
@@ -296,6 +351,20 @@ if use_gpu
     import CUDA
     CUDA.functional(false) || error("OCTOPUS_USE_GPU=1 requested, but CUDA.functional(false) is false.")
 end
+# Each of these is read inside a branch whose switch is off by default, so a
+# set value was silently ignored (comprehensive audit 2026-10-18, F-205; the
+# strong-strong twin had six such variables). A set variable nothing reads is
+# the config-that-was-never-read defect class, not a typo: refused by name
+# where it would go unread, as the crab harness does.
+use_gpu || !haskey(ENV, "OCTOPUS_CUDA_DEVICE") || error(
+    "OCTOPUS_CUDA_DEVICE=$(repr(ENV["OCTOPUS_CUDA_DEVICE"])) without OCTOPUS_USE_GPU=1: the CPU " *
+    "policies read no device, so the variable would be silently dropped. Set " *
+    "OCTOPUS_USE_GPU=1 or unset it.")
+use_mpi || !haskey(ENV, "OCTOPUS_RANKS") || error(
+    "OCTOPUS_RANKS=$(repr(ENV["OCTOPUS_RANKS"])) without OCTOPUS_USE_MPI=1: the rank count is " *
+    "read only by the multi-process arm, so it would go unread -- and under a " *
+    "launcher a single-process run on every rank is P whole simulations racing " *
+    "on one artifact path. Set OCTOPUS_USE_MPI=1 for a divided run.")
 policy = if use_gpu
     cuda_device_env = get(ENV, "OCTOPUS_CUDA_DEVICE", "")
     cuda_device = isempty(cuda_device_env) ? nothing : parse(Int, cuda_device_env)
@@ -492,6 +561,17 @@ line_specs = (
 # times across separate runs -- produced a wrong answer on 2026-09-06 and cost a
 # retraction (docs/history/weak_strong_64thread_lead_2026_09_07.md).
 record_turn_times = env_bool("OCTOPUS_RECORD_TURN_TIMES", false)
+# OCTOPUS_TURN_TIMING_PATH is read inside `if record_turn_times` below, so set
+# without the switch it was a path nothing wrote and nothing mentioned
+# (comprehensive audit 2026-10-18, F-205); set but empty it would write
+# nothing and say nothing. Both refused by name, as the crab harness does.
+turn_timing_path = get(ENV, "OCTOPUS_TURN_TIMING_PATH", "")
+haskey(ENV, "OCTOPUS_TURN_TIMING_PATH") && isempty(strip(turn_timing_path)) && error(
+    "OCTOPUS_TURN_TIMING_PATH is set but empty: name a file for the per-turn series " *
+    "or unset the variable; an empty path would write nothing and say nothing.")
+record_turn_times || !haskey(ENV, "OCTOPUS_TURN_TIMING_PATH") || error(
+    "OCTOPUS_TURN_TIMING_PATH=$(repr(turn_timing_path)) without OCTOPUS_RECORD_TURN_TIMES=1: " *
+    "no per-turn series is recorded, so nothing would be written there.")
 task = TrackingTask(line_specs;
     policy = policy,
     record_turn_times = record_turn_times,
@@ -519,7 +599,7 @@ if record_turn_times
     println("turn_timings_seconds", mpi_nranks > 1 ? " (rank $(mpi_rank) shard of $(mpi_nranks); the turn's wall time is the max over ranks)" : "",
             " = ", series)
     if writes_files
-        path = get(ENV, "OCTOPUS_TURN_TIMING_PATH", "")
+        path = turn_timing_path
         if !isempty(path)
             # Relative paths resolve against the repository, never into
             # OCTOPUS_RESULT_DIR: the suite asserts rank 0's result directory

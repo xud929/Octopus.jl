@@ -436,6 +436,27 @@ function env_parse(::Type{T}, key::AbstractString, default::AbstractString) wher
     return value
 end
 
+# The header's OCTOPUS_* list against what this file reads, so the two cannot
+# drift: the same load-time check the two tracking harnesses carry since
+# 2026-10-20 (comprehensive audit 2026-10-18 F-206; the pattern is
+# profiling/benchmark_strong_strong_pic.jl). This header already named every
+# variable it reads (the audit measured the two sets equal); the check keeps
+# it so. The header is the text above the first `=#`; a name is read when the
+# body spells it as a string literal, which every `get(ENV, ...)`,
+# `haskey(ENV, ...)`, `env_bool(...)` and `env_parse(...)` here does. A glob
+# in the header (`OCTOPUS_X_*_Y`) leaves a token ending in `_`, which is not a
+# name and is ignored.
+let text = read(@__FILE__, String)
+    header, body = split(text, "=#"; limit=2)
+    names(s, pattern) = Set(String(m.captures[1]) for m in eachmatch(pattern, s)
+                            if !endswith(m.captures[1], "_"))
+    named = names(header, r"(OCTOPUS_[A-Z0-9_]+)")
+    read_names = names(body, r"\"(OCTOPUS_[A-Z0-9_]+)\"")
+    named == read_names || error("harness header drift: named but never read " *
+        string(sort!(collect(setdiff(named, read_names)))) * "; read but not named " *
+        string(sort!(collect(setdiff(read_names, named)))))
+end
+
 # The dead spelling, refused on presence as the weak-strong harness refuses it
 # (its header says why: the frozen 2026-09-06 record names it). The switch
 # this harness reads is OCTOPUS_USE_MPI, read next.

@@ -71,6 +71,7 @@ function load_runs(dir, files)
             d = Dict{String,Any}(names[c] => data[r, c] for c in eachindex(names))
             get!(d, "gridmode", "slice_pair")
             get!(d, "solver", "unrecorded")
+            get!(d, "dropped_particles", 0)
             push!(runs, d)
         end
     end
@@ -85,7 +86,13 @@ runs = load_runs(result_dir, files)
 # blocks visibly fragment rather than silently pooling.
 const OUTPUT_COLS = Set(["growth_ele_ey", "growth_ele_ex", "growth_pro_ey", "growth_pro_ex",
                          "final_ratio_ele_ey", "final_ratio_pro_ey",
-                         "boundary_cross_fraction", "elapsed_s"])
+                         "boundary_cross_fraction", "elapsed_s",
+                         # The dropped-charge receipt the run script records since
+                         # 2026-10-20 (comprehensive audit 2026-10-18, F-225): an
+                         # output, so a block whose arms dropped charge is
+                         # reported with the count beside its rates instead of
+                         # fragmenting on it. Rows written before it are read as 0.
+                         "dropped_particles"])
 const IDENTITY_COLS = Set(["tag", "seed"])
 # The four the study varies; the remaining conditions define the comparison block.
 const ARM_COLS = ["scheme", "nslices", "deposit", "gridmode"]
@@ -155,9 +162,9 @@ keys_sorted = sort(collect(keys(groups)), by=k -> (string(k[1]), k[2][4], k[2][3
 
 println("block conditions: ", join(block_cols, ", "))
 println()
-@printf("%-10s %-4s %-5s %-12s %-3s %13s %8s %13s %8s %6s  %s\n",
+@printf("%-10s %-4s %-5s %-12s %-3s %13s %8s %13s %8s %6s %7s  %s\n",
         "scheme", "nsl", "dep", "gridmode", "n",
-        "ele_ey_growth", "t_ele", "pro_ey_growth", "t_pro", "cross", "block")
+        "ele_ey_growth", "t_ele", "pro_ey_growth", "t_pro", "cross", "dropped", "block")
 
 summary = Vector{Any}()
 uncompared = String[]
@@ -176,19 +183,22 @@ for k in keys_sorted
     eey = vals(rs, "growth_ele_ey")
     cross = mean(vals(rs, "boundary_cross_fraction"))
     el = mean(vals(rs, "elapsed_s"))
+    # The charge the arm's runs dropped, summed over seeds: a nonzero total
+    # says the arm's growth is not a clean measurement of the compared option.
+    dropped = Int(sum(vals(rs, "dropped_particles")))
     m, s, n = stats(ey)
     me, se_, _ = stats(eey)
     t_pro = is_base || isempty(brs) ? NaN : tlike(ey, vals(brs, "growth_pro_ey"))
     t_ele = is_base || isempty(brs) ? NaN : tlike(eey, vals(brs, "growth_ele_ey"))
 
     blockstr = join(string.(k[1]), "/")
-    @printf("%-10s %-4d %-5s %-12s %-3d %13.4e %8.2f %13.4e %8.2f %6.3f  %s\n",
-            a[1], a[2], a[3], a[4], n, me, t_ele, m, t_pro, cross, blockstr)
-    push!(summary, [a[1] a[2] a[3] a[4] blockstr n me se_ t_ele m s t_pro mean(ex) cross el])
+    @printf("%-10s %-4d %-5s %-12s %-3d %13.4e %8.2f %13.4e %8.2f %6.3f %7d  %s\n",
+            a[1], a[2], a[3], a[4], n, me, t_ele, m, t_pro, cross, dropped, blockstr)
+    push!(summary, [a[1] a[2] a[3] a[4] blockstr n me se_ t_ele m s t_pro mean(ex) cross el dropped])
 end
 
 open(joinpath(result_dir, "emittance_growth_summary.tsv"), "w") do io
-    writedlm(io, ["scheme" "nslices" "deposit" "gridmode" "block" "seeds" "growth_ele_ey_mean" "growth_ele_ey_sd" "t_like_ele" "growth_pro_ey_mean" "growth_pro_ey_sd" "t_like_pro" "growth_pro_ex_mean" "boundary_cross_fraction" "elapsed_s_mean"])
+    writedlm(io, ["scheme" "nslices" "deposit" "gridmode" "block" "seeds" "growth_ele_ey_mean" "growth_ele_ey_sd" "t_like_ele" "growth_pro_ey_mean" "growth_pro_ey_sd" "t_like_pro" "growth_pro_ex_mean" "boundary_cross_fraction" "elapsed_s_mean" "dropped_particles_total"])
     writedlm(io, vcat(summary...))
 end
 println()

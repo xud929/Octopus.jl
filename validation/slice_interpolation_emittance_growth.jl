@@ -85,9 +85,15 @@ Outputs (under `result/`)
 -------------------------
 - `emittance_growth_<tag>.tsv`      -- per-turn eps_x, eps_y, eps_z for both beams
 - `emittance_growth_<tag>.meta.tsv` -- one summary row (conditions, growth rates,
-  validity). The conditions include the solver family, read off the solver
-  object, so the aggregator can tell a study arm from a run made with a locally
-  modified solver.
+  validity, and `dropped_particles`: the charge the interaction mesh dropped over
+  the run, summed from the solver's own warnings; the `:node` and
+  `:source_slice` arms do not guarantee coverage by construction, and a run that
+  lost charge is not a clean measurement of its arm). The conditions include the
+  solver family, read off the solver object, so the aggregator can tell a study
+  arm from a run made with a locally modified solver.
+
+The default `<tag>` is `<scheme>_n<nslices>_<deposit>[_<gridmode>]_s<seed>`,
+the grid mode named only when it is not the default `slice_pair`.
 
 The `emittance_growth_` prefix is this script's namespace and the aggregator
 globs it. A run that is not a product of this script -- a different solver, a
@@ -103,6 +109,7 @@ the recorded conditions, so it cannot be used to separate one.
 using Octopus
 using DelimitedFiles
 using Printf
+using Logging
 
 const O = Octopus
 
@@ -119,9 +126,17 @@ config = (
     grid      = _envi("OCTOPUS_EMIT_GRID", 64),
     gridmode  = _envs("OCTOPUS_EMIT_GRIDMODE", :slice_pair),
 )
+# One file stem per arm: the non-default `interaction_grid` modes are named
+# by their own value (`_source_slice`, `_node`). Until 2026-10-20 both mapped
+# to one literal `_srcgrid`, so arms F and G at one seed overwrote each other
+# silently and the aggregator, which sees a collision only as two rows with
+# identical conditions, could not notice (comprehensive audit 2026-10-18,
+# F-224). Files written under the old `_srcgrid` stem are not read by name
+# anywhere: the aggregator keys on the recorded conditions, not on the tag.
 tag = get(ENV, "OCTOPUS_EMIT_TAG",
           "$(config.scheme)_n$(config.nslices)_$(lowercase(String(config.deposit)))" *
-          (config.gridmode === :slice_pair ? "" : "_srcgrid") * "_s$(config.seed)")
+          (config.gridmode === :slice_pair ? "" : "_" * String(config.gridmode)) *
+          "_s$(config.seed)")
 
 result_dir = normpath(joinpath(@__DIR__, "..", "result"))
 mkpath(result_dir)
@@ -194,28 +209,59 @@ function slice_indices(beam, slicing)
 end
 
 # ------------------------------------------------------------------ run ------
+"""
+A logger that counts the charge the PIC interaction mesh dropped, from the
+solver's own warning (`_pic_report_dropped_count`, `dropped = n`), and passes
+every record on to the previous logger so nothing is silenced.
+
+The solver's only receipt of dropped charge is that warning (the run artifact
+carries no dataset for it), so the meta row reads it here rather than
+recomputing coverage with a copy of the mesh rule (comprehensive audit
+2026-10-18, F-225).
+"""
+struct DroppedChargeLogger <: AbstractLogger
+    inner::AbstractLogger
+    dropped::Base.RefValue{Int}
+end
+Logging.min_enabled_level(l::DroppedChargeLogger) = Logging.min_enabled_level(l.inner)
+Logging.shouldlog(l::DroppedChargeLogger, args...) = true
+Logging.catch_exceptions(l::DroppedChargeLogger) = Logging.catch_exceptions(l.inner)
+function Logging.handle_message(l::DroppedChargeLogger, level, message, _module, group, id,
+                                file, line; kwargs...)
+    if level == Logging.Warn && occursin("dropped particles", string(message)) &&
+       haskey(kwargs, :dropped)
+        l.dropped[] += Int(kwargs[:dropped])
+    end
+    Logging.shouldlog(l.inner, level, _module, group, id) &&
+        Logging.handle_message(l.inner, level, message, _module, group, id, file, line; kwargs...)
+    return nothing
+end
+
 function run_turns(task, beam_ele, beam_pro, slicing, nturns)
     rows = Vector{Any}()
     cross_counts = Int[]
     prev_ele = slice_indices(beam_ele, slicing)
     prev_pro = slice_indices(beam_pro, slicing)
     push!(rows, [0, emittances(beam_ele)..., emittances(beam_pro)...])
+    dropped = Ref(0)
     t0 = time()
-    for turn in 1:nturns
-        execute!(task, beam_ele, beam_pro; turns=1)
-        push!(rows, [turn, emittances(beam_ele)..., emittances(beam_pro)...])
-        if turn <= 50   # boundary-crossing validity check, sampled early
-            cur_ele = slice_indices(beam_ele, slicing)
-            cur_pro = slice_indices(beam_pro, slicing)
-            push!(cross_counts, count(!=(0), cur_ele .- prev_ele) +
-                                count(!=(0), cur_pro .- prev_pro))
-            prev_ele = cur_ele; prev_pro = cur_pro
+    with_logger(DroppedChargeLogger(current_logger(), dropped)) do
+        for turn in 1:nturns
+            execute!(task, beam_ele, beam_pro; turns=1)
+            push!(rows, [turn, emittances(beam_ele)..., emittances(beam_pro)...])
+            if turn <= 50   # boundary-crossing validity check, sampled early
+                cur_ele = slice_indices(beam_ele, slicing)
+                cur_pro = slice_indices(beam_pro, slicing)
+                push!(cross_counts, count(!=(0), cur_ele .- prev_ele) +
+                                    count(!=(0), cur_pro .- prev_pro))
+                prev_ele = cur_ele; prev_pro = cur_pro
+            end
         end
     end
-    return rows, cross_counts, time() - t0
+    return rows, cross_counts, time() - t0, dropped[]
 end
 
-rows, cross_counts, elapsed = run_turns(task, beam_ele, beam_pro, slicing, config.turns)
+rows, cross_counts, elapsed, dropped_particles = run_turns(task, beam_ele, beam_pro, slicing, config.turns)
 
 # ------------------------------------------------------------- analysis ------
 """Least-squares slope of `y` against `0:length(y)-1`, per step."""
@@ -250,11 +296,14 @@ end
 # a locally modified solver cannot be mistaken for a study arm by the aggregator.
 solver_family = String(string(nameof(typeof(solver))))
 
-meta = [tag String(config.scheme) config.nslices String(config.deposit) String(config.gridmode) solver_family config.seed config.turns config.npart config.grid gr_ele_y gr_ele_x gr_pro_y gr_pro_x ey[end]/ey[1] py_[end]/py_[1] cross_frac elapsed]
+# `dropped_particles` is a RECEIPT of the run (the mesh's own count), not a
+# condition, so the aggregator's condition key does not include it: a block
+# whose runs dropped charge is reported with the count beside its rates.
+meta = [tag String(config.scheme) config.nslices String(config.deposit) String(config.gridmode) solver_family config.seed config.turns config.npart config.grid gr_ele_y gr_ele_x gr_pro_y gr_pro_x ey[end]/ey[1] py_[end]/py_[1] cross_frac elapsed dropped_particles]
 open(joinpath(result_dir, "emittance_growth_$(tag).meta.tsv"), "w") do io
-    writedlm(io, ["tag" "scheme" "nslices" "deposit" "gridmode" "solver" "seed" "turns" "npart" "grid" "growth_ele_ey" "growth_ele_ex" "growth_pro_ey" "growth_pro_ex" "final_ratio_ele_ey" "final_ratio_pro_ey" "boundary_cross_fraction" "elapsed_s"])
+    writedlm(io, ["tag" "scheme" "nslices" "deposit" "gridmode" "solver" "seed" "turns" "npart" "grid" "growth_ele_ey" "growth_ele_ex" "growth_pro_ey" "growth_pro_ex" "final_ratio_ele_ey" "final_ratio_pro_ey" "boundary_cross_fraction" "elapsed_s" "dropped_particles"])
     writedlm(io, meta)
 end
 
-@printf("%-28s ele_ey'=%+.3e pro_ey'=%+.3e  eps_y(end)/eps_y(0)=%.5f  cross=%.3f  %.0fs\n",
-        tag, gr_ele_y, gr_pro_y, ey[end] / ey[1], cross_frac, elapsed)
+@printf("%-28s ele_ey'=%+.3e pro_ey'=%+.3e  eps_y(end)/eps_y(0)=%.5f  cross=%.3f  dropped=%d  %.0fs\n",
+        tag, gr_ele_y, gr_pro_y, ey[end] / ey[1], cross_frac, dropped_particles, elapsed)
