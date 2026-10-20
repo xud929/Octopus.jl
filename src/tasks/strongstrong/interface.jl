@@ -2898,6 +2898,7 @@ function _execute_strong_strong_task!(
     prov = vcat(_turn_modulation_entries(_strong_strong_physics_line(blocks1), 1),
                 _turn_modulation_entries(_strong_strong_physics_line(blocks2), 2))
     solvers = _preflight_solver_configurations!(task, blocks1, blocks2, policy)
+    _preflight_solver_kbb(solvers, beam1, beam2)
     # Validate every output preparer BEFORE any of them commits, then commit.
     #
     # Ordering alone cannot fix this and the history shows why: the 2026-08-05
@@ -3095,6 +3096,29 @@ function _preflight_solver_configurations!(task, blocks1, blocks2, policy)
     end
     isempty(inactive) || @warn "non-default CUDA-only solver options are inactive on CPU storage" options=sort!(collect(inactive))
     return solvers
+end
+
+"""
+    _preflight_solver_kbb(solvers, beam1, beam2) -> Nothing
+
+The derived beam-beam strengths of every resolved collision solver, evaluated
+BEFORE the first turn: `_strong_strong_kbb1` / `_strong_strong_kbb2` refuse a
+beam whose `E0` is not finite and nonzero when the solver gives no `kbb`, and
+until the 2026-10-20 fix batch that refusal fired inside the collide, after
+the upstream elements of both lines had tracked -- a refusal after a mutation
+(2026-10-18 audit, F-54; measured on the public-configuration contract's own
+fixture: `beams unchanged after that throw => false`). Both inputs are known
+here, so the same `ArgumentError` lands with the beams untouched. Solvers
+without `kbb1`/`kbb2` fields (a user-defined solver) are not consulted. The
+values are discarded: the collide derives them again, as before.
+"""
+function _preflight_solver_kbb(solvers, beam1, beam2)
+    for solver in solvers
+        solver === nothing && continue
+        hasproperty(solver, :kbb1) && _strong_strong_kbb1(solver, beam1, beam2)
+        hasproperty(solver, :kbb2) && _strong_strong_kbb2(solver, beam1, beam2)
+    end
+    return nothing
 end
 
 function _warn_inactive_diagnostics(diagnostics::StrongStrongDiagnostics, backend)

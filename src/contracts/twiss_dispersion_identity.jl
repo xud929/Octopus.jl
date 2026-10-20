@@ -1195,7 +1195,9 @@ end
 The whole check with an injectable verb `run(analysis, input)` (the suite
 injects runs that certify silently, perturb the input or throw, and proves
 each red): initializes every count, runs every identity fixture (certifying
-the bunched ones; the scaling and line pairs), the diagnostic table
+the bunched ones -- a bunched fixture, F6a dense map included, that is not
+certified or has no unique frame fails by name, `metrics[:dense6_unresolved]`
+counting the F6a ones; the scaling and line pairs), the diagnostic table
 (`metrics[:diagnostics_expected]`, `[:diagnostics_silent]`,
 `[:diagnostics_silent_names]`), the kind sweep, checks that every slug ran
 on at least one fixture and that every multiplier key is a slug, and
@@ -1245,11 +1247,15 @@ function _identity_contract_probe(contract::TwissDispersionIdentityContract, fix
             continue
         end
         if fx.kind === :bunched && (index == 0 || !frame_unique(r))
-            if startswith(fx.name, "F6a")
-                metrics[:dense6_unresolved] += 1
-            else
-                push!(failures, "fixture $(fx.name): the bunched 6D map was not certified (selected $(index), frame $(_identity_contract_frame_reason(r)))")
-            end
+            # Every bunched fixture alike: F4, F5 and every F6a dense map that
+            # is not certified or has no unique frame FAILS the contract by
+            # name. The F6a maps only incremented `dense6_unresolved` and were
+            # skipped; with all twenty diverted to a degenerate map the contract
+            # still answered "certified ... 100 fixture runs" and only the
+            # suite's `== 0` pin could see the count (2026-10-18 audit, F-139).
+            # The metric stays, now counting the F6a failures (0 on a pass).
+            startswith(fx.name, "F6a") && (metrics[:dense6_unresolved] += 1)
+            push!(failures, "fixture $(fx.name): the bunched 6D map was not certified (selected $(index), frame $(_identity_contract_frame_reason(r)))")
             continue
         end
         if fx.kind === :matrix4 && !frame_unique(r)

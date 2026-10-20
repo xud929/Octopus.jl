@@ -341,8 +341,12 @@ field named after the option; `validate(PublicConfigurationEffectivenessContract
 runs it over a `TrackingTask` fixture (every artifact option away from its
 default, `loss_report=false`, a modulated element, all three probes, a
 fresh then a continued window) and a `StrongStrongTask` fixture (the two
-requests resolved inactive), and the suite's "Run artifact receipts and
-slots: ..." testset adds the negative controls, the static tripwire that
+requests resolved inactive) -- with the observer owners derived from the
+concrete `AbstractBeamObserver` tree and the pairs it judged COUNTED
+(`_output_receipt_pairs`, `metrics[:output_receipt_pairs_checked]`), so a
+schema regression that leaves no `:output` option fails the contract instead
+of passing on an empty gap list (2026-10-18 audit, F-52) -- and the suite's
+"Run artifact receipts and slots: ..." testset adds the negative controls, the static tripwire that
 every `:output` consumer has a `_record_execution!` site, and the pins above.
 Rejected: naming one task's receipt for a shared option (the `blocks`
 precedent is one object with two consumers of its own, not two owners) and

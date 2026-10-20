@@ -40,18 +40,24 @@ end
 """
     _ANALYSIS_CONTRACT_LONGITUDINAL_INDEX
 
-The certified `longitudinal_mode` alternative of the contract: the canonical
-eigenvalue index of the dense 6D fixture's longitudinal mode. The fixture is
-seeded (`_analysis_contract_fixtures(UInt64(20260911))`), so the index is a
-property of the data; the contract's `validate` asserts that the `:analysis_labels`
-receipt of the certified run echoes the requested index (it pins the receipt
-to the request, not the constant to the fixture: a drift of the fixture that
-moves its longitudinal mode is the identity contract's business, stage 9
-U8b-4). Measured by
-`_analysis_contract_longitudinal_index()` on the fixture at construction of
-the tables (see the report of stage 4b Part B).
+The `longitudinal_mode` alternative of the contract: a canonical eigenvalue
+index of the dense 6D fixture that is NOT the one the `:max_signed_z_area`
+heuristic selects on it. The fixture is seeded
+(`_analysis_contract_fixtures(UInt64(20260911))`), its mode clusters are
+`[[1, 6], [2, 5], [3, 4]]` and the heuristic selects 2 (the data's
+synchrotron mode); the alternative names the first betatron pair, so the
+explicit index moves `dispersion.longitudinal` from 2 to 1 and `physical.eta`
+with it (measured: `(0.428, 0.337, -0.131, -0.160)` to `(-0.016, 0.037,
+0.076, 0.256)`, a `:degraded` result). Until the 2026-10-20 fix batch the
+constant WAS the heuristic's choice, 2, so "index honoured" and "index ignored
+with the flags set from `longitudinal_mode isa Integer`" produced the same
+optics and the same receipt and the probe could read only the consumer's
+self-report (2026-10-18 audit, F-140; a contract whose override and fallback
+coincide verifies nothing). The observable asserts both that the default run's
+selection differs from this constant (else the probe proves nothing and
+FAILS saying so) and that the alternative run's result selected it.
 """
-const _ANALYSIS_CONTRACT_LONGITUDINAL_INDEX = 2
+const _ANALYSIS_CONTRACT_LONGITUDINAL_INDEX = 1
 
 """
     _default_analysis_inactive_options() -> Dict{Tuple{Symbol,Symbol},String}
@@ -450,8 +456,22 @@ function _analysis_contract_observable(name::Symbol, meta::ConfigurationOptionMe
             ap[1].clusters.partition_source !== :auto && dp[1].clusters.partition_source === :auto &&
             members(ap[1]) == Set(sort(g) for g in alternative)
     elseif name === :longitudinal_mode
+        # The index must be seen in the RESULT, not only in the flags (F-140):
+        # the heuristic's own selection on this fixture (the default run's
+        # `dispersion.longitudinal`) must differ from the alternative, or an
+        # ignored index is indistinguishable from an honoured one; the
+        # alternative run must have selected the alternative, its dispersion
+        # must have moved with it, and the receipt and the selection record
+        # must say explicit and certified.
         sel = ap[1].diagnostics.longitudinal_selection
-        field(ap, :certified) === true && isequal(field(ap, :selected), alternative) && field(dp, :certified) === false &&
+        heuristic = dp[1].dispersion.longitudinal
+        heuristic == alternative && return (false, :moved,
+            "$(name): the alternative $(alternative) is the heuristic's own selection on the fixture, so an " *
+            "ignored index cannot be told from an honoured one; choose another canonical eigenvalue index")
+        eta_moved = (ed = _analysis_contract_physics(dp[1]).eta; ea = _analysis_contract_physics(ap[1]).eta;
+                     ed !== nothing && ea !== nothing && !isequal(ed, ea))
+        ap[1].dispersion.longitudinal == alternative && eta_moved &&
+            field(ap, :certified) === true && isequal(field(ap, :selected), alternative) && field(dp, :certified) === false &&
             field(ap, :rule) === :explicit && field(dp, :rule) === :max_signed_z_area &&
             sel.status === :unique && sel.value.rule === :explicit && sel.value.certified
     elseif name === :preferred_form

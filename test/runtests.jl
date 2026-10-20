@@ -1380,6 +1380,20 @@ end
     @test occursin("analyzes to :failed", r8.message) && occursin("($(r8.metrics[:kinds_failed_example]) findings)", r8.message)
     @test any(T -> (m8 = Octopus._element_meta_or_nothing(T); m8 !== nothing && occursin("kind $(m8.kind):", r8.message)),
               Octopus.registered_element_specs())
+    # n9 (2026-10-18 audit, F-139; fix batch 2): every F6a dense map diverted to a definite-degenerate map whose
+    # frame is :cluster_unresolved. The probe used to count them in dense6_unresolved and SKIP them, answering
+    # "certified ... 100 fixture runs" with 20 of the 31 judged results gone (measured: passed, dense6_unresolved
+    # = 20); now each uncertified bunched fixture fails by name, F6a included, and the count says how many.
+    let rot(mu) = [cos(mu) sin(mu); -sin(mu) cos(mu)],
+        degenerate = Octopus._identity_contract_blockdiag(rot(0.73), rot(1.41), rot(0.73)),
+        f6a_inputs = Set(objectid(f.input) for f in fx if startswith(f.name, "F6a"))
+        divert(a, x) = (x isa Matrix{Float64} && objectid(x) in f6a_inputs) ? analyze(a, degenerate) : analyze(a, x)
+        r9 = Octopus._identity_contract_probe(c, fx, divert)
+        @test !r9.passed && r9.status === :failed
+        @test r9.metrics[:dense6_unresolved] == c.dense_maps && c.dense_maps > 0
+        @test occursin("F6a dense 6x6 map 1:", r9.message) && occursin("was not certified", r9.message)
+        @test occursin("($(c.dense_maps) findings)", r9.message)        # one finding per diverted map, nothing else red
+    end
     # the tripwire on the pin's single source, last so that nothing above it can be lost to it: the three ratio
     # pins of this testset and of "Physics contracts" all read `_ST6_PIN` (a literal is a second copy of the
     # number, and a second copy is what a fix moves in one place only: run 437). The suite is read by its package
@@ -6120,7 +6134,12 @@ Mimics `analyze`'s receipts and configuration report from the options alone.
 `:report_resolved_inactive` (the report calls an inactive option
 `:resolved`), `:zeta_moves` (scaling moves the physical zeta), `:no_move`
 (preferred_form ignored), `:strict_returns` (strict = true returns the
-failed result instead of throwing).
+failed result instead of throwing), `:index_dropped` (an explicit
+`longitudinal_mode` index is reported as honoured -- receipt and selection
+flags explicit and certified, `selected` the request -- while the result
+keeps the heuristic's selection and its dispersion; 2026-10-18 audit, F-140).
+The result carries `dispersion.longitudinal` and an `eta` that depend on the
+selection the verb actually made, as `analyze`'s do.
 """
 function _st4b_b_fake_run(a::TwissDispersionAnalysis, input; defect::Symbol=:none)
     M = input isa Octopus.LinearizedMap ? input.matrix : input
@@ -6156,10 +6175,14 @@ function _st4b_b_fake_run(a::TwissDispersionAnalysis, input; defect::Symbol=:non
     bunched6 = form in (:matrix, :linearized)
     newton = bunched6 && :newton in a.dispersion_routes
     lrule = a.longitudinal_mode isa Symbol ? :max_signed_z_area : :explicit
+    # the selection the receipt REPORTS (the request) and the one the result CARRIES: equal unless the
+    # verb drops the index and keeps the heuristic's 2 (the F-140 defect)
+    reported_sel = a.longitudinal_mode isa Int ? a.longitudinal_mode : 2
+    actual_sel = defect === :index_dropped ? 2 : reported_sel
     if bunched6
         rec(defect === :wrong_consumer ? :analysis_scaling : :analysis_labels,
             (longitudinal_mode=a.longitudinal_mode, rule=lrule, certified=!(a.longitudinal_mode isa Symbol),
-             selected=a.longitudinal_mode isa Int ? a.longitudinal_mode : 2, weights=[0.03, 0.88, 0.08]))
+             selected=reported_sel, weights=[0.03, 0.88, 0.08]))
         rec(:analysis_dispersion_routes, (dispersion_routes=a.dispersion_routes, executed=a.dispersion_routes))
         newton && rec(:analysis_newton, (newton_max_iterations=a.newton_max_iterations, used=min(4, a.newton_max_iterations)))
     end
@@ -6176,7 +6199,9 @@ function _st4b_b_fake_run(a::TwissDispersionAnalysis, input; defect::Symbol=:non
             for (n, m) in pairs(Octopus.analysis_option_schema(a))]
     D(x) = Octopus.Determined(x)
     zeta = [1.0, 0.2, 0.1, 0.0] .+ ((defect === :zeta_moves && a.scaling === :none) ? 1e-3 : 0.0)
-    physical = (zeta=D(zeta), eta=D([0.0, 0.5, 0.0, 0.0]), h=D(0.5), tunes=[0.47, 1.6, 0.87])
+    # the dispersion read off the selected mode moves with the selection, as the real analysis's does
+    eta = actual_sel == 2 ? [0.0, 0.5, 0.0, 0.0] : [0.1 * actual_sel, 0.2, 0.0, 0.0]
+    physical = (zeta=D(zeta), eta=D(eta), h=D(0.5), tunes=[0.47, 1.6, 0.87])
     covariance = a.emittances === nothing ? Octopus.Determined{Matrix{Float64}}(:unavailable, nothing, nothing, :not_requested, "") :
         D(ones(d, d))
     groups = a.clusters === :auto ? (d == 6 ? [[1, 6], [2, 5], [3, 4]] : [[1, 4], [2, 3]]) : a.clusters
@@ -6185,7 +6210,8 @@ function _st4b_b_fake_run(a::TwissDispersionAnalysis, input; defect::Symbol=:non
     result = (configuration=conf, physical=physical, transverse=D((preferred_form=D(reported),)),
               covariance=covariance, status=status, degradations=degradations,
               scaling=(mode=mode, factors=collect(factors)), matrix=M, matrix_scaled=(mode === :none ? M : 1.5 .* M),
-              clusters=clusters, diagnostics=(longitudinal_selection=D((rule=lrule, certified=lrule === :explicit)),))
+              clusters=clusters, dispersion=(longitudinal=(bunched6 ? actual_sel : 0),),
+              diagnostics=(longitudinal_selection=D((rule=lrule, certified=lrule === :explicit)),))
     failing && a.strict && defect !== :strict_returns && throw(_St4bBError(result, ["frame residual above acceptance"]))
     return result
 end
@@ -7403,7 +7429,13 @@ end
     @test cm.degeneracy_status === :all_resolved && all(cl -> cl.classification === :definite, cm.clusters)
     @test Set(Set.(Octopus._default_analysis_option_alternatives()[:clusters])) == Set(Set.(cl.members for cl in cm.clusters))
     rm = Octopus._dispersion_routes(f.matrix, cm)
-    @test rm.longitudinal == Octopus._ANALYSIS_CONTRACT_LONGITUDINAL_INDEX      # the certified alternative IS the data's synchrotron mode
+    # the alternative is NOT the heuristic's own selection on the fixture (2026-10-18 audit, F-140): until fix
+    # batch 2 this line pinned the opposite ("the certified alternative IS the data's synchrotron mode"), which
+    # made "index honoured" and "index ignored" the same optics; the contract's observable refuses a coincidence
+    @test rm.longitudinal == 2 && rm.longitudinal != Octopus._ANALYSIS_CONTRACT_LONGITUDINAL_INDEX
+    @test Octopus._ANALYSIS_CONTRACT_LONGITUDINAL_INDEX in 1:6 &&
+          analyze(TwissDispersionAnalysis(longitudinal_mode=Octopus._ANALYSIS_CONTRACT_LONGITUDINAL_INDEX), f.matrix).dispersion.longitudinal ==
+          Octopus._ANALYSIS_CONTRACT_LONGITUDINAL_INDEX
     cc = Octopus._mode_clusters(f.coasting; rho_M0=rho(f.coasting))
     rc = Octopus._dispersion_routes(f.coasting, cc)
     @test rc.coasting.holds && all(r -> r.status === :coasting_structure, rc.routes)
@@ -7501,6 +7533,12 @@ end
     # strict = true returning the failed result instead of throwing
     r = probe((a, x) -> _st4b_b_fake_run(a, x; defect=:strict_returns))
     @test !r.passed && occursin("did not throw", r.message) && occursin("status failed", r.message)
+    # an explicit longitudinal_mode index reported as honoured (receipt and selection flags explicit, certified,
+    # `selected` the request) while the result keeps the heuristic's selection: caught in the RESULT, where the
+    # dispersion did not move (2026-10-18 audit, F-140; with the alternative equal to the heuristic's choice
+    # this lie was indistinguishable from the truth)
+    r = probe((a, x) -> _st4b_b_fake_run(a, x; defect=:index_dropped))
+    @test !r.passed && occursin("longitudinal_mode", r.message) && occursin("did NOT move", r.message)
     # a run that throws where a result is expected is a FAILED probe carrying the message
     r = probe((a, x) -> error("scratch verb exploded"))
     @test !r.passed && r.status === :failed && occursin("scratch verb exploded", r.message)
@@ -12995,7 +13033,8 @@ end
     @test !(:turn_modulation in physics_keywords(ElementSpec{:thin_accelerating_cavity}))
     # The effectiveness contract with the two new exemption rows: it passes, no
     # row is stale and every declared row applied (measured 24.6 s on the stage
-    # 3 machine, 38 rows). It runs here in the full lane and in an extracted
+    # 3 machine, 38 rows then; 26 since fix batch 2 retired twelve, F-107). It
+    # runs here in the full lane and in an extracted
     # run; the fast lane leaves it to its lane-gated testset, loudly.
     if !(@isdefined _lane_full) || _lane_full()
         eff = validate(ElementParameterEffectivenessContract())
@@ -14124,7 +14163,12 @@ if _lane_gate("Element parameter effectiveness")
     # 2.2e-12 thin_sextupole .. 4.8e-10 thin_dipole: the rotation-composition
     # order, second order in the pitches, not last-bit hair). Unperturbable
     # 41 -> 34, rejected unchanged.
-    @test r.metrics[:checked] >= 537
+    # 537 -> 549 on 2026-10-20 (fix batch 2 unit A, F-107; the
+    # two units' counts add, measured on the merged tree): twelve exemptions whose structural reasons the six-DOF probe
+    # falsifies (the thin kicks' and the thin RF cavity's x/y offsets, the two
+    # boosts' y offsets; movements 1e-8 to 2.3e-6 through the pitch and the
+    # tilt) retired and swept.
+    @test r.metrics[:checked] >= 549
 
     # What the contract does NOT decide has to be visible, and bounded
     # (2026-08-05_b audit, U4-2). 112 of 501 declared parameters used to be
@@ -14242,6 +14286,15 @@ if _lane_gate("Element parameter effectiveness")
     # for an effective parameter would keep excusing it forever, silently.
     @test !haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:drift, :nst))
     @test !haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:drift, :integrator_order))
+    # ... and so are the twelve placement rows the six-DOF probe falsified (F-107, fix batch 2): every
+    # transverse offset of the thin kick kinds and the thin RF cavity, and the boosts' vertical offsets, are
+    # swept now. With the placement wrap skipped for every kind the sweep names them (measured: 0 of the 12
+    # named while exempt, all 12 after).
+    for kind_ in (:thin_dipole, :hkicker, :vkicker, :kicker, :thin_rf_cavity), key_ in (:x_offset, :y_offset)
+        @test !haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (kind_, key_))
+    end
+    @test !haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:lorentz_boost, :y_offset))
+    @test !haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (:rev_lorentz_boost, :y_offset))
 
     # U4-1 (2026-08-16): the aperture half can now FAIL. The old probe killed
     # its particle, `NaN <= atol` is false, and all 11 aperture parameters
@@ -26095,6 +26148,8 @@ end
     @test res.metrics[:lost_both_backends] > 0        # it really kills
     @test res.metrics[:compared_coordinates] > 0      # and really compares
     @test res.metrics[:lost_one_backend] == 0
+    # the CPU/CPU docstring's exact-zero expectation, observed as a metric (F-50, fix batch 2)
+    @test res.metrics[:bitwise] === true && res.metrics[:max_abs_error] == 0.0
 end
 
 if _lane_gate("Contract coverage guards: declared kinds, solver tree, broken baselines, unrun contracts")
@@ -26209,22 +26264,103 @@ if _lane_gate("Contract coverage guards: declared kinds, solver tree, broken bas
         r3 = validate(StrongStrongPICMultiProcessConsistencyContract(ranks=(1, 3), mpiexec="mpiexec"))
         @test r3.status === :failed
         @test occursin("cannot divide", r3.message)
+        # The forwarded fields are DERIVED (2026-10-18 audit, F-53; fix batch 2): every field of the contract
+        # is either kept by the launch (`_MPI_PIC_CONTRACT_OWN_FIELDS`) or forwarded, every forwarded field is
+        # a field of the PIC contract, and the child's command line round-trips each one -- a loop over the
+        # derived tuple, where four hand copies (base, args, spec, this test) used to agree by luck.
+        forwarded = Octopus._mpi_pic_contract_forwarded()
+        @test Set(fieldnames(StrongStrongPICMultiProcessConsistencyContract)) ==
+              union(Set(Octopus._MPI_PIC_CONTRACT_OWN_FIELDS), Set(forwarded))
+        @test isempty(intersect(Set(Octopus._MPI_PIC_CONTRACT_OWN_FIELDS), Set(forwarded)))
+        @test all(f -> f in fieldnames(StrongStrongPICBackendConsistencyContract), forwarded)
+        @test :green_type in forwarded && :seed in forwarded && !(:atol in forwarded)     # the CUDA leg keeps its own tolerances
         spec = Octopus._mpi_pic_contract_spec(Octopus._mpi_pic_contract_args(c, 2, "out.h5"))
-        @test spec.n_particles == c.n_particles && spec.turns == c.turns
-        @test spec.grid == c.grid && spec.nslices == c.nslices
-        @test spec.deposit_method === c.deposit_method && spec.green_cache === c.green_cache
-        @test spec.threads_per_rank == c.threads_per_rank && spec.seed == c.seed
+        for f in forwarded
+            @test isequal(spec[f], getfield(c, f))
+        end
+        @test spec.threads_per_rank == c.threads_per_rank
         @test spec.ranks == 2 && spec.out == "out.h5"
+        base = Octopus._mpi_pic_contract_base(c)
+        @test all(f -> isequal(getfield(base, f), getfield(c, f)), forwarded)
+        # a value that is not the default travels: the derivation forwards the FIELD, not the default
+        cst = StrongStrongPICMultiProcessConsistencyContract(green_type=:standard, nslices=4)
+        sst = Octopus._mpi_pic_contract_spec(Octopus._mpi_pic_contract_args(cst, 2, "o.h5"))
+        @test sst.green_type === :standard && sst.nslices == 4 && Octopus._mpi_pic_contract_base(cst).green_type === :standard
+        # a word the child never received, and a field type without a parser, fail by name
+        @test_throws ArgumentError Octopus._mpi_pic_contract_spec(filter(w -> !startswith(w, "nslices="), Octopus._mpi_pic_contract_args(c, 2, "o.h5")))
+        @test_throws ArgumentError Octopus._mpi_pic_contract_parse(Vector{Int}, "1,2")
         @test StrongStrongPICMultiProcessConsistencyContract in required_contracts(StrongStrongTask)
         @test isfile(joinpath(pkgdir(Octopus), "src", "contracts", "mpi_pic_consistency_child.jl"))
+    end
+
+    # Fix batch 2 (2026-10-20), the contracts' own guards, each cheap and each red before its fix:
+    # F-48: a type that is not a backend is refused at construction and by the availability check, never
+    # reported as `:skipped` (the status an unavailable device earns).
+    let line48 = (CrabDispersionSpec{Float64}(zeta1=0.02, zeta3=-0.01),)
+        # the field type `Type{<:AbstractExecutionBackend}` refuses the conversion (a MethodError from the
+        # kwdef constructor's convert), before any validate could call it `:skipped`
+        @test_throws MethodError ElementTrackingBackendConsistencyContract(line=line48, backend_b=Float64)
+        @test_throws ArgumentError Octopus._contract_backends_available(Float64)
+        @test Octopus._contract_backends_available(CPUThreadsBackend) == (true, "")
+    end
+    # F-10: the public-configuration contract refuses an override equal to the fallback it displaces, and
+    # SolverOptionEffectivenessContract a launch request equal to its policy's thread count.
+    let r10 = validate(PublicConfigurationEffectivenessContract(cuda_pic_threads=128))
+        @test r10.status === :failed && occursin("must be a power of two different from", r10.message)
+        r10b = validate(SolverOptionEffectivenessContract(cuda_threads=Octopus._SOLVER_CONTRACT_CUDA_POLICY_THREADS))
+        @test r10b.status === :failed && occursin("equals the contract's CUDA policy thread count", r10b.message)
+        @test PublicConfigurationEffectivenessContract().cuda_pic_threads != PublicConfigurationEffectivenessContract().cuda_threads
+        @test SolverOptionEffectivenessContract().cuda_threads != Octopus._SOLVER_CONTRACT_CUDA_POLICY_THREADS
+    end
+    # F-52: the output-boundary coverage count is derived from the schemas and is zero when nothing declares
+    # `:output`; the contract fails on zero (its probe is the full validate, run below).
+    let schemas = Pair{Symbol,Any}[:RunArtifact => run_artifact_option_schema(), :TrackingTask => tracking_task_option_schema()]
+        consumers = Set(m.consumer for (_, s) in schemas for m in s if m.category === :output)
+        @test !isempty(consumers)
+        @test Octopus._output_receipt_pairs(schemas) == sum(count(m -> m.consumer in consumers, s) for (_, s) in schemas)
+        @test Octopus._output_receipt_pairs(schemas) > 0
+        @test Octopus._output_receipt_pairs(Pair{Symbol,Any}[]) == 0
+        flipped = Pair{Symbol,Any}[o => NamedTuple{keys(s)}(map(m -> m.category === :output ?
+            typeof(m)((f === :category ? :execution : getfield(m, f) for f in fieldnames(typeof(m)))...) : m, values(s)))
+            for (o, s) in schemas]
+        @test Octopus._output_receipt_pairs(flipped) == 0
+        @test isempty(Octopus._output_receipt_gaps(Octopus.ExecutionAuditReceipt[], flipped))   # the pass the count refuses
+    end
+    # green_type on the PIC backend contract (batch 1 unit Q's open gap): a kernel the solver refuses is a
+    # `:failed` result naming it, judged before the CUDA gate, so a CPU-only process sees it too.
+    let rgt = validate(StrongStrongPICBackendConsistencyContract(green_type=:bogus))
+        @test rgt.status === :failed && occursin("green_type", rgt.message)
+        @test StrongStrongPICBackendConsistencyContract().green_type === :integrated
+        @test Octopus._strong_strong_contract_solver(StrongStrongPICBackendConsistencyContract(green_type=:standard)).green_type === :standard
+    end
+    # F-108: the solver contract's stale-exemption tripwire runs on every process, device or not: a row for
+    # an option that does not exist is `:failed` by name, where a CPU-only process used to return `:skipped`
+    # before the tripwire. A small beam keeps the sweep cheap; the stale verdict comes first whatever else the
+    # sweep found at that size.
+    let stale = merge(Octopus.DEFAULT_INACTIVE_SOLVER_OPTIONS,
+                      Dict((:PICPoissonSolver, :no_such_option) => "a stale entry for a parameter that does not exist"))
+        r108 = validate(SolverOptionEffectivenessContract(n_particles=16, inactive=stale))
+        @test r108.status === :failed && occursin("stale exemptions", r108.message) && occursin("PICPoissonSolver.no_such_option", r108.message)
+        @test r108.metrics[:stale_exemptions] == 1 && r108.metrics[:exemptions_declared] == length(stale)
     end
 
     # U3-6/U21-13: these contracts were executed by no test and no CI.
     rp = validate(PublicConfigurationEffectivenessContract())
     rp.status === :passed ||
         @info "public-configuration contract result" rp.status rp.message rp.metrics
+    # a single-threaded Julia is a SKIP naming the worker-invariance comparison (F-47), which this suite,
+    # run at four threads, never takes; the output boundary is counted, not only gapped (F-52); the
+    # derived-kbb refusal fires before any element tracks (F-54)
     @test rp.status === :passed || (rp.status === :skipped && !CUDA_TESTS_ACTIVE)
+    @test rp.metrics[:cpu_worker_effective] === true
+    @test rp.metrics[:output_receipt_pairs_checked] > 0 && isempty(rp.metrics[:output_receipt_gaps])
+    @test rp.metrics[:derived_kbb_refusal_rejected] === true && rp.metrics[:derived_kbb_refusal_unchanged] === true
     if CUDA_TESTS_ACTIVE
+        # F-10: the launch-family override read on every family, the fallback observed to differ
+        @test rp.metrics[:cuda_pic_launch_effective] === true
+        @test all(v -> v == [rp.metrics[:cuda_pic_threads_requested]], values(rp.metrics[:cuda_pic_threads_observed]))
+        @test all(v -> v == [PublicConfigurationEffectivenessContract().cuda_threads], values(rp.metrics[:cuda_pic_fallback_observed]))
+        @test Set(keys(rp.metrics[:cuda_pic_fallback_observed])) == Set(Octopus._CUDA_PIC_LAUNCH_FAMILIES)
         rpic = validate(StrongStrongPICBackendConsistencyContract())
         @test rpic.passed
         # `passed` alone did not mean the per-pair luminosity trace was
@@ -26232,10 +26368,20 @@ if _lane_gate("Contract coverage guards: declared kinds, solver tree, broken bas
         # when skipped, still reported success having compared nothing
         # (2026-08-05_b audit, U1-1). The count is now asserted, so a contract
         # that certifies backend equivalence while comparing an empty set fails
-        # here instead of passing quietly.
+        # here instead of passing quietly -- and since fix batch 2 (F-46) the
+        # contract derives the expected count from its own configuration,
+        # `nslices^2 * turns`, and fails on its own when the CPU trace is short.
         @test rpic.metrics[:slice_pair_luminosity_records_compared] > 0
         @test rpic.metrics[:slice_pair_luminosity_records_compared] ==
               rpic.metrics[:slice_pair_luminosity_cpu_records]
+        @test rpic.metrics[:slice_pair_luminosity_records_expected] == rpic.metrics[:nslices]^2 * rpic.metrics[:turns]
+        @test rpic.metrics[:slice_pair_luminosity_records_compared] == rpic.metrics[:slice_pair_luminosity_records_expected]
+        # green_type reaches the solver: the :standard kernel under the default cache passes at the
+        # controls' class (F-3's route, unit Q), and the CPU reference luminosity moves between the kernels
+        rstd = validate(StrongStrongPICBackendConsistencyContract(green_type=:standard))
+        @test rstd.passed && rstd.metrics[:green_type] === :standard && rpic.metrics[:green_type] === :integrated
+        @test rstd.metrics[:cpu_luminosity] != rpic.metrics[:cpu_luminosity]
+        @test rstd.metrics[:cpu_cache_history] == rstd.metrics[:gpu_cache_history] && rstd.metrics[:cpu_cache_history][1] > 0
         # 2026-08-07 (U1-1 remainder, archived todo row): only the indexed wavefront
         # sub-route populated the GPU per-pair luminosity sink, so this
         # contract FAILED at `batch_mode=:sequential` — 18 CPU records against

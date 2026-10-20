@@ -55,20 +55,30 @@ coordinates, snapshots the same Octopus global RNG state, executes a
 `TrackingTask` on each backend, and compares all six coordinates.
 
 Use `backend_b=CUDABackend` for a CPU/CUDA check. If CUDA is unavailable to
-Julia, validation returns `status == :skipped` instead of failing.
+Julia, validation returns `status == :skipped` instead of failing. The two
+backend fields take an execution backend type (`CPUThreadsBackend`,
+`CUDABackend`); any other type is refused at construction, and
+`_contract_backends_available` throws an `ArgumentError` for one -- until the
+2026-10-20 fix batch an unsupported type was reported as `:skipped`, the
+status reserved for an unavailable resource, so a mistyped backend in a test
+was green on a CPU-only host (2026-10-18 audit, F-48).
 
 When both backends are `CPUThreadsBackend`, this is a same-process deterministic
 repeatability check. Exact zero coordinate error is expected for the current
 elementwise fused path because particles do not share reductions and stochastic
-samples are keyed by particle index, turn, seed, and `rng_id`.
+samples are keyed by particle index, turn, seed, and `rng_id`; the verdict is
+still the stated `atol`/`rtol` (so a CPU/CUDA caller can reuse the same
+fields), and `metrics[:bitwise]` records whether the two runs agreed to the
+bit, which the suite pins for the CPU/CPU case (measured 0.0 on the
+2026-10-18 audit's re-run; F-50).
 """
 Base.@kwdef struct ElementTrackingBackendConsistencyContract <: AbstractBackendConsistencyContract
     line
     initial_rep = nothing
     n_particles::Int = 1024
     turns::Int = 1
-    backend_a::DataType = CPUThreadsBackend
-    backend_b::DataType = CPUThreadsBackend
+    backend_a::Type{<:AbstractExecutionBackend} = CPUThreadsBackend
+    backend_b::Type{<:AbstractExecutionBackend} = CPUThreadsBackend
     seed::UInt64 = UInt64(123456789)
     rng_method::Symbol = :philox
     atol::Float64 = 1e-10
@@ -84,6 +94,23 @@ Validate CPU/CUDA consistency for a live-beam strong-strong soft-Gaussian
 collision. The contract constructs identical electron/proton beams, executes
 matching `StrongStrongTask`s, and compares both final six-dimensional beam
 states and luminosity.
+
+The allowances and where they come from (2026-10-18 audit, F-50): `atol =
+rtol = luminosity_rtol = 1e-10` is the repository's class for "the same
+result by another route", the convention every strong-strong backend contract
+and `SolverOptionEffectivenessContract`'s device floor use. It is not fitted
+to this comparison's floor: measured on the defaults (RTX 4500 Ada, 2026-10-19
+re-run) the CPU/CUDA difference is `max_abs_error = 1.53e-17`,
+`global_rel_error = 6.5e-16`, `luminosity_rel_error = 1.38e-16`, i.e. six
+orders inside the allowance, and the CUDA soft-Gaussian route is bitwise
+repeatable run to run (repeat spread 0.0). What the allowance must stay above
+is the class of a reordered float sum on the device (the PIC deposit's
+run-to-run spread, 1.7e-11 relative, measured by the same audit) and what it
+must stay below is any algorithmic divergence (2e-3 for a Green-cache route
+change, 5e-3 for a spectral method switch): 1e-10 sits six orders below the
+latter and the Gaussian route has none of the former. The `MultiProcess`
+sibling chose tighter values from its own measured legs because its claim is
+about rank counts, not devices.
 
 If CUDA is unavailable, validation returns `status=:skipped`.
 """
@@ -101,7 +128,7 @@ end
     StrongStrongPICBackendConsistencyContract(; n_particles=1024, turns=2,
         grid=(32, 32), nslices=3, deposit_method=:CIC,
         luminosity_deposit_method=nothing,
-        green_cache=:slice_pair,
+        green_type=:integrated, green_cache=:slice_pair,
         slice_pair_green_min_ratio=0.50, slice_pair_green_growth=0.25,
         batch_mode=:wavefront, seed=123456789, atol=1e-10, rtol=1e-10,
         luminosity_rtol=1e-10)
@@ -113,9 +140,34 @@ luminosity, and—when `green_cache=:slice_pair`—requires identical cache
 hit/miss/rebuild histories with at least one reuse.
 Set `deposit_method=:CIC` or `:TSC` to validate either force deposition path.
 `luminosity_deposit_method=nothing` inherits that method; explicit `:CIC` or
-`:TSC` validates an independent luminosity-deposition choice. Wavefront mode
-also compares every nonempty slice-pair luminosity contribution; sequential
-mode compares the complete per-turn luminosity series.
+`:TSC` validates an independent luminosity-deposition choice. `green_type`
+selects the free-space kernel (`:integrated`, the default; `:standard`;
+`:lattice`), so the `:standard` route under the default cache -- the route
+the 2026-10-18 audit's F-3 found a whole cell apart between the backends,
+fixed by the 2026-10-19 batch's unit Q -- is contractable at the controls'
+class (measured 2026-10-20 at the defaults, RTX 4500 Ada: `global_rel_error`
+2.4e-15 for `:integrated` and 7.0e-16 for `:standard`, per-pair luminosity
+9.3e-15 and 1.1e-14 relative, identical cache histories (17, 18, 1); the CPU
+reference luminosity moves by 2.5e-3 relative between the two kernels, which
+is the field reaching the solver); a value the solver refuses is a
+`:failed` result naming it, judged before the CUDA gate. Every slice pair of
+every turn is compared through the per-pair luminosity trace in both batch
+modes: the expected record count is DERIVED from the configuration,
+`nslices^2 * turns` (the CPU reference pushes one record per slice pair from
+the single loop that serves every route), and a run whose CPU trace has
+fewer rows fails by that count -- until the 2026-10-20 fix batch the
+expectation was read off the CPU output itself, so a sink that fell silent on
+both backends passed with 0 records compared (2026-10-18 audit, F-46). The
+per-turn luminosity series is compared whole in both modes.
+
+The allowances `atol = rtol = luminosity_rtol = 1e-10` are the repository's
+class for "the same result by another route" (the soft-Gaussian sibling's
+docstring derives it); measured on the defaults (2026-10-19 re-run) the
+CPU/CUDA difference is `max_abs_error = 5.5e-17`, `global_rel_error =
+2.3e-15`, per-pair luminosity 8.2e-15 relative over 18 records, and the CUDA
+deposit's run-to-run spread (float atomics reorder) is 1.7e-11 relative, so
+the allowance is six times that noise class and six orders inside any
+algorithmic divergence (F-50).
 
 If CUDA is unavailable, validation returns `status=:skipped`.
 """
@@ -126,6 +178,7 @@ Base.@kwdef struct StrongStrongPICBackendConsistencyContract <: AbstractBackendC
     nslices::Int = 3
     deposit_method::Symbol = :CIC
     luminosity_deposit_method::Union{Nothing,Symbol} = nothing
+    green_type::Symbol = :integrated
     green_cache::Symbol = :slice_pair
     slice_pair_green_min_ratio::Float64 = 0.50
     slice_pair_green_growth::Float64 = 0.25
@@ -138,7 +191,8 @@ end
 
 """
     StrongStrongPICMultiProcessConsistencyContract(; n_particles=1024, turns=2,
-        grid=(32, 32), nslices=3, deposit_method=:CIC, green_cache=:slice_pair,
+        grid=(32, 32), nslices=3, deposit_method=:CIC, green_type=:integrated,
+        green_cache=:slice_pair,
         ranks=(1, 2), threads_per_rank=1, mpiexec=nothing, timeout=1800,
         atol=1e-18, rtol=1e-11, luminosity_rtol=1e-12, cuda=true,
         seed=123456789)
@@ -176,6 +230,14 @@ child writes the beams gathered onto rank 0 and the luminosity series to a file
 this process reads. With `mpiexec = nothing` the result is `:skipped`, naming
 what was not exercised; an unrun leg is never reported as a pass. A child that
 blocks is killed after `timeout` seconds and reported as a failure.
+
+Which fields reach the legs is DERIVED, not listed (2026-10-18 audit, F-53):
+every field not in `_MPI_PIC_CONTRACT_OWN_FIELDS` (the launch and tolerance
+fields this contract keeps for itself) is forwarded to the CPU reference, to
+the child's command line and to the CUDA leg's
+`StrongStrongPICBackendConsistencyContract`, and must be a field of that
+contract (`_mpi_pic_contract_forwarded` refuses one that is not, by name).
+`green_type` joined both contracts that way in the 2026-10-20 fix batch.
 """
 Base.@kwdef struct StrongStrongPICMultiProcessConsistencyContract <: AbstractBackendConsistencyContract
     n_particles::Int = 1024
@@ -183,6 +245,7 @@ Base.@kwdef struct StrongStrongPICMultiProcessConsistencyContract <: AbstractBac
     grid::Tuple{Int,Int} = (32, 32)
     nslices::Int = 3
     deposit_method::Symbol = :CIC
+    green_type::Symbol = :integrated
     green_cache::Symbol = :slice_pair
     ranks::Tuple{Vararg{Int}} = (1, 2)
     threads_per_rank::Int = 1
@@ -197,7 +260,7 @@ end
 
 """
     PublicConfigurationEffectivenessContract(; n_particles=256,
-        cuda_threads=128, cuda_blocks=3)
+        cuda_threads=128, cuda_blocks=3, cuda_pic_threads=64)
 
 Verify that public execution configuration reaches actual runtime consumers.
 The contract checks CPU logical-worker receipts, explicit and automatic fused
@@ -205,13 +268,36 @@ CUDA launch receipts, policy/storage mismatch rejection before mutation, and
 all CUDA PIC launch-family overrides. Execution-geometry changes must preserve
 the deterministic fused tracking result.
 
+`cuda_threads` is the generic CUDA thread count of the policies the contract
+installs; `cuda_pic_threads` is the per-family override it requests through
+`CUDAPICLaunchConfig` for every family of `_CUDA_PIC_LAUNCH_FAMILIES`. The two
+MUST differ (both powers of two, the luminosity family's requirement), and
+the contract refuses to run otherwise: the launch-family check reads the
+`:cuda_pic_launch` receipts and requires every family to carry
+`cuda_pic_threads`, then runs the same task with no override and requires
+every family to carry `cuda_threads` (the fallback, observed). Until the
+2026-10-20 fix batch both numbers were `cuda_threads`, so a consumer that
+dropped the override and inherited the policy's count read exactly what the
+override asked for and the check could not fail (2026-10-18 audit, F-10).
+
+The output boundary is checked for coverage, not only for gaps: the schema
+owners are derived (`RunArtifact`, the two task kinds and every concrete
+`AbstractBeamObserver`), `metrics[:output_receipt_pairs_checked]` counts the
+(owner, option) pairs whose declared consumer is an output receipt, and a run
+that checked none fails (F-52).
+
 If CUDA is unavailable, CPU/schema checks run and the overall result is
-`status=:skipped`; an unavailable CUDA check is never reported as passed.
+`status=:skipped`; an unavailable CUDA check is never reported as passed. The
+same holds for the logical-worker invariance comparison: on a single-threaded
+Julia it cannot run, so the result is `status=:skipped` naming it (until the
+2026-10-20 fix batch a `-t1` run was `:passed` with `cpu_worker_effective =
+:not_measured`; F-47).
 """
 Base.@kwdef struct PublicConfigurationEffectivenessContract <: AbstractImplementationContract
     n_particles::Int = 256
     cuda_threads::Int = 128
     cuda_blocks::Int = 3
+    cuda_pic_threads::Int = 64
 end
 
 """
@@ -348,14 +434,22 @@ function validate(contract::KnobEffectivenessContract; kwargs...)
         execute!(bind_task, rep_bind; turns=1)
         bound = _contract_coordinate_metrics(rep_bind, run_reference!(expected(400.0)), 0.0, 0.0)
 
+        # The unset-knob guard, by ITS message. Every parameter the runtime
+        # constructor reads is supplied, so the only thing that can refuse is
+        # the knob: this probe used to pass `zeta1` alone and accept any
+        # ArgumentError, and was sound only because the knob guard fired before
+        # the missing `zeta2` did -- which was a raw `KeyError` then and is an
+        # `ArgumentError` naming the parameter since the 2026-10-20 fix batch
+        # (2026-10-18 audit, F-55), so the decoy would have satisfied it.
         unset_rejected = try
             @knob __knob_contract__.unset
             compile_runtime(ElementSpec{:crab_dispersion}(;
                 zeta1=@knob_expr(__knob_contract__.unset),
+                zeta2=0.0, zeta3=0.0, zeta4=0.0,
                 tracking_method=Symplectic6DMap()))
             false
         catch err
-            err isa ArgumentError
+            err isa ArgumentError && occursin("has no value", sprint(showerror, err))
         end
         cycle_rejected = try
             _knob_define!(Symbol("__knob_contract__.brho"),
@@ -441,9 +535,47 @@ function _output_receipt_gaps(receipts, schemas)
     return gaps
 end
 
+"""
+    _output_receipt_pairs(schemas) -> Int
+
+How many (owner, option) pairs [`_output_receipt_gaps`](@ref) judges on
+`schemas`: the options, of any category, whose declared consumer is one of the
+consumers the `:output`-category options name. The gap check returns only
+what it found wrong, so an empty gap list was the same pass whether every
+option was carried or no schema option declared `:output` at all and nothing
+was checked (2026-10-18 audit, F-52); the public-configuration contract
+publishes this count and fails when it is zero.
+"""
+function _output_receipt_pairs(schemas)
+    consumers = Set{Symbol}()
+    for (_, schema) in schemas, meta in schema
+        meta.category === :output && push!(consumers, meta.consumer)
+    end
+    return sum(count(meta -> meta.consumer in consumers, schema) for (_, schema) in schemas; init=0)
+end
+
 function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
     _reject_unknown_validate_kwargs(contract, kwargs)
     metrics = Dict{Symbol,Any}()
+    # The override and the fallback it would be ignored in favour of must be
+    # distinguishable, or the launch-family check below proves nothing (F-10).
+    (ispow2(contract.cuda_threads) && ispow2(contract.cuda_pic_threads) &&
+     contract.cuda_pic_threads != contract.cuda_threads) || return ContractResult(false,
+        "cuda_pic_threads ($(contract.cuda_pic_threads)) must be a power of two different from " *
+        "cuda_threads ($(contract.cuda_threads), also a power of two): the launch-family check " *
+        "tells an honoured override from the inherited policy count only when the two differ.";
+        metrics=metrics)
+    # The strong-strong base beams FIRST, before anything auto-assigns a
+    # counter-RNG stream (2026-10-18 audit, F-49): they claim `rng_id = 1` and
+    # `2` explicitly, and the registry's automatic sequence steps over recorded
+    # ids, so the metadata validator's default `BPMObserver()` and the output
+    # probe's rules land above them. Built after those, in a fresh process the
+    # two claims met auto-assigned holders and drew two registry warnings about
+    # the contract's own fixture, while the comment at the output probe
+    # described a mitigation the code did not have.
+    base_beam1, base_beam2 = _strong_strong_contract_base_beams(
+        StrongStrongPICBackendConsistencyContract(n_particles=contract.n_particles,
+            turns=2, grid=(16, 16), nslices=3, green_cache=:none))
     try
         validate_configuration_metadata()
     catch err
@@ -539,16 +671,22 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
     # `cpu_workers_tested = [1]`, error 0.0, effective true. `validate` is
     # public API, and the CI gate's --threads=4 is what kept the suite honest,
     # not the contract.
+    # ... and since the 2026-10-20 fix batch the unmeasured comparison reaches
+    # the VERDICT: a run that could not compare worker counts ends `:skipped`
+    # naming it, never `:passed` (2026-10-18 audit, F-47), exactly as an
+    # unavailable CUDA device does below.
+    worker_skip = nothing
     if length(worker_sweep) >= 2
         metrics[:cpu_worker_coordinate_max_abs_error] = cpu_coordinate_error
         metrics[:cpu_worker_effective] = true
     else
         metrics[:cpu_worker_coordinate_max_abs_error] = :not_measured
         metrics[:cpu_worker_effective] = :not_measured
-        metrics[:cpu_worker_invariance_note] =
+        worker_skip =
             "only one logical-worker count is available on this Julia " *
             "(--threads=$(Threads.nthreads(:default))); worker-invariance was " *
             "not compared. Run with at least two threads to measure it."
+        metrics[:cpu_worker_invariance_note] = worker_skip
     end
 
     invalid_rejected = try
@@ -605,15 +743,17 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
     # `recording=true` with a modulated element in the line and `false`
     # without one (the strong-strong fixture). Every artifact option is away
     # from its default, as is the task's `loss_report`.
-    output_gaps, output_resolution = mktempdir() do dir
+    output_gaps, output_pairs, output_resolution = mktempdir() do dir
         cpu = CPUThreadsExecutionPolicy(threads=first(worker_sweep))
+        # The rule's and the BPM's stream ids sit above the registry's counter
+        # and are unheld (the suite's fresh-id convention, `_unheld_rng_id`):
+        # the contract's own fixtures then auto-assign nothing in the small-id
+        # range the strong-strong base beams claim (`rng_id = 1`, `2`; built
+        # first, at the top of this function, F-49). A `WhiteNoise` without an
+        # id took the next automatic id, 2 in a fresh process.
         modulated = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,),
-                                          phase_noise=(WhiteNoise(1.0e-3),))
-        # The BPM's stream id sits above the registry's counter and is unheld:
-        # the contract's later probes claim small ids explicitly (`rng_id=1`,
-        # `2` on the strong-strong base beams), and an auto-assigned BPM id in
-        # that range would draw the registry's explicit-after-auto warning in a
-        # fresh process (the suite's fresh-id convention, `_unheld_rng_id`).
+                                          phase_noise=(WhiteNoise(1.0e-3;
+                                              rng_id=_unheld_rng_id(_GLOBAL_RNG_ID_COUNTER[] + 1_000_000)),))
         hooks = (ScheduledObserver(MomentObserver(; name="m", orders=1)),
                  ScheduledObserver(CoordinateSnapshotObserver(; name="s", npart=2)),
                  ScheduledObserver(BPMObserver("b"; artifact=true,
@@ -642,16 +782,27 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
         with_execution_audit(audit_ss) do
             execute!(ss_task, ss_beam1, ss_beam2; turns=1)
         end
-        tracking_schemas = [:RunArtifact => run_artifact_option_schema(),
-                            :TrackingTask => tracking_task_option_schema(),
-                            :MomentObserver => observer_option_schema(MomentObserver),
-                            :CoordinateSnapshotObserver => observer_option_schema(CoordinateSnapshotObserver),
-                            :BPMObserver => observer_option_schema(BPMObserver)]
-        strong_strong_schemas = [:RunArtifact => run_artifact_option_schema(),
-                                 :StrongStrongTask => strong_strong_task_option_schema()]
+        # The schema owners are DERIVED: the artifact, the task kind, and every
+        # concrete observer Octopus defines (F-52; the three observer names were
+        # a hand list). A fourth observer kind lands here without an edit, and
+        # since the probe's `hooks` above instantiate the three by hand, its
+        # output options then fail the gap check by name ("no observer_output
+        # receipt was recorded") until the probe carries it -- loud, not
+        # silently uncovered.
+        observer_schemas = Pair{Symbol,Any}[nameof(T) => observer_option_schema(T)
+                                            for T in _concrete_octopus_subtypes(AbstractBeamObserver)]
+        tracking_schemas = vcat(Pair{Symbol,Any}[:RunArtifact => run_artifact_option_schema(),
+                                                 :TrackingTask => tracking_task_option_schema()],
+                                observer_schemas)
+        strong_strong_schemas = Pair{Symbol,Any}[:RunArtifact => run_artifact_option_schema(),
+                                                 :StrongStrongTask => strong_strong_task_option_schema()]
         gaps = vcat(_output_receipt_gaps(execution_receipts(audit_fresh), tracking_schemas),
                     _output_receipt_gaps(execution_receipts(audit_continued), tracking_schemas),
                     _output_receipt_gaps(execution_receipts(audit_ss), strong_strong_schemas))
+        # What the gap check COVERED, per fixture (tracking fresh, tracking
+        # continued, strong-strong): the pairs it judged, not only its misses.
+        pairs = (tracking=_output_receipt_pairs(tracking_schemas),
+                 strong_strong=_output_receipt_pairs(strong_strong_schemas))
         one(audit, consumer) = only(filter(r -> r.consumer === consumer, execution_receipts(audit))).values
         ra_fresh, ra_continued, ra_ss = one(audit_fresh, :run_artifact_output),
                                         one(audit_continued, :run_artifact_output),
@@ -668,10 +819,19 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
                             one(audit_fresh, :tracking_output).artifact == task.artifact.path,
             strong_strong_output=one(audit_ss, :strong_strong_output).channels == ["output"],
         )
-        return gaps, resolution
+        return gaps, pairs, resolution
     end
     metrics[:output_receipt_gaps] = output_gaps
+    metrics[:output_receipt_pairs_checked] = 2 * output_pairs.tracking + output_pairs.strong_strong
+    metrics[:output_receipt_pairs_by_task] = output_pairs
     metrics[:output_receipt_resolution] = output_resolution
+    (output_pairs.tracking > 0 && output_pairs.strong_strong > 0) || return ContractResult(false,
+        "the output boundary checked no (owner, option) pair for " *
+        (output_pairs.tracking > 0 ? "the strong-strong task" :
+         output_pairs.strong_strong > 0 ? "the tracking task" : "either task kind") *
+        ": no schema option declares category :output, so no consumer is an output receipt " *
+        "and an empty gap list is not a pass (F-52).";
+        metrics=metrics)
     isempty(output_gaps) || return ContractResult(false,
         "output options are not carried by their declared receipts: " * join(output_gaps, "; ");
         metrics=metrics)
@@ -756,11 +916,43 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
         "structurally identical solver objects were rejected as a configuration mismatch.";
         metrics=metrics)
 
+    # The derived-kbb refusal fires BEFORE the lines mutate the beams (2026-10-18
+    # audit, F-54; `_preflight_solver_kbb` in the strong-strong preflight since
+    # the 2026-10-20 fix batch). These beams carry no E0 and the solver no
+    # `kbb`, so the strength cannot be derived; the refusal used to land inside
+    # the collide, after the crab element ahead of the IP had tracked both
+    # beams -- a refusal after a mutation, the class the mismatch probe above
+    # separates from with its `unchanged` conjunct. Rejected AND unchanged, by
+    # the refusal's own message, not any ArgumentError.
+    kbb_policy = CPUThreadsExecutionPolicy(threads=first(worker_sweep))
+    kbb_beam1 = Beam(16, kbb_policy, Float64; rng_id=107)
+    kbb_beam2 = Beam(16, kbb_policy, Float64; rng_id=108)
+    kbb_before1 = map(copy, coordinate_arrays(kbb_beam1.rep))
+    kbb_before2 = map(copy, coordinate_arrays(kbb_beam2.rep))
+    kbb_ip = StrongStrongCollision(:derivedkbb; poisson_solver=GaussianPoissonSolver())
+    derived_kbb_rejected = try
+        execute!(StrongStrongTask((line[1], kbb_ip), (line[1], kbb_ip); policy=kbb_policy),
+                 kbb_beam1, kbb_beam2; turns=1)
+        false
+    catch err
+        err isa ArgumentError && occursin("kbb1 is not specified", sprint(showerror, err))
+    end
+    derived_kbb_unchanged =
+        all(map(==, kbb_before1, coordinate_arrays(kbb_beam1.rep))) &&
+        all(map(==, kbb_before2, coordinate_arrays(kbb_beam2.rep)))
+    metrics[:derived_kbb_refusal_rejected] = derived_kbb_rejected
+    metrics[:derived_kbb_refusal_unchanged] = derived_kbb_unchanged
+    (derived_kbb_rejected && derived_kbb_unchanged) || return ContractResult(false,
+        "the derived-kbb refusal (a beam without E0, a solver without kbb) did not fire before " *
+        "line mutation: rejected by name = $(derived_kbb_rejected), beams unchanged = $(derived_kbb_unchanged).";
+        metrics=metrics)
+
     available, reason = _contract_backends_available(CUDABackend)
     if !available
         metrics[:cuda_status] = :skipped
         return ContractResult(:skipped,
-            "CPU configuration checks passed; CUDA effectiveness was skipped: $(reason)";
+            "CPU configuration checks passed; CUDA effectiveness was skipped: $(reason)" *
+            (worker_skip === nothing ? "" : "; the logical-worker invariance was NOT compared: " * worker_skip);
             metrics=metrics)
     end
 
@@ -816,9 +1008,7 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
     (mismatch_rejected && mismatch_unchanged) || return ContractResult(false,
         "CUDA device mismatch was not rejected before particle mutation."; metrics=metrics)
 
-    base_beam1, base_beam2 = _strong_strong_contract_base_beams(
-        StrongStrongPICBackendConsistencyContract(n_particles=contract.n_particles,
-            turns=2, grid=(16, 16), nslices=3, green_cache=:none))
+    # `base_beam1`, `base_beam2` were built at the top of this function (F-49).
     invalid_beam1 = _strong_strong_contract_beam(base_beam1, CUDABackend)
     invalid_beam2 = _strong_strong_contract_beam(base_beam2, CUDABackend)
     invalid_before1 = map(Array, coordinate_arrays(invalid_beam1.rep))
@@ -845,48 +1035,79 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
         "invalid inherited CUDA PIC launch was not rejected before line mutation.";
         metrics=metrics)
 
-    beam1 = _strong_strong_contract_beam(base_beam1, CUDABackend)
-    beam2 = _strong_strong_contract_beam(base_beam2, CUDABackend)
-    pic_launch = CUDAPICLaunchConfig(
-        gather_scatter_threads=contract.cuda_threads,
-        deposition_threads=contract.cuda_threads,
-        kick_threads=contract.cuda_threads,
-        field_threads=contract.cuda_threads,
-        spectral_threads=contract.cuda_threads,
-        green_threads=contract.cuda_threads,
-        luminosity_threads=contract.cuda_threads,
-    )
+    # The launch-family check, in two runs (2026-10-18 audit, F-10). Every
+    # family is overridden to `cuda_pic_threads` -- the keywords DERIVED from
+    # `_CUDA_PIC_LAUNCH_FAMILIES`, so a family added to the tuple is requested
+    # here without a hand edit -- under a policy whose generic count is
+    # `cuda_threads`, and the two differ by the guard at the top. The first run
+    # requires every family's `:cuda_pic_launch` receipts to read the override;
+    # the second runs the SAME task with no override and requires every family
+    # to read the policy's count, so the fallback the override displaces is
+    # observed and not argued. Before this both numbers were `cuda_threads`
+    # and a consumer that dropped the override passed (measured: the predicate
+    # was true with `backend_configurations = ()`).
+    pic_launch = CUDAPICLaunchConfig(; (Symbol(family, :_threads) => contract.cuda_pic_threads
+                                         for family in _CUDA_PIC_LAUNCH_FAMILIES)...)
     slicing = LongitudinalSlicing(method=:normal_quantile, nslices=3,
                                   center_position=:centroid)
-    solver = PICPoissonSolver(grid=(16, 16), slicing=slicing, green_cache=:none,
-        cuda_indexed_wavefront=false, backend_configurations=(pic_launch,))
-    ip = StrongStrongCollision(:ip; poisson_solver=solver)
     explicit_policy = CUDAExecutionPolicy(
         launch=CUDALaunchConfig(threads=contract.cuda_threads,
                                 blocks=contract.cuda_blocks))
-    pic_task = StrongStrongTask((ip,), (ip,); policy=explicit_policy)
-    pic_audit = ExecutionAudit()
-    with_execution_audit(pic_audit) do
-        execute!(pic_task, beam1, beam2; turns=1)
-        CUDA.synchronize()
+    # family => the sorted distinct thread counts the launch consumer read, and
+    # every receipt of the run (the algorithm receipts are read off the first run)
+    pic_family_threads = function (configurations, b1, b2)
+        solver = PICPoissonSolver(grid=(16, 16), slicing=slicing, green_cache=:none,
+                                  cuda_indexed_wavefront=false, backend_configurations=configurations)
+        ip = StrongStrongCollision(:ip; poisson_solver=solver)
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do
+            execute!(StrongStrongTask((ip,), (ip,); policy=explicit_policy), b1, b2; turns=1)
+            CUDA.synchronize()
+        end
+        receipts = execution_receipts(audit)
+        per_family = Dict{Symbol,Vector{Int}}()
+        for r in receipts
+            r.consumer === :cuda_pic_launch || continue
+            push!(get!(Vector{Int}, per_family, r.values.family), Int(r.values.threads))
+        end
+        foreach(v -> sort!(unique!(v)), values(per_family))
+        return per_family, receipts
     end
-    pic_receipts = filter(r -> r.consumer === :cuda_pic_launch,
-                          execution_receipts(pic_audit))
-    families = Set(r.values.family for r in pic_receipts)
     required_families = Set(_CUDA_PIC_LAUNCH_FAMILIES)
-    pic_effective = required_families <= families &&
-                    all(r -> r.values.threads == contract.cuda_threads, pic_receipts)
-    algorithm_receipts = filter(r -> r.consumer === :cuda_pic_algorithm,
-                                execution_receipts(pic_audit))
+    overridden, pic_receipts = pic_family_threads((pic_launch,),
+        _strong_strong_contract_beam(base_beam1, CUDABackend),
+        _strong_strong_contract_beam(base_beam2, CUDABackend))
+    override_effective = required_families <= Set(keys(overridden)) &&
+        all(threads == [contract.cuda_pic_threads] for threads in values(overridden))
+    inherited, _ = pic_family_threads((),
+        _strong_strong_contract_beam(base_beam1, CUDABackend),
+        _strong_strong_contract_beam(base_beam2, CUDABackend))
+    fallback_effective = required_families <= Set(keys(inherited)) &&
+        all(threads == [contract.cuda_threads] for threads in values(inherited))
+    algorithm_receipts = filter(r -> r.consumer === :cuda_pic_algorithm, pic_receipts)
     wavefront_algorithm_effective = !isempty(algorithm_receipts) && all(r ->
         r.values.batch_mode === :wavefront && r.values.cuda_async &&
         r.values.cuda_batch_fft && r.values.cuda_wavefront_fft &&
         !r.values.cuda_indexed_wavefront, algorithm_receipts)
-    metrics[:cuda_pic_families_observed] = sort!(collect(families))
-    metrics[:cuda_pic_launch_effective] = pic_effective
+    metrics[:cuda_pic_families_observed] = sort!(collect(keys(overridden)))
+    metrics[:cuda_pic_threads_requested] = contract.cuda_pic_threads
+    metrics[:cuda_pic_threads_observed] = overridden
+    metrics[:cuda_pic_fallback_observed] = inherited
+    metrics[:cuda_pic_launch_effective] = override_effective && fallback_effective
     metrics[:cuda_pic_wavefront_algorithm_effective] = wavefront_algorithm_effective
-    (pic_effective && wavefront_algorithm_effective) || return ContractResult(false,
-        "CUDA PIC launch or wavefront algorithm settings did not reach their consumers.";
+    override_effective || return ContractResult(false,
+        "CUDA PIC launch-family overrides did not reach the launch consumer: every family was " *
+        "requested at $(contract.cuda_pic_threads) threads under a $(contract.cuda_threads)-thread " *
+        "policy, the :cuda_pic_launch receipts read $(overridden)" *
+        (required_families <= Set(keys(overridden)) ? "" :
+         "; families with no receipt: $(sort!(collect(setdiff(required_families, keys(overridden)))))") * ".";
+        metrics=metrics)
+    fallback_effective || return ContractResult(false,
+        "the inherited CUDA PIC launch did not read the policy's $(contract.cuda_threads) threads on " *
+        "every family: the :cuda_pic_launch receipts read $(inherited).";
+        metrics=metrics)
+    wavefront_algorithm_effective || return ContractResult(false,
+        "the default wavefront CUDA PIC algorithm settings did not reach their consumer.";
         metrics=metrics)
 
     sequential_beam1 = _strong_strong_contract_beam(base_beam1, CUDABackend)
@@ -914,6 +1135,11 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
         metrics=metrics)
 
     metrics[:cuda_status] = :passed
+    # A comparison that could not run is a skip, never a pass (F-47).
+    worker_skip === nothing || return ContractResult(:skipped,
+        "Public configuration reached CPU, fused CUDA, and CUDA PIC consumers; the logical-worker " *
+        "invariance was NOT compared: " * worker_skip;
+        residual=cuda_coordinate_error, metrics=metrics)
     return ContractResult(true,
         "Public configuration reached CPU, fused CUDA, and CUDA PIC consumers.";
         residual=cuda_coordinate_error, metrics=metrics)
@@ -956,6 +1182,10 @@ function validate(contract::ElementTrackingBackendConsistencyContract; kwargs...
     metrics[:n_particles] = length(rep_a)
     metrics[:seed] = contract.seed
     metrics[:rng_method] = contract.rng_method
+    # Bit identity, observed: the CPU/CPU docstring's expectation as a metric
+    # the suite pins, beside the stated-tolerance verdict (F-50).
+    metrics[:bitwise] = metrics[:max_abs_error] == 0.0 && metrics[:lost_one_backend] == 0 &&
+                        metrics[:compared_coordinates] > 0
 
     ok = Bool(metrics[:passed_tolerance])
     message = ok ?
@@ -1063,6 +1293,18 @@ end
 
 function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...)
     _reject_unknown_validate_kwargs(contract, kwargs)
+    # The solver's own refusals (a `green_type`, a `deposit_method` it does not
+    # know) are judged BEFORE the CUDA gate, so a CPU-only process reports a
+    # misconfigured contract as `:failed` by the solver's message rather than
+    # as a skip (the 2026-08-05_b audit's U4-9 remark on the guards' position).
+    solver_refusal = try
+        _strong_strong_contract_solver(contract)
+        nothing
+    catch err
+        err isa ArgumentError ? sprint(showerror, err) : rethrow()
+    end
+    solver_refusal === nothing || return ContractResult(false,
+        "the PIC solver refused the contract's configuration: " * solver_refusal)
     available, reason = _contract_backends_available(CPUThreadsBackend, CUDABackend)
     if !available
         return ContractResult(:skipped, reason; metrics=Dict(
@@ -1082,6 +1324,9 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
         return ContractResult(false,
             "slice-pair cache consistency requires at least two turns to exercise reuse.")
     end
+    # The per-pair luminosity trace's expected size, from the CONFIGURATION:
+    # one record per slice pair per turn on the CPU reference (F-46).
+    pair_records_expected = contract.nslices^2 * contract.turns
 
     old_seed = global_rng_seed()
     old_method = global_rng_method()
@@ -1163,19 +1408,25 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
             # 16 on every CPU route).
             #
             # The CPU pushes one record per slice pair from the single loop that
-            # serves every configuration, so an empty CPU trace means the run had
-            # no pairs at all; a non-empty CPU trace with an empty GPU one is a
-            # real backend divergence and is reported as such rather than
-            # silently waived.
-            pair_trace_expected = !isempty(cpu_pair_map)
-            pair_keys_match = !pair_trace_expected || keys(cpu_pair_map) == keys(gpu_pair_map)
+            # serves every configuration, so the trace has `nslices^2 * turns`
+            # records whenever every slice is populated -- and that number is
+            # the contract's expectation, derived above from its own fields
+            # (2026-10-18 audit, F-46). Until the 2026-10-20 fix batch the
+            # expectation was `!isempty(cpu_pair_map)`, read off the CPU output
+            # itself, so a sink that fell silent on both backends compared zero
+            # records and passed as `:not_applicable`; measured: 18 of 18 on the
+            # defaults, 0 of 0 "passed" with the push dropped. A CPU trace short
+            # of the expectation (an empty slice at a tiny `n_particles`, a
+            # route that stopped pushing) fails by the two counts; a non-empty
+            # CPU trace with an empty GPU one is a real backend divergence.
+            pair_keys_match = keys(cpu_pair_map) == keys(gpu_pair_map)
             pair_records_compared = pair_keys_match ? length(cpu_pair_map) : 0
-            pair_luminosity_rel = pair_trace_expected && pair_keys_match ? maximum(
+            pair_luminosity_rel = pair_keys_match && !isempty(cpu_pair_map) ? maximum(
                 abs(gpu_pair_map[key] - cpu_pair_map[key]) /
                 max(abs(cpu_pair_map[key]), eps(Float64)) for key in keys(cpu_pair_map)
-            ) : pair_trace_expected ? Inf : :not_applicable
-            pair_luminosity_ok = !pair_trace_expected ? :not_applicable :
-                (pair_keys_match && pair_luminosity_rel <= contract.luminosity_rtol)
+            ) : Inf
+            pair_luminosity_ok = pair_keys_match && pair_records_compared == pair_records_expected &&
+                                 pair_luminosity_rel <= contract.luminosity_rtol
 
             cpu_history = _strong_strong_contract_cpu_cache_history(cpu_task)
             gpu_history = _strong_strong_contract_cuda_cache_history(gpu_task)
@@ -1203,6 +1454,7 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
                 :luminosity_deposit_method => contract.luminosity_deposit_method,
                 :resolved_luminosity_deposit_method =>
                     something(contract.luminosity_deposit_method, contract.deposit_method),
+                :green_type => contract.green_type,
                 :green_cache => contract.green_cache,
                 :slice_pair_green_min_ratio => contract.slice_pair_green_min_ratio,
                 :slice_pair_green_growth => contract.slice_pair_green_growth,
@@ -1220,6 +1472,7 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
                 # offered: if the keys disagree nothing was compared, and that
                 # must read as 0 rather than as the CPU's count (U1-1).
                 :slice_pair_luminosity_records_compared => pair_records_compared,
+                :slice_pair_luminosity_records_expected => pair_records_expected,
                 :slice_pair_luminosity_cpu_records => length(cpu_pair_map),
                 :slice_pair_luminosity_gpu_records => length(gpu_pair_map),
                 :slice_pair_luminosity_rel_error => pair_luminosity_rel,
@@ -1235,13 +1488,21 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
             )
             # `:not_applicable` does not block the verdict, and does not
             # contribute a passing one either -- it says the question was not
-            # asked (U4-9). Anything that WAS compared must still pass.
+            # asked (U4-9). Anything that WAS compared must still pass. The
+            # per-pair trace is always asked (F-46), so its verdict is a Bool.
             _decided(v) = v === :not_applicable ? true : v
-            ok = coordinate_ok && luminosity_ok && _decided(pair_luminosity_ok) &&
+            ok = coordinate_ok && luminosity_ok && pair_luminosity_ok &&
                  _decided(cache_history_ok) && _decided(cache_reuse_ok)
             message = ok ?
                 "Strong-strong PIC CPU and CUDA results agree within tolerance." :
-                "Strong-strong PIC CPU and CUDA results disagree or cache histories diverge."
+                pair_luminosity_ok ?
+                "Strong-strong PIC CPU and CUDA results disagree or cache histories diverge." :
+                "Strong-strong PIC per-pair luminosity trace: $(pair_records_compared) of the " *
+                "$(pair_records_expected) slice-pair records the configuration implies " *
+                "(nslices^2 * turns) were compared (CPU trace $(length(cpu_pair_map)), " *
+                "CUDA trace $(length(gpu_pair_map)), keys match $(pair_keys_match), worst relative " *
+                "difference $(pair_luminosity_rel))" *
+                (coordinate_ok && luminosity_ok ? "." : "; the coordinates or the luminosity series also disagree.")
             return ContractResult(ok, message; residual=max_abs, metrics=metrics)
         end
     finally
@@ -1264,7 +1525,12 @@ function _contract_backends_available(backends::DataType...)
             functional || return false, "CUDA backend requested, but no functional CUDA device is visible to Julia."
             continue
         end
-        return false, "Unsupported backend $(backend)."
+        # A type that is not a backend is a caller's error, not an unavailable
+        # resource: refused, never `:skipped` (2026-10-18 audit, F-48; the
+        # contracts' struct fields refuse it earlier still).
+        throw(ArgumentError(
+            "unsupported backend type $(backend): a backend-consistency contract takes " *
+            "CPUThreadsBackend or CUDABackend, and an unavailable device is the only reason it skips."))
     end
     return true, ""
 end
@@ -1447,18 +1713,22 @@ function _strong_strong_contract_beam(beam, ::Type{CUDABackend})
     return Beam{CUDABackend,typeof(beam.params),typeof(rep)}(beam.params, rep)
 end
 
-function _strong_strong_contract_task(contract::StrongStrongPICBackendConsistencyContract,
-                                      artifact_path; policy=nothing)
+"""
+The PIC solver of the contract's task, built from its fields alone (so the
+solver's own refusal of a field value is judged before anything runs).
+"""
+function _strong_strong_contract_solver(contract::StrongStrongPICBackendConsistencyContract)
     slicing = LongitudinalSlicing(
         method=:normal_quantile,
         nslices=contract.nslices,
         center_position=:centroid,
     )
-    solver = PICPoissonSolver(
+    return PICPoissonSolver(
         slicing=slicing,
         grid=contract.grid,
         deposit_method=contract.deposit_method,
         luminosity_deposit_method=contract.luminosity_deposit_method,
+        green_type=contract.green_type,
         green_cache=contract.green_cache,
         slice_pair_green_min_ratio=contract.slice_pair_green_min_ratio,
         slice_pair_green_growth=contract.slice_pair_green_growth,
@@ -1466,29 +1736,79 @@ function _strong_strong_contract_task(contract::StrongStrongPICBackendConsistenc
         longitudinal_kick=true,
         luminosity_schedule=nothing,
     )
-    ip = StrongStrongCollision(:ip; poisson_solver=solver)
+end
+
+function _strong_strong_contract_task(contract::StrongStrongPICBackendConsistencyContract,
+                                      artifact_path; policy=nothing)
+    ip = StrongStrongCollision(:ip; poisson_solver=_strong_strong_contract_solver(contract))
     return StrongStrongTask((ip,), (ip,); artifact=artifact_path, policy=policy)
+end
+
+"""
+The fields of `StrongStrongPICMultiProcessConsistencyContract` that describe the
+LAUNCH and the MPI legs' own tolerances, kept by that contract and forwarded
+to no leg. Every other field is forwarded (`_mpi_pic_contract_forwarded`).
+"""
+const _MPI_PIC_CONTRACT_OWN_FIELDS = (:ranks, :threads_per_rank, :mpiexec, :timeout,
+                                      :atol, :rtol, :luminosity_rtol, :cuda)
+
+"""
+    _mpi_pic_contract_forwarded() -> Tuple{Vararg{Symbol}}
+
+The fields the multi-process contract forwards to its three legs -- the CPU
+reference, the child's command line and the CUDA leg's
+`StrongStrongPICBackendConsistencyContract` -- DERIVED as every field of the
+contract not in `_MPI_PIC_CONTRACT_OWN_FIELDS`, each required to be a field
+of the PIC contract (an `ArgumentError` names one that is not). Three hand
+lists did this before (`_mpi_pic_contract_base`, `_args`, `_spec`), with the
+suite round-tripping a fourth copy field by field; a field added to the
+contract and forwarded in none of them was silently inert on every leg, both
+legs falling back to the same PIC default, so no leg failed and the three-way
+claim was made for a configuration nobody ran (2026-10-18 audit, F-53).
+"""
+function _mpi_pic_contract_forwarded()
+    forwarded = Tuple(f for f in fieldnames(StrongStrongPICMultiProcessConsistencyContract)
+                      if !(f in _MPI_PIC_CONTRACT_OWN_FIELDS))
+    foreign = [f for f in forwarded if !(f in fieldnames(StrongStrongPICBackendConsistencyContract))]
+    isempty(foreign) || throw(ArgumentError(
+        "StrongStrongPICMultiProcessConsistencyContract forwards $(foreign) to its legs, but " *
+        "StrongStrongPICBackendConsistencyContract has no such field: add it there, or list it in " *
+        "_MPI_PIC_CONTRACT_OWN_FIELDS as a field the launch keeps"))
+    return forwarded
 end
 
 """
 The PIC contract whose beams and task the multi-process contract's legs share.
 """
 _mpi_pic_contract_base(c::StrongStrongPICMultiProcessConsistencyContract) =
-    StrongStrongPICBackendConsistencyContract(
-        n_particles=c.n_particles, turns=c.turns, grid=c.grid, nslices=c.nslices,
-        deposit_method=c.deposit_method, green_cache=c.green_cache, seed=c.seed)
+    StrongStrongPICBackendConsistencyContract(;
+        (f => getfield(c, f) for f in _mpi_pic_contract_forwarded())...)
+
+# One command-line word per forwarded value, and its parse by the PIC
+# contract's field TYPE: a type without a parser here fails by name when the
+# child reads it, never a silent default (F-53).
+_mpi_pic_contract_word(x::Tuple) = join(x, ",")
+_mpi_pic_contract_word(x) = string(x)
+_mpi_pic_contract_parse(::Type{Int}, word) = parse(Int, word)
+_mpi_pic_contract_parse(::Type{UInt64}, word) = parse(UInt64, word)
+_mpi_pic_contract_parse(::Type{Float64}, word) = parse(Float64, word)
+_mpi_pic_contract_parse(::Type{Bool}, word) = parse(Bool, word)
+_mpi_pic_contract_parse(::Type{Symbol}, word) = Symbol(word)
+_mpi_pic_contract_parse(::Type{Tuple{Int,Int}}, word) = Tuple(parse.(Int, split(word, ",")))
+_mpi_pic_contract_parse(::Type{T}, word) where {T} = throw(ArgumentError(
+    "no command-line parser for a forwarded contract field of type $(T) (word $(repr(word))): " *
+    "add a _mpi_pic_contract_parse method beside the others"))
 
 """
 The keyword arguments the child rebuilds the contract from, as `key=value`
-command-line words (the child parses them back with `_mpi_pic_contract_spec`).
+command-line words (the child parses them back with `_mpi_pic_contract_spec`):
+every forwarded field, then the launch's `threads_per_rank`, `ranks` and `out`.
 """
 function _mpi_pic_contract_args(c::StrongStrongPICMultiProcessConsistencyContract, ranks::Int,
                                 out::AbstractString)
-    return String["n_particles=$(c.n_particles)", "turns=$(c.turns)",
-                  "grid=$(c.grid[1]),$(c.grid[2])", "nslices=$(c.nslices)",
-                  "deposit_method=$(c.deposit_method)", "green_cache=$(c.green_cache)",
-                  "threads_per_rank=$(c.threads_per_rank)", "seed=$(c.seed)",
-                  "ranks=$(ranks)", "out=$(out)"]
+    words = String[string(f, "=", _mpi_pic_contract_word(getfield(c, f)))
+                   for f in _mpi_pic_contract_forwarded()]
+    return vcat(words, String["threads_per_rank=$(c.threads_per_rank)", "ranks=$(ranks)", "out=$(out)"])
 end
 
 function _mpi_pic_contract_spec(args)
@@ -1497,12 +1817,14 @@ function _mpi_pic_contract_spec(args)
         k, v = split(a, "="; limit=2)
         kv[String(k)] = String(v)
     end
-    gx, gy = parse.(Int, split(kv["grid"], ","))
-    return (n_particles=parse(Int, kv["n_particles"]), turns=parse(Int, kv["turns"]),
-            grid=(gx, gy), nslices=parse(Int, kv["nslices"]),
-            deposit_method=Symbol(kv["deposit_method"]), green_cache=Symbol(kv["green_cache"]),
-            threads_per_rank=parse(Int, kv["threads_per_rank"]),
-            seed=parse(UInt64, kv["seed"]), ranks=parse(Int, kv["ranks"]), out=kv["out"])
+    forwarded = _mpi_pic_contract_forwarded()
+    absent = [f for f in forwarded if !haskey(kv, string(f))]
+    isempty(absent) || throw(ArgumentError(
+        "the child's command line carries no value for the forwarded field(s) $(absent)"))
+    values = (f => _mpi_pic_contract_parse(fieldtype(StrongStrongPICBackendConsistencyContract, f), kv[string(f)])
+              for f in forwarded)
+    return (; values..., threads_per_rank=parse(Int, kv["threads_per_rank"]),
+            ranks=parse(Int, kv["ranks"]), out=kv["out"])
 end
 
 """
@@ -1810,28 +2132,42 @@ function _symplecticity_contract_cases()
             angle=(2.0e-4, -1.0e-4, 0.0), virtual_drift=:hirata),
         ns=3, sigz=7.0e-3, slice_method=:equal_area))
     q0 = copy(SYMPLECTICITY_PROBE_POINT)
+    # The twelve older cases' tolerances, re-frozen at ~100x their measured
+    # residual (2026-10-18 audit, F-51; the principle the fifteen newer cases
+    # below state). They were the file's older round numbers, 3e5 to 1.2e7
+    # times the residual: a linear map whose matrix acquired a 1e-9
+    # non-symplectic entry passed at 5e-8 (measured: a CrabDispersion kernel
+    # writing `pz += 1e-9 x` gives residual 1.0e-9, passed at 5e-8, fails at
+    # 2e-11). Measured 2026-10-20 in both CPU arms (native sapphirerapids and
+    # `-C haswell` with Haswell OpenBLAS kernels, identical to four digits):
+    # Linear6D 1.502e-13, CrabDispersion 1.319e-13, MomentumDispersion
+    # 1.807e-13, XYCoupling 1.319e-13, ThinCrabCavity 1.319e-13,
+    # ChromaticityKick 4.163e-13, Solenoid 5.413e-13, SolenoidCurvedMultipole
+    # 2.118e-10; the four beam-beam cases sit at 7.908e-8 and 4.24e-8 against
+    # 5e-7 (ratio 0.158 / 0.085), the finite-difference truncation floor the
+    # docstring explains, and keep their value.
     return (
-        (name=:Linear6D, element=linear, q0=q0, tolerance=5.0e-8),
+        (name=:Linear6D, element=linear, q0=q0, tolerance=2.0e-11),
         (name=:CrabDispersion,
          element=CrabDispersion(CrabDispersionSpec{Float64}(
              zeta1=0.02, zeta2=-0.01, zeta3=0.004, zeta4=0.002)),
-         q0=q0, tolerance=5.0e-8),
+         q0=q0, tolerance=2.0e-11),
         (name=:MomentumDispersion,
          element=MomentumDispersion(MomentumDispersionSpec{Float64}(
              eta1=0.03, eta2=-0.006, eta3=0.002, eta4=0.01)),
-         q0=q0, tolerance=5.0e-8),
+         q0=q0, tolerance=2.0e-11),
         (name=:XYCoupling, element=XYCoupling(0.01, -0.003, 0.002, 0.004),
-         q0=q0, tolerance=5.0e-8),
+         q0=q0, tolerance=2.0e-11),
         (name=:ThinCrabCavity,
          element=ThinCrabCavity{2}(197.0e6; strengthX=(1.0e-5, -2.0e-6),
              strengthY=(3.0e-6, 0.0), phase=(0.0, 0.2)),
-         q0=q0, tolerance=5.0e-7),
+         q0=q0, tolerance=2.0e-11),
         (name=:ChromaticityKick,
          element=ChromaticityKick(ChromaticityKickSpec{Float64}(;
              xi=(1.2, -0.8), beta=(0.82, 0.075), alpha=(0.01, -0.02),
              zeta=(0.002, -0.001, 0.0, 0.0), eta=(0.001, 0.0, -0.001, 0.0),
              R=(0.001, -0.0005, 0.0003, 0.0007))),
-         q0=q0, tolerance=5.0e-6),
+         q0=q0, tolerance=5.0e-11),
         (name=:ThinStrongBeam, element=thin, q0=q0, tolerance=5.0e-7),
         (name=:ThinStrongBeamChromatic, element=thin_with(:chromatic), q0=q0,
          tolerance=5.0e-7),
@@ -1844,10 +2180,10 @@ function _symplecticity_contract_cases()
         # (2026-08-05 audit, U3-3).
         (name=:Solenoid,
          element=Solenoid(SolenoidSpec(L=1.3, ks=1.7, nst=1)), q0=q0,
-         tolerance=5.0e-7),
+         tolerance=1.0e-10),
         (name=:SolenoidCurvedMultipole,
          element=Solenoid(SolenoidSpec(L=1.3, ks=1.7, h=0.18, kskew=(0.05,),
-                                       nst=8)), q0=q0, tolerance=5.0e-7),
+                                       nst=8)), q0=q0, tolerance=5.0e-8),
         # The other fifteen kinds that declare Symplectic6DMap (2026-08-05_b
         # audit, U4-8). Before this the list held 12 cases for 7 of the 22
         # declaring kinds, and the tripwire below derived its obligation from
@@ -3054,20 +3390,28 @@ const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     (:marker, :y_pitch) => "identity map; the rotation conjugation cancels to roundoff",
     (:marker, :tilt) => "identity map; the rotation conjugation cancels to roundoff",
     (:marker, :ref_tilt) => "identity map; the design-roll conjugation cancels to roundoff",
-    (:thin_dipole, :x_offset) => "a constant kick commutes with transverse displacements: shift in, kick by the same constant, shift back",
-    (:thin_dipole, :y_offset) => "constant kick; see thin_dipole.x_offset",
-    (:hkicker, :x_offset) => "constant kick; see thin_dipole.x_offset",
-    (:hkicker, :y_offset) => "constant kick; see thin_dipole.x_offset",
-    (:vkicker, :x_offset) => "constant kick; see thin_dipole.x_offset",
-    (:vkicker, :y_offset) => "constant kick; see thin_dipole.x_offset",
-    (:kicker, :x_offset) => "constant kick; see thin_dipole.x_offset",
-    (:kicker, :y_offset) => "constant kick; see thin_dipole.x_offset",
-    (:thin_rf_cavity, :x_offset) => "the thin RF kick reads z and writes pt only, so a transverse displacement conjugates to exactly nothing",
-    (:thin_rf_cavity, :y_offset) => "reads z, writes pt; see thin_rf_cavity.x_offset",
+    # Twelve rows RETIRED (2026-10-18 audit, F-107; fix batch 2, 2026-10-20): the
+    # `x_offset`/`y_offset` of thin_dipole, hkicker, vkicker, kicker and
+    # thin_rf_cavity, and the `y_offset` of lorentz_boost and rev_lorentz_boost.
+    # Their reasons ("a constant kick commutes with transverse displacements",
+    # "reads z, writes pt", "writes y without reading it") hold for a pure
+    # translation and not for the probe every kind runs, which carries all six
+    # placement degrees of freedom (`_PLACEMENT_PROBE_DOF`): the pitch turns a
+    # transverse offset into a longitudinal displacement `offset * pitch`, the
+    # kick changes the momentum between the two frame changes, and the net move
+    # is `kick * offset * pitch` -- physics, not roundoff. Measured at the
+    # shipped probe: thin_dipole.x_offset 1.039e-7 (= 1e-3 k0l x 0.13 x 0.8e-3
+    # x_pitch to three digits), hkicker/vkicker/kicker.x_offset ~1.04e-8,
+    # .y_offset ~7.8e-9, thin_rf_cavity.x_offset 3.8e-8 / .y_offset 2.9e-8,
+    # lorentz_boost.y_offset and rev_lorentz_boost.y_offset 2.34e-6 (through
+    # the tilt, the boost reads x); the marker rows above move by 4e-19..4e-17
+    # and stay. An exemption excusing an effective parameter is the bad
+    # direction (the table's own comment at the top): with the placement wrap
+    # skipped for every kind, the sweep named quadrupole.x_offset and NOT one
+    # of these twelve, because an exempted pair is never judged. All twelve are
+    # swept now (`checked` 530 -> 542, `exemptions_declared` 38 -> 26).
     (:thin_rf_cavity, :tilt) => "the map is independent of the transverse coordinates, so a roll about s commutes (cancels to roundoff)",
     (:thin_rf_cavity, :ref_tilt) => "transverse-independent map; a design roll commutes like tilt does",
-    (:lorentz_boost, :y_offset) => "the horizontal-crossing boost writes y without reading it, so a vertical displacement conjugates to exactly nothing",
-    (:rev_lorentz_boost, :y_offset) => "writes y without reading it, as the forward boost does; the sweep sees roundoff here, not physics",
 )
 
 """
@@ -3614,7 +3958,17 @@ performance choice — otherwise an option that gains a CPU consumer silently
 stops being checked on the device, which is how `GaussianPoissonSolver.batch_mode`
 would have left the device half the day the CPU route learned to read it. If no
 device is visible the contract returns `status=:skipped` rather than reporting
-an unrun check as passed.
+an unrun check as passed -- after the stale-exemption tripwire, which runs on
+every process: an `inactive` row naming a `(solver, option)` the sweep never
+reaches FAILS the contract with or without a device (until the 2026-10-20 fix
+batch the tripwire sat after the CUDA half, so CI, which has no GPU, never
+ran it; 2026-10-18 audit, F-108).
+
+The CUDA launch surfaces are checked with every launch family requested at
+`cuda_threads` under a policy of `_SOLVER_CONTRACT_CUDA_POLICY_THREADS`
+threads; the two must differ, or an override the consumer dropped would read
+exactly the inherited count (the public-configuration contract's F-10), and
+the contract refuses a `cuda_threads` equal to it.
 """
 Base.@kwdef struct SolverOptionEffectivenessContract <: AbstractImplementationContract
     n_particles::Int = 256
@@ -3624,6 +3978,14 @@ Base.@kwdef struct SolverOptionEffectivenessContract <: AbstractImplementationCo
     inactive::Dict{Tuple{Symbol,Symbol},String} = DEFAULT_INACTIVE_SOLVER_OPTIONS
     cuda_threads::Int = 64
 end
+
+"""
+The generic CUDA thread count of the policies `SolverOptionEffectivenessContract`
+installs for its device runs: the fallback every launch family inherits when
+no `CUDAPICLaunchConfig` override reaches it, so the contract's `cuda_threads`
+(the override it requests) must differ from it.
+"""
+const _SOLVER_CONTRACT_CUDA_POLICY_THREADS = 256
 
 description(::Type{SolverOptionEffectivenessContract}) =
     "Checks that every declared strong-strong solver option reaches a runtime consumer."
@@ -3722,7 +4084,7 @@ function _solver_contract_cuda_observable(solver, base1, base2)
         path = joinpath(dir, "run.h5")
         with_execution_audit(audit) do
             execute!(StrongStrongTask((ip,), (ip,);
-                policy=CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=256)),
+                policy=CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=_SOLVER_CONTRACT_CUDA_POLICY_THREADS)),
                 artifact=path), beam1, beam2; turns=1)
             CUDA.synchronize()
         end
@@ -3828,6 +4190,12 @@ function validate(contract::SolverOptionEffectivenessContract; kwargs...)
         haskey(contract.probes, nameof(T)) || return ContractResult(false,
             "$(nameof(T)) has no solver-option probe entry; the sweep would silently skip it")
     end
+    # The override and the fallback must differ, or the launch-surface check
+    # cannot tell a dropped override from an honoured one (F-10's shape).
+    contract.cuda_threads != _SOLVER_CONTRACT_CUDA_POLICY_THREADS || return ContractResult(false,
+        "cuda_threads ($(contract.cuda_threads)) equals the contract's CUDA policy thread count " *
+        "$(_SOLVER_CONTRACT_CUDA_POLICY_THREADS): a launch family that dropped the override would read " *
+        "exactly the requested value; choose another power of two")
     old_seed = global_rng_seed()
     old_method = global_rng_method()
     try
@@ -3926,6 +4294,25 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
 
     metrics[:cpu_options_checked] = checked
     metrics[:cuda_only_options] = length(deferred_cuda)
+
+    # The staleness tripwire, HERE -- after the CPU loop, which consults every
+    # exemption of every solver whatever its backends, and before the CUDA
+    # gate (2026-10-18 audit, F-108). It sat after the CUDA half, so on a
+    # process with no visible device (CI) the contract returned `:skipped`
+    # before it ran, and a stale `(solver, option)` row was never reported
+    # where CI runs (measured under CUDA_VISIBLE_DEVICES="": `:skipped`, no
+    # `:stale_exemptions` metric; now `:failed` naming the row). Same rule as
+    # the element table (U4-17): an exemption naming a pair the sweep never
+    # reaches excuses nothing, and an entry whose option later becomes
+    # genuinely ignored would keep excusing it forever with no signal.
+    stale = sort!([string(k, ".", n) for (k, n) in keys(contract.inactive)
+                   if !((k, n) in solver_exemptions_seen)])
+    metrics[:exemptions_declared] = length(contract.inactive)
+    metrics[:exemptions_applied] = length(solver_exemptions_seen)
+    metrics[:stale_exemptions] = length(stale)
+    isempty(stale) || return ContractResult(false,
+        "declared inactive but never reached by the sweep (stale exemptions): " *
+        join(stale, ", "); metrics=metrics)
 
     available, reason = _contract_backends_available(CUDABackend)
     if !available
@@ -4060,7 +4447,7 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
         audit = ExecutionAudit()
         with_execution_audit(audit) do
             execute!(StrongStrongTask((ip,), (ip,);
-                policy=CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=256))),
+                policy=CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=_SOLVER_CONTRACT_CUDA_POLICY_THREADS))),
                 beam1, beam2; turns=1)
             CUDA.synchronize()
         end
@@ -4079,19 +4466,7 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
     end
     metrics[:cuda_launch_solvers_checked] = cuda_checked
     metrics[:cuda_options_checked] = cuda_options_checked
-
-    # Same staleness tripwire as the element table (U4-17): an exemption naming
-    # a (solver, option) pair the sweep never reaches excuses nothing, and an
-    # entry whose option later becomes genuinely ignored would keep excusing it
-    # forever with no signal.
-    stale = sort!([string(k, ".", n) for (k, n) in keys(contract.inactive)
-                   if !((k, n) in solver_exemptions_seen)])
-    metrics[:exemptions_declared] = length(contract.inactive)
-    metrics[:exemptions_applied] = length(solver_exemptions_seen)
-    metrics[:stale_exemptions] = length(stale)
-    isempty(stale) || return ContractResult(false,
-        "declared inactive but never reached by the sweep (stale exemptions): " *
-        join(stale, ", "); metrics=metrics)
+    # (The staleness tripwire runs above the CUDA gate, F-108.)
 
     isempty(failures) || return ContractResult(false,
         "solver options did not reach their consumers: " * join(sort(failures), "; ");
