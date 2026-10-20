@@ -37,7 +37,7 @@
 if _HAS_CUDA
     @eval begin
         """
-            _cuda_launch_capped!(f, launch, stream, args...)
+            _cuda_launch_capped!(f, launch, stream, args...; max_blocks=typemax(Int))
 
         Launch kernel `f` with `launch.threads`, reduced to what `f` can
         actually be launched with on this device.
@@ -61,8 +61,24 @@ if _HAS_CUDA
         changes the partition and not the result. It is announced once and
         recorded in a receipt, because a silently downgraded launch is a
         performance number with a hidden variable in it.
+
+        The same ceiling bit the wavefront bounds reductions (2026-10-18
+        comprehensive audit, F-2): `_cuda_pic_force_luminosity_bounds_indexed_kernel!`
+        compiles to 68 registers, launchable at 896 threads at most on the same
+        device, and its two launches took the raw `:field` thread count, so
+        `CUDAPICLaunchConfig(field_threads = 1024)` -- or a plain
+        `CUDALaunchConfig(threads = 1024)`, which every PIC family inherits --
+        failed the DEFAULT route with `Block register count exceeds device
+        limit`. Both indexed bounds kernels now launch through here.
+        `max_blocks` bounds the scaled-up block count for a grid-strided kernel
+        whose per-block output has a fixed number of slots (the bounds partials
+        hold `_CUDA_PIC_BOUNDS_PARTIAL_BLOCKS` per column). The suite pins every
+        launch site of `pic_cuda.jl` and `gaussian_pic_cuda.jl` that does not
+        go through here and, on a GPU, checks each such kernel's ceiling against
+        the thread count its site can hand it (fix batch 2026-10-19, unit P).
         """
-        @inline function _cuda_launch_capped!(f::F, launch, stream, args...) where {F}
+        @inline function _cuda_launch_capped!(f::F, launch, stream, args...;
+                                              max_blocks::Integer=typemax(Int)) where {F}
             kernel = CUDA.@cuda launch = false f(args...)
             usable = CUDA.maxthreads(kernel)
             threads = min(launch.threads, usable)
@@ -78,10 +94,11 @@ if _HAS_CUDA
             end
             # Blocks scale back up so the grid still covers the work in one
             # sweep; every kernel routed here is grid-strided, so this is a
-            # partition change, not a coverage requirement.
+            # partition change, not a coverage requirement. `max_blocks` holds
+            # the scale-up inside a fixed per-block output (the bounds partials).
             blocks = launch.blocks
             if threads < launch.threads && blocks isa Integer
-                blocks = max(1, cld(blocks * launch.threads, threads))
+                blocks = min(max(1, cld(blocks * launch.threads, threads)), Int(max_blocks))
             end
             if stream === nothing
                 kernel(args...; threads=threads, blocks=blocks)
@@ -1815,7 +1832,11 @@ if _HAS_CUDA
             # bounds stage was invisible to the configuration a user sets and to
             # the receipts they read to confirm it took effect. The bounds
             # reduction is field work, and its shared array is sized for up to
-            # 1024 threads.
+            # 1024 threads. Two consequences the 2026-10-18 audit found: the
+            # reduction must be correct for a thread count that is not a warp
+            # multiple (F-1, `_cuda_pic_bounds_block_reduce`), and a count the
+            # device admits but the 68-register luminosity kernel cannot launch
+            # at goes through `_cuda_launch_capped!` below (F-2).
             threads = _cuda_pic_threads(:field)
             block_cap = _CUDA_PIC_BOUNDS_PARTIAL_BLOCKS
             stream = CUDA.stream()
@@ -1834,28 +1855,36 @@ if _HAS_CUDA
                 sR21 = half * (center2 - T(item.p1.rb))
                 blocks1 = min(cld(length(item.idx1), threads), block_cap)
                 blocks2 = min(cld(length(item.idx2), threads), block_cap)
+                # Through the register cap, with the block scale-up held at
+                # `block_cap` (the partials' slots per column; the kernels are
+                # grid-strided): the luminosity variant's 68 registers make 1024
+                # unlaunchable (F-2, 2026-10-18 audit).
                 if compute_luminosity
                     s1 = half * (center1 - center2)
-                    CUDA.@cuda threads=threads blocks=blocks1 stream=stream _cuda_pic_force_luminosity_bounds_indexed_kernel!(
+                    _cuda_launch_capped!(_cuda_pic_force_luminosity_bounds_indexed_kernel!,
+                        (threads=threads, blocks=blocks1), stream,
                         wf.bounds_partials, Int32(2n - 1),
                         rep1.x, rep1.px, rep1.y, rep1.py, rep1.z, item.idx1,
-                        sL12, sR12, center2, half, s1,
+                        sL12, sR12, center2, half, s1; max_blocks=block_cap,
                     )
-                    CUDA.@cuda threads=threads blocks=blocks2 stream=stream _cuda_pic_force_luminosity_bounds_indexed_kernel!(
+                    _cuda_launch_capped!(_cuda_pic_force_luminosity_bounds_indexed_kernel!,
+                        (threads=threads, blocks=blocks2), stream,
                         wf.bounds_partials, Int32(2n),
                         rep2.x, rep2.px, rep2.y, rep2.py, rep2.z, item.idx2,
-                        sL21, sR21, center1, half, -s1,
+                        sL21, sR21, center1, half, -s1; max_blocks=block_cap,
                     )
                 else
-                    CUDA.@cuda threads=threads blocks=blocks1 stream=stream _cuda_pic_force_bounds_indexed_kernel!(
+                    _cuda_launch_capped!(_cuda_pic_force_bounds_indexed_kernel!,
+                        (threads=threads, blocks=blocks1), stream,
                         wf.bounds_partials, Int32(2n - 1),
                         rep1.x, rep1.px, rep1.y, rep1.py, rep1.z, item.idx1,
-                        sL12, sR12, center2, half,
+                        sL12, sR12, center2, half; max_blocks=block_cap,
                     )
-                    CUDA.@cuda threads=threads blocks=blocks2 stream=stream _cuda_pic_force_bounds_indexed_kernel!(
+                    _cuda_launch_capped!(_cuda_pic_force_bounds_indexed_kernel!,
+                        (threads=threads, blocks=blocks2), stream,
                         wf.bounds_partials, Int32(2n),
                         rep2.x, rep2.px, rep2.y, rep2.py, rep2.z, item.idx2,
-                        sL21, sR21, center1, half,
+                        sL21, sR21, center1, half; max_blocks=block_cap,
                     )
                 end
             end
@@ -4525,23 +4554,58 @@ if _HAS_CUDA
             )
         end
 
-        @inline function _cuda_pic_bounds_tuple_shuffle_down(values::NTuple{N,T}, offset) where {N,T}
-            shuffled = ntuple(
-                row -> CUDA.shfl_down_sync(UInt32(0xffffffff), values[row], offset),
-                Val(N),
-            )
-            return _cuda_pic_bounds_tuple_combine(values, shuffled)
+        # The lanes of a warp that exist in this block: all 32, or the first
+        # `nactive` of a partial warp.
+        @inline _cuda_pic_warp_lane_mask(nactive::Int) =
+            nactive >= 32 ? UInt32(0xffffffff) : (UInt32(1) << nactive) - UInt32(1)
+
+        # A separate function on purpose: its `ntuple` closure captures only
+        # arguments. Written inline in the loop below it captured `values` and
+        # `offset`, both reassigned there, so they were boxed and every call in
+        # the kernel became a dynamic invocation in device IR (the `Core.Box`
+        # class of docs/experiences.md, met again 2026-10-19).
+        @inline function _cuda_pic_bounds_tuple_shuffle_down(values::NTuple{N,T}, mask::UInt32,
+                                                             offset) where {N,T}
+            return ntuple(row -> CUDA.shfl_down_sync(mask, values[row], offset), Val(N))
         end
 
-        @inline function _cuda_pic_bounds_block_reduce(values::NTuple{N,T},
-                                                       neutral::NTuple{N,T}) where {N,T}
-            lane = Int(CUDA.threadIdx().x - 1) % 32 + 1
-            warp = Int(CUDA.threadIdx().x - 1) ÷ 32 + 1
+        # One warp's min/max fold over its `nactive` live lanes (`lane` is
+        # 1-based). Every live lane executes every shuffle with the same mask,
+        # as the `_sync` intrinsics require; a lane whose source `lane + offset`
+        # lies beyond the live lanes keeps its own value, which is what folding
+        # the neutral element would give it.
+        @inline function _cuda_pic_bounds_warp_reduce(values::NTuple{N,T}, mask::UInt32,
+                                                      lane::Int, nactive::Int) where {N,T}
             offset = 16
             while offset >= 1
-                values = _cuda_pic_bounds_tuple_shuffle_down(values, offset)
+                shuffled = _cuda_pic_bounds_tuple_shuffle_down(values, mask, offset)
+                if lane + offset <= nactive
+                    values = _cuda_pic_bounds_tuple_combine(values, shuffled)
+                end
                 offset ÷= 2
             end
+            return values
+        end
+
+        # Block-wide min/max fold of an N-tuple, correct for EVERY block size.
+        # Until the 2026-10-19 fix batch (comprehensive audit F-1) both stages
+        # shuffled with the full warp mask, so a block whose thread count is not
+        # a multiple of 32 -- every such `field_threads` is legal in 1:1024 --
+        # read lanes that do not exist, 0.0 on an RTX 4500 Ada, and min/max
+        # folded that zero into the interaction-grid bounds whenever the beam
+        # did not straddle the axis (offset beams at field_threads = 100: kicks
+        # off by 4 % and 20 %, luminosity by 45 %; centred beams hid it because
+        # min < 0 < max absorbs a stray zero). The mask now names the live lanes
+        # of each warp, including a first warp shorter than 32 in a block
+        # smaller than one warp, and the thread count stays unconstrained.
+        @inline function _cuda_pic_bounds_block_reduce(values::NTuple{N,T},
+                                                       neutral::NTuple{N,T}) where {N,T}
+            nthreads = Int(CUDA.blockDim().x)
+            lane = Int(CUDA.threadIdx().x - 1) % 32 + 1
+            warp = Int(CUDA.threadIdx().x - 1) ÷ 32 + 1
+            nactive = min(32, nthreads - (warp - 1) * 32)
+            values = _cuda_pic_bounds_warp_reduce(
+                values, _cuda_pic_warp_lane_mask(nactive), lane, nactive)
 
             shared = CUDA.CuStaticSharedArray(T, (N, 32))
             if lane == 1
@@ -4552,16 +4616,14 @@ if _HAS_CUDA
             CUDA.sync_threads()
 
             if warp == 1
-                nwarps = cld(Int(CUDA.blockDim().x), 32)
+                nwarps = cld(nthreads, 32)
                 values = ntuple(
                     row -> lane <= nwarps ? (@inbounds shared[row, lane]) : neutral[row],
                     Val(N),
                 )
-                offset = 16
-                while offset >= 1
-                    values = _cuda_pic_bounds_tuple_shuffle_down(values, offset)
-                    offset ÷= 2
-                end
+                nactive1 = min(32, nthreads)
+                values = _cuda_pic_bounds_warp_reduce(
+                    values, _cuda_pic_warp_lane_mask(nactive1), lane, nactive1)
             end
             return values
         end

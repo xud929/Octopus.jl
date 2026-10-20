@@ -101,7 +101,12 @@ const _CUDA_PIC_LAUNCH_FAMILIES = (
 Optional CUDA-only PIC launch overrides. `nothing` inherits the thread count
 from `CUDAExecutionPolicy`. PIC block counts remain derived from the particle,
 grid, spectral, or reduction topology. Luminosity threads must be a power of
-two because the current overlap kernel uses a tree reduction.
+two because the current overlap kernel uses a tree reduction. Every other
+family accepts any count in 1:1024: the wavefront bounds reductions that
+`field_threads` also feeds are correct for a partial last warp (2026-10-18
+audit, F-1), and a count a register-heavy kernel cannot launch at is reduced
+by `_cuda_launch_capped!` with a `:cuda_strong_strong_thread_cap` receipt
+rather than failing at run time (F-2).
 
 **Applies only through a `StrongStrongTask`.** The resolved configuration is
 installed as a scoped value by `execute!`; a bare
@@ -164,7 +169,7 @@ const _CUDA_PIC_LAUNCH_OPTION_SCHEMA = (
         "Threads for field interpolation and particle kicks.";
         supported_backends=(CUDABackend,), consumer=:cuda_pic_launch),
     field_threads=ConfigurationOptionMeta(Union{Nothing,Int}, nothing,
-        "Threads for transverse field derivatives.";
+        "Threads for transverse field derivatives and the wavefront interaction-bounds reductions.";
         supported_backends=(CUDABackend,), consumer=:cuda_pic_launch),
     spectral_threads=ConfigurationOptionMeta(Union{Nothing,Int}, nothing,
         "Threads for Octopus spectral multiply kernels; cuFFT remains library-managed.";
