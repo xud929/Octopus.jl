@@ -100,10 +100,14 @@ element with an identity body map the two cancel. Measured:
 | element | map output |
 |---|---|
 | `MarkerSpec()` | `[0.003, 0.0003, -0.002, -0.00022, 0.002, 0.0011]` |
-| `MarkerSpec(x_offset=1e-3, y_offset=-8e-4)` | identical, difference `0.0` |
+| `MarkerSpec(x_offset=1e-3, y_offset=-8e-4)` | identical on this input, difference `0.0` |
 
 The misalignment machinery runs — the runtime object really is a
-`MisalignedElement` — and the map is bit-identical. A BPM built this way would
+`MisalignedElement` — and the map is the identity to rounding: `(x - dx) + dx`
+is not an IEEE identity, so each coordinate returns within one ulp (bitwise on
+the input above, one ulp off on about a third of random inputs; the suite pins
+the one-ulp bound, 2026-10-20, after the 2026-10-18 audit's F-218). A BPM built
+this way would
 accept an offset, report it in `element_help`, pass metadata validation, and
 read the true orbit. It is the exact failure mode the
 `ElementParameterEffectivenessContract` exists to catch, which is a good sign

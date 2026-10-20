@@ -7185,15 +7185,31 @@ end
     rp4 = analyze(TwissDispersionAnalysis(clusters=part4, strict=false), M4)
     @test Octopus.is_determined(_st4b_a_val(rp4.transverse).frame)
     @test _st4b_a_val(_st4b_a_val(rp4.transverse).frame).normalizer == _st4b_a_val(_st4b_a_val(r4.transverse).frame).normalizer
+    # Both arms of that rule are ASSERTED, each on a fixture of its own, rather
+    # than selected from the artifact (2026-10-18 audit F-156: on the dense
+    # stable 4x4 the explicit union is :definite, so the blocking arm never ran
+    # and twiss_dispersion_analysis.jl's "explicit partition blocks the frame"
+    # branch was exercised by no test). (i) The dense stable map: same-sense
+    # modes, the union classifies :definite, nothing blocks, the frame stands.
     ru4 = analyze(TwissDispersionAnalysis(clusters=[[1, 2, 3, 4]], strict=false), M4)
-    block = Octopus._frame_availability(ru4.clusters)
-    if block === nothing
-        @test Octopus.is_determined(_st4b_a_val(ru4.transverse).frame)
-    else
-        @test !Octopus.is_determined(_st4b_a_val(ru4.transverse).frame) && _st4b_a_val(ru4.transverse).frame.reason === block[1]
-        @test occursin("explicit partition", _st4b_a_val(ru4.transverse).frame.detail)
-        @test _st4b_a_entry(ru4, :preferred_form).status === :inactive_dependency
-    end
+    @test ru4.clusters.clusters[1].classification === :definite
+    @test Octopus._frame_availability(ru4.clusters) === nothing
+    @test Octopus.is_determined(_st4b_a_val(ru4.transverse).frame)
+    # (ii) Two modes rotating in OPPOSITE senses at distinct tunes (0.73 and
+    # -1.41: the auto partition leaves two singletons and the frame is
+    # determined), forced into one explicit cluster: the union is :indefinite
+    # (Gram signs [-1, 1]), the frame is blocked with the cluster's reason and
+    # the "explicit partition" detail, and the presented form reports the
+    # inactive dependency.
+    Mo4 = _st4b_a_bd(_st4b_a_rot(0.73), _st4b_a_rot(-1.41))
+    @test Octopus.is_determined(_st4b_a_val(analyze(TwissDispersionAnalysis(strict=false), Mo4).transverse).frame)
+    ro4 = analyze(TwissDispersionAnalysis(clusters=[[1, 2, 3, 4]], strict=false), Mo4)
+    blocked = Octopus._frame_availability(ro4.clusters)
+    @test blocked !== nothing && blocked[1] === :indefinite_cluster
+    @test !Octopus.is_determined(_st4b_a_val(ro4.transverse).frame)
+    @test _st4b_a_val(ro4.transverse).frame.reason === :indefinite_cluster
+    @test occursin("explicit partition", _st4b_a_val(ro4.transverse).frame.detail)
+    @test _st4b_a_entry(ro4, :preferred_form).status === :inactive_dependency
     # the same rule on a genuinely blocked explicit report: the indefinite 4D union of stage 3
     Mi4 = _st4b_a_bd(_st4b_a_rot(0.73), _st4b_a_rot(-0.73))
     ri4 = analyze(TwissDispersionAnalysis(strict=false), Mi4)
@@ -9851,6 +9867,17 @@ end
     end
     @test_throws ArgumentError compile_runtime(
         QuadrupoleSpec(L=0.4, k1=1.7, x_offset=1e-3, misalign_convention=:middle))
+    # The INACTIVE path (2026-10-18 audit F-211/U31-6, a seam with F-133): with
+    # no placement error set, `_misalignment_wrap` returns the bare element
+    # before it reads the convention, so `:middle` -- or a String -- is accepted
+    # silently at the spec, at compile and at the task: a non-default request
+    # ignored without a word. The refusal belongs to the source (a schema
+    # allowed-values check or the convention check hoisted above the early
+    # return); these two lines are the visible marker until it lands and turn
+    # into failures the day it does.
+    refused(f) = try; f(); false; catch e; e isa ArgumentError; end
+    @test_broken refused(() -> compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, misalign_convention=:middle)))
+    @test_broken refused(() -> compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, misalign_convention="madx")))
 
     # The survey follows h, the frame curvature, and never b0, the field. Two
     # bends with the same h and different b0 must get the same misalignment
@@ -10166,8 +10193,33 @@ end
     # atan(u)/u is 1 at the origin and continuous across the series crossover.
     @test Octopus._atan_over(0.0) == 1.0
     @test Octopus._atan_over(1.0e-5) ≈ 1.0 - 1.0e-10 / 3 rtol = 1.0e-12
-    @test Octopus._atan_over(1.0e-4 + eps()) ≈ Octopus._atan_over(1.0e-4 - eps()) rtol = 1.0e-14
     @test Octopus._atan_over(0.7) ≈ atan(0.7) / 0.7
+    # The crossover is READ from the helper's source (a bare literal there;
+    # 2026-10-18 audit F-211/U31-1: the straddle here hand-copied `1e-4`, so a
+    # moved crossover turned it into a same-branch comparison that sees
+    # neither a seam nor a stale series), and the helper is held to a 256-bit
+    # reference on both sides of it and across seven decades: a seam jump or
+    # a series truncation error beyond 4 ulp fails wherever the crossover sits
+    # (the audit's probe -- a copy with the crossover at 1e-2 and a 1e-10
+    # relative defect on the closed branch -- passed every line above). Four
+    # ulp: one rounding each in `atan`, the division and the two series terms.
+    let src = read(joinpath(pkgdir(Octopus), "src", "elements", "lattice_magnets.jl"), String),
+        body = split(split(src, "function _atan_over(")[2], "\nend")[1],
+        m = match(r"abs\(u\) < real\(T\)\(([0-9.e+-]+)\)", body)
+        @test m !== nothing
+        u_cross = m === nothing ? 1.0e-4 : parse(Float64, m.captures[1])
+        @test 0 < u_cross < 1
+        atan_over_ref(v) = v == 0 ? one(BigFloat) : atan(BigFloat(v)) / BigFloat(v)   # (`big` is a local tuple here)
+        worst = 0.0
+        for v in vcat(exp10.(range(-7, 0; length=1401)),
+                      u_cross * (1 - 8 * eps()), prevfloat(u_cross), u_cross, nextfloat(u_cross), u_cross * (1 + 8 * eps()))
+            ref = atan_over_ref(v)
+            worst = max(worst, Float64(abs(Octopus._atan_over(v) - ref) / eps(Float64(ref))))
+        end
+        @testset let crossover = u_cross, worst_ulps = worst
+            @test worst <= 4.0
+        end
+    end
 end
 
 @testset "Cancellation-free longitudinal updates for the curved drift, the bend and the solenoid" begin
@@ -11419,9 +11471,21 @@ struct _FixGSubjectOp{E} <: Octopus.AbstractTrackOp; subject::E; end
     suite = read(joinpath(root, "test", "runtests.jl"), String)
     suite_copies_seed = occursin("joinpath(outdir, \"123456789\")", suite)
     @test !suite_copies_seed
+    # Every harness that mentions the switch at all must carry the exact gate
+    # line this loop keys on, and the loop must have visited the MPI-capable
+    # ones (2026-10-18 audit F-211/U31-5: a bare `continue` on a respelled
+    # gate line left this part with no executed assertion and a green
+    # summary; the sibling scan in the MPI testset carries both tripwires).
+    seed_gate = "use_mpi = env_bool(\"OCTOPUS_USE_MPI\", false)"
+    visited = String[]
     for h in sort(filter(f -> endswith(f, ".jl"), readdir(joinpath(root, "test", "examples"))))
         text = read(joinpath(root, "test", "examples", h), String)
-        occursin("use_mpi = env_bool(\"OCTOPUS_USE_MPI\", false)", text) || continue
+        occursin("OCTOPUS_USE_MPI", text) || continue
+        @testset let harness = h, has_gate = occursin(seed_gate, text)
+            @test has_gate                            # the gate line, spelled as this loop keys on it
+        end
+        occursin(seed_gate, text) || continue
+        push!(visited, h)
         m = match(r"^const HARNESS_DEFAULT_SEED = (\d+)"m, text)
         @testset let harness = h
             @test m !== nothing
@@ -11429,6 +11493,7 @@ struct _FixGSubjectOp{E} <: Octopus.AbstractTrackOp; subject::E; end
             @test reads_constant                      # read by the harness, not only declared
         end
     end
+    @test length(visited) >= 2                        # the MPI-capable harnesses were visited (three today)
 
     # (6) S3-3: the wrapper set by forwarding, both ways. On Octopus's own
     # track ops the derivation names the three wrappers and agrees with the
@@ -11441,8 +11506,12 @@ struct _FixGSubjectOp{E} <: Octopus.AbstractTrackOp; subject::E; end
     @test Set(Any[T for T in octopus_ops if :inner in fieldnames(Base.unwrap_unionall(T))]) == derived
     probe = _forwarding_track_ops((_FixGBareOp, _FixGInnerNoForward, _FixGSubjectOp, Octopus.CompositeLine, Octopus.RefTilted))
     @test probe == Set(Any[_FixGSubjectOp, Octopus.RefTilted])
-    suite_derives_by_forwarding = occursin("derived = _forwarding_track_ops(octopus_track_ops)", suite)
-    @test suite_derives_by_forwarding
+    # The pattern is assembled at run time so this line's own text is not an
+    # occurrence (2026-10-18 audit F-211/U31-2: the literal matched itself and
+    # the pin could not fail); the one occurrence left is the derivation in
+    # "Turn modulation: rules, wrapper and the pure hook".
+    derivation_line = "derived = _forwarding_track_ops(" * "octopus_track_ops)"
+    @test count(derivation_line, suite) == 1
 end
 
 @testset "Turn modulation: slot bounds and labels at the wrap" begin
@@ -11697,8 +11766,8 @@ end
     # measured slope equals that expectation to 1e-9. Negative controls: the
     # `:flat` table's slope is +1 exactly (2^j bins at equal power) and the D2
     # trap -- `1/f` as an AMPLITUDE, i.e. the custom PSD `f -> 1/f^2` -- gives
-    # -1.017, one unit per octave steeper; both fail the pink pin by 50 times
-    # its tolerance.
+    # -1.017, one unit per octave steeper; both miss the pink pin by about 50
+    # times its tolerance (the flat by exactly 50, the brown by 50.8).
     sp_octave(P, j) = sum(P[k + 1] for k in 2^j:2^(j + 1) - 1)
     function sp_slope(y)
         x = collect(0.0:length(y) - 1)
@@ -11708,8 +11777,9 @@ end
     y_pink = [log2(sp_octave(tables["pink"][2].P, j)) for j in 2:13]
     y_expected = [log2(sum(1 / k for k in 2^j:2^(j + 1) - 1)) for j in 2:13]
     slope_pink = sp_slope(y_pink)
+    sp_slope_tol = 0.02                 # the pink pin; the controls below are stated in units of it
     @testset let slope = slope_pink, expected = sp_slope(y_expected), steps = round.(diff(y_pink); digits=4)
-        @test abs(slope) <= 0.02
+        @test abs(slope) <= sp_slope_tol
         @test abs(slope - expected) <= 1.0e-9
         @test maximum(abs.(y_pink .- y_expected .- (sum(y_pink) - sum(y_expected)) / 12)) <= 1.0e-9
     end
@@ -11717,11 +11787,17 @@ end
     slope_flat = sp_slope([log2(sp_octave(sp_periodogram(t_flat_wide.offsets), j)) for j in 2:13])
     t_brown = spectral_turn_table("brown" => f -> 1 / f^2, sp_sigma, (2.0^-14, 0.5); turns=sp_N, seed=sp_seed, rng_id=sp_id)
     slope_brown = sp_slope([log2(sp_octave(sp_periodogram(t_brown.offsets), j)) for j in 2:13])
-    @testset let negative_control = "slopes", flat = slope_flat, brown = slope_brown
+    # The flat slope is exactly +1 by construction, so "50 times the pink
+    # tolerance" is saturated, not exceeded: measured 1 + 30 ulp here and
+    # 1 + 2e-18 in BigFloat (2026-10-18 audit F-210), and a strict `> 50 tol`
+    # rode on the sign of that rounding -- a false red that would abort the
+    # suite. The controls are pinned at 40 times the pink tolerance, in units
+    # of the constant the pink pin reads, so a widened pink pin fails here.
+    @testset let negative_control = "slopes", flat = slope_flat, brown = slope_brown, tol = sp_slope_tol
         @test abs(slope_flat - 1.0) <= 1.0e-9
-        @test abs(slope_flat) > 0.02 * 50
+        @test abs(slope_flat) >= 40 * sp_slope_tol
         @test abs(slope_brown + 1.0) <= 0.05
-        @test abs(slope_brown) > 0.02 * 50
+        @test abs(slope_brown) >= 40 * sp_slope_tol
     end
     @test t_brown.name == "spectral(brown; sigma=1.0e-5, band=6.103515625e-5..0.5, turns=65536, seed=2026, rng_id=11, slot=0, amplitudes=fixed)"
 
@@ -13457,8 +13533,16 @@ end
         gpu = CUDAExecutionPolicy()
         for kind in kinds
             example = example_spec(ElementSpec{kind})
-            typed = kind === :line ? line32 : typed_example(kind, Float32)
-            typed isa Exception && continue                         # reported by part (b)
+            typed = kind === :line ? line32 : attempt(() -> typed_example(kind, Float32))
+            if typed isa Exception                                  # reported by part (b)
+                # Through `attempt`, so a kind without a typed form is one kind's
+                # visible skip and not an abort of the device half at that kind
+                # (2026-10-18 audit F-213/U32-6: only `line32` went through it).
+                @testset let kind = kind
+                    @test_skip "no typed form: this kind's device run is not exercised (part (b) reports it)"
+                end
+                continue
+            end
             @testset let kind = kind
                 err = refusal(example, cuda_rep(rep32()), gpu)
                 @test err isa ArgumentError
@@ -13814,7 +13898,11 @@ end
         @test mark(table[:drift]) == "u-u-u-" && table[:drift].ulp_bound == 8          # the straight drift writes x, y, z only
         @test mark(table[:quadrupole]) == "uuuuu-" && table[:quadrupole].ulp_bound == 32
         # The bend's body and the solenoid were 8192 and 4096 for the cancellation
-        # class fix batch 3 unit K removed (2026-10-17); the face maps keep theirs.
+        # class fix batch 3 unit K removed (2026-10-17); the face maps keep theirs
+        # (8192 below, `_rot_xz(e)` and `_wedge(-e, b1)` turning the momentum by an
+        # O(sin e) share of ps and back), as does the Lorentz boost (16384): the
+        # same class, declared rather than removed, priced for the ledger by the
+        # 2026-10-18 audit (F-212/U32-3).
         @test mark(table[:sbend]) == "uuuuu-" && table[:sbend].ulp_bound == 64
         @test mark(table[:solenoid]) == "uuuuu-" && table[:solenoid].ulp_bound == 128
         @test mark(table[:thin_quadrupole]) == "-b-b--" && mark(table[:thin_dipole]) == "-b-b--"
@@ -13830,6 +13918,9 @@ end
         @test mark(table[:crab_dispersion]) == "u----u" && mark(table[:momentum_dispersion]) == "u---u-"
         @test mark(table[:xy_coupling]) == "uuuu--" && mark(table[:chromaticity_kick]) == "uuuuu-"
         @test mark(table[:patch]) == "uuuuu-" && mark(table[:line]) == "uuuuu-"
+        @test mark(table[:sextupole]) == "uuuuu-" && table[:sextupole].ulp_bound == 32   # straight magnets, as the quadrupole
+        @test mark(table[:octupole]) == "uuuuu-" && table[:octupole].ulp_bound == 32
+        @test mark(table[:multipole]) == "uuuuu-" && table[:multipole].ulp_bound == 32
         # the instance decides
         class_of(spec) = Octopus._cross_backend_rounding(compile_runtime(spec))
         @test mark(class_of(ThinQuadrupoleSpec(k1l=0.05, k1sl=0.02))) == "-u-u--"              # normal and skew at one order
@@ -13869,6 +13960,18 @@ end
         @test mark(Octopus._cross_backend_rounding(map(compile_runtime, (DriftSpec(L=100.0), Linear6DSpec(matrix=zpz_map), ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV))))) == "u-u-uu"
         @test mark(Octopus._cross_backend_rounding(())) == "------"
     end
+    # Every registry kind has a pinned mark above (2026-10-18 audit
+    # F-213/U32-11: 28 of 31 were pinned and nothing said so; on CI, where part
+    # (d) does not run, an unpinned kind's declaration is checked for existence
+    # alone). The pinned set is read off this file's part (c), the kinds off
+    # the registry.
+    pinned_kinds = let text = read(joinpath(pkgdir(Octopus), "test", "runtests.jl"), String),
+                       part = split(split(text, "@testset \"the declared classes\" begin")[2], "# the instance decides")[1]
+        Set(Symbol(m.captures[1]) for m in eachmatch(r"table\[:([a-z_0-9]+)\]", part))
+    end
+    @testset let unpinned_kinds = sort!(string.(collect(setdiff(Set(kinds), pinned_kinds))))
+        @test isempty(unpinned_kinds)
+    end
 
     # (d) THE MEASUREMENT: every registry example (Float64, 400 particles with
     # spread, 3 turns; the single-pass cavity 1) and the mixed fixtures tracked
@@ -13878,6 +13981,36 @@ end
     # (`_cross_backend_violations`). A ulp-class coordinate that agrees
     # bitwise is not a violation. The table is printed, so the numbers behind
     # the bounds are in every log.
+    fixtures = (
+        ("drift L=0.35", DriftSpec(L=0.35)),
+        ("drift L=100", DriftSpec(L=100.0)),
+        ("drift curved", DriftSpec(L=0.35, h=0.02)),
+        ("quad fringe+offset", QuadrupoleSpec(L=0.4, k1=0.8, nst=2, fringe=:all, va=0.03, vs=1.0e-4, x_offset=1.0e-4)),
+        ("sext tilt", SextupoleSpec(L=0.25, k2=6.0, nst=2, tilt=0.01)),
+        ("sbend fringe ref_tilt", SBendSpec(L=1.1, angle=0.05, k1=0.2, e1=0.02, e2=0.015, fringe=:all, nst=2, ref_tilt=0.05)),
+        ("solenoid kn", SolenoidSpec(L=0.8, ks=0.3, kn=(0.0, 0.2), nst=2)),
+        ("thin skew+normal quad", ThinQuadrupoleSpec(k1l=0.05, k1sl=0.02)),
+        ("rf thick", ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV, phase=0.3, L=0.5)),
+        ("rf modulated", ThinRFCavitySpec(197.0e6; strength=1.0e-4, beta0=reference_beta(51.1e6, 0.511e6), gamma0=reference_gamma(51.1e6, 0.511e6),
+                                          phase_noise=TurnTable([0.02 * cos(2pi * k / 5) for k in 1:3]; name="fixI_rf_phase"),
+                                          strength_noise=WhiteNoise(5.0e-3; rng_id=Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)))),
+        ("crab modulated", ThinCrabCavitySpec{2}(197.0e6; strengthX=(1.0e-5, -2.0e-6), strengthY=(3.0e-6, 0.0), phase=(0.0, 0.2),
+                                                 phase_noise=(WhiteNoise(2.0e-3; rng_id=Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)), nothing))),
+        ("radiation exciting", LumpedRadSpec(damping_turns=(1000.0, 1000.0, 500.0), sigma=(1.0e-4, 8.0e-5, 1.0e-2))),
+        ("strong beam chromatic", ThinStrongBeamSpec(kbb=1.0e-4, beta=(1.0, 1.0), sigma=(1.0e-3, 1.0e-3), virtual_drift=ChromaticDrift())),
+        ("strong beam elliptic", ThinStrongBeamSpec(kbb=1.0e-8, klum=1.0, beta=(0.82, 0.075), alpha=(0.01, -0.02), sigma=(110.0e-6, 12.0e-6))),
+        ("chromaticity kick with zeta", ChromaticityKickSpec(xi=(1.2, -0.8), beta=(0.82, 0.075), alpha=(0.01, -0.02), zeta=(0.002, -0.001, 0.0, 0.0),
+                                                             eta=(0.001, 0.0, -0.001, 0.0), R=(0.001, -0.0005, 0.0003, 0.0007))),
+        ("linear6d z-pz row", Linear6DSpec(matrix=zpz_map)),
+        ("patch", PatchSpec(dx=1.0e-5, dz=2.0e-5, angle_x=1.0e-4, angle_s=0.01)),
+        ("marker x_offset", MarkerSpec(x_offset=1.0e-4)),
+        ("marker z_offset", MarkerSpec(z_offset=1.0e-3)),
+        ("marker x_pitch", MarkerSpec(x_pitch=1.0e-3)),
+        ("marker ref_tilt", MarkerSpec(ref_tilt=0.01)),
+        ("line misaligned", BeamLine("G", DriftSpec(L=0.5), QuadrupoleSpec(L=0.4, k1=1.7, nst=2); x_offset=1.0e-4)),
+        ("line markers", BeamLine("M", MarkerSpec(), MarkerSpec())),
+        ("aperture killing", ApertureSpec(shape=:ellipse, x_limit=7.0e-5, y_limit=5.6e-5)),
+    )
     if CUDA_TESTS_ACTIVE
         @testset "the declaration against the measurement" begin
             base = Octopus._contract_default_initial_rep(400, Float64)
@@ -13891,6 +14024,7 @@ end
                 return rep
             end
             println("cross-backend measurement, 400 particles, CPU against CUDA (measured B or ulps of scale / declared):")
+            measured = Any[]                 # (class, agreement) per row, for the derived anti-vacuity below
             function measure(label, spec)
                 class = Octopus._cross_backend_rounding(compile_runtime(spec))
                 turns = 3
@@ -13907,49 +14041,26 @@ end
                 @testset let case = label, violations = Octopus._cross_backend_violations(class, agreement; label=label)
                     @test isempty(violations)
                 end
+                push!(measured, (class, agreement))
                 return agreement
             end
             for kind in kinds
                 measure(string(kind), example_spec(ElementSpec{kind}))
             end
-            fixtures = (
-                ("drift L=0.35", DriftSpec(L=0.35)),
-                ("drift L=100", DriftSpec(L=100.0)),
-                ("drift curved", DriftSpec(L=0.35, h=0.02)),
-                ("quad fringe+offset", QuadrupoleSpec(L=0.4, k1=0.8, nst=2, fringe=:all, va=0.03, vs=1.0e-4, x_offset=1.0e-4)),
-                ("sext tilt", SextupoleSpec(L=0.25, k2=6.0, nst=2, tilt=0.01)),
-                ("sbend fringe ref_tilt", SBendSpec(L=1.1, angle=0.05, k1=0.2, e1=0.02, e2=0.015, fringe=:all, nst=2, ref_tilt=0.05)),
-                ("solenoid kn", SolenoidSpec(L=0.8, ks=0.3, kn=(0.0, 0.2), nst=2)),
-                ("thin skew+normal quad", ThinQuadrupoleSpec(k1l=0.05, k1sl=0.02)),
-                ("rf thick", ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV, phase=0.3, L=0.5)),
-                ("rf modulated", ThinRFCavitySpec(197.0e6; strength=1.0e-4, beta0=reference_beta(51.1e6, 0.511e6), gamma0=reference_gamma(51.1e6, 0.511e6),
-                                                  phase_noise=TurnTable([0.02 * cos(2pi * k / 5) for k in 1:3]; name="fixI_rf_phase"),
-                                                  strength_noise=WhiteNoise(5.0e-3; rng_id=Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)))),
-                ("crab modulated", ThinCrabCavitySpec{2}(197.0e6; strengthX=(1.0e-5, -2.0e-6), strengthY=(3.0e-6, 0.0), phase=(0.0, 0.2),
-                                                         phase_noise=(WhiteNoise(2.0e-3; rng_id=Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)), nothing))),
-                ("radiation exciting", LumpedRadSpec(damping_turns=(1000.0, 1000.0, 500.0), sigma=(1.0e-4, 8.0e-5, 1.0e-2))),
-                ("strong beam chromatic", ThinStrongBeamSpec(kbb=1.0e-4, beta=(1.0, 1.0), sigma=(1.0e-3, 1.0e-3), virtual_drift=ChromaticDrift())),
-                ("strong beam elliptic", ThinStrongBeamSpec(kbb=1.0e-8, klum=1.0, beta=(0.82, 0.075), alpha=(0.01, -0.02), sigma=(110.0e-6, 12.0e-6))),
-                ("chromaticity kick with zeta", ChromaticityKickSpec(xi=(1.2, -0.8), beta=(0.82, 0.075), alpha=(0.01, -0.02), zeta=(0.002, -0.001, 0.0, 0.0),
-                                                                     eta=(0.001, 0.0, -0.001, 0.0), R=(0.001, -0.0005, 0.0003, 0.0007))),
-                ("linear6d z-pz row", Linear6DSpec(matrix=zpz_map)),
-                ("patch", PatchSpec(dx=1.0e-5, dz=2.0e-5, angle_x=1.0e-4, angle_s=0.01)),
-                ("marker x_offset", MarkerSpec(x_offset=1.0e-4)),
-                ("marker z_offset", MarkerSpec(z_offset=1.0e-3)),
-                ("marker x_pitch", MarkerSpec(x_pitch=1.0e-3)),
-                ("marker ref_tilt", MarkerSpec(ref_tilt=0.01)),
-                ("line misaligned", BeamLine("G", DriftSpec(L=0.5), QuadrupoleSpec(L=0.4, k1=1.7, nst=2); x_offset=1.0e-4)),
-                ("line markers", BeamLine("M", MarkerSpec(), MarkerSpec())),
-                ("aperture killing", ApertureSpec(shape=:ellipse, x_limit=7.0e-5, y_limit=5.6e-5)),
-            )
             for (label, spec) in fixtures
                 measure(label, spec)
             end
-            # Anti-vacuity: the measurement sees differences where the classes
-            # say it may (the sector bend parts in x on this fixture), and the
-            # killing aperture killed something on both sides.
-            bend = measure("sbend (anti-vacuity)", example_spec(ElementSpec{:sbend}))
-            @test !bend.x.bitwise
+            # Anti-vacuity: somewhere in the table the measurement SAW a
+            # difference where a class says it may -- counted over every
+            # measured ulp-class coordinate of every row, not pinned on one
+            # kind's x (2026-10-18 audit F-213/U32-10: `!bend.x.bitwise` was a
+            # pin on the device compiler's contraction choice for one kernel)
+            # -- and the killing aperture killed something on both sides.
+            parted = sum(count(getfield(c, k) === :ulp && !getfield(a, k).bitwise for k in coords)
+                         for (c, a) in measured)
+            @testset let ulp_coordinates_that_parted = parted, rows = length(measured)
+                @test parted > 0
+            end
             killed = measure("aperture killing (anti-vacuity)", ApertureSpec(shape=:ellipse, x_limit=7.0e-5, y_limit=5.6e-5))
             @test killed.x.compared < 400 && killed.x.lost_one_backend == 0
             # The surveyed cavity at ZERO voltage (F-91, fix batch 2026-10-19), whose kick is the slip
@@ -13982,7 +14093,38 @@ end
             end
         end
     else
-        @test_skip "CUDA inactive: the measurement of the declared classes (31 registry examples and 25 mixed fixtures) is not exercised"
+        @test_skip "CUDA inactive: the measurement of the declared classes ($(length(kinds)) registry examples and $(length(fixtures)) mixed fixtures) is not exercised"
+    end
+
+    # (d') The checker itself, fed known defects on the host (2026-10-18 audit
+    # F-212/U32-1: every suite call site asserted `isempty(violations)` and
+    # nothing ever showed the classifier firing, so an inverted or vacuous
+    # checker would have turned every class measurement green). Synthetic
+    # pairs: the agreeing pair that must stay clean, a declared-bitwise
+    # coordinate parted by four ulps, a :ulp coordinate within its bound and
+    # past it, and a NaN on one side.
+    @testset "the checker fires on a known defect" begin
+        base6 = Octopus._contract_default_initial_rep(64, Float64)
+        copy6() = Phase6DRep((copy(a) for a in coordinate_arrays(base6))...)
+        all_bitwise = Octopus.CrossBackendRounding(:bitwise, :bitwise, :bitwise, :bitwise, :bitwise, :bitwise,
+                                                   0, "synthetic: every coordinate bitwise")
+        x_ulp4 = Octopus.CrossBackendRounding(:ulp, :bitwise, :bitwise, :bitwise, :bitwise, :bitwise,
+                                              4, "synthetic: x within 4 ulps of its scale")
+        agree(a, b) = Octopus._cross_backend_agreement(a, b)
+        @test isempty(Octopus._cross_backend_violations(all_bitwise, agree(copy6(), copy6()); label="clean"))
+        parted = copy6()
+        parted.x .= nextfloat.(parted.x, 4)
+        v_parted = Octopus._cross_backend_violations(all_bitwise, agree(copy6(), parted); label="parted")
+        @test length(v_parted) == 1 && occursin("x is declared :bitwise", v_parted[1])
+        @test isempty(Octopus._cross_backend_violations(x_ulp4, agree(copy6(), parted); label="within"))
+        far = copy6()
+        far.x .+= 8 * eps(maximum(abs, far.x))
+        v_far = Octopus._cross_backend_violations(x_ulp4, agree(copy6(), far); label="beyond")
+        @test length(v_far) == 1 && occursin("declared :ulp within 4 ulps", v_far[1])
+        one_nan = copy6()
+        one_nan.y[3] = NaN
+        v_nan = Octopus._cross_backend_violations(all_bitwise, agree(copy6(), one_nan); label="nan")
+        @test length(v_nan) == 2 && any(s -> occursin("NaN on one backend only", s), v_nan)
     end
 
     # (e) The pointers are real: the backend-consistency script consults the
@@ -14700,9 +14842,18 @@ if _lane_gate("Solver option effectiveness")
     # discard every CUDAPICLaunchConfig and the inherited policy thread count
     # while configuration_report called them resolved.
     r = validate(SolverOptionEffectivenessContract())
-    # `:skipped` only without a GPU -- see U18-3 note below; a tolerant status
-    # assertion makes a GPU-less run indistinguishable from a real one.
-    @test r.status === :passed || (r.status === :skipped && !CUDA_TESTS_ACTIVE)
+    # `:skipped` only without a GPU -- see U18-3 note below. Without a GPU the
+    # contract's CPU half ran (a CPU failure returns `:failed` before any
+    # `:skipped`) and its device half did not: the summary says so instead of
+    # recording the unrun leg as a pass (2026-10-18 audit F-218/U35-4; the
+    # `status === :passed || (status === :skipped && !CUDA_TESTS_ACTIVE)` form
+    # printed a GPU-less run byte for byte like a real one).
+    if CUDA_TESTS_ACTIVE
+        @test r.status === :passed
+    else
+        @test r.status === :skipped
+        @test_skip "CUDA device not available: the device half of the solver-option contract did not run"
+    end
     @test r.metrics[:cpu_options_checked] > 60
     # The device half must keep checking an option the CPU ALSO reads. When
     # the CPU soft-Gaussian learned `batch_mode` (2026-09-04) a filter keyed
@@ -14724,6 +14875,8 @@ if _lane_gate("Solver option effectiveness")
         # Anti-vacuity: the three solvers whose `batch_mode` both backends read.
         @test both >= 3
         @test r.metrics[:cuda_options_checked] == r.metrics[:cuda_only_options] + both
+    else
+        @test_skip "CUDA device not available: the device option count is not checked (2026-10-18 audit F-213/U32-7)"
     end
 
     # Every declared option must be judged or exempted with a reason; an option
@@ -14833,7 +14986,7 @@ end # _lane_gate("Solver option effectiveness")
     # is the regression guard for the whole class -- a future `Float64` written
     # where the type should be carried shows up here as a lost element rather
     # than as a silently non-differentiable one.
-    let H = 1e-30, verified = String[], disagreed = String[]
+    let H = 1e-30, verified = String[], disagreed = String[], caught = String[]
         seed(spec, key, v) = (p = copy(getfield(spec, :params)); p[key] = v;
                               ElementSpec{kind(spec)}(p))
         for T in sort(collect(Octopus.registered_element_specs()); by=string)
@@ -14864,6 +15017,7 @@ end # _lane_gate("Solver option effectiveness")
                     # anything else -- a genuine error in an element map --
                     # propagates and fails the testset.
                     sweep_err isa Union{MethodError,InexactError} || rethrow()
+                    push!(caught, "$(meta.kind).$(key)")
                 end
             end
         end
@@ -14886,6 +15040,12 @@ end # _lane_gate("Solver option effectiveness")
         # complex-steppable parameter derivatives (of its 6 real example
         # params; the other two land in the documented exception buckets).
         @test length(verified) == 29
+        # The caught bucket, BY NAME (2026-10-18 audit F-213/U32-12: the comment
+        # above described a bucket that did not exist, so a parameter swallowed
+        # from its first day was counted nowhere). A sixth name here is a new
+        # parameter the sweep cannot differentiate, to be argued or fixed.
+        @test sort(caught) == ["aperture.x_limit", "aperture.y_limit", "gaussian_strong_beam.sigz",
+                               "thin_strong_beam.kbb", "thin_strong_beam.klum"]
         # the kinds that must stay differentiable
         for k in ("quadrupole", "sextupole", "octupole", "multipole", "sbend",
                   "drift", "patch", "kicker", "thin_crab_cavity",
@@ -15282,11 +15442,15 @@ end
     @test zop(cin...) === cin
 
     # The design particle maps to itself exactly, and a phase-pi/2 cavity
-    # (zero design gain) leaves the reference alone: rho == 1 exactly.
+    # leaves the reference alone to rounding: its design gain is
+    # `strength beta0 cos(pi/2)` with `cos(pi/2) = 6.1e-17`, i.e. 1.5e-18 here,
+    # below eps/2, so `rho == 1` held bit for bit by rounding and not by a zero
+    # gain (2026-10-18 audit F-213/U32-5; the structural zero-gain pin is the
+    # `strength=0.0` identity above). Stated as the bound it is: one ulp.
     @test all(iszero, op(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
     op90 = Octopus.ThinAcceleratingCavity(
         ThinAcceleratingCavitySpec(1.3e9; voltage=V, e0=E0, mc2=mc2, phase=pi/2))
-    @test op90.rho == 1
+    @test abs(op90.rho - 1) <= eps()
 
     # Adiabatic damping: px, py scale by rho exactly; x, y untouched; and the
     # full map's determinant is rho^3 exactly (one factor per canonical
@@ -15868,7 +16032,11 @@ end
         # thin-RF-cavity fixture carried `beta0=0.99, gamma0=100.0` (residual
         # 2.0e-2, no particle at all) and the round-trip block above carried a
         # pair hand-typed to 10 digits (residual -3.8e-8).
-        @test reference_pair_residual(reference_beta_gamma(275e9, PMASS_EV)...) == 0
+        # "0 or one ulp" (the docstring): exactly 0 for 29.6% of proton energies
+        # in [1, 300] GeV and -5.55e-16 at 275.1 GeV (2026-10-18 audit
+        # F-213/U32-4), so this energy's pin is the docstring's bound, not the
+        # bit pattern it happens to produce.
+        @test abs(reference_pair_residual(reference_beta_gamma(275e9, PMASS_EV)...)) <= eps()
         for (E0, mc2) in ((275e9, PMASS_EV), (2.5e9, PMASS_EV), (10e9, EMASS_EV))
             @test abs(reference_pair_residual(reference_beta_gamma(E0, mc2)...)) <= 1.0e-15
         end
@@ -15966,7 +16134,7 @@ if _lane_gate("script mode picks up the ForwardDiff rules")
     # LOUD -- an @info, not silence.
     if get(ENV, "OCTOPUS_SKIP_SCRIPT_MODE_TEST", "0") == "1"
         @info "script-mode ForwardDiff test skipped by OCTOPUS_SKIP_SCRIPT_MODE_TEST"
-        @test true
+        @test_skip "OCTOPUS_SKIP_SCRIPT_MODE_TEST=1: the script-mode ForwardDiff branch was not exercised this run"
     else
         root = pkgdir(Octopus)
         script = """
@@ -16096,6 +16264,19 @@ end
     # both were public keywords with no schema entry).
     @test keys(tracking_task_option_schema()) ==
           (:record_turn_times, :luminosity_tracking, :artifact, :loss_report)
+    # The tripwire the comment above promised (2026-10-18 audit F-212/U32-2:
+    # `validate_configuration_metadata` checks schema ⊆ fields, the direction
+    # that cannot see an undeclared keyword, and S4-10 found two by hand). The
+    # constructor's keywords are derived from its methods; every one is a
+    # schema entry or on the stated list of non-options -- composition
+    # (`policy`, `seed`, `hooks`, `actions`, `observers`, `contracts`,
+    # `analyses`) and the two retired spellings that throw by name (`loss_log`,
+    # `luminosity`). A new keyword lands here red until it has a schema entry
+    # or a stated reason.
+    task_kwargs = Set(k for m in methods(TrackingTask) for k in Base.kwarg_decl(m))
+    @test Set(keys(tracking_task_option_schema())) ⊆ task_kwargs
+    @test setdiff(task_kwargs, keys(tracking_task_option_schema())) ==
+          Set([:policy, :seed, :hooks, :actions, :observers, :contracts, :analyses, :loss_log, :luminosity])
 end
 
 @testset "CUDA and CPU PIC cache keys cannot drift apart" begin
@@ -16106,22 +16287,32 @@ end
     # "Derive the missing fields from the other key rather than by hand" is the
     # rule; this is the tripwire that makes the rule enforceable, and it reads
     # the SOURCE so it works with no GPU present (2026-08-05_b audit, U2-3).
-    key_fields(path, marker, closer) = begin
-        text = read(joinpath(pkgdir(Octopus), path), String)
-        i = findfirst(marker, text)
-        j = findnext(closer, text, last(i))
-        blob = text[first(i):first(j)]
+    # The blob is cut at the first line after the marker whose content is the
+    # bare tuple closer `)`, whatever its indentation (2026-10-18 audit
+    # F-213/U32-13: an indentation-keyed closer let a re-indented paren grow
+    # the blob past the key -- 1624 to 3047 characters, measured -- where
+    # another function's `solver.<field>` reads would weaken the subset check
+    # silently), and the field counts are pinned EXACTLY, so over-capture is
+    # as loud as a dropped field.
+    key_blob(path, marker) = begin
+        lines = readlines(joinpath(pkgdir(Octopus), path))
+        i = findfirst(l -> occursin(marker, l), lines)
+        j = findnext(l -> strip(l) == ")", lines, i)
+        lines[i:j]
+    end
+    key_fields(blob) = begin
         # Strip comments: the U1-2/U1-3 rationale mentions field names in prose.
-        stripped = join((first(split(line, "#")) for line in split(blob, "\n")), "\n")
+        stripped = join((first(split(line, "#")) for line in blob), "\n")
         Set(Symbol(m.captures[1]) for m in eachmatch(r"solver\.([a-z_0-9]+)", stripped))
     end
-    cuda_key = key_fields("src/tasks/strongstrong/pic_cuda.jl",
-                          ":cuda_pic_workspace,", "\n            )")
-    cpu_key = key_fields("src/tasks/strongstrong/pic_cpu.jl",
-                         ":cpu_pic_green_cache,", "\n    )")
-    # Non-empty, or the extraction silently checks nothing.
-    @test length(cpu_key) >= 6
-    @test length(cuda_key) >= 10
+    cuda_blob = key_blob("src/tasks/strongstrong/pic_cuda.jl", ":cuda_pic_workspace,")
+    cpu_blob = key_blob("src/tasks/strongstrong/pic_cpu.jl", ":cpu_pic_green_cache,")
+    cuda_key, cpu_key = key_fields(cuda_blob), key_fields(cpu_blob)
+    # Exact, not `>=`: a field added to either key, or a cut that swallowed a
+    # neighbour, changes a number here rather than passing. Measured
+    # 2026-10-20: 10 and 6 fields, 30 and 10 lines.
+    @test length(cpu_key) == 6 && length(cpu_blob) == 10
+    @test length(cuda_key) == 10 && length(cuda_blob) == 30
     @test :interaction_grid in cpu_key && :interaction_grid in cuda_key
     @test isempty(setdiff(cpu_key, cuda_key))      # the drift that happened twice
 end
@@ -17220,9 +17411,11 @@ end
         isempty(parts) ? s : String(parts[1])
     end
     allowed = Set([
-        # serial file I/O and initialisation
+        # serial file I/O
         ("read_beam_coordinates", "Beam.jl"),
-        ("_initialize_moment_file!", "BeamObservers.jl"),
+        # (`_initialize_moment_file!` left with the legacy moment observers on
+        # 2026-08-11 and sat here unhit until the 2026-10-18 audit, F-214/U33-2;
+        # the used-entry tripwire below retires the next one on the spot.)
         # serial contract validation helpers
         ("validate", "Contracts.jl"),
         ("_contract_default_initial_rep", "Contracts.jl"),
@@ -17237,6 +17430,7 @@ end
         # the closures, by collision position, and the sweep finds no box.
     ])
     offenders = String[]
+    hit = Set{Tuple{String,String}}()
     nmethods = 0
     seen = Set{Method}()
     # Enumerate over EVERY loaded module's bindings, not just Octopus's own
@@ -17290,7 +17484,10 @@ end
             any(expr_has_box, ci.code) || continue
             file = basename(String(m.file))
             file == "none" && continue          # @generated bodies: compile-time, serial
-            (clean_name(m), file) in allowed && continue
+            if (clean_name(m), file) in allowed
+                push!(hit, (clean_name(m), file))
+                continue
+            end
             push!(offenders, "$(m.name) @ $(file):$(m.line)")
         end
     end
@@ -17301,6 +17498,30 @@ end
     @test nmethods >= 2450             # the sweep actually swept, and widely
     @test isempty(offenders)
     isempty(offenders) || foreach(o -> @info("new Core.Box: " * o), offenders)
+    # Every allowlist entry was HIT (2026-10-18 audit F-214/U33-2): a box that
+    # left the tree leaves the list, so an argued exemption cannot outlive its
+    # box and blanket a future function of the same name.
+    @testset let unused_allowlist_entries = sort!(collect(setdiff(allowed, hit)))
+        @test isempty(unused_allowlist_entries)
+    end
+    # The detector itself, fed a known box and a known non-box in THIS process
+    # (the same audit: `expr_has_box` had never been shown a defect): a local
+    # assigned inside a closure AND outside it is one shared `Core.Box`; a
+    # `Ref` written the same way is not.
+    function corebox_positive(n)
+        acc = 0
+        f = () -> (acc += n)
+        f(); acc += 1
+        return acc
+    end
+    function corebox_negative(n)
+        acc = Ref(0)
+        f = () -> (acc[] += n)
+        f(); acc[] += 1
+        return acc[]
+    end
+    @test any(expr_has_box, Base.uncompressed_ir(only(methods(corebox_positive))).code)
+    @test !any(expr_has_box, Base.uncompressed_ir(only(methods(corebox_negative))).code)
 end
 
 @testset "CPU solver stack is thread-count invariant" begin
@@ -17863,6 +18084,16 @@ end
     # mesh must evaluate bit-identically to the monolithic solve-and-eval.
     # (At the change itself, full transverse collides were captured pre- and
     # post-refactor and diffed bit-identical at 4 threads, ns=8.)
+    #
+    # `_spectral_field_grid!` IS the composition `solve!` then `eval`, so the
+    # bitwise lines below cannot see a defect inside either half (2026-10-18
+    # audit F-214/U33-1: an eval returning an all-zero field passed them). The
+    # independent reference is the allocating `_spectral_field_grid`, a
+    # separate implementation of the same deposit, DST solve and bilinear
+    # evaluation (unit-charge normalisation before the transform, FFTW `r2r`
+    # calls and `_spectral_cosderiv` instead of the workspace's padded plans),
+    # so the two agree to roundoff and not by construction: 1e-12 of the
+    # field's scale, two orders above the roundoff of a 32x32 DST pair.
     mkc(scale, phase, n) = [scale * sin(0.7 * i + phase) for i in 1:n]
     sx, sy = mkc(1.0e-4, 0.0, 500), mkc(1.0e-4, 0.9, 500)
     fx, fy = mkc(8.0e-5, 0.4, 300), mkc(8.0e-5, 1.3, 300)
@@ -17873,8 +18104,15 @@ end
     Octopus._spectral_field_grid_solve!(ws2, sx, sy, L, L)
     Ex1, Ey1 = Octopus._spectral_field_grid_eval(copy(ws2.Exg), copy(ws2.Eyg),
                                                  32, 32, fx, fy, L, L)
-    @test Ex1 == Ex0
+    @test Ex1 == Ex0                      # a stored mesh evaluates as a live one
     @test Ey1 == Ey0
+    Exr, Eyr = Octopus._spectral_field_grid(sx, sy, fx, fy, L, L, 32, 32)
+    scale = max(maximum(abs, Exr), maximum(abs, Eyr))
+    @test scale > 0                       # the reference saw a field
+    @testset let rel_x = maximum(abs, Ex1 .- Exr) / scale, rel_y = maximum(abs, Ey1 .- Eyr) / scale
+        @test rel_x <= 1.0e-12
+        @test rel_y <= 1.0e-12
+    end
 end
 
 if _lane_gate("Every example script runs against the current interface")
@@ -18018,13 +18256,18 @@ end
     # Nothing in `env_bool`'s grammar catches a variable that is simply never
     # read, so an operator following that record would have set `OCTOPUS_MP=1`,
     # got a threads-only run, and reported it as MPI -- a non-default request
-    # silently ignored, the defect class this repository names first. Both
-    # harnesses refuse the dead spelling BY NAME; this says they still do.
+    # silently ignored, the defect class this repository names first. Every
+    # harness refuses the dead spelling BY NAME; this says they still do.
     #
     # Cheap on purpose: the refusal sits above the Octopus load, so each of
     # these subprocesses is a bare Julia startup, not a package load.
     root = dirname(@__DIR__)
-    for harness in ("weak_strong_tracking.jl", "strong_strong_tracking.jl")
+    # Every harness in the directory, derived as the example-script testset
+    # derives it (2026-10-18 audit F-214/U33-3: two of the three were listed
+    # by hand, and the third's refusal was verified by nothing).
+    harnesses = sort(filter(f -> endswith(f, ".jl"), readdir(joinpath(root, "test", "examples"))))
+    @test length(harnesses) >= 3
+    for harness in harnesses
         script = joinpath(root, "test", "examples", harness)
         # Presence, not truthiness: `OCTOPUS_MP=0` also means the reader
         # believes the switch exists, so both values must be refused.
@@ -18907,6 +19150,19 @@ end
     end
     Octopus.HDF5.h5open(pa2, "r") do f
         @test read(f["luminosity"]["ip"]["turns"]) == [0, 1, 2, 3]
+    end
+    # The torn tail is truncated SILENTLY by design (RunArtifact.jl: rows past
+    # the cursor are a torn tail, the docstring says so, and the truncation
+    # emits nothing); the ONE warning this reopen does emit is the
+    # second-live-observer warning ("a second live observer is initializing an
+    # output path that another live observer is writing ..."), because `t2`'s
+    # observer above still holds the path. Pinned on that content, so a new
+    # warning or error log on this path -- or the known one going away -- is
+    # a change this test sees rather than a capture nobody reads (2026-10-18
+    # audit F-214/U33-4, `logs_t2b` was dead; measured 2026-10-20: exactly
+    # one warning, the one named).
+    @testset let torn_tail_logs = [string(l.level, ": ", l.message) for l in logs_t2b if l.level >= Logging.Warn]
+        @test length(torn_tail_logs) == 1 && occursin("second live observer", torn_tail_logs[1])
     end
     # (4b) The weak-strong side of the channel (step 2a): per-strong-beam
     # datasets carrying the positive rows only (this fixture's thin strong
@@ -21072,6 +21328,23 @@ end
         @test realised.strengthX[1] === el.slots[1].nominal.strengthX   # the inactive strength slot
     end
 
+    # The strength slot NUMBER (`N + i`: 4 for harmonic 2 of a two-harmonic
+    # cavity, src/elements/turn_modulated.jl) is observable only through a
+    # slot-keyed rule -- a `TurnTable` replays by turn alone, so the pin above
+    # held for any slot number (2026-10-18 audit F-216/U34-6). A white rule on
+    # that slot reproduces the recorded series at slot 4 and at no other.
+    let crab_w = ThinCrabCavitySpec{2}(394.0e6; strengthX=(2.0e-3, 1.0e-3), strengthY=(0.0, 5.0e-4),
+                                       phase=(0.1, 0.2), strength_noise=(nothing, WhiteNoise(1.0e-2; rng_id=9))),
+        p_w = tempname() * ".h5"
+        run(p_w, (crab_w, disp, probe); record_turn_modulation=true)
+        el_w = turn_modulation_provenance(p_w)[1].elements[1]
+        rule_w = compile_runtime(crab_w).rule.strength[2]
+        @test [s.slot for s in el_w.slots] == ["strength_noise[2]"]
+        @test el_w.slots[1].series == replay(rule_w, 4, 0:4)
+        @test all(el_w.slots[1].series != replay(rule_w, s, 0:4) for s in (1, 2, 3))
+        rm(p_w; force=true)
+    end
+
     # (d) NO SIDE EFFECT: the moments of the run with the switch on are bitwise
     # those of the run with it off, and the ledger agrees but for `elapsed`.
     m_off = read(TaskOutput(p_off), :moments; name="m")
@@ -23161,15 +23434,36 @@ end
     #
     # This is deliberately a SOURCE check: the uncapped sites are unreachable
     # without a GPU, so no runtime test on CI could ever see them.
-    for file in ("pic_cuda.jl", "gaussian_pic_cuda.jl")
+    #
+    # The file list is DERIVED from the directory (2026-10-18 audit
+    # F-215/U34-2: two files were listed, and the spectral solver's kick
+    # kernels -- `_cuda_spectral_interp_scatter_kernel!` and its 6D twin, no
+    # "kick" in their names -- launch raw at the file's fixed count in a
+    # third). Those two ARE the spectral kick: they are exempt from the cap
+    # here by name because their count is fixed, never policy-handed, and the
+    # launch-site tripwire below pins them with that count and measures their
+    # ceiling against it; the exemption is asserted LIVE, so it cannot outlive
+    # the kernels it names.
+    cuda_files = sort(filter(f -> endswith(f, "_cuda.jl"),
+                             readdir(joinpath(pkgdir(Octopus), "src", "tasks", "strongstrong"))))
+    @test length(cuda_files) >= 3
+    spectral_kick = ("_cuda_spectral_interp_scatter_kernel!", "_cuda_spectral_interp_scatter_6d_kernel!")
+    seen_spectral_kick = Set{String}()
+    for file in cuda_files
         path = joinpath(pkgdir(Octopus), "src", "tasks", "strongstrong", file)
         raw = String[]
         for (i, line) in enumerate(eachline(path))
-            occursin("CUDA.@cuda", line) && occursin("kick", lowercase(line)) &&
-                push!(raw, "$(file):$(i)")
+            occursin("CUDA.@cuda", line) || continue
+            for k in spectral_kick
+                occursin(k * "(", line) && push!(seen_spectral_kick, k)
+            end
+            occursin("kick", lowercase(line)) && push!(raw, "$(file):$(i)")
         end
-        @test isempty(raw)
+        @testset let file = file, raw_kick_launches = raw
+            @test isempty(raw)
+        end
     end
+    @test seen_spectral_kick == Set(spectral_kick)        # the exemption names live launches
 end
 
 @testset "Every raw CUDA PIC launch site is pinned and its kernel fits the device thread ceiling" begin
@@ -23181,8 +23475,9 @@ end
     # 896 on an RTX 4500 Ada) sat behind a raw launch on the default route and a
     # legal `threads=1024` crashed it. Two halves:
     #
-    # (1) SOURCE, on every machine. The raw launch sites are derived from the two
-    #     files -- every `CUDA.@cuda` line that is not the cap's own
+    # (1) SOURCE, on every machine. The raw launch sites are derived from the
+    #     three CUDA solver files (`spectral_cuda.jl` since 2026-10-20, F-215)
+    #     -- every `CUDA.@cuda` line that is not the cap's own
     #     `launch = false` compile -- and must equal the pinned table below per
     #     (file, kernel, count). A new raw launch fails here with its site named;
     #     so does a pinned site that disappeared, so the table cannot go stale.
@@ -23220,6 +23515,16 @@ end
     partials_fixed = (token="threads=launch.threads",
                       threads=Octopus._cuda_gaussian_moment_launch(1).threads)
     bounds_fixed = (token="threads=block_cap", threads=Octopus._CUDA_PIC_BOUNDS_PARTIAL_BLOCKS)
+    # spectral_cuda.jl launches at ONE fixed count: every `threads = N`
+    # assignment and every inline `threads=N` literal in the file must carry
+    # the same N, derived here and tied to each launch line by its token.
+    spectral_src = read(joinpath(pkgdir(Octopus), "src", "tasks", "strongstrong", "spectral_cuda.jl"), String)
+    spectral_counts = unique(vcat([parse(Int, m.captures[1]) for m in eachmatch(r"^\s*threads = (\d+)\s*$"m, spectral_src)],
+                                  [parse(Int, m.captures[1]) for m in eachmatch(r"CUDA\.@cuda threads=(\d+)\b", spectral_src)]))
+    @test length(spectral_counts) == 1
+    spectral_n = isempty(spectral_counts) ? 0 : maximum(spectral_counts)
+    spectral_fixed = (token="threads=threads", threads=spectral_n)
+    spectral_inline = (token="threads=$(spectral_n)", threads=spectral_n)
     pinned = [
         ("pic_cuda.jl", :_cuda_pic_gather_slice_longitudinal_kernel!, 1, :device),          # 40 regs
         ("pic_cuda.jl", :_cuda_pic_scatter_slice_longitudinal_kernel!, 1, :device),         # 26
@@ -23257,6 +23562,21 @@ end
         ("gaussian_pic_cuda.jl", :_cuda_gaussian_reduce_partials_kernel!, 1, :device),      # 40
         ("gaussian_pic_cuda.jl", :_cuda_pic_deposit_drifted_nomask_kernel!, 1, :device),    # 48
         ("gaussian_pic_cuda.jl", :_cuda_pic_field_kernel!, 1, :device),                     # 40
+        # spectral_cuda.jl (joined 2026-10-20, F-215): the two interp-scatter
+        # kernels are the spectral solver's beam-beam kick (62 registers at
+        # Float64, raw at the file's fixed count); the lane-moment kernel takes
+        # the policy's gather/scatter count like its pic_cuda.jl twin.
+        ("spectral_cuda.jl", :_cuda_ext1_kernel!, 1, spectral_inline),
+        ("spectral_cuda.jl", :_cuda_ext2_kernel!, 1, spectral_inline),
+        ("spectral_cuda.jl", :_cuda_extract1_kernel!, 1, spectral_inline),
+        ("spectral_cuda.jl", :_cuda_extract2_kernel!, 1, spectral_inline),
+        ("spectral_cuda.jl", :_cuda_spectral_snap4_kernel!, 1, spectral_inline),
+        ("spectral_cuda.jl", :_cuda_spectral_deposit_kernel!, 3, spectral_fixed),
+        ("spectral_cuda.jl", :_cuda_spectral_deposit_drift_kernel!, 2, spectral_fixed),
+        ("spectral_cuda.jl", :_cuda_spectral_deposit_idx_kernel!, 2, spectral_fixed),
+        ("spectral_cuda.jl", :_cuda_spectral_interp_scatter_kernel!, 2, spectral_fixed),      # 62, the transverse kick
+        ("spectral_cuda.jl", :_cuda_spectral_interp_scatter_6d_kernel!, 2, spectral_fixed),   # the 6D kick
+        ("spectral_cuda.jl", :_cuda_lane_z_moment_kernel!, 2, :device),
     ]
     expected = Dict((file, kernel) => count for (file, kernel, count, _) in pinned)
     @test length(expected) == length(pinned)                     # no duplicate rows
@@ -23264,7 +23584,7 @@ end
     sites = Dict{Tuple{String,Symbol},Vector{Int}}()
     site_text = Dict{Tuple{String,Symbol},Vector{String}}()
     compile_sites = String[]
-    for file in ("pic_cuda.jl", "gaussian_pic_cuda.jl")
+    for file in ("pic_cuda.jl", "gaussian_pic_cuda.jl", "spectral_cuda.jl")
         path = joinpath(pkgdir(Octopus), "src", "tasks", "strongstrong", file)
         for (i, line) in enumerate(eachline(path))
             # A launch is the macro followed by a keyword (`threads=`, `launch=`,
@@ -23275,7 +23595,10 @@ end
                 push!(compile_sites, "$(file):$(i): $(strip(line))")
                 continue
             end
-            m = match(r"(_cuda_[A-Za-z0-9_]+!)\(", line)
+            # The kernel is the `_cuda_*!(` AFTER the macro: spectral_cuda.jl's
+            # one-line builders (`_cuda_ext1_build!(ws, A, sign) = (CUDA.@cuda ...`)
+            # put a helper's own name before it.
+            m = match(r"CUDA\.@cuda.*?(_cuda_[A-Za-z0-9_]+!)\(", line)
             kernel = m === nothing ? :UNPARSED : Symbol(m.captures[1])
             found[(file, kernel)] = get(found, (file, kernel), 0) + 1
             push!(get!(sites, (file, kernel), Int[]), i)
@@ -23310,7 +23633,8 @@ end
     end
     if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         CUDA = Octopus.CUDA
-        # Populate the compiled-kernel cache with the two default routes so the
+        # Populate the compiled-kernel cache with the four default routes (PIC,
+        # Gaussian-PIC, the spectral 6D map and its transverse route) so the
         # device half cannot be vacuous in a short process.
         let sl = LongitudinalSlicing(nslices=3, method=:normal_quantile)
             mkb(pol) = Beam(2000, pol, Float64; beta=(0.55, 0.056, 12.7),
@@ -23318,7 +23642,9 @@ end
                 rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
                 r0=RE * ME0 / EMASS_EV, npart=1.7e11)
             for solver in (PICPoissonSolver(; slicing=sl, grid=(16, 16)),
-                           GaussianPICPoissonSolver(; slicing=sl, grid=(16, 16)))
+                           GaussianPICPoissonSolver(; slicing=sl, grid=(16, 16)),
+                           SpectralPoissonSolver(; slicing=sl, grid=(16, 16)),
+                           SpectralPoissonSolver(; slicing=sl, grid=(16, 16), longitudinal_kick=false))
                 pol = CUDAExecutionPolicy()
                 set_global_rng!(seed=123, method=:philox)
                 ip = StrongStrongCollision(:ip; poisson_solver=solver)
@@ -23344,9 +23670,11 @@ end
             raw_kernels = collect(keys(required))
             measured = filter(k -> haskey(ceilings, k), raw_kernels)
             unmeasured = setdiff(raw_kernels, measured)
-            # Anti-vacuity: the two routes just run compile these four.
+            # Anti-vacuity: the four routes just run compile these six, the two
+            # spectral kick kernels among them.
             for k in (:_cuda_pic_deposit_drifted_indexed_plane_kernel!, :_cuda_pic_field_wavefront_kernel!,
-                      :_cuda_pic_finalize_force_luminosity_bounds_kernel!, :_cuda_gpic_subtract_kernel!)
+                      :_cuda_pic_finalize_force_luminosity_bounds_kernel!, :_cuda_gpic_subtract_kernel!,
+                      :_cuda_spectral_interp_scatter_kernel!, :_cuda_spectral_interp_scatter_6d_kernel!)
                 @test k in measured
             end
             println("raw-launch ceiling check: ", length(measured), " of ", length(raw_kernels),
@@ -23449,11 +23777,19 @@ end
         (x, y) in ((1.0e-5, 2.0e-5), (-3.0e-5, 1.0e-5), (0.0, 4.0e-5))
         mine = transition_reference(s1, s2, x, y)
         theirs = Base.invokelatest(probe._transition_reference, s1, s2, x, y)
-        worst = max(worst, maximum(abs.(collect(mine) .- collect(theirs))))
+        worst = max(worst, maximum(abs.(collect(mine) .- collect(theirs)) ./
+                                   max.(abs.(collect(mine)), abs.(collect(theirs)), 1.0e-300)))
     end
     # Same algorithm in the same arithmetic: they must agree to round-off, not
-    # merely to a physics tolerance.
-    @test worst <= 1.0e-18
+    # merely to a physics tolerance -- stated as a RELATIVE bound. The former
+    # `worst <= 1e-18` was bitwise in disguise: the compared values run 3.3e2
+    # to 1.1e8, where one ulp is 5.7e-14 to 1.5e-8 (2026-10-18 audit
+    # F-216/U34-5), so a legitimate re-summation of either copy would have
+    # failed it; the precedent defect (a 1e-9 relative CODATA drift) sits five
+    # orders above this bound. Measured 0 here.
+    @testset let worst_relative = worst
+        @test worst <= 1.0e-14
+    end
 end
 
 @testset "No docstring is detached by comment lines" begin
@@ -23475,18 +23811,26 @@ end
     # following expression"), so Julia catches it before this file can run, and
     # a check here for it could never fire. Tried and reverted (2026-08-05_b
     # audit, U4-13); the silent shape is the one that needs a scan.
-    detached = String[]
-    for (root, _, files) in walkdir(joinpath(pkgdir(Octopus), "src")), f in files
-        endswith(f, ".jl") || continue
-        path = joinpath(root, f)
-        lines = readlines(path)
+    # The scan is a function of the lines it is handed, so the planted shapes
+    # below can be fed to it (2026-10-18 audit F-216/U34-4: the definition
+    # test was blind to `Base.`-qualified and `where` short forms, to a block
+    # docstring closing on its last text line and to a documented global
+    # assignment -- Julia leaves all of them undocumented -- and the scanner
+    # had never been shown a defect).
+    is_definition(target) =
+        occursin(r"^(function|const|macro|struct|abstract type|mutable struct|primitive type|@\w+)\b", target) ||
+        occursin(r"^[A-Za-z_][A-Za-z0-9_!.]*(\{[^=]*\})?\(.*\)(\s+where\s*(\{.*\}|[A-Za-z_][A-Za-z0-9_]*))?\s*=", target) ||
+        occursin(r"^[A-Za-z_][A-Za-z0-9_!]*\s*(::[^=]+)?=(?!=)", target)
+    function detached_in(lines, label)
+        out = String[]
         i = 1
         while i <= length(lines)
-            line = lines[i]
-            stripped = strip(line)
-            # A one-line docstring, or the closing line of a block docstring.
-            closes = (startswith(stripped, "\"\"\"") && endswith(stripped, "\"\"\"") &&
-                      length(stripped) > 6) || stripped == "\"\"\""
+            stripped = strip(lines[i])
+            # A one-line docstring, the bare closing line of a block docstring,
+            # or a block docstring closing on its last text line.
+            closes = (startswith(stripped, "\"\"\"") && endswith(stripped, "\"\"\"") && length(stripped) > 6) ||
+                     stripped == "\"\"\"" ||
+                     (endswith(stripped, "\"\"\"") && !startswith(stripped, "\"\"\"") && !occursin("= \"\"\"", stripped))
             if closes
                 j = i + 1
                 saw_comment = false
@@ -23501,22 +23845,50 @@ end
                         break
                     end
                 end
-                if saw_comment && j <= length(lines)
-                    target = strip(lines[j])
-                    # Only a definition would have been documented.
-                    if occursin(r"^(function|const|macro|struct|abstract type|mutable struct|@\w+)\b", target) ||
-                       occursin(r"^[A-Za-z_][A-Za-z0-9_!]*\(.*\)\s*=", target)
-                        push!(detached, "$(f):$(i) -> $(first(target, 60))")
-                    end
+                # Only a definition would have been documented.
+                if saw_comment && j <= length(lines) && is_definition(strip(lines[j]))
+                    push!(out, "$(label):$(i) -> $(first(strip(lines[j]), 60))")
                 end
                 i = j
             else
                 i += 1
             end
         end
+        return out
+    end
+    detached = String[]
+    for (root, _, files) in walkdir(joinpath(pkgdir(Octopus), "src")), f in files
+        endswith(f, ".jl") || continue
+        append!(detached, detached_in(readlines(joinpath(root, f)), f))
     end
     isempty(detached) || foreach(d -> @info("detached docstring: " * d), detached)
     @test isempty(detached)
+    # The scanner shown its defects: each planted shape (a docstring, comment
+    # lines, then a definition Julia would have documented) is reported once,
+    # and the two sound shapes are not.
+    planted = (
+        ("function", "\"\"\"doc\"\"\"\n# why\nfunction f_planted end"),
+        ("const", "\"\"\"doc\"\"\"\n# why\nconst X_PLANTED = 1"),
+        ("qualified_shortform", "\"\"\"doc\"\"\"\n# why\nBase.show(io::IO, x::Planted) = print(io, 1)"),
+        ("where_shortform", "\"\"\"doc\"\"\"\n# why\ng_planted(x::T) where {T} = x"),
+        ("text_closing_line", "\"\"\"\ndoc\nmore.\"\"\"\n# why\nfunction h_planted end"),
+        ("global_assignment", "\"\"\"doc\"\"\"\n# why\nY_PLANTED = 1"),
+        ("macro_definition", "\"\"\"doc\"\"\"\n# why\n@inline k_planted(x) = x"),
+    )
+    sound = (
+        ("adjacent", "\"\"\"doc\"\"\"\nfunction f_sound end"),
+        ("not_a_definition", "\"\"\"doc\"\"\"\n# why\nf_sound(1) + 2"),
+    )
+    for (name, text) in planted
+        @testset let shape = name
+            @test length(detached_in(split(text, "\n"), name)) == 1
+        end
+    end
+    for (name, text) in sound
+        @testset let shape = name
+            @test isempty(detached_in(split(text, "\n"), name))
+        end
+    end
 
     # The sibling shape (2026-10-13 neighbour audit, U6-1): a docstring that
     # attaches, but to a binding no `?Name` shows. A docstring above a
@@ -23546,39 +23918,39 @@ end
     # `:inactive_backend` and `:inactive_dependency`, neither of them
     # `:inactive`. A hand-copied vocabulary with nothing checking it is the
     # drift Measured Lesson 4 names, so this derives the set from the source.
-    src = joinpath(pkgdir(Octopus), "src")
-    found = Set{Symbol}()
-    for (root, _, files) in walkdir(src), f in files
-        endswith(f, ".jl") || continue
-        text = read(joinpath(root, f), String)
-        for m in eachmatch(r"ConfigurationEntry\([^)]*?,\s*(:[a-z_]+)\s*,", text)
-            push!(found, Symbol(m.captures[1][2:end]))
-        end
-    end
-    # Statuses are the 4th positional argument, so the regex above also catches
-    # some option names; intersect with the declared set and require that every
-    # DECLARED status is actually constructed somewhere, and that nothing
-    # constructs a status the constant does not declare.
     declared = Set(Octopus.CONFIGURATION_STATUSES)
-    @test :library_managed ∉ found          # the docstring's ghost
-    @test :inactive ∉ found                 # ...and its wrong spelling
     @test :inactive_backend in declared && :inactive_dependency in declared
     @test :resolved in declared && :unresolved in declared
     @test :inherited in declared && :deprecated in declared
     @test length(declared) == 6
 
-    # Every status a live report produces must be in the declared set. This is
-    # the direction that catches a NEW status added without updating the list.
-    live = Set{Symbol}()
-    for obj in (CPUThreadsExecutionPolicy(), PICPoissonSolver(grid=(16, 16)),
-                GaussianPoissonSolver(), GaussianPICPoissonSolver(grid=(16, 16)),
-                SpectralPoissonSolver(grid=(16, 16)))
-        for e in configuration_report(obj)
-            push!(live, e.status)
-        end
+    # Both directions over LIVE reports (2026-10-18 audit F-215/U34-1: a regex
+    # over the source stood here, blind to `:inherited` -- assigned through a
+    # variable -- and the promised `declared ⊆ found` was never written). The
+    # producers are chosen so that each declared status has one: `:inherited`
+    # (a solver's `slicing1/2` taken from the shared slicing), `:inactive_dependency`
+    # (`grid_extent_sigma` under `:extrema`), `:inactive_backend` (a CUDA-only
+    # option reported for the CPU backend), `:unresolved` (a CUDA policy's
+    # device before activation), `:deprecated` (`GPUExecutionPolicy`),
+    # `:resolved` (everything else). A declared status nothing produces, or a
+    # produced status the constant does not declare, fails by name.
+    live = Dict{Symbol,Vector{String}}()
+    producers = (CPUThreadsExecutionPolicy(), CUDAExecutionPolicy(), GPUExecutionPolicy(),
+                 PICPoissonSolver(grid=(16, 16)), GaussianPoissonSolver(),
+                 GaussianPICPoissonSolver(grid=(16, 16)), SpectralPoissonSolver(grid=(16, 16)))
+    for obj in producers, e in configuration_report(obj)
+        push!(get!(live, e.status, String[]), "$(nameof(typeof(obj))).$(e.name)")
     end
-    @test !isempty(live)
-    @test issubset(live, declared)
+    for e in configuration_report(PICPoissonSolver(grid=(16, 16)); backend=CPUThreadsBackend)
+        push!(get!(live, e.status, String[]), "PICPoissonSolver(CPU).$(e.name)")
+    end
+    @test :library_managed ∉ keys(live)     # the docstring's ghost
+    @test :inactive ∉ keys(live)            # ...and its wrong spelling
+    @testset let declared_not_produced = sort!(string.(collect(setdiff(declared, keys(live))))),
+                 produced_not_declared = sort!(string.(collect(setdiff(keys(live), declared))))
+        @test isempty(declared_not_produced)
+        @test isempty(produced_not_declared)
+    end
 end
 
 @testset "The Runtime Objects section is complete" begin
@@ -23594,9 +23966,16 @@ end
               join(string.(nameof.(missing_types)), ", "))
     @test isempty(missing_types)
 
-    # The check must be able to fail, or it is decoration: a concrete
-    # AbstractTrackOp that is not in the section must be reported.
+    # The check must be able to fail, or it is decoration: the instrument fed
+    # a registry missing an element kind reports that kind's runtime type
+    # (2026-10-18 audit F-216/U34-3: the line below only asserted that the
+    # universe is non-empty).
     @test !isempty(Octopus._subtypes_recursive(Octopus.AbstractTrackOp))
+    let reg = Octopus.build_registry(), fields = fieldnames(Octopus.OctopusRegistry)
+        plant(f, v) = Octopus.OctopusRegistry((g === f ? v : getfield(reg, g) for g in fields)...)
+        @test :elements in fields && length(reg.elements) >= 2
+        @test !isempty(Octopus.runtime_object_types_missing_from_snapshot(plant(:elements, reg.elements[2:end])))
+    end
 end
 
 @testset "Every registry type describes itself" begin
@@ -23613,12 +23992,17 @@ end
     isempty(bare) || @info("undescribed registry types: " *
                            join(("$(s).$(nameof(T))" for (s, T) in bare), ", "))
 
-    # The tripwire must be able to fail, or it is decoration: a type in a
-    # registry section with no `description` method must be reported.
-    struct_free_probe = Octopus.build_registry()
-    @test !isempty(propertynames(struct_free_probe))
-    @test isempty(Octopus.description(Octopus.AbstractExecutionPolicy)) ==
-          isempty(Octopus.description(Octopus.AbstractExecutionPolicy))
+    # The tripwire must be able to fail, or it is decoration: a type planted
+    # into a registry section with no `description` method must be reported,
+    # by section and type (2026-10-18 audit F-216/U34-3: the line here compared
+    # `isempty(x)` with itself).
+    let reg = Octopus.build_registry(), fields = fieldnames(Octopus.OctopusRegistry)
+        plant(f, v) = Octopus.OctopusRegistry((g === f ? v : getfield(reg, g) for g in fields)...)
+        @test :solvers in fields
+        planted = Octopus.registry_types_without_description(plant(:solvers, vcat(reg.solvers, Any[Int])))
+        @test any(x -> x[2] === Int, planted)
+        @test isempty(Octopus.registry_types_without_description(reg))
+    end
     # ...and the ones this lead named must now be non-empty, by name.
     for T in (TrackingTask, StrongStrongTask, PICPoissonSolver,
               GaussianPoissonSolver, GaussianPICPoissonSolver,
@@ -24063,6 +24447,8 @@ end
                 end
                 @test caught[] isa ArgumentError
                 @test occursin("spawned _run_logical_workers", sprint(showerror, caught[]))
+            else
+                @test_skip "one default thread: the spawned-worker half of the :funneled tripwire is not observable (2026-10-18 audit F-216/U34-8)"
             end
             # The single-worker short circuit runs INLINE on the caller's task
             # and must NOT be refused: that is the path the divided PIC collide
@@ -24214,17 +24600,26 @@ end
     # kicks, so at this coarse grid it drops a few particles and warns; that
     # is the documented behaviour of the mode, not a symptom of division.
     series = Dict{Symbol,Vector{Float64}}()
-    with_logger(NullLogger()) do
-        for (name, solver) in variants
-            cpu = run(CPUThreadsExecutionPolicy(threads=1), solver)
-            mp = run(MultiProcessExecutionPolicy(threads=1), solver)
-            @test all(a == b for (a, b) in zip(cpu[1], mp[1]))
-            @test all(a == b for (a, b) in zip(cpu[2], mp[2]))
-            @test cpu[3] == mp[3] && length(cpu[3]) == 2
-            @test all(cpu[3] .> 0)
-            @test length(mp[4]) == 2 && all(s -> s.ranks == 1, mp[4])   # one receipt per turn
-            series[name] = cpu[3]
+    # Warnings are CAPTURED per run and counted, not silenced (2026-10-18 audit
+    # F-216/U34-7: one NullLogger over the 28 runs hid every warning but the
+    # `:node` drop it was written for): the `:node` mesh's documented drop
+    # warns once per run on each policy, and no other variant warns at all.
+    warned(f) = begin
+        logs, out = Test.collect_test_logs(f; min_level=Logging.Warn)
+        (count(l -> l.level >= Logging.Warn, logs), out)
+    end
+    for (name, solver) in variants
+        ncpu, cpu = warned(() -> run(CPUThreadsExecutionPolicy(threads=1), solver))
+        nmp, mp = warned(() -> run(MultiProcessExecutionPolicy(threads=1), solver))
+        @testset let variant = name, warnings_cpu_mp = (ncpu, nmp)
+            @test (ncpu, nmp) == (name === :node ? (1, 1) : (0, 0))
         end
+        @test all(a == b for (a, b) in zip(cpu[1], mp[1]))
+        @test all(a == b for (a, b) in zip(cpu[2], mp[2]))
+        @test cpu[3] == mp[3] && length(cpu[3]) == 2
+        @test all(cpu[3] .> 0)
+        @test length(mp[4]) == 2 && all(s -> s.ranks == 1, mp[4])   # one receipt per turn
+        series[name] = cpu[3]
     end
     for (name, _) in variants
         name === :default || @test series[name] != series[:default]
@@ -24237,13 +24632,14 @@ end
     # different, and it is where a divergence would be cheapest to find.
     let mp = MultiProcessExecutionPolicy(threads=1)
         loops = Dict{Symbol,Any}()
-        with_logger(NullLogger()) do
+        logs_loops, _ = Test.collect_test_logs(; min_level=Logging.Warn) do
             for loop in (:dataflow, :batched)
                 loops[loop] = Base.ScopedValues.with(Octopus._PIC_SLICED_LOOP => loop) do
                     run(mp, pic())
                 end
             end
         end
+        @test isempty(logs_loops)                  # the default variant warns on neither loop
         @test all(a == b for (a, b) in zip(loops[:dataflow][1], loops[:batched][1]))
         @test all(a == b for (a, b) in zip(loops[:dataflow][2], loops[:batched][2]))
         @test loops[:dataflow][3] == loops[:batched][3]
@@ -24306,21 +24702,31 @@ end
          collect(lum.value), sched)
     end
     series = Dict{Symbol,Vector{Float64}}()
-    with_logger(NullLogger()) do
-        for (name, solver) in variants
-            cpu = run(CPUThreadsExecutionPolicy(threads=1), solver)
-            mp = run(MultiProcessExecutionPolicy(threads=1), solver)
-            @test all(a == b for (a, b) in zip(cpu[1], mp[1]))
-            @test all(a == b for (a, b) in zip(cpu[2], mp[2]))
-            @test cpu[3] == mp[3] && length(cpu[3]) == 2
-            @test all(cpu[3] .> 0)
-            # The multi-process run really took the sliced transport, and the
-            # CPU one really did not: an arm that fell back to the undivided
-            # collide would compare that path with itself.
-            @test all(s -> s.exchange === :sliced, mp[4])
-            @test all(s -> s.exchange === :none, cpu[4])
-            series[name] = cpu[3]
+    # Warnings CAPTURED per run and counted, not silenced (the PIC sibling's
+    # repair, 2026-10-18 audit F-216/U34-7, applied to its twin): no
+    # Gaussian-PIC variant warns on either policy.
+    warned(f) = begin
+        logs, out = Test.collect_test_logs(f; min_level=Logging.Warn)
+        (count(l -> l.level >= Logging.Warn, logs), out)
+    end
+    for (name, solver) in variants
+        ncpu, cpu = warned(() -> run(CPUThreadsExecutionPolicy(threads=1), solver))
+        nmp, mp = warned(() -> run(MultiProcessExecutionPolicy(threads=1), solver))
+        @testset let variant = name, warnings_cpu_mp = (ncpu, nmp)
+            @test (ncpu, nmp) == (0, 0)
         end
+        @test all(a == b for (a, b) in zip(cpu[1], mp[1]))
+        @test all(a == b for (a, b) in zip(cpu[2], mp[2]))
+        @test cpu[3] == mp[3] && length(cpu[3]) == 2
+        @test all(cpu[3] .> 0)
+        # The multi-process run really took the sliced transport, and the
+        # CPU one really did not: an arm that fell back to the undivided
+        # collide would compare that path with itself. `all` over an empty
+        # receipt list is true, so the list is required non-empty first, as
+        # the spectral sibling does (2026-10-18 audit F-218/U35-2).
+        @test !isempty(mp[4]) && all(s -> s.exchange === :sliced, mp[4])
+        @test !isempty(cpu[4]) && all(s -> s.exchange === :none, cpu[4])
+        series[name] = cpu[3]
     end
     for (name, _) in variants
         # `:sequential` is the same physics on the other loop, so it is the
@@ -24430,21 +24836,29 @@ end
          collect(lum.value), sched)
     end
     series = Dict{Symbol,Vector{Float64}}()
-    with_logger(NullLogger()) do
-        for (name, solver, exchange) in variants
-            cpu = run_spec(CPUThreadsExecutionPolicy(threads=1), solver)
-            mp = run_spec(MultiProcessExecutionPolicy(threads=1), solver)
-            @test all(a == b for (a, b) in zip(cpu[1], mp[1]))
-            @test all(a == b for (a, b) in zip(cpu[2], mp[2]))
-            @test cpu[3] == mp[3] && length(cpu[3]) == 2
-            @test all(cpu[3] .> 0)
-            # The multi-process run really took the divided route this arm
-            # names, and the CPU one really did not: an arm that fell back to
-            # the undivided collide would compare that path with itself.
-            @test !isempty(mp[4]) && all(s -> s.exchange === exchange, mp[4])
-            @test !isempty(cpu[4]) && all(s -> s.exchange === :none, cpu[4])
-            series[name] = cpu[3]
+    # Warnings CAPTURED per run and counted, not silenced (the PIC sibling's
+    # repair, 2026-10-18 audit F-216/U34-7, applied to its twin): no spectral
+    # variant warns on either policy.
+    warned(f) = begin
+        logs, out = Test.collect_test_logs(f; min_level=Logging.Warn)
+        (count(l -> l.level >= Logging.Warn, logs), out)
+    end
+    for (name, solver, exchange) in variants
+        ncpu, cpu = warned(() -> run_spec(CPUThreadsExecutionPolicy(threads=1), solver))
+        nmp, mp = warned(() -> run_spec(MultiProcessExecutionPolicy(threads=1), solver))
+        @testset let variant = name, warnings_cpu_mp = (ncpu, nmp)
+            @test (ncpu, nmp) == (0, 0)
         end
+        @test all(a == b for (a, b) in zip(cpu[1], mp[1]))
+        @test all(a == b for (a, b) in zip(cpu[2], mp[2]))
+        @test cpu[3] == mp[3] && length(cpu[3]) == 2
+        @test all(cpu[3] .> 0)
+        # The multi-process run really took the divided route this arm
+        # names, and the CPU one really did not: an arm that fell back to
+        # the undivided collide would compare that path with itself.
+        @test !isempty(mp[4]) && all(s -> s.exchange === exchange, mp[4])
+        @test !isempty(cpu[4]) && all(s -> s.exchange === :none, cpu[4])
+        series[name] = cpu[3]
     end
     for (name, _, _) in variants
         # `:sequential` is the same physics on the other schedule, so it is the
@@ -24460,7 +24874,7 @@ end
     # same collide and not merely the same answer. The launcher child holds them
     # to this at two and four ranks as well; here it costs nothing and runs in
     # every lane.
-    with_logger(NullLogger()) do
+    logs_two_loops, _ = Test.collect_test_logs(; min_level=Logging.Warn) do
         for (name, solver, exchange) in variants
             exchange === :sliced || continue
             outs = map((:batched, :dataflow)) do loop
@@ -24497,6 +24911,7 @@ end
             @test all(a == b for (a, b) in zip(outs[1][3], outs[2][3]))
         end
     end
+    @test isempty(logs_two_loops)                  # neither loop warns on the sliced variants
     # The campaign's last solver. The refusal is now a DENY-BY-DEFAULT
     # tripwire, so what the suite owes is both halves: every solver in the
     # roster answers `true`, and the fallback answers `false` -- a solver
@@ -24646,10 +25061,32 @@ end
     serial = Octopus._slice_transverse_moments(wide, few, false, 1.0e-12, Val(false))
     @test isfinite(chunked.mx) && chunked.sx > 0
     @test isfinite(serial.mx) && serial.sx > 0
-    # Both branches over the SAME members agree to the fold difference, which
-    # is what makes the path choice a performance decision and not a physics one.
-    same = Octopus._slice_transverse_moments(wide, few, false, 1.0e-12, Val(false))
-    @test same.mx == serial.mx
+    # The CHUNKED branch over all the members against an independent serial
+    # fold of the SAME members: the branch is chosen inside
+    # `_slice_moment_local_sums!` from the member count, so the public call
+    # cannot run both branches on one list, and the reference below is the
+    # shifted two-pass algebra written out with the shift the production fold
+    # uses (the first member). The line this replaces compared the serial call
+    # with a repeat of itself (2026-10-18 audit F-217/U35-1). Measured by the
+    # audit's probe: the widths agree to 1.9e-16 (sx) and 7.7e-16 (sy)
+    # relative, the means to 2.4e-20 absolute on means of 1e-8 (a cancelled
+    # quantity); pinned at 1e-13 relative on the widths and 1e-13 of the width
+    # on the means -- two orders above the measurement, nine below the width.
+    let x0 = wide.x[1], y0 = wide.y[1], sdx = 0.0, sdy = 0.0, sdx2 = 0.0, sdy2 = 0.0
+        for i in all_members
+            dx = wide.x[i] - x0; dy = wide.y[i] - y0
+            sdx += dx; sdy += dy; sdx2 += dx * dx; sdy2 += dy * dy
+        end
+        invn = 1.0 / big
+        ref_mx = x0 + sdx * invn; ref_my = y0 + sdy * invn
+        ref_sx = sqrt(fma(-(sdx * invn), sdx * invn, sdx2 * invn))
+        ref_sy = sqrt(fma(-(sdy * invn), sdy * invn, sdy2 * invn))
+        @testset let rel_sx = abs(chunked.sx - ref_sx) / ref_sx, rel_sy = abs(chunked.sy - ref_sy) / ref_sy,
+                     mx_gap = abs(chunked.mx - ref_mx) / ref_sx, my_gap = abs(chunked.my - ref_my) / ref_sy
+            @test rel_sx <= 1.0e-13 && rel_sy <= 1.0e-13
+            @test mx_gap <= 1.0e-13 && my_gap <= 1.0e-13
+        end
+    end
 
     # `_run_logical_workers` runs its grid inline when the pool holds one
     # thread, because spawning a task per chunk buys nothing there. The
@@ -25384,10 +25821,19 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 # loops rather than one with itself (step 4e).
                 arms = (_mpi_check_pic_variants()..., _mpi_check_gpic_variants()...)
                 armsolver = arms[findfirst(v -> v[1] === name, arms)][2]
+                # Over BOTH beams, as production decides it (pic_cpu_sliced.jl,
+                # spectral_sliced.jl) and as this testset's two sibling
+                # derivations do (2026-10-18 audit F-218/U35-5: this one read
+                # beam 1 alone, right today only because beam 2's widest group
+                # never exceeds beam 1's).
+                arm_slicing2(s) = hasproperty(s, :slicing2) ? s.slicing2 : s.pic.slicing2
                 armloop(P) = name in (:sequential, :gpic_seq) ? "batched" :
-                    (maximum(_mpi_check_pic_groups(
-                         _mpi_check_ss_beams(CPUThreadsExecutionPolicy(threads=1))[1].rep,
-                         _mpi_check_arm_slicing(armsolver), P)) >= 2 ? "dataflow" : "batched")
+                    begin
+                        cb1, cb2 = _mpi_check_ss_beams(CPUThreadsExecutionPolicy(threads=1))
+                        w = max(maximum(_mpi_check_pic_groups(cb1.rep, _mpi_check_arm_slicing(armsolver), P)),
+                                maximum(_mpi_check_pic_groups(cb2.rep, arm_slicing2(armsolver), P)))
+                        w >= 2 ? "dataflow" : "batched"
+                    end
                 if per_pair
                     @test sched1 == ["pair_workers=$(ref.pair_workers) inner_workers=$(ref.inner_workers) exchange=none schedule=none"]
                     for sched in (sched2, sched4)
@@ -26348,10 +26794,19 @@ if _lane_gate("Contract coverage guards: declared kinds, solver tree, broken bas
     rp = validate(PublicConfigurationEffectivenessContract())
     rp.status === :passed ||
         @info "public-configuration contract result" rp.status rp.message rp.metrics
-    # a single-threaded Julia is a SKIP naming the worker-invariance comparison (F-47), which this suite,
-    # run at four threads, never takes; the output boundary is counted, not only gapped (F-52); the
-    # derived-kbb refusal fires before any element tracks (F-54)
-    @test rp.status === :passed || (rp.status === :skipped && !CUDA_TESTS_ACTIVE)
+    # Without a GPU the contract's CPU half ran and its CUDA half did not
+    # (`:skipped` means exactly that); the summary says so instead of recording
+    # the unrun leg as a pass (2026-10-18 audit F-218/U35-4). A single-threaded
+    # Julia would also be a SKIP naming the worker-invariance comparison (F-47),
+    # which this suite, run at four threads, never takes.
+    if CUDA_TESTS_ACTIVE
+        @test rp.status === :passed
+    else
+        @test rp.status === :skipped
+        @test_skip "CUDA device not available: the CUDA half of the public-configuration contract did not run"
+    end
+    # the worker comparison ran (four threads); the output boundary is counted, not only gapped (F-52);
+    # the derived-kbb refusal fires before any element tracks (F-54)
     @test rp.metrics[:cpu_worker_effective] === true
     @test rp.metrics[:output_receipt_pairs_checked] > 0 && isempty(rp.metrics[:output_receipt_gaps])
     @test rp.metrics[:derived_kbb_refusal_rejected] === true && rp.metrics[:derived_kbb_refusal_unchanged] === true
@@ -26673,13 +27128,18 @@ end
 
     # The reason a BPM is an observer and not an element: a zero-length element
     # cannot carry a reading offset. The entrance and exit frames cancel, so a
-    # misaligned marker is the identity -- the machinery runs and the map is
-    # bit-identical. Documented in docs/theory/bpm_measurement_model.md Sec. 2.
+    # misaligned marker is the identity TO ROUNDING -- the machinery runs and
+    # the map returns each coordinate within one ulp: `(x - dx) + dx == x` is
+    # not an IEEE identity, it holds or misses by one ulp with the operands'
+    # exponents (bitwise on this fixture, one ulp off on 6884 of 20000 random
+    # coordinate sets; 2026-10-18 audit F-218/U35-3, the former `==` rested on
+    # this fixture's rounding). Documented in
+    # docs/theory/bpm_measurement_model.md Sec. 2.
     let u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
         plain = compile_runtime(MarkerSpec())
         moved = compile_runtime(MarkerSpec(x_offset=1.0e-3, y_offset=-8.0e-4))
         @test moved isa MisalignedElement          # the wrap really is applied
-        @test collect(moved(u...)) == collect(plain(u...))   # and does nothing
+        @test all(abs(a - b) <= eps(abs(b)) for (a, b) in zip(moved(u...), plain(u...)))   # and does nothing, to one ulp
     end
 
     # Zero errors must return the centroid itself, which is what ties the new
@@ -26887,9 +27347,14 @@ if _lane_gate("Lattice cells track and stay symplectic")
         # `status in (:passed, :skipped)` this check counted a vacuous skip as an
         # ordinary pass, and the test summary was byte-for-byte identical on a
         # GPU-less host and a real GPU run -- the F20 class in its subtler form
-        # (2026-08-05_b audit, U18-3).
-        @test gpu.status === :passed ||
-              (gpu.status === :skipped && !CUDA_TESTS_ACTIVE)
+        # (2026-08-05_b audit, U18-3); the `||` form that replaced it still
+        # recorded the unrun leg as a Pass (2026-10-18 audit F-218/U35-4).
+        if CUDA_TESTS_ACTIVE
+            @test gpu.status === :passed
+        else
+            @test gpu.status === :skipped
+            @test_skip "CUDA device not available: the CPU/CUDA cell consistency contract did not run"
+        end
     end
 
     # A counter-RNG element must COMPILE in the fused CUDA kernel. Every
@@ -26911,9 +27376,14 @@ if _lane_gate("Lattice cells track and stay symplectic")
     # `status in (:passed, :skipped)` this check counted a vacuous skip as an
     # ordinary pass, and the test summary was byte-for-byte identical on a
     # GPU-less host and a real GPU run -- the F20 class in its subtler form
-    # (2026-08-05_b audit, U18-3).
-    @test stochastic_gpu.status === :passed ||
-          (stochastic_gpu.status === :skipped && !CUDA_TESTS_ACTIVE)
+    # (2026-08-05_b audit, U18-3); the `||` form that replaced it still
+    # recorded the unrun leg as a Pass (2026-10-18 audit F-218/U35-4).
+    if CUDA_TESTS_ACTIVE
+        @test stochastic_gpu.status === :passed
+    else
+        @test stochastic_gpu.status === :skipped
+        @test_skip "CUDA device not available: the stochastic-element CPU/CUDA consistency contract did not run"
+    end
 end
 end # _lane_gate("Lattice cells track and stay symplectic")
 
@@ -27837,24 +28307,35 @@ end
             (:gaussian, sched -> GaussianPoissonSolver(slicing=slc,
                                                        luminosity_schedule=sched)),
         )
+        # The list is every concrete solver, derived (2026-10-18 audit
+        # F-219/U36-3: four hand lists in this file claim "every solver").
+        @test Set(nameof(typeof(build(nothing))) for (_, build) in solvers) ==
+              Set(nameof.(Octopus._concrete_octopus_subtypes(Octopus.AbstractPoissonSolver)))
+        mkb(id, q, m, E) = (set_global_rng!(seed=4242, method=:philox);
+                            Beam(64, CPUThreadsExecutionPolicy(), Float64; beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0),
+                                 sigma=(106.0e-6, 9.5e-6, 1.0e-2), cutoff=5.0, rng_id=id, charge=q, mc2=m, E0=E,
+                                 r0=RE * ME0 / m, npart=1.7e11))
         for (name, build) in solvers
-            calls = Ref(0)
-            stateful = PredicateSchedule(_ -> (calls[] += 1; isodd(calls[])))
-            sv = build(stateful)
-            for t in 1:4
-                c = TrackingContext(turn=t)
-                # Both consults a turn makes: the file-writing gate, and the
-                # solver's own. They must agree, whichever solver it is.
-                gate = Octopus._strong_strong_luminosity_evaluated(sv, c)
-                own = sv isa SpectralPoissonSolver ?
-                        Octopus._spectral_compute_luminosity(sv, c) :
-                      sv isa GaussianPoissonSolver ?
-                        Octopus._luminosity_schedule_evaluated(sv.luminosity_schedule, c) :
-                        Octopus._pic_compute_luminosity(sv, c)
-                @test gate == own
+            # At the CONSUMER BOUNDARY (2026-10-18 audit F-219/U36-6: the lines
+            # this replaces compared the file-writing gate with the solver's
+            # own consult, and the gate IS a one-line forward to that consult,
+            # so they agreed by construction and could fail only with the memo
+            # removed). One strong-strong turn loop with an artifact: the
+            # alternating predicate is consulted ONCE per turn by gate and
+            # solver together, in turn order, and the artifact's luminosity
+            # rows are exactly the turns it admitted -- 0 and 2 of four.
+            consulted = Int[]
+            stateful = PredicateSchedule(ctx -> (push!(consulted, ctx.turn); isodd(length(consulted))))
+            ip = StrongStrongCollision(:ip; poisson_solver=build(stateful))
+            path = tempname() * ".h5"
+            execute!(StrongStrongTask((ip,), (ip,); artifact=path),
+                     mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9); turns=4)
+            rows = Octopus.HDF5.h5open(f -> read(f["luminosity"]["ip"]["turns"]), path, "r")
+            rm(path; force=true)
+            @testset let solver = name, consulted = consulted, rows = rows
+                @test consulted == [0, 1, 2, 3]
+                @test rows == [0, 2]
             end
-            # Four turns, four consults -- one per turn for every solver.
-            @test calls[] == 4
         end
     end
 end
@@ -27922,10 +28403,18 @@ end
     end
     reference = beam_statistics(survivors; diagonal_fourth=true)
     @test masked.n == n - length(dead)
-    @test masked.mean ≈ reference.mean atol=1e-18
-    @test masked.covariance ≈ reference.covariance atol=1e-24
-    @test masked.emittance ≈ reference.emittance atol=1e-24
-    @test masked.diagonal_fourth_central ≈ reference.diagonal_fourth_central atol=1e-30
+    # Relative, at a few ulp (2026-10-18 audit F-219/U36-1): the former
+    # `atol=1e-24` on a covariance of 5e-5 (ulp 7e-21) and `atol=1e-30` on a
+    # fourth moment of 4e-9 (ulp 8e-25) were bitwise pins between two
+    # reductions that are not the same arithmetic (Base's pairwise sums
+    # unmasked, a sequential conditional loop masked); they held because both
+    # loops happen to associate alike at n = 200, and a correct reassociation
+    # moves var(z) by 1.4e-20. Measured: means 1.0e-20 apart (3 ulp of 1e-8),
+    # covariance 5.2e-26, emittance and fourth moments 0.
+    @test masked.mean ≈ reference.mean atol=1e-18            # means of 1e-8: 1e-10 relative
+    @test masked.covariance ≈ reference.covariance rtol=1e-13
+    @test masked.emittance ≈ reference.emittance rtol=1e-13
+    @test masked.diagonal_fourth_central ≈ reference.diagonal_fourth_central rtol=1e-13
     # Without the flag the same beam still poisons the statistics, which is the
     # signal that a non-finite coordinate is a bug when losses are not expected.
     @test !isfinite(beam_statistics(poisoned).mean[1])
@@ -27986,6 +28475,9 @@ end
         ("Spectral", SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6,
              luminosity_scale=1.0, grid=(64, 64), slicing=sl)),
     )
+    # Every concrete solver is in the list (2026-10-18 audit F-219/U36-3).
+    @test Set(nameof(typeof(s)) for (_, s) in solvers) ==
+          Set(nameof.(Octopus._concrete_octopus_subtypes(Octopus.AbstractPoissonSolver)))
     clean_rep() = Phase6DRep((loss_test_coords(n)[k]
                               for k in (:x, :px, :y, :py, :z, :pz))...)
     # The same particles are dead in all three, but their corpses differ wildly:
@@ -28565,6 +29057,8 @@ end
         GaussianPICPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
                                  grid=(32, 32), green_cache=:none, slicing=sl),
     )
+    # Every concrete solver is in the list (2026-10-18 audit F-219/U36-3).
+    @test Set(nameof.(typeof.(solvers))) == Set(nameof.(Octopus._concrete_octopus_subtypes(Octopus.AbstractPoissonSolver)))
     for solver in solvers
         x1, y1 = aperture_beam(2000; seed=11), aperture_beam(2000; seed=11)
         plain = collide!(solver, x1, y1, CPUThreadsBackend)
@@ -31051,6 +31545,14 @@ end
         (:spectral, (; kw...) -> SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
                     grid=(32, 32), slicing=slc; kw...), :spectral_pair_schedule),
     )
+    # The families are the solver tree with ONE stated exemption (2026-10-18
+    # audit F-219/U36-3): the soft Gaussian reads `batch_mode` on both backends
+    # too and is pinned by the solver-option effectiveness contract and the
+    # pair-schedule receipt testsets; its per-pair kick has no mesh, no cache
+    # and no inner map to split, so the bitwise schedule claim made here is the
+    # PIC family's and the spectral solver's. A fifth solver lands here red.
+    @test Set(nameof(typeof(mk())) for (_, mk, _) in families) ==
+          setdiff(Set(nameof.(Octopus._concrete_octopus_subtypes(Octopus.AbstractPoissonSolver))), Set([:GaussianPoissonSolver]))
     for (label, mk, consumer) in families
         seq = run_collide(mk(batch_mode=:sequential), nthr, consumer)
         wf = run_collide(mk(batch_mode=:wavefront), nthr, consumer)
@@ -31078,6 +31580,10 @@ end
         @test same(wf1, seq)
         @test wf1[4][1].batch_mode === :wavefront
         @test wf1[4][1].batches == wf[4][1].batches
+        # The PIC receipts carry the worker split; the spectral receipt has
+        # none (its 6D loop has one schedule) -- an exemption asserted, not a
+        # body skipped silently (2026-10-18 audit F-219/U36-4).
+        @test haskey(wf1[4][1], :pair_workers) == (label !== :spectral)
         if haskey(wf1[4][1], :pair_workers)
             @test wf1[4][1].pair_workers == 1
             # ...and hands the inner maps the whole pool, as the sequential
@@ -31105,6 +31611,8 @@ end
         if nthr > 1
             @test wf[4][1].pair_workers > 1
             @test wf[4][1].inner_workers == 1
+        else
+            @test_skip "one thread: the sequential/batched worker split is not observable (2026-10-18 audit F-219/U36-5)"
         end
     end
 
@@ -31205,8 +31713,27 @@ end
     # effectiveness contract can certify the option on both backends through
     # ONE consumer name (`_solver_contract_receipt_carries` filters by backend
     # before it matches the name).
+    sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
+    # (constructor, what ran per requested mode). The device honours the
+    # mode on PIC, Gaussian-PIC and the soft-Gaussian; the spectral 6D
+    # route has one schedule and says so; the transverse map is order-free.
+    arms = (
+        ((; kw...) -> PICPoissonSolver(slicing=sl, grid=(16, 16); kw...), identity),
+        ((; kw...) -> GaussianPICPoissonSolver(slicing=sl, grid=(16, 16); kw...), identity),
+        ((; kw...) -> GaussianPICPoissonSolver(slicing=sl, grid=(16, 16),
+                                               cuda_indexed_wavefront=false; kw...), identity),
+        ((; kw...) -> GaussianPoissonSolver(slicing=sl; kw...), identity),
+        ((; kw...) -> SpectralPoissonSolver(slicing=sl, grid=(32, 32); kw...),
+         m -> :sequential),
+        ((; kw...) -> SpectralPoissonSolver(slicing=sl, grid=(32, 32),
+                                            longitudinal_kick=false; kw...),
+         m -> :order_free),
+    )
+    # The arms cover every solver the CPU twin derives from
+    # `_solver_contract_types()` (2026-10-18 audit F-221/U37-10: a hand list
+    # with no tie to it); checked on every host, GPU or not.
+    @test Set(nameof(typeof(mk(batch_mode=:sequential))) for (mk, _) in arms) == Set(nameof.(Octopus._solver_contract_types()))
     if CUDA_TESTS_ACTIVE
-        sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
         function beams()
             set_global_rng!(seed=11, method=:philox)
             e = Beam(2000, CUDAExecutionPolicy(), Float64; beta=(1.0, 1.0, 10.0),
@@ -31219,21 +31746,6 @@ end
                      r0=RE * ME0 / PMASS_EV, npart=1.7e11)
             return e, p
         end
-        # (constructor, what ran per requested mode). The device honours the
-        # mode on PIC, Gaussian-PIC and the soft-Gaussian; the spectral 6D
-        # route has one schedule and says so; the transverse map is order-free.
-        arms = (
-            ((; kw...) -> PICPoissonSolver(slicing=sl, grid=(16, 16); kw...), identity),
-            ((; kw...) -> GaussianPICPoissonSolver(slicing=sl, grid=(16, 16); kw...), identity),
-            ((; kw...) -> GaussianPICPoissonSolver(slicing=sl, grid=(16, 16),
-                                                   cuda_indexed_wavefront=false; kw...), identity),
-            ((; kw...) -> GaussianPoissonSolver(slicing=sl; kw...), identity),
-            ((; kw...) -> SpectralPoissonSolver(slicing=sl, grid=(32, 32); kw...),
-             m -> :sequential),
-            ((; kw...) -> SpectralPoissonSolver(slicing=sl, grid=(32, 32),
-                                                longitudinal_kick=false; kw...),
-             m -> :order_free),
-        )
         for (mk, expected) in arms, mode in (:sequential, :wavefront)
             solver = mk(batch_mode=mode)
             consumer = solver_option_schema(typeof(solver)).batch_mode.consumer
@@ -31392,21 +31904,37 @@ end
 # backstops that run last (2026-08-05_b audit, U20-12, carried from U17-7).
 @testset "High-energy weak-strong strong-strong limit" begin
     include(joinpath(pkgdir(Octopus), "validation", "high_energy_weakstrong_limit.jl"))
+    # Tolerances re-derived from the measurement at THIS geometry (2026-10-18
+    # audit F-220: 0.60 and 0.80 stood here, 7.5-10x the script's own 0.08,
+    # and a PIC luminosity wrong by 1.5x passed). Measured 2026-10-20 (n=256,
+    # nslices=3, grid=48): PIC luminosity 0.058, PIC size 4.2e-4, spectral
+    # model luminosity 0.013, spectral model size 0.004 (grid and grid-free
+    # alike; the beams are drawn from the seeded counter RNG, so the errors
+    # are discretisation, not statistics, and do not move with the host).
+    # Pinned at about twice the PIC luminosity error and four to twenty times
+    # the others; a 1.5x PIC luminosity (relative error 0.59) fails by a
+    # factor five, which the last line asserts outright.
+    tols = (pic_luminosity_rtol=0.12, pic_size_rtol=0.01,
+            spectral_model_luminosity_rtol=0.05, spectral_model_size_rtol=0.05)
     result = run_high_energy_weakstrong_limit(;
         n=256, nslices=3, grid=48,
         spectral_grid=(32, 64),
         spectral_free_grid=(16, 16),
-        pic_luminosity_rtol=0.60,
-        pic_size_rtol=0.60,
-        spectral_model_luminosity_rtol=0.80,
-        spectral_model_size_rtol=0.80,
+        tols...,
         spectral_limit_atol=5.0e-12,
         spectral_limit_luminosity_rtol=1.0e-10,
     )
-    @test result.gaussian_passed
-    @test result.pic_passed
-    @test result.spectral_limit_passed
-    @test result.spectral_model_passed
+    @testset let pic_luminosity_relative_error = result.pic_luminosity_relative_error,
+                 pic_proton_size_relative_error = result.pic_proton_size_relative_error,
+                 gaussian_luminosity_relative_error = result.gaussian_luminosity_relative_error
+        @test result.gaussian_passed
+        @test result.pic_passed
+        @test result.spectral_limit_passed
+        @test result.spectral_model_passed
+    end
+    # The tolerances discriminate: a PIC luminosity 1.5x the reference fails them.
+    wrong = abs(1.5 * result.pic_luminosity - result.reference_luminosity) / result.reference_luminosity
+    @test wrong > tols.pic_luminosity_rtol
 end
 
 if Octopus._HAS_CUDA && Octopus.CUDA.functional()
@@ -32174,8 +32702,10 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         # the recorded CUDA atomic-deposition nondeterminism, entering here
         # through allocation-layout-dependent scheduling, retriggered
         # whenever testset composition shifts. The pin's purpose is ROUTE
-        # equivalence: a wrong fallback diverges at O(kick) ~ 1e-15
-        # wholesale and is caught by rtol=2e-12 regardless of atol; atol
+        # equivalence: a wrong fallback diverges at O(kick) -- max|px| is
+        # 0.13 on the rankone arm, so rtol = 2e-12 governs at 2.6e-13
+        # absolute, not the 1e-15 this paragraph once claimed (2026-10-18
+        # audit F-221/U37-6) -- wholesale, caught regardless of atol; atol
         # governs only the near-zero tail where the wobble lives, so 1e-16
         # (100x under kick scale) keeps the full discriminating power while
         # granting the backend its recorded ordering freedom. Ledger: the
@@ -32188,10 +32718,10 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         # bit-identical profiles A/B across processes and routes, with
         # norm(A-B) = 6.3e-16 -- above atol = 1e-16, so any straddling draw
         # failed the gate (straddle series 2,2,1,1,0 that night). atol is now
-        # 2e-15: 3x above the measured wobble norm, 4x under the wrong-route
-        # wholesale floor (O(kick) ~ 1e-15 per element, ~8e-15 in norm over
-        # n = 64, and rtol = 2e-12 catches wholesale divergence regardless of
-        # atol). The capture trap stays armed: any mismatch above THIS bound
+        # 2e-15: 3x above the measured wobble norm and far under the
+        # wrong-route floor (a wrong fallback moves px by O(0.1), which
+        # rtol = 2e-12 catches regardless of atol). The capture trap stays
+        # armed: any mismatch above THIS bound
         # is a new phenomenon, not the tallied coin. Evidence arrays:
         # docs/history/gpic_wobble_capture_2026_08_19.txt.
         n = 64
@@ -32251,7 +32781,7 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         # floor for the (common) case where two draws happen to coincide.
         #
         # This keeps the check discriminating for what it is FOR: a wrong
-        # fallback diverges wholesale at O(kick) ~ 1e-15 and is caught by
+        # fallback diverges wholesale at O(kick), 0.13 in px, and is caught by
         # rtol = 2e-12 regardless. What it no longer does is fail because the
         # route drew a different ordering of the same atomic adds.
         function checked(actual, expected, tag, noise=0.0)
@@ -32297,6 +32827,12 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         route_noise = max(
             maximum((norm(a .- b) for (a, b) in zip(host_arrays(pic1), host_arrays(picN1))); init=0.0),
             maximum((norm(a .- b) for (a, b) in zip(host_arrays(pic2), host_arrays(picN2))); init=0.0))
+        # The instrument that sets the tolerance is itself bounded (2026-10-18
+        # audit F-221/U37-6: nothing bounded it, so a route gone grossly
+        # nondeterministic would have widened the comparison instead of
+        # failing it): 6.2e-16 measured; the bound keeps `4 route_noise` two
+        # orders under the rtol-governed scale, 2e-12 x 0.13.
+        @test route_noise <= 1.0e-14
         arm_context[] = (arm="rankone", route_noise=route_noise,
                          pic_addresses=vcat(addresses(pic1), addresses(pic2)),
                          gpic_addresses=vcat(addresses(gpic1), addresses(gpic2)),
@@ -32345,6 +32881,7 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             route_noise = max(
                 maximum((norm(a .- b) for (a, b) in zip(host_arrays(pic1), host_arrays(rpicN1))); init=0.0),
                 maximum((norm(a .- b) for (a, b) in zip(host_arrays(pic2), host_arrays(rpicN2))); init=0.0))
+            @test route_noise <= 1.0e-14               # bounded, as on the rankone arm (F-221/U37-6)
             arm_context[] = (arm=string(route.batch_mode, "_",
                                         route.cuda_indexed_wavefront),
                              pic_addresses=vcat(addresses(pic1), addresses(pic2)),
@@ -32406,12 +32943,23 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             spectral, gpu_rep(poison=:x), gpu_rep(), Octopus.CUDABackend))
     end
 else
-    # This `if` guards 17 testsets and 358 assertions. Without an `else` the
-    # whole block does not exist on a CPU-only host -- `Total 0`, no pass and
-    # no skip -- which is the failure class the header of this file forbids
-    # (2026-08-05_b audit, U20-3). One visible skip stands in for the block.
+    # This `if` guards the GPU-only block. Without an `else` the whole block
+    # does not exist on a CPU-only host -- `Total 0`, no pass and no skip --
+    # which is the failure class the header of this file forbids (2026-08-05_b
+    # audit, U20-3). One visible skip stands in for the block, and its count
+    # is READ from this file rather than copied (2026-10-18 audit F-221/U37-1:
+    # the copy said "17 testsets and 358 assertions" where the block held 15
+    # and 415): the `@testset` lines one level in between this `if` and its
+    # `else`. No assertion count: it belongs to a run, not to the source.
     @testset "CUDA GPU-only block" begin
-        @test_skip "CUDA device not available -- 17 GPU-only testsets did not run"
+        n_gpu_only = let lines = readlines(joinpath(pkgdir(Octopus), "test", "runtests.jl"))
+            i = findfirst(==("if Octopus._HAS_CUDA && Octopus.CUDA.functional()"), lines)
+            j = i === nothing ? nothing : findnext(l -> l == "else" || l == "end", lines, i)
+            (i === nothing || j === nothing) ? -1 :
+                count(l -> startswith(l, "    @testset") && !startswith(l, "     "), lines[i:j])
+        end
+        @test n_gpu_only > 0
+        @test_skip "CUDA device not available -- $(n_gpu_only) GPU-only testsets did not run"
     end
 end
 
@@ -33626,7 +34174,7 @@ end
         Octopus._pic_build_node_grids!(cache, solver, Float64, source, 0.0,
                                        (x=field.x, px=field.px, y=field.y, py=field.py,
                                         z=field.z, pz=field.pz),
-                                       1:nf, [-1.0e-3, 0.0, 1.0e-3])
+                                       [1:nf, 1:nf], [-1.0e-3, 0.0, 1.0e-3])
         gL, gR = cache[1], cache[2]
         ws = Octopus._pic_cpu_workspace(Float64, nx, ny)
 
@@ -33634,6 +34182,12 @@ end
         Octopus._pic_interaction_node!(solver, source, param, field, param,
                                        1.0e-6, ws, gL, gR)
         before = ws.dropped[]
+        # A whole-field node mesh drops nothing on the benign pass (2026-10-18
+        # audit F-221/U37-4: `1:nf` handed `_pic_build_node_grids!` ONE field
+        # particle per slice, collapsed the field boxes to points and dropped
+        # 295 of the 800 deposits before anything was displaced; the CUDA half
+        # below always built `[1:nf, 1:nf]` and measured 0).
+        @test before == 0
 
         # The mechanism itself: the node mesh is built at TURN START and
         # deposited into after the intra-collision kicks have moved the
@@ -33912,25 +34466,27 @@ if _lane_gate("PIC-family luminosity returns Float64 on every backend and precis
         e1, p1 = mkbn(T)
         @test collide!(mk(), e1, p1, Octopus.CPUThreadsBackend) isa Float64
     end
+    # The grid geometry follows the beam type (2026-08-08, solver-matrix
+    # finding): promoting through the solver's Float64 fields gave
+    # Float32 beams Float64 grid origins/spacings, and the per-particle
+    # deposit/interp loops then paid mixed-precision promotion — measured
+    # 1.5-1.6x SLOWER than Float64 on the CPU at production size,
+    # recovered to parity by typing the grids from the bounds. A HOST check,
+    # so it runs on CI (2026-10-18 audit F-221/U37-3: it sat inside the CUDA
+    # gate, and the one lane that could catch the CPU regression never ran it).
+    for T in (Float64, Float32)
+        g1, g2 = Octopus._pic_interaction_grids(
+            mkpic(), T(-1e-4), T(1e-4), T(-1e-5), T(1e-5),
+            T(-1e-4), T(1e-4), T(-1e-5), T(1e-5))
+        @test typeof(g1.x0) === T && typeof(g1.width) === T
+        @test typeof(g2.x0) === T && typeof(g2.height) === T
+    end
     if CUDA_TESTS_ACTIVE
         for T in (Float64, Float32), mk in (mkpic, mkgp)
             e2, p2 = mkbn(T)
             eg = Octopus._strong_strong_contract_beam(e2, Octopus.CUDABackend)
             pg = Octopus._strong_strong_contract_beam(p2, Octopus.CUDABackend)
             @test collide!(mk(), eg, pg, Octopus.CUDABackend) isa Float64
-        end
-        # The grid geometry follows the beam type (2026-08-08, solver-matrix
-        # finding): promoting through the solver's Float64 fields gave
-        # Float32 beams Float64 grid origins/spacings, and the per-particle
-        # deposit/interp loops then paid mixed-precision promotion — measured
-        # 1.5-1.6x SLOWER than Float64 on the CPU at production size,
-        # recovered to parity by typing the grids from the bounds.
-        for T in (Float64, Float32)
-            g1, g2 = Octopus._pic_interaction_grids(
-                mkpic(), T(-1e-4), T(1e-4), T(-1e-5), T(1e-5),
-                T(-1e-4), T(1e-4), T(-1e-5), T(1e-5))
-            @test typeof(g1.x0) === T && typeof(g1.width) === T
-            @test typeof(g2.x0) === T && typeof(g2.height) === T
         end
         # The Float32 PIC cross-backend envelope, previously unpinned.
         e1, p1 = mkbn(Float32)
@@ -33986,6 +34542,8 @@ end # _lane_gate("PIC-family luminosity returns Float64 on every backend and pre
          (Octopus.CUDABackend, (batch_mode=:sequential,)),
          (Octopus.CUDABackend, NamedTuple())) :
         ((Octopus.CPUThreadsBackend, NamedTuple()),)
+    CUDA_TESTS_ACTIVE ||
+        @test_skip "CUDA device not available: the two CUDA arms of the flip did not run (2026-10-18 audit F-221/U37-2)"
     for (backend, kw) in arms
         l1, epx1, ppx1, epz1 = runflip(1, backend, kw)
         l2, epx2, ppx2, epz2 = runflip(2, backend, kw)
@@ -34020,6 +34578,9 @@ end
         end
         (thin.last_luminosity, copy(rep.px))
     end
+    # Anti-vacuity (2026-10-18 audit F-221/U37-9): `last_luminosity`
+    # initialises to zero, so a fold that never ran passed `==` as 0.0 == 0.0.
+    @test isfinite(outs[1][1]) && outs[1][1] > 0
     for other in 2:length(outs)
         @test outs[1][1] == outs[other][1]
         @test outs[1][2] == outs[other][2]
@@ -34138,8 +34699,20 @@ end
     @test Octopus._masked_rms(v, nothing) isa Float64
     if CUDA_TESTS_ACTIVE
         CuA = Octopus.CUDA.CuArray
-        @test Octopus._masked_rms(v, nothing) == Octopus._cuda_masked_rms(CuA(v), nothing)
-        @test Octopus._masked_rms(v, flags) == Octopus._cuda_masked_rms(CuA(v), CuA(flags))
+        # Bitwise today, and stated as the one-ulp bound it is (2026-10-18
+        # audit F-221/U37-7): the host fold writes `fma(d, d, acc)` while the
+        # device kernel writes `acc += (zi - mu) * (zi - mu)` and the NVPTX
+        # backend CONTRACTS it to one fma -- the same rounding by a compiler
+        # choice, not by construction. A toolkit that stopped contracting would
+        # part the two by one ulp with no defect anywhere; the structural fix
+        # (an explicit `fma` in the kernel) belongs to the kernel's owner.
+        within_ulp(a, b) = abs(a - b) <= eps(max(abs(a), abs(b)))
+        @testset let host = Octopus._masked_rms(v, nothing), device = Octopus._cuda_masked_rms(CuA(v), nothing)
+            @test within_ulp(host, device)
+        end
+        @testset let host = Octopus._masked_rms(v, flags), device = Octopus._cuda_masked_rms(CuA(v), CuA(flags))
+            @test within_ulp(host, device)
+        end
     else
         @test_skip "CUDA device not available"
     end
@@ -34264,7 +34837,12 @@ end
                 # It also explains why the three asserts above never moved:
                 # count, extrema and the MEAN have no multiply to contract.
                 # Record: docs/history/cuda_lastbit_fma_2026_09_07.md.
-                @test sc.sigma == sg.sigma
+                #
+                # Stated as the one-ulp bound it is (2026-10-18 audit
+                # F-221/U37-7): the device's single rounding is the NVPTX
+                # contraction of `(zi - mu) * (zi - mu)`, a compiler choice the
+                # host matches with an explicit `fma`; bitwise today.
+                @test abs(sc.sigma - sg.sigma) <= eps(max(abs(sc.sigma), abs(sg.sigma)))
             end
         end
         # Whole-structure equality for every method, Float64 and Float32, on
@@ -34324,9 +34902,23 @@ end
             lc = collide!(s, e1, p1, Octopus.CPUThreadsBackend)
             lg = collide!(s, eg, pg, Octopus.CUDABackend)
             Octopus.CUDA.synchronize()
-            @test Array(eg.rep.px) == e1.rep.px
-            @test Array(eg.rep.py) == e1.rep.py
-            @test Array(pg.rep.px) == p1.rep.px
+            # The Float64 pipelines differ (the sequential route's luminosity
+            # by 7e-10, the pre-collision moments by 2e-13 relative) and the
+            # coordinates agreed bitwise only because Float32 rounding absorbs
+            # that: the expected number of last-bit flips over the 60,000
+            # compared values is 0.27 at the measured moment gap and 1.3 at
+            # the 1e-12 the moment pin grants (2026-10-18 audit F-221/U37-8).
+            # Stated as what it is: every coordinate within one Float32 ulp,
+            # and at most eight of them off at all (0 on both routes here).
+            flips = 0
+            for (dev, host) in ((eg.rep.px, e1.rep.px), (eg.rep.py, e1.rep.py), (pg.rep.px, p1.rep.px))
+                d = Array(dev)
+                @test all(abs(a - b) <= eps(max(abs(a), abs(b))) for (a, b) in zip(d, host))
+                flips += count(a != b for (a, b) in zip(d, host))
+            end
+            @testset let route = kw, float32_last_bit_flips = flips
+                @test flips <= 8
+            end
             @test abs(Float64(lc) - Float64(lg)) <= lum_tol * abs(Float64(lc))
         end
     else
