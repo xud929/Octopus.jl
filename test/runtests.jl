@@ -19018,6 +19018,37 @@ end
                           beam2=(apertures=0, rf_cavities=0, accelerating_cavities=0, circumference=1.0))
     rm(pss; force=true); rm(ptt; force=true)
 
+    # (3d) Units R and S joined at integration (2026-10-19): the per-beam
+    # groups follow the replay rule across task objects. A continued file
+    # (append=true) written by a NEW StrongStrongTask keeps window 1's
+    # /losses/beam_1 rows below the incoming window's first turn and appends
+    # its own, the counts following the rows (`_ra_write_losses!` merging from
+    # `_ra_existing_losses_group`); a task whose beam-1 line names another
+    # aperture is refused by name at the prepare (`_ra_check_loss_apertures`,
+    # the per-beam form), the file left as found.
+    prepl = tempname() * ".h5"
+    allow_lost_particles() do
+        execute!(StrongStrongTask(line1, line2; policy=cpu, artifact=RunArtifact(prepl; append=true)),
+                 outside!(mk8(rid + 1)), mk8(rid + 2); turns=1)
+    end
+    w1 = read(TaskOutput(prepl), :losses).beam_1
+    @test w1.turn == [0, 0] && w1.particle_id == [1, 2] && w1.aperture_counts == [2]
+    allow_lost_particles() do
+        execute!(StrongStrongTask(line1, line2; policy=cpu, artifact=RunArtifact(prepl; append=true)),
+                 outside!(mk8(rid + 1)), mk8(rid + 2); turns=1, start_turn=1)
+    end
+    w2 = read(TaskOutput(prepl), :losses).beam_1
+    @test w2.turn == [0, 0, 1, 1] && w2.particle_id == [1, 2, 1, 2] && w2.aperture_counts == [4]
+    @test w2.summary.logged == 2 && read(TaskOutput(prepl), :execution).start_turn == [0, 1]
+    lineB = (ApertureSpec(x_limit=2.0e-3, name="COLL_B"), ip)
+    errB = refusal(() -> execute!(StrongStrongTask(lineB, line2; policy=cpu,
+                                                   artifact=RunArtifact(prepl; append=true)),
+                                  outside!(mk8(rid + 1)), mk8(rid + 2); turns=1, start_turn=2))
+    @test errB isa ArgumentError && occursin("/losses/beam_1", errB.msg) && occursin("COLL_B", errB.msg)
+    @test read(TaskOutput(prepl), :losses).beam_1 == w2
+    @test read(TaskOutput(prepl), :execution).start_turn == [0, 1]
+    rm(prepl; force=true)
+
     # (4) The CUDA twin of (1) and (3b), small: the same bound line on the
     # device, the record on the beam's device. CPU against CUDA is not pinned
     # (libdevice `sin` is a few ulps off `Base.sin`); the two task kinds on
@@ -19051,6 +19082,7 @@ end
         @test_skip "CUDA device not available: the strong-strong binding's CUDA twin is not checked"
     end
     set_global_rng!(seed=0x5eed, method=:philox)
+end
 
 # Fixtures for the row-cursor testset below (fix batch 2026-10-19, unit T:
 # comprehensive audit F-73, F-84, F-74, F-59, F-63). A coordinate array whose
