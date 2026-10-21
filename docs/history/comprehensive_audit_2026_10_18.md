@@ -2086,3 +2086,7 @@ The thirteen Major rows of section 7b were closed by the fix batch recorded in
 integrated tree); their closings are in the ledger archive, and the pointer row
 of `todo.md` carries what that batch left for the owner. The Moderate and
 Minor rows of 7b stay open for the next batches.
+
+## Addendum 2026-10-21 (fix campaign, batch 2)
+
+The five instrument rows of section 7b (contracts that cannot fail, suite checks, the validators, validation scripts and harnesses) were closed by the fix batch recorded in [`comprehensive_audit_fixes_2026_10_20_batch2.md`](comprehensive_audit_fixes_2026_10_20_batch2.md); the runtime rows and the documentation and Minor rows stay open for batches 3 and 4.

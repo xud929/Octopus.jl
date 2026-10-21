@@ -620,6 +620,16 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   the cluster mode index matched by eigenvalue, three dead scripts ported
   with a retired-spelling tripwire, the MPI seam child's arms that fail by
   name; two integration joins with their own test; thirteen rows retired.
+- [`comprehensive_audit_fixes_2026_10_20_batch2.md`](history/comprehensive_audit_fixes_2026_10_20_batch2.md) —
+  the comprehensive audit's fix batch 2, the five instrument rows through four
+  units (sub-agents proposing, the integrator verifying each red on the
+  unfixed tree and green after the merge, every repaired check shown failing
+  under an injected regression): contracts with override values that differ
+  from their fallbacks and exemptions that are real, 37 suite checks made
+  able to fail, validators that compare every declared default and hold the
+  placement entries to one table with a symmetric shard verdict, scripts and
+  harnesses that assert what the run recorded, and the gate's CUDA arm running
+  every CUDA-requiring validation script from a derived list; five rows retired.
 - [`beam_beam_fixes_2026_10_18.md`](history/beam_beam_fixes_2026_10_18.md) —
   the beam-beam fix batch: the strong beam's `momentum_dispersion` made the
   canonical dispersion the Twiss analysis reports (owner decision: one

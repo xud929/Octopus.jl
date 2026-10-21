@@ -1887,6 +1887,78 @@ one commit applies every mutation after the last refusal; a row that arrives
 before the commit is refused by name. A refusal that follows a write is a
 partial write with an error message.
 
+## An instrument is finished when it has been shown failing
+
+Batch 2 of the audit's fix campaign repaired 37 suite checks, nine contracts, two
+validators and a dozen scripts whose common defect was that they could not fail:
+tautologies, pins derived from the quantity they pinned, gates with no `else`,
+override values equal to the fallback they displaced, a validator that compared
+only what the example happened to set (77 of 608 declared defaults), scripts
+whose verdict was print-only. The rule that closed every one: inject the
+regression the check exists to catch and watch it go red, then watch it go green
+on the real tree; quote both. The batch's units ran 112 such runner invocations
+for the suite alone and four of their own first drafts were caught by it. A check
+without a red run on record is a claim, not a check.
+
+## A verdict taken on one rank's data is a deadlock in waiting
+
+`_mp_resolve_shard` judged this rank's particle count against the rule and threw
+or proceeded on its own; four ranks holding (256, 256, 255, 257) split two and
+two, and the proceeding pair sat in the next collective until the launcher was
+killed (F-170). At two ranks a mismatch is always mutual by arithmetic, which is
+why the launcher testset never saw it. A collective decision is taken on the
+all-summed data every rank holds alike, so every rank throws or none does; the
+probe that shows it is a hand `mpiexec -n 4` with per-rank verdict files, not the
+merged stdout.
+
+## A script that only a GPU can run is run by nobody until the gate runs it
+
+CI has no GPU; three committed validation scripts died on a constructor retirement
+and stayed dead for two months because nothing executing ever loaded them (A-4,
+F-200, F-236). The class fix is a suite testset that DERIVES the CUDA-capable
+scripts from the refusals in their own code, requires each to declare its reduced
+size and verdict token in one machine-readable header line, runs them in
+subprocesses with the gate's own flags when the process has a device (18 scripts,
+370 s, four at a time), and records a visible skip naming them when it has none.
+Both directions are tripwires: a new CUDA script cannot join unrun, and a stale
+declaration fails as stale. A list of scripts in a README is not a gate.
+
+## A subprocess under `Pkg.test` does not have the shell's load path
+
+The CUDA arm's testset ran eighteen validation scripts green in every stage-runner
+process and failed four of them on its first full gate: `Pkg.test` runs the test
+process with `JULIA_LOAD_PATH = @:<test environment>` and no `@stdlib`, a
+subprocess inherits that path, and `using Statistics` or `using DelimitedFiles`
+-- standard libraries the project does not depend on -- cannot resolve there,
+where a terminal's default path has them. A script that passes in a shell has
+been measured in the shell's environment, not the gate's; a testset that launches
+processes gives them their load path and working directory explicitly, and the
+gate is the only run that proves it.
+
+## Two units that raise one ratchet add; measure the sum on the merged tree
+
+Units A and C each raised the element-parameter effectiveness floor from 530 (to
+542 and 537) by independent repairs; the merge conflicted on the number and the
+right value was neither: 549, measured on the merged tree, because the two sets of
+newly checked parameters were disjoint. A ratchet resolved by taking the larger
+side would have passed and under-asserted. Resolve a numeric conflict by running
+the measurement on the result of the merge, never by choosing a side.
+
+## A gate's wall time is not the suite's time; a slow gate is diagnosed, not relaunched
+
+Batch 2's second gate ran its native arm in 4 h 05 min where the first attempt on
+the same tree, one testset apart, took 69 min; every testset was green and the
+per-testset time column summed to 3.3x the earlier run, the subprocess-heavy
+testsets (the examples, the MPI seam, the CUDA arm) 3 to 16x. The cause was outside
+the repository: the machine's NFS client to `/cfs/ad`, which holds the worktree and
+the Julia depot, was saturated by another user's jobs (about 4,100 WRITE operations
+per second at a 2.2 s service time, GETATTR 16 ms against its long-run 0.63 ms, read
+from `/proc/self/mountstats`), so package images and CUDA kernel caches queued
+behind them. A test process alternating between running and uninterruptible I/O
+wait while summary rows keep appearing is slow, not hung; its verdict is as valid
+as a fast one, and launching more work on the same mount deepens the queue.
+Diagnose from the mount statistics before suspecting the tree or killing the run.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.
