@@ -35103,7 +35103,21 @@ if _lane_gate("CUDA-requiring validation scripts run in the gate's CUDA arm")
                 env = [k => sub(v) for (k, v) in spec.env]
                 args = sub.(spec.args)
                 base = `$(Base.julia_cmd()) --startup-file=no --threads=$(Threads.nthreads()) --project=$(root) -L $(preload) $(script) $(args)`
-                cmd = isempty(env) ? base : addenv(base, env...)
+                # The load path the subprocess inherits is the TEST PROCESS's:
+                # under `Pkg.test` that is `@:<test env>` with no `@stdlib`, so a
+                # stdlib the project does not depend on (`Statistics`,
+                # `DelimitedFiles`) cannot be loaded there, where a plain shell's
+                # default path has it -- four of the eighteen scripts failed the
+                # batch's first gate that way after passing every stage-runner
+                # run (2026-10-20). `@stdlib` is appended when absent; the
+                # project and the test environment stay first, so a test-only
+                # dependency a script uses still resolves. The script runs from
+                # the repository root, where its relative paths (the declared
+                # `outputs`) are meant to be read, not from `test/` where
+                # `Pkg.test` leaves the process.
+                load_path = get(ENV, "JULIA_LOAD_PATH", "@:@v#.#:@stdlib")
+                occursin("@stdlib", load_path) || (load_path *= ":@stdlib")
+                cmd = addenv(Cmd(base; dir=root), "JULIA_LOAD_PATH" => load_path, env...)
                 buf = IOBuffer()
                 t0 = time()
                 proc = run(pipeline(cmd; stdout=buf, stderr=buf); wait=false)
