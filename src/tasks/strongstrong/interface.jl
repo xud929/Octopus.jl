@@ -3025,6 +3025,20 @@ function _execute_strong_strong_task!(
             prepare_observers!(_line_observers(blocks2), _strong_strong_physics_line(blocks2);
                                turns=Int(turns), first_turn=Int(first_turn))
         end
+        # The unfireable-schedule warning, derived from the one hook table as
+        # the TrackingTask's is (`_run_scheduled_hooks` over `_HOOK_KINDS`,
+        # fix batch 3, unit F): once per line, over that line's in-line hook
+        # entries, which the blocks resolved at compile. The strong-strong task
+        # has no task-level hooks, so the task tuples are empty. Until
+        # 2026-10-21 nothing asked here, and a line observer scheduled outside
+        # the window observed nothing and said nothing (unit E's report,
+        # integrator item 2).
+        for blocks in (blocks1, blocks2)
+            hook_entries = Tuple(reduce(vcat, (b isa StrongStrongBlock ? b.hooks : Any[] for b in blocks);
+                                        init=Any[]))
+            _warn_unfireable_schedules(_run_scheduled_hooks((observers=(), actions=()), hook_entries),
+                                       Int(turns), Int(first_turn))
+        end
         # Every bind validated: the artifact commits the window, the replay
         # rule applied to every channel and bound probe at once (F-56/F-58).
         # Inside the same try, so a commit that fails closes the artifact too.

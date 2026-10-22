@@ -17699,6 +17699,52 @@ end
     end
 end
 
+@testset "A strong-strong line's scheduled hook that cannot fire warns, as the tracking task's does" begin
+    # Fix batch 3 (2026-10-21): unit F derived the unfireable-schedule warning
+    # from the one hook table `_HOOK_KINDS` for `TrackingTask` (every kind at
+    # both placements); the strong-strong compile never asked the question
+    # for its line observers (unit E's report, integrator item 2), so a
+    # `ScheduledObserver(..., AtTurns([500]))` on a four-turn collision run
+    # observed nothing and said nothing. The strong-strong execute! now
+    # enumerates each line's in-line hooks through the same
+    # `_run_scheduled_hooks` and warns through the same
+    # `_warn_unfireable_schedules`, once per line; a reachable schedule and the
+    # other line stay silent. Memory-mode BPMs, so no artifact is involved.
+    rid = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
+    mkb(rng_id, charge, mc2, E0) = begin
+        set_global_rng!(seed=5, method=:philox)
+        Beam(64, CPUThreadsExecutionPolicy(), Float64;
+             beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+             sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
+             charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+    end
+    ip = StrongStrongCollision(:ip)
+    plain = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,))
+    unfireable(l) = l.level == Logging.Warn && occursin("cannot fire in this run", l.message)
+    far = StrongStrongTask((ip, plain, ScheduledObserver(BPMObserver("ssfar"), AtTurns([500]))), (ip, plain))
+    logs, _ = Test.collect_test_logs() do
+        execute!(far, mkb(rid + 1, -1.0, EMASS_EV, 10.0e9), mkb(rid + 2, 1.0, PMASS_EV, 275.0e9); turns=4)
+    end
+    warns = filter(unfireable, logs)
+    @test length(warns) == 1                                   # was 0: nothing asked
+    @test haskey(warns[1].kwargs, :hooks) &&
+          any(s -> occursin("in-line observer BPMObserver", s) && occursin("AtTurns", s), warns[1].kwargs[:hooks])
+    @test warns[1].kwargs[:turns] == 4 && warns[1].kwargs[:first_turn] == 0
+    # The second line's hook is enumerated too (one warning per line).
+    both = StrongStrongTask((ip, plain, ScheduledObserver(BPMObserver("ssfar1"), AtTurns([500]))),
+                            (ip, plain, ScheduledObserver(BPMObserver("ssfar2"), AtTurns([600]))))
+    logs2, _ = Test.collect_test_logs() do
+        execute!(both, mkb(rid + 3, -1.0, EMASS_EV, 10.0e9), mkb(rid + 4, 1.0, PMASS_EV, 275.0e9); turns=4)
+    end
+    @test length(filter(unfireable, logs2)) == 2
+    # Control: a reachable schedule says nothing.
+    near = StrongStrongTask((ip, plain, ScheduledObserver(BPMObserver("ssnear"), AtTurns([2]))), (ip, plain))
+    logs3, _ = Test.collect_test_logs() do
+        execute!(near, mkb(rid + 5, -1.0, EMASS_EV, 10.0e9), mkb(rid + 6, 1.0, PMASS_EV, 275.0e9); turns=4)
+    end
+    @test !any(unfireable, logs3)
+end
+
 @testset "A crashed execute! still delivers its loss artifacts" begin
     # Audit part 7, T6. The stored turn deliberately does not advance on
     # failure (documented retry semantics), so the retry replays the same
