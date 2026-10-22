@@ -92,7 +92,8 @@ One group per producer, position and provenance as attributes:
     /moments/IP6             scheduled blocks  attrs: name, s, provenance path
     /moments/ARC1_QF3
     /snapshot/injection      coordinate blocks attrs: name, s
-    /bpm/BPM_07              readings          attrs: name, s
+    /bpm/BPM_07              readings          attrs: name, s, the device model
+                                               (x_offset .. y_noise, rng_id; 2026-10-21)
     /losses                  the write_loss_record layout (names, counts,
                              aperture_s, per-loss rows, summary); a
                              TrackingTask's one beam; rows and counts span
@@ -607,9 +608,14 @@ retries a failed open once (a flush landing) before the failure propagates
 with the lock information in it; only the open is retried, never the read
 body, so a torn group keeps its own refusal. The lock is ADVISORY and for
 Octopus writers: HDF5 itself does not honour it, a foreign `h5open` is not
-stopped by it. The in-process registry stays beside it, now reporting only
-the sequential sharing it was built for (a refused writer is not registered
-as live). Record: `../history/audit_crab_cavity_noise_neighbours_2026_10_16.md`.
+stopped by it. The in-process registry stays beside it; since 2026-10-21
+(comprehensive audit F-85) it warns only when the earlier artifact object
+still holds its file OPEN -- the one collision the lock cannot see, a lock
+removed by hand -- and a finished writer's path continued or rewritten by a
+new object (a new task continuing a file, a refused task's path reused) is
+silent, where it used to warn "a second live observer ..." on every such
+continuation (a refused writer is not registered as live). Record:
+`../history/audit_crab_cavity_noise_neighbours_2026_10_16.md`.
 
 ### Execution diagnostics
 

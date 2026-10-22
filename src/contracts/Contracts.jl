@@ -509,8 +509,11 @@ artifact receipts) or when its `observer` field is the owner's name (the
 probes share the `:observer_output` consumer and each carries its own
 options). Each miss is one line naming the owner, the option, the consumer
 and what is missing; an empty vector is the pass. Options whose consumer is
-not an output receipt (`:bpm_reading`, the BPM's reading terms) are outside
-this check and belong to the schema-driven sweep of `docs/todo.md` row 28.
+not an output receipt are outside this check: the BPM's reading terms
+(`:bpm_reading`, recorded per reading since 2026-10-21, F-90) are paired with
+their receipt and their `/bpm` attributes by the suite's own derived check
+("The BPM device model is on record ..."), the rest belong to the
+schema-driven sweep of `docs/todo.md` row 28.
 """
 function _output_receipt_gaps(receipts, schemas)
     consumers = Set{Symbol}()

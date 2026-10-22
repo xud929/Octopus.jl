@@ -225,7 +225,12 @@ checks that do mean something:
 
 1. **The zero-error BPM reproduces the moment observer's centroid exactly.**
    With all errors zero the reading must equal $\langle x\rangle$ to round-off,
-   which ties the new path to the existing validated one.
+   which ties the new path to the existing validated one. Both accumulate in
+   Float64 whatever the beam's element type (the BPM through `_bpm_mean`
+   since 2026-10-21, comprehensive audit F-88: a Float32 beam's centroid was
+   accumulated in Float32, 1.2e8 Float64 ulps from the moment), so
+   "round-off" here is the pairwise-against-serial summation difference,
+   tens of ulps at $10^5$ particles, on either element type.
 2. **Each error term reaches the reading**, in the spirit of
    `ElementParameterEffectivenessContract`: setting any one of the nine to a
    non-default must move the number. Section 2 is the cautionary tale.

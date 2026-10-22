@@ -68,13 +68,22 @@ wrong sign.
 Readings accumulate in memory and are available through
 [`readings`](@ref). Passing `artifact=true` also records them into the
 owning task's [`RunArtifact`](@ref) as `/bpm/<name>` (`[turn, x, y]` rows,
-read back with `read(TaskOutput(path), :bpm; name=name)`). Buffering is the
+read back with `read(TaskOutput(path), :bpm; name=name)`), with the device
+model stamped on the group as attributes (`x_offset` to `y_noise` and
+`rng_id`; the reader returns them under `attrs`) so the file says which
+error model produced its rows, and every reading records a `:bpm_reading`
+receipt carrying the same values (2026-10-21, F-90). Buffering is the
 ARTIFACT'S: `RunArtifact(path; capacity=...)` decides how many readings
 accumulate before one append writes them all (the per-observer `capacity`
 retired 2026-08-18). Buffered rows are flushed at the end of every
-`execute!`, including a failing one; replayed turn windows are dropped by
-the artifact's per-group cursor, so the memory arrays and the artifact
-cannot disagree.
+`execute!`, including a failing one. Under `append=true` the memory arrays
+and the group hold the same turns: a replayed window is dropped from both,
+the group truncated at the commit to the boundary the memory discard keeps.
+Under the default `append=false` the artifact recreates the FILE at every
+`execute!`, so the group holds the latest window while the memory arrays
+hold every turn this object observed (after two `execute!(turns=3)`: the
+group 3:5, memory 0:5 -- the two agree only under `append=true`, which this
+text claimed unconditionally until 2026-10-21, F-86).
 
 ```julia
 bpm = BPMObserver("bpm_01"; x_offset = 1.0e-4, x_noise = 5.0e-6)
@@ -208,18 +217,36 @@ function bpm_reading(bpm::BPMObserver, xbar::Real, ybar::Real, ctx::TrackingCont
     uy = c * dy - s * dx
     rx = (1 + bpm.x_gain) * ux + bpm.x_readout
     ry = (1 + bpm.y_gain) * uy + bpm.y_readout
+    occurrence = nothing
     if bpm.x_noise != 0 || bpm.y_noise != 0
-        occurrence = _bpm_noise_occurrence!(bpm, ctx.turn)
+        occ = _bpm_noise_occurrence!(bpm, ctx.turn)
         # The occurrence rides in the particle slot: a BPM reads the beam, not
         # a particle, so the slot is free -- and occurrence 0 reproduces the
         # stream from before readings were counted. Components 1-2 here; the
         # turn-modulation rules, also on particle slot 0, draw from the band at
         # `_RULE_COMPONENT_BASE` (src/elements/turn_modulated.jl, key layout).
-        n1 = octopus_normal(ctx.seed, ctx.rng_method, ctx.turn, bpm.rng_id, occurrence, 1, Float64)
-        n2 = octopus_normal(ctx.seed, ctx.rng_method, ctx.turn, bpm.rng_id, occurrence, 2, Float64)
+        n1 = octopus_normal(ctx.seed, ctx.rng_method, ctx.turn, bpm.rng_id, occ, 1, Float64)
+        n2 = octopus_normal(ctx.seed, ctx.rng_method, ctx.turn, bpm.rng_id, occ, 2, Float64)
         rx += bpm.x_noise * n1
         ry += bpm.y_noise * n2
+        occurrence = occ
     end
+    # The consumer boundary's receipt (comprehensive audit 2026-10-18, F-90:
+    # the nine device-model options declared this consumer and no site
+    # recorded it, so a run with `x_offset = 1e-4` and one with 0 were
+    # indistinguishable from their receipts): every option the schema names
+    # under `:bpm_reading`, with the value this reading applied -- the
+    # deterministic terms are their fields, the noise sigmas scaled a draw
+    # only when one was made (`noise_drawn`; `occurrence` is that draw's key,
+    # `nothing` otherwise), `rng_id` the stream drawn from or that would have
+    # been. Recorded after the arithmetic, so a failed reading leaves no
+    # receipt; isbits, so an unaudited run allocates nothing for it.
+    _record_execution!(:bpm_reading, _observer_backend(),
+        (observer=:BPMObserver, name=Symbol(bpm.name), turn=ctx.turn,
+         x_offset=bpm.x_offset, y_offset=bpm.y_offset, tilt=bpm.tilt,
+         x_gain=bpm.x_gain, y_gain=bpm.y_gain, x_readout=bpm.x_readout, y_readout=bpm.y_readout,
+         x_noise=bpm.x_noise, y_noise=bpm.y_noise, rng_id=bpm.rng_id,
+         noise_drawn=occurrence !== nothing, occurrence=occurrence))
     return rx, ry
 end
 
@@ -242,16 +269,43 @@ function _bpm_noise_occurrence!(bpm::BPMObserver, turn::Integer)
     return occurrence
 end
 
+# The BPM's means, accumulated in Float64 whatever the beam's element type
+# (comprehensive audit 2026-10-18, F-88: `_mean(v)` is `sum(v)/length(v)` in
+# the array's element type, so a Float32 beam's centroid was a Float32, 2.64e-11 m
+# and 1.2e8 Float64 ulps from the moment observer's Float64-accumulated mean --
+# one centroid, two accumulation precisions). `sum(Float64, v)` is the same
+# pairwise reduction as `sum(v)` and bit-identical to it on Float64 data
+# (measured on 100,003 terms, unit G probe `pow_identity.jl`), so Float64
+# readings do not move; on a device array it reduces on the device, as `_mean`
+# did, transferring nothing. The masked form is the survivors' serial sum
+# `_mean(v, flags, nlive)` makes, with a Float64 accumulator in place of
+# `zero(eltype(v))` -- for a Float64 array the same loop and the same bits.
+_bpm_mean(v) = sum(Float64, v) / length(v)
+function _bpm_mean(v, flags, nlive)
+    flags === nothing && return _bpm_mean(v)
+    s = 0.0
+    @inbounds for i in eachindex(v)
+        _stat_live(flags, i) && (s += v[i])
+    end
+    return s / nlive
+end
+
 """
     _bpm_centroid(rep)
 
-Transverse centroid over the surviving particles.
+Transverse centroid over the surviving particles, accumulated in Float64 on
+every path and both backends (F-88).
 
 `beam_statistics` would give the same two numbers, but it also builds a full
 6x6 covariance, three emittances and optionally fourth moments. A lattice can
 hold hundreds of BPMs read every turn, so this takes the two means it needs
-through the same masked `_mean` that `beam_statistics` uses -- same reduction,
-same lost-particle handling, none of the rest.
+through `_bpm_mean` and none of the rest. The lost-particle rule differs from
+`beam_statistics`' since 2026-10-21 (fix batch 3, unit L): the statistics
+COMPACT the survivors and run their unmasked reductions, one reduction order
+for both liveness paths, while the centroid keeps the masked helper -- the
+serial survivors' sum over the arrays in place (`_bpm_mean(v, flags, nlive)`,
+the masked `_mean` with a Float64 accumulator) -- because it reads two means
+of a beam it must not copy or compact per reading.
 """
 function _bpm_centroid(rep)
     # Default path: no host copy at all. `_live_stat_flags` returns `nothing`
@@ -262,15 +316,15 @@ function _bpm_centroid(rep)
     # function whose own docstring justifies itself with "a lattice can hold
     # hundreds of BPMs read every turn" (2026-08-05_b audit, U7-5).
     #
-    # `_mean(v)` is `sum(v)/length(v)`, which reduces on the device for a
-    # CuArray, so the common case now transfers nothing.
+    # `_bpm_mean(v)` is `sum(Float64, v)/length(v)`, which reduces on the
+    # device for a CuArray, so the common case transfers nothing.
     if !allow_lost_particles()
         # A BPM reads the BEAM's centroid, so under a divided run it reads
-        # across the ranks. `_mean(v)` is `sum(v)/length(v)` -- Julia's
-        # pairwise sum, which does not decompose -- so the divided path takes
-        # the serial form that does, at the cost stated on `_masked_global_sum`.
+        # across the ranks. `_bpm_mean(v)` is Julia's pairwise sum, which does
+        # not decompose -- so the divided path takes the serial form that
+        # does, at the cost stated on `_masked_global_sum`.
         if _mp_nranks() == 1
-            return _mean(rep.x), _mean(rep.y)
+            return _bpm_mean(rep.x), _bpm_mean(rep.y)
         end
         n = length(rep)
         alive = _ -> true
@@ -296,7 +350,7 @@ function _bpm_centroid(rep)
     # (2026-08-05_b audit, U7-12). Same behaviour on both, now stated on both,
     # so a future reader does not "fix" the division.
     _mp_nranks() == 1 &&
-        return _mean(coords[1], flags, nlive), _mean(coords[3], flags, nlive)
+        return _bpm_mean(coords[1], flags, nlive), _bpm_mean(coords[3], flags, nlive)
     n = length(rep)
     return (_masked_global_sum(k -> @inbounds(coords[1][k]), islive, n) / nlive,
             _masked_global_sum(k -> @inbounds(coords[3][k]), islive, n) / nlive)
@@ -355,8 +409,11 @@ caller rewound with `start_turn` to replay from a checkpoint. In both cases
 the timeline from `first_turn` on is being rewritten, and a table carrying two
 rows labelled with the same turn is corrupt for every downstream reader. For
 an ordinary chunked run every stored turn is below `first_turn` and this is a
-no-op. The artifact group is truncated to the same boundary by the bind in
-`_bpm_prepare!`, so memory and artifact cannot disagree.
+no-op. Under `append=true` the artifact group is truncated to the same
+boundary at the commit (`_bpm_prepare!` binds, `commit_run_artifact!`
+truncates), so memory and the group hold the same turns; under
+`append=false` the file is recreated and the group starts empty while the
+memory prefix stays (the constructor docstring states both; F-86).
 """
 function _bpm_discard_window!(bpm::BPMObserver, first_turn)
     # The replayed window must also redraw the same noise, so the occurrence
@@ -386,7 +443,7 @@ function _bpm_prepare!(bpm::BPMObserver, first_turn)
         bpm.artifact_ref = art
         bpm.artifact_key = _ra_bind_probe!(art, "bpm", bpm.name,
                                            ["turn", "x", "y"], Int(first_turn);
-                                           s=_active_probe_s(bpm))
+                                           s=_active_probe_s(bpm), attrs=_bpm_model_attrs(bpm))
         # The discard above kept the memory prefix with turns < first_turn,
         # and the commit truncates the artifact group to the same boundary
         # (`commit_run_artifact!`, after every bind; the bind itself did it
@@ -401,6 +458,19 @@ prepare_observer!(bpm::BPMObserver, runtime_elems, schedule, turns, first_turn) 
     _bpm_prepare!(bpm, first_turn)
 prepare_line_observer!(bpm::BPMObserver, schedule, turns, first_turn) =
     _bpm_prepare!(bpm, first_turn)
+
+# The device model as the group's attributes (F-90), DERIVED from the schema:
+# every option under the `:bpm_reading` consumer except the name the group
+# already carries, so an option added to the schema is stamped without a
+# second list here. The public reader returns them under `attrs`.
+_bpm_model_attrs(bpm::BPMObserver) =
+    (; (k => getproperty(bpm, k) for (k, m) in pairs(_BPM_OBSERVER_OPTION_SCHEMA)
+         if m.consumer === :bpm_reading && k !== :name)...)
+
+# A BPM binds one artifact group only in artifact mode
+# (`_observer_binds_one_group`, BeamObservers.jl; F-89): in memory mode it
+# reads as often as it is placed.
+_observer_binds_one_group(bpm::BPMObserver) = bpm.artifact
 
 const _BPM_OBSERVER_OPTION_SCHEMA = (
     name=ConfigurationOptionMeta(String, "bpm", "Monitor identity, carried into readings and execution records.";

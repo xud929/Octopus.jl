@@ -1866,7 +1866,11 @@ slots)`; `_turn_modulation_entries` (src/tasks/Tasks.jl) adds the task's
             rng_id = UInt64,                # the white or pink rule's stream; 0 for a table
             digest = UInt64,                # the table's FNV-1a digest; 0 for white and pink
             name = String,                  # the table's name; "" for white and pink
-            length = Int)                   # the table's length; 0 for white and pink
+            length = Int,                   # the table's length; 0 for white and pink
+            sigma = Float64,                # the white or pink rule's rms in the slot's unit
+                                            # (F-66, 2026-10-21); 0.0 for a table, whose scale
+                                            # lives in its digest
+            octaves = Int)                  # the pink rule's octave count; 0 for every other kind
 
 and the receipt's top level is `(elements, first_turn, turns)`; the suite pins
 all three levels (2026-10-16 neighbour audit, S4-9: only the slot entry was
@@ -1956,10 +1960,14 @@ Append the provenance entry of one ACTIVE slot, in the shape
 `_turn_modulation_provenance!` documents, built generically from the rule's
 fields: `kind` from `_rule_kind`, `rng_id` when the rule carries one (the
 stochastic rules), `digest`, `name` and `length` when it carries a table
-(`TurnTable`), zeros and `""` otherwise -- so a new rule needs a type-level
-`_rule_kind` method and nothing here (the per-type `isa` chain this replaces was a
-hand-copied catalogue). `nothing`, the inactive slot, appends nothing. Called
-by each element's `_turn_modulation_slots` with its own slot label.
+(`TurnTable`), `sigma` (as `Float64`) and `octaves` when it carries them (the
+live rules' free parameters -- until 2026-10-21 neither was read, so two runs
+differing only in a rule's rms or octave count were byte-identical in their
+receipts and in the artifact; comprehensive audit 2026-10-18, F-66), zeros
+and `""` otherwise -- so a new rule needs a type-level `_rule_kind` method and
+nothing here (the per-type `isa` chain this replaces was a hand-copied
+catalogue). `nothing`, the inactive slot, appends nothing. Called by each
+element's `_turn_modulation_slots` with its own slot label.
 """
 _push_rule_slot!(slots::Vector{Any}, ::Nothing, label::String) = slots
 function _push_rule_slot!(slots::Vector{Any}, rule::AbstractTurnRule, label::String)
@@ -1969,6 +1977,8 @@ function _push_rule_slot!(slots::Vector{Any}, rule::AbstractTurnRule, label::Str
                   rng_id=hasfield(R, :rng_id) ? rule.rng_id : UInt64(0),
                   digest=hasfield(R, :digest) ? rule.digest : UInt64(0),
                   name=hasfield(R, :name) ? rule.name : "",
-                  length=hasfield(R, :offsets) ? length(rule.offsets) : 0))
+                  length=hasfield(R, :offsets) ? length(rule.offsets) : 0,
+                  sigma=hasfield(R, :sigma) ? Float64(rule.sigma) : 0.0,
+                  octaves=hasfield(R, :octaves) ? Int(rule.octaves) : 0))
     return slots
 end
