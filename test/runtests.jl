@@ -14561,6 +14561,66 @@ end
 end
 
 
+@testset "The bend's design excess is cancellation-free at b0 = 2h as well (F-161)" begin
+    # The design orbit's share of the bend's path-length excess,
+    # `kappa S1 + (asin(pxd) - pxd)` with kappa = h - b0 and pxd = kappa C1,
+    # vanishes identically at kappa = 0 (the sector bend, exact by
+    # construction since unit K) AND at kappa = -h, b0 = 2h: a circle of half
+    # the frame's radius, internally tangent to it, has the frame's arc length.
+    # The two terms, each O(u^3/6) and rounded at eps of themselves (the
+    # direct `asin(t) - t` from |pxd| = 0.4 on), cancelled to a residue that
+    # landed on z: 4.8 / 56.7 / 757 / 1073 / 2136 ulp of max(|z|, |E|) at
+    # L = 0.5 / 1 / 1.4 / 2 / 2.5, h = 0.3 (2026-10-18 audit, U17-2;
+    # probes/H/logs/f161_probe_unfixed.log reproduces every row). Within
+    # |2h - b0| <= |h|/16 the excess is now formed from the small quantities
+    # that make it small (`_bend_design_excess`); the sweep and metric are the
+    # unit-K pins' (BigFloat twin of the same kernel, ulps of max(|z|, |E|)).
+    O = Octopus
+    kulps(got, ref, zin) = Float64(abs(big(got) - ref) / big(eps(max(abs(Float64(zin)), abs(Float64(big(zin) - ref))))))
+    cerr(got, ref, scale) = Float64(abs(big(got) - ref) / big(eps(Float64(scale))))
+    krng = Random.Xoshiro(2026)
+    kparts = [(1.0e-3, 2.0e-4, -5.0e-4, 1.0e-4, 2.0e-3, 1.0e-3)]
+    for _ in 1:100
+        push!(kparts, (1.0e-3 * randn(krng), 1.0e-3 * randn(krng), 1.0e-3 * randn(krng), 1.0e-3 * randn(krng),
+                       rand(krng, (-1, 1)) * (2.0e-4 + 4.8e-3 * rand(krng)), 1.0e-3 * randn(krng)))
+    end
+    setprecision(BigFloat, 256) do
+        # Measured 2026-10-21 after the repair (probes/H/logs/f161_probe_fixed*.log):
+        # inside the band 2-27 ulp, at its edges (b0/h = 1.9375, 2.0625) up to 43,
+        # just outside on the direct form (1.93, 2.07) up to 39; the weak bend
+        # h = 0.05 sits at its own class (32-34 here, 42 on its sector orbit).
+        # Bounds: the measured worst rounded up to the next power of two, as the
+        # unit-K pins are.
+        for (h, L, zb) in ((0.3, 0.5, 16), (0.3, 1.0, 64), (0.3, 1.4, 64), (0.3, 2.0, 64), (0.3, 2.5, 64), (0.05, 2.0, 64)),
+            ratio in (2.0, 1.99, 2.01, 1.95, 2.05, 1.9375, 2.0625, 1.93, 2.07)
+            b0 = ratio * h
+            wz = 0.0; wt = 0.0
+            for u in kparts
+                r64 = O._lattice_bend(h, b0, L, u...)
+                rb = O._lattice_bend(big(h), big(b0), big(L), big.(u)...)
+                wz = max(wz, kulps(r64[5], rb[5], u[5]))
+                for i in (1, 2, 3)
+                    wt = max(wt, cerr(r64[i], rb[i], max(abs(Float64(rb[i])), abs(u[i]))))
+                end
+            end
+            @testset let h = h, b0_over_h = ratio, L = L, z_ulps = wz, transverse_ulps = wt
+                @test z_ulps <= zb
+                @test transverse_ulps <= 32
+            end
+        end
+    end
+    # On the frame's axis at b0 = 2h the excess is zero EXACTLY (the audit's
+    # one-liner returned z - 2e-3 = 5.8e-17 at L = 2 and -4.0e-17 at L = 1.4).
+    for L in (1.4, 2.0)
+        r = O._lattice_bend(0.3, 0.6, L, 0.0, 0.0, 0.0, 0.0, 2.0e-3, 0.0)
+        @test r[5] === 2.0e-3
+    end
+    # The switch is a rule on the parameters alone (|2h - b0| <= |h|/16), the
+    # same on every backend, and both sides are pinned above against the same
+    # BigFloat twin, so nothing physics cares about moves across it.
+end
+
+
 
 @testset "Thin elements, markers and RBEND" begin
     u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)

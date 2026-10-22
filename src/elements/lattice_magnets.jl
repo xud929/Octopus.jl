@@ -257,6 +257,78 @@ end
     return (sin(u) - u) / h
 end
 
+# `(sin u - u cos u)/h`, `u = hL`: the excess of the frame's sine over its
+# cosine-projected length, O(u^3/3), formed without subtracting two numbers
+# near `u` -- the alternating series `L u^2 sum_{k>=1} (-1)^(k+1) 2k u^(2k-2)/(2k+1)!`
+# to `u^20` for `|u| < 1` (the next term is below `2e-19` of the leading one at
+# the seam), the direct difference beyond, where it keeps its digits. Used by
+# the bend's design excess near b0 = 2h (`_bend_design_excess`).
+@inline function _sin_minus_ucos(h, L)
+    u = h * L
+    T = typeof(u)
+    u2 = u * u
+    if abs(u) < real(T)(1)
+        return L * u2 / 3 * (one(T) - u2 / 10 * (one(T) - u2 / 28 * (one(T) - u2 / 54 * (one(T) - u2 / 88 *
+               (one(T) - u2 / 130 * (one(T) - u2 / 180 * (one(T) - u2 / 238 * (one(T) - u2 / 304 *
+               (one(T) - u2 / 378)))))))))
+    end
+    return (sin(u) - u * cos(u)) / h
+end
+
+"""
+    _bend_design_excess(h, b0, L, kappa, C1, S1, s, c, pxd, psd)
+
+The design orbit's share of the bend's path-length excess (see `_lattice_bend`),
+`asin(pxd) - kappa L = kappa S1 + (asin(pxd) - pxd)` with `kappa = h - b0`,
+`pxd = kappa C1` the sine of the design orbit's exit angle, `S1 = C1 - L`. It
+vanishes identically at `kappa = 0` (the sector bend, exact by construction)
+AND at `kappa = -h`, i.e. `b0 = 2h`: a circle of half the frame's radius,
+internally tangent to it, has exactly the frame's arc length (`asin(-sin u) =
+-u` for `|u| <= pi/2`). There the two terms, each O(u^3/6) and rounded at eps
+of themselves -- from `|pxd| = 0.4` on `_asin_excess` is the direct
+`asin(t) - t`, rounded at eps(asin t) -- cancelled to a residue that landed on
+z: measured against the same kernel in BigFloat over the unit-K sweep, in ulps
+of max(|z|, |E|), 4.8 / 56.7 / 112 / 757 / 1073 / 2136 at h = 0.3, b0 = 2h and
+L = 0.5 / 1 / 1.3 / 1.4 / 2 / 2.5; 461 / 861 at b0 = 1.99h / 2.01h, L = 2;
+on the frame's axis at b0 = 2h the kernel returned z - z_in = 5.8e-17 where the
+exact value is 0 (2026-10-18 comprehensive audit, F-161, U17-2; the first
+cancellation, at kappa = 0, was unit K's 2026-10-17 repair).
+
+Within `|2h - b0| <= |h|/16` and `|hL| < pi/2` the excess is formed from the
+quantities that make it small. With `eps = 2h - b0 = h + kappa`, `s = sin u`,
+`c = cos u` and `psd = sqrt(1 - pxd^2)`:
+
+    asin(pxd) - kappa L = [asin(s) - asin(-pxd)] - eps L            (asin s = u)
+    asin(s) - asin(-pxd) = asin(y),  y = eps b0 C1^2 / den,  den = s psd - pxd c
+
+by the difference identity `asin p - asin q = asin(p sqrt(1-q^2) - q sqrt(1-p^2))`
+(both arguments of one sign here), its numerator `p^2 - q^2 = (s + pxd)(s - pxd)
+= (eps C1)(b0 C1)`. Then, splitting `asin y = y + (asin y - y)`,
+
+    design = (asin y - y) + eps (R - L),   R = b0 C1^2 / den,
+    R - L  = b0 C1 [G - eps L h C1^2 / (psd + c)] / den,   G = (sin u - u cos u)/h,
+
+using `b0 C1^2 - L den = C1 [b0 (C1 - L c) - L h (psd - c)]` and `psd - c =
+(s - pxd)(s + pxd)/(psd + c) = eps b0 C1^2/(psd + c)`. Every factor is a small
+quantity formed as such (`_asin_excess` of a small y, `_sin_minus_ucos` for G);
+nothing cancels, and at `eps = 0` the result is exactly zero. The band is
+narrow on purpose: the form's own rounding, eps |eps| tan(u)/h, grows with
+|eps| while the direct form's does not depend on it, and outside the band the
+direct form measures 2-9 ulps (b0 = 1.6h, 2.4h). Measured after the repair,
+same sweep and metric: see the suite's pins (F-161 testset).
+"""
+@inline function _bend_design_excess(h::T, b0::T, L::T, kappa, C1, S1, s, c, pxd, psd) where {T}
+    eps_b = h + kappa                       # 2h - b0, exact by Sterbenz when small
+    if abs(real(eps_b)) <= abs(real(h)) / 16 && abs(real(h * L)) < real(T)(pi) / 2
+        den = s * psd - pxd * c             # sin u sqrt(1 - pxd^2) - pxd cos u, both terms of one sign
+        y = eps_b * b0 * C1 * C1 / den
+        G = _sin_minus_ucos(h, L)
+        RmL = b0 * C1 * (G - eps_b * L * h * C1 * C1 / (psd + c)) / den
+        return _asin_excess(y) + eps_b * RmL
+    end
+    return kappa * S1 + _asin_excess(pxd)
+end
+
 @inline function _lattice_drift(::Val{false}, h::T, L::T, x, px, y, py, z, pz) where {T}
     ps0 = _ps_or_dead((1 + pz)^2 - px * px - py * py)
     return x + px / ps0 * L, px, y + py / ps0 * L, py,
@@ -380,7 +452,8 @@ sector bend on its design orbit.
     # phi_d = asin(kappa C1) the design orbit's rotation. The first term is the
     # design orbit's own excess, -(kappa S1 + (asin(pxd) - pxd))/b0 with
     # S1 = C1 - L (zero on a sector bend with h = b0; the straight-frame bend's
-    # (asin(b0 L) - b0 L)/b0); the second is the particle's departure, the
+    # (asin(b0 L) - b0 L)/b0; formed from small quantities near its second
+    # zero b0 = 2h by `_bend_design_excess`, F-161); the second is the particle's departure, the
     # angle of (psn + i pxn)(psd - i pxd)(ps0 - i px) formed from `dp` so the
     # near-equal products never meet; the third is small by itself. Where the
     # field is weaker than half the frame's curvature the bend is a curved
@@ -397,7 +470,7 @@ sector bend on its design orbit.
         Pi = dp * psd + pxd * (((py * py - pz * (2 + pz)) + dp * (pxn + pxd)) / (psd + psn))
         Pr = psn * psd + pxn * pxd
         dphi = _atan2(_diff_of_products(Pi, ps0, Pr, px), Pr * ps0 + Pi * px)
-        E = -(kappa * S1 + _asin_excess(pxd)) / b0 - dphi / b0 + pz * Δ
+        E = -_bend_design_excess(h, b0, L, kappa, C1, S1, s, c, pxd, psd) / b0 - dphi / b0 + pz * Δ
     else
         E = (1 + pz) * Δ - L
     end
