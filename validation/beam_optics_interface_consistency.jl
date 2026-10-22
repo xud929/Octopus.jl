@@ -40,9 +40,18 @@ function arrays_on_cpu(beam)
     return map(Array, coordinate_arrays(beam))
 end
 
-function legacy_sigma_reference(backend)
+# The reference is formed on the HOST for either backend, as the construction
+# itself is since the 2026-10-18 audit (F-189/U27-5): `Beam` draws,
+# standardizes and normalizes on the host and uploads once, so a CUDA beam is
+# the CPU beam of the same seed and stream bit for bit. A device broadcast of
+# the same formula would not reproduce it: the device fuses `px - alpha*x`
+# into one rounding (measured 2026-10-21 on this machine: bitwise with the
+# host's `fma`, 1 ulp from the host's two roundings), a difference of
+# arithmetic, not of physics. The counter draw depends only on the seed and
+# the stream, so the host rep is the raw material of both backends' beams.
+function legacy_sigma_reference()
     set_global_rng!(seed=0x12345678, method=:philox)
-    rep = Octopus._standard_gaussian_rep(backend, Float64, N;
+    rep = Octopus._standard_gaussian_rep(CPUThreadsBackend, Float64, N;
                                          cutoff=Inf, rng_id=17)
     rep.px .= (SIGMA[1] / BETA[1]) .* (rep.px .- ALPHA_XY[1] .* rep.x)
     rep.x .*= SIGMA[1]
@@ -50,14 +59,14 @@ function legacy_sigma_reference(backend)
     rep.y .*= SIGMA[2]
     rep.pz .*= SIGMA[3] / BETA[3]
     rep.z .*= SIGMA[3]
-    return map(Array, coordinate_arrays(rep))
+    return coordinate_arrays(rep)
 end
 
 function check_backend(backend)
     legacy = arrays_on_cpu(make_beam(backend, ALPHA_XY))
     shared = arrays_on_cpu(make_beam(backend, ALPHA_ZERO_Z))
     legacy == shared || error("legacy and three-plane alpha differ on $(backend)")
-    legacy == legacy_sigma_reference(backend) ||
+    legacy == legacy_sigma_reference() ||
         error("alpha_z=0 differs from the previous sigma normalization on $(backend)")
 
     sigma_beam = arrays_on_cpu(make_beam(backend, ALPHA_ZERO_Z))

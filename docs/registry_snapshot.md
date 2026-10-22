@@ -331,7 +331,7 @@ entry's script with `example_script_path`.
 - `examples/crab_cavity_noise.jl` (`ReferenceExample`)
   - Objects: `TrackingTask`, `ThinCrabCavitySpec`, `WhiteNoise`, `PinkNoise`, `SpectralNoise`, `TurnTable`, `TurnModulated`, `RunArtifact`
 - `examples/knob_control.jl` (`ReferenceExample`)
-  - Objects: `KnobRef`, `TrackingTask`, `ElementSpec`
+  - Objects: `TrackingTask`, `ElementSpec`, `BeamLine`
 - `examples/twiss_dispersion_dba_ring.jl` (`ReferenceExample`)
   - Objects: `TwissDispersionAnalysis`, `BeamLine`, `ThinRFCavitySpec`, `SBendSpec`
 

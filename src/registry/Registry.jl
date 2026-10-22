@@ -64,22 +64,28 @@ end
 """
     summarize_registry([registry])
 
-Return a compact named tuple of symbolic type names from an `OctopusRegistry`.
-This is useful for notebooks, diagnostics, and AI-agent orientation. The
-`examples` entry lists the catalogue entries by their script path
-(`Symbol("examples/crab_cavity_noise.jl")`, ...), the name an `Example` object
-has; `example_script_path` resolves one.
+Return a compact named tuple of symbolic type names from an `OctopusRegistry`:
+every category's CONCRETE members (AGENTS.md's statement of this function).
+The abstract taxonomy nodes the registry walks and the snapshot's sections
+publish with their descriptions (`AbstractGPUExecutionPolicy`, the three
+contract families) are not listed here (2026-10-18 audit F-191/U27-10: they
+were, one of six policies and three of nineteen contracts, so a consumer
+counting members from the summary over-counted). This is useful for notebooks,
+diagnostics, and AI-agent orientation. The `examples` entry lists the catalogue
+entries by their script path (`Symbol("examples/crab_cavity_noise.jl")`, ...),
+the name an `Example` object has; `example_script_path` resolves one.
 """
 function summarize_registry(reg::OctopusRegistry=build_registry())
+    concrete(types) = Any[T for T in types if !isabstracttype(T)]
     return (
         elements = name.(reg.elements),
-        tracking_methods = name.(reg.tracking_methods),
-        solvers = name.(reg.solvers),
-        policies = name.(reg.policies),
-        contracts = name.(reg.contracts),
-        analyses = name.(reg.analyses),
+        tracking_methods = name.(concrete(reg.tracking_methods)),
+        solvers = name.(concrete(reg.solvers)),
+        policies = name.(concrete(reg.policies)),
+        contracts = name.(concrete(reg.contracts)),
+        analyses = name.(concrete(reg.analyses)),
         examples = Symbol[Symbol(e.title) for e in reg.examples],
-        tasks = name.(reg.tasks),
+        tasks = name.(concrete(reg.tasks)),
     )
 end
 

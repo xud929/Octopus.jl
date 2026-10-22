@@ -259,11 +259,66 @@ end
     # Every directory under src/ has an ownership bullet in AGENTS.md's source
     # map. The map once named 7 of 13 directories (2026-08-05_b audit, U26-12;
     # docs/history/comprehensive_audit_2026_08_05_b_unit_reports/U26_report.md);
-    # a hand-maintained count rots, so this derives the list from the tree.
+    # a hand-maintained count rots, so this derives the list from the tree --
+    # the WHOLE tree (2026-10-18 audit F-191/U27-9: the walk read the top
+    # level only while AGENTS.md states the rule for every directory, and
+    # `src/tasks/strongstrong/` went unchecked). A nested directory passes
+    # with a bullet of its own or named, as `<name>/`, inside its parent's
+    # bullet paragraph; hidden directories (editor checkpoints) and
+    # directories holding no source are skipped.
     agents_md = read(joinpath(pkgdir(Octopus), "AGENTS.md"), String)
-    for d in readdir(joinpath(pkgdir(Octopus), "src"))
-        isdir(joinpath(pkgdir(Octopus), "src", d)) || continue
-        @test occursin("- `src/$d/`:", agents_md)
+    src_root = joinpath(pkgdir(Octopus), "src")
+    # The bullet paragraph for `src/<dir>/`: its first line and the indented
+    # continuation lines, up to the next bullet or a blank line.
+    source_map_bullet(text, dir) = begin
+        m = match(Regex("^- `src/" * dir * "/`:.*?(?=\\n- |\\n\\n|\\z)", "ms"), text)
+        m === nothing ? nothing : m.match
+    end
+    source_map_names(text, dir) = source_map_bullet(text, dir) !== nothing ||
+        (occursin("/", dir) && (parent = source_map_bullet(text, dirname(dir));
+                                parent !== nothing && occursin("`" * basename(dir) * "/`", parent)))
+    walked = String[]
+    for (root, dirs, files) in walkdir(src_root)
+        filter!(d -> !startswith(d, "."), dirs)
+        root == src_root && continue
+        any(f -> endswith(f, ".jl"), files) || continue
+        push!(walked, relpath(root, src_root))
+    end
+    for d in walked
+        @testset let d = d
+            @test source_map_names(agents_md, d)
+        end
+    end
+    @test "tasks/strongstrong" in walked          # the nested directory that motivated the walk is reached
+    # The rule shown failing on a synthetic map: the old top-level check is
+    # satisfied while the nested directory goes unnamed; the new one catches
+    # it, accepts either way of naming it, and does not accept a mention
+    # outside the parent's bullet.
+    let fake = "- `src/tasks/`: workflow composition and execution.\n- `src/track/`: tracking.\n"
+        @test occursin("- `src/tasks/`:", fake)
+        @test !source_map_names(fake, "tasks/strongstrong")
+        @test source_map_names(fake * "- `src/tasks/strongstrong/`: solvers.\n", "tasks/strongstrong")
+        @test source_map_names("- `src/tasks/`: composition; `strongstrong/` holds the\n  solvers.\n",
+                               "tasks/strongstrong")
+        @test !source_map_names("- `src/tasks/`: composition.\n\n`strongstrong/` elsewhere.\n",
+                                "tasks/strongstrong")
+    end
+
+    # `summarize_registry()` lists every category's CONCRETE members, as
+    # AGENTS.md says; the registry and the snapshot's sections keep the
+    # abstract taxonomy nodes, each with a description (2026-10-18 audit
+    # F-191/U27-10: the summary listed `AbstractGPUExecutionPolicy` among six
+    # policies and three abstract contract nodes among nineteen contracts, so
+    # a consumer counting members from it over-counted). Derived from the
+    # registry the summary consumes: the summary is exactly its concrete part.
+    let s = summarize_registry(), reg = build_registry()
+        for section in (:tracking_methods, :solvers, :policies, :contracts, :analyses, :tasks)
+            members = getproperty(reg, section)
+            @test Set(getproperty(s, section)) == Set(Octopus.name.(filter(!isabstracttype, members)))
+        end
+        @test any(isabstracttype, reg.policies) && any(isabstracttype, reg.contracts)   # the walk still carries the taxonomy
+        @test !(:AbstractGPUExecutionPolicy in s.policies) && !(:AbstractPhysicsContract in s.contracts)
+        @test occursin("`AbstractGPUExecutionPolicy`", registry_snapshot_markdown(reg))  # and the snapshot still publishes it
     end
 end
 
@@ -16205,6 +16260,40 @@ end # _lane_gate("script mode picks up the ForwardDiff rules")
     rm(path; force = true)
 end
 
+@testset "write_beam_coordinates refuses npart beyond the count; a record past the end and mixed coordinate arrays are refused by name" begin
+    # 2026-10-18 audit F-188/U27-4 and F-190/U27-8. `write_beam_coordinates(io,
+    # rep; npart=5)` on two particles wrote a 2-particle record and returned 2
+    # with no signal (`min(npart, length)`), where its twin
+    # `CoordinateSnapshotObserver` refuses the same request by name; a `record`
+    # index past the last record died in a bare EOFError, a negative one read
+    # record 0 under another name, and six coordinate arrays of two types met
+    # a MethodError. Red on da40d39 at each of the four.
+    rep = Phase6DRep([1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0], [9.0, 10.0], [11.0, 12.0])
+    io = IOBuffer()
+    err = try; write_beam_coordinates(io, rep; npart=5); nothing catch e; e end
+    @test err isa ArgumentError && occursin("npart 5", err.msg) && occursin("2", err.msg)
+    @test position(io) == 0                       # nothing was written before the refusal
+    @test_throws ArgumentError write_beam_coordinates(io, rep; npart=-1)
+    @test write_beam_coordinates(io, rep; npart=1) == 1   # a request the beam can fill is written as asked
+    @test take!(io) == vcat(reinterpret(UInt8, [UInt32(1)]),
+                            reinterpret(UInt8, [1.0, 3.0, 5.0, 7.0, 9.0, 11.0]))
+    path = tempname()
+    @test_throws ArgumentError write_beam_coordinates(path, rep; npart=3)
+    @test filesize(path) == 0                     # the path form opens before it writes; nothing landed
+    write_beam_coordinates(path, rep; append=false)
+    @test write_beam_coordinates(path, rep) == 2  # two records now
+    err = try; read_beam_coordinates(path; record=2); nothing catch e; e end
+    @test err isa ArgumentError && occursin("record 2", err.msg) && occursin("2 record", err.msg)
+    @test_throws ArgumentError read_beam_coordinates(path; record=-1)
+    @test length(read_beam_coordinates(path; record=1)) == 2   # the last record is still read
+    write(path, UInt8[])
+    err = try; read_beam_coordinates(path); nothing catch e; e end
+    @test err isa ArgumentError && occursin("empty", err.msg)
+    rm(path; force=true)
+    err = try; Phase6DRep(zeros(2), zeros(Float32, 2), zeros(2), zeros(2), zeros(2), zeros(2)); nothing catch e; e end
+    @test err isa ArgumentError && occursin("Vector{Float32}", err.msg) && occursin("Vector{Float64}", err.msg)
+end
+
 @testset "the Example core object answers with real scripts" begin
     # `Example` is one of AGENTS.md's seven Core Objects, and its entire runtime
     # realisation was three struct definitions that nothing ever instantiated --
@@ -16225,6 +16314,16 @@ end
         # field had to widen from `Vector{DataType}`: a bare parametric name is
         # a UnionAll and does not convert.
         @test e.objects isa Vector{Type}
+        # Every object the entry is a precedent FOR is named in its script
+        # (2026-10-18 audit F-190/U27-7: `knob_control.jl` was listed for
+        # `KnobRef`, which it names nowhere -- its knobs are declared through
+        # `@knob` and `@knob_expr`). Word-boundary match on the type's name,
+        # so `Beam` is not satisfied by `BeamLine`. The `objects` field is a
+        # hand list; this is its tripwire against the scripts.
+        script = read(example_script_path(e), String)
+        for T in e.objects
+            @test occursin(Regex("\\b" * string(nameof(T)) * "\\b"), script)
+        end
     end
     # Every committed script under examples/ is catalogued, derived rather than
     # listed: a new example that nobody registers fails here.
@@ -16409,6 +16508,145 @@ end
     # no matter what the beam actually held.)
     @test eltype(Beam(4, CPUThreadsBackend, Float32).rep.x) === Float32
     @test eltype(Beam(4, CPUThreadsExecutionPolicy(), Float32).rep.x) === Float32
+end
+
+@testset "Beam refuses sigma with emit and a second spelling of the coupling coefficients, by name" begin
+    # 2026-10-18 audit F-185/U27-1. `emit` silently overrode a non-default
+    # `sigma` (requested 1e-3, built 1e-4, no warning) and `C` overrode `R`
+    # and `coupling` through a pure precedence chain. A silently ignored
+    # non-default request is a defect (AGENTS.md); two spellings of one truth
+    # are reconciled by construction (`k1` with a nonzero `kn[2]` throws), so
+    # both pairs are refused with the keywords named. Every refusal below
+    # constructed silently on da40d39.
+    refusal(f) = (err = try; f(); nothing catch e; e end;
+                  (err, err === nothing ? "" : sprint(showerror, err)))
+    rid = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
+    mk(; kw...) = Beam(2000, CPUThreadsBackend; beta=(1.0, 1.0, 1.0), rng_id=rid, kw...)
+    err, msg = refusal(() -> mk(sigma=(1.0e-3, 1.0e-3, 1.0e-3), emit=(1.0e-8, 1.0e-8, 1.0e-8)))
+    @test err isa ArgumentError
+    @test occursin("sigma", msg) && occursin("emit", msg) && occursin("not both", msg)
+    # The policy entry point forwards the keywords and refuses the same way.
+    @test_throws ArgumentError Beam(16, CPUThreadsExecutionPolicy();
+                                    sigma=(1.0e-3, 1.0e-3, 1.0e-3), emit=(1.0e-8, 1.0e-8, 1.0e-8))
+    # Either alone acts: the rms is the one asked for. The coordinates are
+    # standardized to unit rms before scaling, so this is a rounding-level
+    # statement (1e-12 relative), not a sampling one; on da40d39 the first
+    # line read 1e-4 when `emit` was given beside it.
+    @test beam_statistics(mk(sigma=(1.0e-3, 1.0e-3, 1.0e-3))).rms[1] ≈ 1.0e-3 rtol=1.0e-12
+    @test beam_statistics(mk(emit=(1.0e-8, 1.0e-8, 1.0e-8))).rms[1] ≈ 1.0e-4 rtol=1.0e-12
+    # The coupling coefficients: `coupling`, `R` and `C` name the same four
+    # numbers. Two of them together are refused; each alone builds the same
+    # beam bit for bit (same seed, same stream, same map), and that one acts.
+    r = (0.1, 0.0, 0.0, 0.0)
+    for kw in ((; coupling=r, R=(0.5, 0.0, 0.0, 0.0)), (; coupling=r, C=(0.5, 0.0, 0.0, 0.0)),
+               (; R=r, C=(0.5, 0.0, 0.0, 0.0)), (; coupling=r, R=r, C=r))
+        err, msg = refusal(() -> mk(; kw...))
+        @test err isa ArgumentError
+        @test all(k -> occursin(string(k), msg), keys(kw))
+    end
+    a, b, c = (coordinate_arrays(mk(; kw...)) for kw in ((; coupling=r), (; R=r), (; C=r)))
+    @test a == b == c
+    @test beam_statistics(mk(; coupling=r)).covariance[1, 3] != 0.0
+    # An explicit all-zero `coupling` is the default and contradicts nothing.
+    @test mk(; coupling=(0.0, 0.0, 0.0, 0.0), R=r) isa Beam
+end
+
+@testset "A refused Beam has drawn nothing: every keyword is checked before the stream is taken" begin
+    # 2026-10-18 audit F-187/U27-3. The draw (`_standard_gaussian_rep`, which
+    # takes or claims the stream id and allocates 6N normals) ran before the
+    # Twiss, coupling and offset keywords were validated, so a construction
+    # refused for `beta=(1.0, 2.0)` had consumed an automatic stream (counter
+    # 1 -> 2 across the refusal) and shifted every later auto-assigned
+    # consumer; through the policy entry point the policy had been activated
+    # too. Now every keyword is validated first, the policy activated next
+    # and the draw comes last. Red on da40d39: the automatic sequence advanced
+    # by one per refusal, the explicit id was held, `cutoff=-1.0` constructed
+    # a clamped-to-garbage beam silently, `seed=-1` died in an InexactError
+    # and `rng_id=1.5` in a MethodError.
+    would_be = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1)   # what the next automatic consumer receives
+    bad = ((; beta=(1.0, 2.0)), (; alpha=(1.0, 2.0, 3.0, 4.0)), (; sigma=(1.0e-3,)),
+           (; emit=(1.0e-8, 1.0e-8)), (; eta=(1.0, 0.0, 0.0)), (; zeta=(1.0,)),
+           (; coupling=(0.1, 0.0)), (; initial_offset=(1.0, 2.0)),
+           (; cutoff=-1.0), (; cutoff=0), (; seed=-1), (; rng_id=-3))
+    for kw in bad
+        err = try; Beam(10, CPUThreadsBackend; kw...); nothing catch e; e end
+        @test err isa ArgumentError
+        # Directed: the message names the keyword.
+        @test err isa ArgumentError && occursin(string(only(keys(kw))), err.msg)
+    end
+    @test Octopus.next_rng_id!() == would_be        # the refusals took no automatic stream
+    rid = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
+    for second in (CPUThreadsBackend, CPUThreadsExecutionPolicy())
+        @test_throws ArgumentError Beam(10, second; rng_id=rid, beta=(1.0, 2.0))
+        @test !Octopus._rng_id_held(rid)             # and no explicit one: a refused beam claims nothing
+    end
+    err = try; Beam(10, CPUThreadsBackend; rng_id=1.5); nothing catch e; e end
+    @test err isa ArgumentError && occursin("rng_id", err.msg) && occursin("1.5", err.msg)
+    # The checks that already preceded the draw still do.
+    @test_throws ArgumentError Beam(0, CPUThreadsBackend)
+    @test_throws ArgumentError Beam(10, CPUThreadsBackend; bogus=1)
+    # A valid construction still claims its explicit stream, so the pins above
+    # are not satisfied by a registry that records nothing.
+    @test Beam(10, CPUThreadsBackend; rng_id=rid) isa Beam
+    @test Octopus._rng_id_held(rid)
+end
+
+@testset "BeamParams keyword defaults are typed: any keyword may be omitted, in the typed and the untyped form" begin
+    # Auditor item A-6 of the 2026-10-18 audit: the `@kwdef` defaults were
+    # `zero(FloatT)`, and the untyped keyword method does not bind the type
+    # parameter, so the documented `BeamParams(; charge, mc2, E0, r0, npart)`
+    # worked only with all five keywords given and died with
+    # `UndefVarError: FloatT` otherwise (four of five given failed, five
+    # succeeded, the typed form worked). Red on da40d39 at the first line.
+    p = BeamParams(; charge=1.0, E0=275.0e9)
+    @test p isa BeamParams{Float64}
+    @test (p.charge, p.mc2, p.E0, p.r0, p.npart) === (1.0, 0.0, 275.0e9, 0.0, 0.0)
+    @test BeamParams() === BeamParams{Float64}(0.0, 0.0, 0.0, 0.0, 0.0)
+    # The untyped form promotes its keywords over a Float64 floor and never
+    # narrows -- the precision rule every element kind follows -- so integers
+    # and Float32 land on Float64; the typed form converts to its parameter.
+    @test BeamParams(; charge=1, npart=10) === BeamParams{Float64}(1.0, 0.0, 0.0, 0.0, 10.0)
+    @test BeamParams(; mc2=1.0f0) isa BeamParams{Float64}
+    q = BeamParams{Float32}(; npart=10)
+    @test q isa BeamParams{Float32} && q.npart === 10.0f0 && q.charge === 0.0f0
+    # The five-keyword and the positional forms are unchanged.
+    @test BeamParams{Float64}(charge=1.0, mc2=2.0, E0=3.0, r0=4.0, npart=5.0) ===
+          BeamParams(1.0, 2.0, 3.0, 4.0, 5.0) ===
+          BeamParams(; charge=1.0, mc2=2.0, E0=3.0, r0=4.0, npart=5.0)
+    # A random Beam still carries the parameters it was given, with the
+    # particle count as the default `npart`.
+    b = Beam(8, CPUThreadsBackend; charge=-1.0, E0=10.0e9)
+    @test b.params === BeamParams{Float64}(-1.0, 0.0, 10.0e9, 0.0, 8.0)
+end
+
+@testset "A CUDA beam is the CPU beam of the same seed and stream, bit for bit" begin
+    # 2026-10-18 audit F-189/U27-5. The counter draw was already built on the
+    # host for both backends, so the raw normals were identical, but the
+    # standardization then ran on the device, whose `sum` reduces in another
+    # order, and every coordinate moved by O(ulp) (x 1.6e-15 of rms, px
+    # 4.4e-18; z happened to be bitwise). The construction now draws,
+    # standardizes AND normalizes on the host for either backend and uploads
+    # once, so a CUDA beam is the CPU beam of the same seed and `rng_id` bit
+    # for bit for any Twiss parameters; the device is reached only by the
+    # initial maps (`coupling`, `eta`, `zeta`: their kernels' own classes) and
+    # the offset (one add, nothing to contract). Nonzero `alpha` here because
+    # the normalization's `px - alpha*x` is a multiply-add the device would
+    # fuse into one rounding, which is why it must not run there. Red on
+    # da40d39 in x, px, y, py and pz.
+    if CUDA_TESTS_ACTIVE
+        rid = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
+        mk(backend) = Beam(20_000, backend, Float64; beta=(0.55, 0.056, 12.7), alpha=(0.3, -0.2, 0.4),
+                           emit=(20.0e-9, 1.3e-9, 36.0e-6),
+                           initial_offset=(1.0e-5, 0.0, -2.0e-6, 0.0, 1.0e-3, 0.0), rng_id=rid)
+        cpu, gpu = mk(CPUThreadsBackend), mk(CUDABackend)
+        @test gpu.rep.x isa Octopus.CUDA.CuArray             # a device beam, not a host beam in disguise
+        for (a, g) in zip(coordinate_arrays(cpu), coordinate_arrays(gpu))
+            @test a == Array(g)
+        end
+        @test beam_statistics(gpu).rms[1] ≈ sqrt(0.55 * 20.0e-9) rtol=1.0e-12   # and it is the beam asked for
+    else
+        @test_skip "CUDA device not available"
+    end
 end
 
 if _lane_gate("ForwardDiff differentiates the lattice")
@@ -28403,18 +28641,22 @@ end
     end
     reference = beam_statistics(survivors; diagonal_fourth=true)
     @test masked.n == n - length(dead)
-    # Relative, at a few ulp (2026-10-18 audit F-219/U36-1): the former
-    # `atol=1e-24` on a covariance of 5e-5 (ulp 7e-21) and `atol=1e-30` on a
-    # fourth moment of 4e-9 (ulp 8e-25) were bitwise pins between two
-    # reductions that are not the same arithmetic (Base's pairwise sums
-    # unmasked, a sequential conditional loop masked); they held because both
-    # loops happen to associate alike at n = 200, and a correct reassociation
-    # moves var(z) by 1.4e-20. Measured: means 1.0e-20 apart (3 ulp of 1e-8),
-    # covariance 5.2e-26, emittance and fourth moments 0.
-    @test masked.mean ≈ reference.mean atol=1e-18            # means of 1e-8: 1e-10 relative
-    @test masked.covariance ≈ reference.covariance rtol=1e-13
-    @test masked.emittance ≈ reference.emittance rtol=1e-13
-    @test masked.diagonal_fourth_central ≈ reference.diagonal_fourth_central rtol=1e-13
+    # Bit for bit, and structurally so (2026-10-18 audit F-186/U27-2, closed in
+    # fix batch 3, unit L): the masked path of `beam_statistics` compacts the
+    # live entries and runs the UNMASKED reductions on them, so "masked over
+    # the poisoned beam" and "unmasked over the survivors" are one arithmetic
+    # on one array, whatever the size or the values. History of these four
+    # lines: `atol=1e-24` on a covariance of 5e-5 and `atol=1e-30` on a fourth
+    # moment of 4e-9 were bitwise pins resting on rounding -- the masked loops
+    # were sequential, the plain ones Base's pairwise sums, and the two
+    # associated alike only at n = 200 (random values at n = 200000 put the
+    # covariance 1.1e-23 apart, the suite's own sinusoid at n = 5000 the
+    # fourth moment 3.3e-24 apart); F-219/U36-1 relaxed them to `rtol=1e-13`.
+    # The size-and-values sweep that shows the identity is the next testset.
+    @test masked.mean == reference.mean
+    @test masked.covariance == reference.covariance
+    @test masked.emittance == reference.emittance
+    @test masked.diagonal_fourth_central == reference.diagonal_fourth_central
     # Without the flag the same beam still poisons the statistics, which is the
     # signal that a non-finite coordinate is a bug when losses are not expected.
     @test !isfinite(beam_statistics(poisoned).mean[1])
@@ -28442,6 +28684,58 @@ end
     end
     @test row_dead[1] == 7.0
     @test all(isnan, row_dead[2:end])
+end
+
+@testset "Masked statistics are the unmasked statistics of the survivors, bit for bit, at any size and for any values" begin
+    # 2026-10-18 audit F-186/U27-2. The identity the lost-particle design rests
+    # on ("a lost particle is excluded from every reduction, exactly" -- the
+    # reason `Policies.jl` rejected a chunk-grid fold) was not structural for
+    # `beam_statistics`: the masked reductions were sequential conditional
+    # loops and the plain ones Base's pairwise sums, so it held only where the
+    # two happened to associate alike. The auditor's re-run: random values at
+    # n = 200000, covariance 1.1e-23 and fourth moment 4.5e-22 apart; the
+    # suite's own sinusoid at n = 5000, fourth moment 3.3e-24 apart; with ZERO
+    # losses, switching `allow_lost_particles` on moved every mean. Fix batch 3
+    # (unit L) chose one reduction order over a tolerance: the masked path
+    # compacts the live entries and runs the unmasked reductions on them, so
+    # every pin here is `==`. Red on da40d39 at every row but the n = 200
+    # sinusoid (4 rows, 3 of them red; the zero-loss block red).
+    sfix(scale, phase, n) = [scale * sin(0.7 * i + phase) for i in 1:n]
+    srand(scale, phase, n) = scale .* randn(MersenneTwister(round(Int, phase * 1000) + n), n)
+    coords6(n, mk) = Any[mk(1.0e-4, 0.0, n), mk(1.0e-5, 0.3, n), mk(1.0e-4, 0.9, n),
+                         mk(1.0e-5, 1.2, n), mk(1.0e-2, 2.0, n), mk(1.0e-4, 2.5, n)]
+    dead = [5, 77, 133]
+    for (label, mk, n) in (("sinusoid n=200", sfix, 200), ("sinusoid n=5000", sfix, 5000),
+                           ("randn n=200", srand, 200), ("randn n=200000", srand, 200_000))
+        @testset "$label" begin
+            c = coords6(n, mk)
+            keep = setdiff(1:n, dead)
+            survivors = Phase6DRep((v[keep] for v in c)...)
+            for (k, d) in enumerate(dead)                 # the fixtures' rotation: x, pz, py, z, px, y
+                c[(1, 6, 4, 5, 2, 3)[mod1(k, 6)]][d] = isodd(k) ? NaN : Inf
+            end
+            poisoned = Phase6DRep(c...)
+            masked = allow_lost_particles(() -> beam_statistics(poisoned; diagonal_fourth=true))
+            reference = beam_statistics(survivors; diagonal_fourth=true)
+            @test masked.n == reference.n == n - length(dead)
+            @test masked.mean == reference.mean
+            @test masked.covariance == reference.covariance
+            @test masked.rms == reference.rms
+            @test masked.emittance == reference.emittance
+            @test masked.diagonal_fourth_central == reference.diagonal_fourth_central
+            # Anti-vacuity: the dead particles poison the unmasked row.
+            @test !isfinite(beam_statistics(poisoned).mean[1])
+        end
+    end
+    # Zero losses: the flag changes where the denominator comes from, never
+    # the number. (CUDA storage reduces on the host after one copy, so the
+    # identity covers it unchanged.)
+    let n = 200_000, clean = Phase6DRep(coords6(n, srand)...)
+        off = beam_statistics(clean; diagonal_fourth=true)
+        on = allow_lost_particles(() -> beam_statistics(clean; diagonal_fourth=true))
+        @test on == off
+        @test on.n == n && all(!=(0.0), on.rms)       # real moments, not an empty identity
+    end
 end
 
 @testset "Lost particles cannot influence a strong-strong collision" begin
