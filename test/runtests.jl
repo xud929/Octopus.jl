@@ -14422,6 +14422,74 @@ end
 end
 
 
+@testset "The curved solenoid's gauge function and its derivative are one consistent pair (F-166)" begin
+    # `_sol_g` is `2 ln(1+hx)/h - x` through the u^7 series of `_sol_log_over_h`
+    # below the crossover, while `_sol_gp` was the exact derivative of the
+    # UNTRUNCATED log, so the curved solenoid's vector field was not exactly
+    # Hamiltonian: in exact arithmetic the implicit-midpoint map had a
+    # symplecticity floor of ~1e-17 that no step or sweep count removed,
+    # invisible at double precision (2026-10-18 audit, U17-8). `_sol_gp` is now
+    # the derivative of `_sol_g` AS COMPUTED on each side of the crossover.
+    O = Octopus
+    setprecision(BigFloat, 256) do
+        step = big(1.0e-40)
+        # u = h x: three points on the series side (9e-3, 3.6e-3, 3e-4), one on
+        # the closed side (7.2e-2), which was consistent before as well.
+        for (h, x) in ((0.18, 0.05), (0.18, 0.02), (1.0e-3, 0.3), (0.18, 0.4))
+            hb, xb = big(h), big(x)
+            cs = imag(O._sol_g(hb, xb + im * step)) / step
+            gp = O._sol_gp(hb, xb)
+            @testset let h = h, x = x, u = h * x, mismatch = Float64(abs(gp - cs))
+                # One pair: agreement to the 256-bit floor; the complex step's
+                # own error is O(step^2) = 1e-80. The old mismatch was
+                # 2 u^8 / (1 + u): 8.5e-17 at u = 9e-3, 1.3e-28 at u = 3e-4.
+                @test mismatch < 1.0e-60
+            end
+        end
+        # The 4D implicit-midpoint map of the code's own field in exact
+        # arithmetic (the audit's probe I at reduced size: 256 bits, nst = 8,
+        # 60 sweeps; q = |L ks|/(2 nst) = 0.138, so the fixed point's floor is
+        # q^60 = 1e-52 and the central-difference step's 1e-60): the
+        # symplectic residual |J' S4 J - S4| over the sweep that carries the
+        # orbit through both sides of the crossover (|h x| reaches 0.018).
+        hb, kb, Lb, pzb = big(0.18), big(1.7), big(1.3), big(1.1e-3)
+        field(v) = collect(O._sol_curved_deriv(hb, kb, v[1], v[2], v[3], v[4], pzb)[1:4])
+        function onestep(d, v)
+            m = v
+            for _ in 1:60
+                m = v .+ (d / 2) .* field(m)
+            end
+            return v .+ d .* field(m)
+        end
+        function nsteps(v)
+            d = Lb / 8
+            for _ in 1:8
+                v = onestep(d, v)
+            end
+            return v
+        end
+        q0 = BigFloat[1.3e-3, 3.0e-4, -0.9e-3, -2.2e-4]
+        hs = big(1.0e-30)
+        J = zeros(BigFloat, 4, 4)
+        for j in 1:4
+            qp = copy(q0); qm = copy(q0)
+            qp[j] += hs; qm[j] -= hs
+            J[:, j] = (nsteps(qp) .- nsteps(qm)) ./ (2hs)
+        end
+        S4 = kron(Matrix{BigFloat}(I, 2, 2), BigFloat[0 1; -1 0])
+        residual = Float64(maximum(abs, J' * S4 * J - S4))
+        @testset let symplectic_residual = residual
+            # Measured 2026-10-21 (probes/H/logs/f166_*.log): the old pairing
+            # 1.9e-18 here (the audit's 1.1e-17 at nst = 16), the consistent
+            # pairing 9.0e-49 (nst = 8) and 1.4e-48 (nst = 16), the fixed
+            # point's floor; the bound sits between them with eight orders
+            # on each side.
+            @test residual < 1.0e-40
+        end
+    end
+end
+
+
 
 @testset "Thin elements, markers and RBEND" begin
     u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)

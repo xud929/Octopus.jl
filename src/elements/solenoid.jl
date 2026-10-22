@@ -129,9 +129,38 @@ The curved-frame gauge function `g(x) = 2 ln(1+hx)/h - x` and its derivative
 Chosen so that `g(x) -> x` as `h -> 0`, which makes the potential reduce to the
 straight symmetric gauge and therefore makes the curved element's flat limit the
 *same* map as the exact straight one -- not merely a numerically close one.
+
+`_sol_gp` is the derivative of `_sol_g` AS COMPUTED, on each side of
+`SOL_LOG_CROSSOVER`: below it `_sol_log_over_h` is the `u^7` series
+`x sum_{k=0}^{7} (-u)^k/(k+1)`, whose exact derivative is `sum_{k=0}^{7} (-u)^k
+= (1 - u^8)/(1 + u)`, so `g' = 2 sum (-u)^k - 1` there and `2/(1+u) - 1` on the
+closed side. Until the 2026-10-18 comprehensive audit `_sol_gp` was the
+derivative of the UNTRUNCATED log on both sides, `2 u^8/(1+u)` away from the
+series' own (2.0e-16 at the crossover), so the vector field of
+`_sol_curved_deriv` was not exactly Hamiltonian and the implicit-midpoint map
+had a structural symplecticity floor in exact arithmetic -- 1.1e-17 at
+nst = 16 in 320-bit BigFloat, unmoved by step or sweep count, where the
+consistent pair reaches the fixed point's floor (F-166, U17-8). Invisible at
+double precision (the mismatch is below eps), it mattered for the "symplectic
+for any Hamiltonian" argument of Section 15.4, which rests on the derivative
+the code takes. The series derivative differs from `2/(1+u) - 1` by `2 u^8/(1+u)`
+at most, below eps for `|u| < 1e-2`, so the flow is the exact flow of the
+series' own Hamiltonian and nothing at double precision moves.
 """
 @inline _sol_g(h::T, x) where {T} = 2 * _sol_log_over_h(h, x) - x
-@inline _sol_gp(h::T, x) where {T} = 2 / (one(T) + h * x) - one(T)
+@inline function _sol_gp(h::T, x) where {T}
+    u = h * x
+    U = typeof(u)
+    # `real(U)` for the crossover, as in `_sol_log_over_h`: complex-step and
+    # dual arguments pass through here.
+    if abs(u) < real(U)(SOL_LOG_CROSSOVER)
+        # sum_{k=0}^{7} (-u)^k by Horner: the exact derivative of the series.
+        s = one(U) - u * (one(U) - u * (one(U) - u * (one(U) - u * (one(U) - u *
+            (one(U) - u * (one(U) - u))))))
+        return 2 * s - one(U)
+    end
+    return 2 / (one(U) + u) - one(U)
+end
 
 """
 Right-hand side of the curved-frame solenoid equations of motion, Section 15.2.
