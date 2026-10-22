@@ -146,7 +146,7 @@ function weakstrong_limit_reference!(source, probe, solver)
     slices_source = longitudinal_slices(source.rep, solver.slicing1)
     slices_probe = longitudinal_slices(probe.rep, solver.slicing2)
     kbb = Octopus._strong_strong_kbb2(solver, source, probe)
-    _, klum_probe = Octopus._strong_strong_luminosity_scales(solver, source, probe)
+    _, klum_probe = Octopus._strong_strong_luminosity_scales(solver, source, probe, slices_source, slices_probe)
     luminosity = zero(eltype(probe.rep.x))
     for (_, i, j) in Octopus._slice_collision_order(slices_source, slices_probe)
         moments = Octopus._slice_transverse_moments(
@@ -179,7 +179,7 @@ function spectral_weakstrong_limit_reference!(source, probe, solver)
     slices_source = longitudinal_slices(source.rep, solver.slicing1)
     slices_probe = longitudinal_slices(probe.rep, solver.slicing2)
     kbb_probe = Octopus._spectral_kbb2(solver, source, probe)
-    klum = Octopus._spectral_luminosity_scale(solver, source, probe)
+    klum = Octopus._spectral_luminosity_scale(solver, source, probe, slices_source, slices_probe)
     lnx, lny = solver.grid
     Lx, Ly = Octopus._spectral_box(
         solver, source.rep.x, source.rep.y, probe.rep.x, probe.rep.y)

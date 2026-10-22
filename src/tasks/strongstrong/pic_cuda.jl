@@ -11,9 +11,10 @@
 # `_cuda_pic_deposit_drifted_indexed_plane_kernel!`, `_cuda_pic_deposit_point!`).
 # Floating-point addition is not associative and the hardware ordering of
 # concurrent atomics is not fixed, so the charge grid -- and everything
-# downstream of it -- varies between launches. `_cuda_pic_luminosity_wavefront_kernel!`
-# adds a second, coarser source: a single `CUDA.@atomic accum[1] +=` over the
-# whole plane stack.
+# downstream of it -- varies between launches. (A second, coarser source, the
+# single-atomic `_cuda_pic_luminosity_wavefront_kernel!`, sat behind a constant
+# `false` switch nothing could flip and was deleted in the 2026-10-18 audit's
+# fix batch 3, F-15.)
 #
 # Measured, 60,000 particles/beam, grid 32x32, 4 slices, `green_cache=:none`,
 # six repetitions of the same `collide!` in one process:
@@ -631,12 +632,21 @@ if _HAS_CUDA
 
         _cuda_pic_async_luminosity_enabled() = false
 
-        _cuda_pic_batched_luminosity_enabled() = false
-
         _cuda_pic_slice_pair_green_cache_enabled(solver::PICPoissonSolver) =
             Symbol(solver.green_cache) == :slice_pair
 
-        _cuda_pic_stack_cached_green_enabled() = true
+        # Two more constant switches lived here until the 2026-10-18 audit's fix
+        # batch 3: `_cuda_pic_batched_luminosity_enabled() = false` kept a
+        # 70-line batched luminosity route and its single-atomic kernel
+        # (`_cuda_pic_wavefront_luminosity_batched`,
+        # `_cuda_pic_luminosity_wavefront_kernel!`) that nothing could reach
+        # (F-15), and `_cuda_pic_stack_cached_green_enabled() = true` kept a
+        # per-plane Green multiply (`_cuda_pic_apply_green_plane!` and its
+        # kernel) behind a branch that could never be taken (F-13, with the
+        # caller-less `_cuda_pic_solve_field_with_green_fft` and
+        # `_cuda_pic_bounds_pair_combine`). Device code nothing launches is
+        # never compiled, so the "every branch compiles as device IR" rule had
+        # no purchase on them; they are gone rather than kept honest by nothing.
 
         const _CUDA_PIC_BOUNDS_PARTIAL_BLOCKS = 64
 
@@ -1265,7 +1275,7 @@ if _HAS_CUDA
             batches = collision_pair_batches(slices1, slices2)
             kbb1 = _strong_strong_kbb1(solver, beam1, beam2)
             kbb2 = _strong_strong_kbb2(solver, beam1, beam2)
-            klum1, klum2 = _strong_strong_luminosity_scales(solver, beam1, beam2)
+            klum1, klum2 = _strong_strong_luminosity_scales(solver, beam1, beam2, slices1, slices2)
             T = eltype(beam1.rep.x)
             # Same working-precision rule as the sequential route and the CPU
             # twin (U3-4): the whole moment pipeline — partials, sums, the
@@ -1638,7 +1648,9 @@ if _HAS_CUDA
 
             # Dropped-charge accounting (U1-5), mirroring the CPU node path:
             # per direction, each drift plane against the node mesh it deposits
-            # into and the field side against the mesh the interpolation reads.
+            # into (sL on gL, sR on gR, the longitudinal plane's sR on gL) and
+            # the field side against BOTH meshes the blended interpolation
+            # reads (the gR and phi_Z counts since the 2026-10-18 audit, F-9).
             # Launched before the field solves on the same stream, so the
             # counts see the coordinates the deposits will see.
             for n in 1:npairs
@@ -1648,14 +1660,22 @@ if _HAS_CUDA
                     workspace.dropped, rep1, item.idx1, nd12.sL, nd12.sL, nd12.gL.source_grid)
                 _cuda_pic_count_outside_drifted!(
                     workspace.dropped, rep1, item.idx1, nd12.sR, nd12.sR, nd12.gR.source_grid)
+                solver.longitudinal_kick && _cuda_pic_count_outside_drifted!(
+                    workspace.dropped, rep1, item.idx1, nd12.sR, nd12.sR, nd12.gL.source_grid)
                 _cuda_pic_count_outside_zdrift!(
                     workspace.dropped, rep2, item.idx2, item.p1.center, nd12.gL.field_grid)
+                _cuda_pic_count_outside_zdrift!(
+                    workspace.dropped, rep2, item.idx2, item.p1.center, nd12.gR.field_grid)
                 _cuda_pic_count_outside_drifted!(
                     workspace.dropped, rep2, item.idx2, nd21.sL, nd21.sL, nd21.gL.source_grid)
                 _cuda_pic_count_outside_drifted!(
                     workspace.dropped, rep2, item.idx2, nd21.sR, nd21.sR, nd21.gR.source_grid)
+                solver.longitudinal_kick && _cuda_pic_count_outside_drifted!(
+                    workspace.dropped, rep2, item.idx2, nd21.sR, nd21.sR, nd21.gL.source_grid)
                 _cuda_pic_count_outside_zdrift!(
                     workspace.dropped, rep1, item.idx1, item.p2.center, nd21.gL.field_grid)
+                _cuda_pic_count_outside_zdrift!(
+                    workspace.dropped, rep1, item.idx1, item.p2.center, nd21.gR.field_grid)
             end
 
             # Reuse the indexed luminosity reduction: it works from slice indices
@@ -2215,11 +2235,17 @@ if _HAS_CUDA
             sR = T(0.5) * (T(param_source.center) - T(param_field.rb))
             if dropped !== nothing
                 # Mirrors the CPU `_pic_interaction_node!` accounting exactly:
-                # each drift plane against the mesh IT deposits into, the field
-                # side against the mesh the interpolation reads (U6-1).
+                # each drift plane against the mesh IT deposits into -- sL on
+                # gL, sR on gR, and the longitudinal plane's sR deposit on gL --
+                # and the field side against BOTH meshes the blended
+                # interpolation reads (U6-1; the gR and phi_Z counts since the
+                # 2026-10-18 audit, F-9).
                 _cuda_pic_count_outside_drifted!(dropped, source, nothing, sL, sL, gL.source_grid)
                 _cuda_pic_count_outside_drifted!(dropped, source, nothing, sR, sR, gR.source_grid)
+                solver.longitudinal_kick &&
+                    _cuda_pic_count_outside_drifted!(dropped, source, nothing, sR, sR, gL.source_grid)
                 _cuda_pic_count_outside_zdrift!(dropped, field, nothing, param_source.center, gL.field_grid)
+                _cuda_pic_count_outside_zdrift!(dropped, field, nothing, param_source.center, gR.field_grid)
             end
             t_fields = time_ns()
             phiL, ExL, EyL = _cuda_pic_solve_drifted_field_with_green_fft(
@@ -2583,13 +2609,6 @@ if _HAS_CUDA
             return (bounds..., bounds...)
         end
 
-        @inline function _cuda_pic_bounds_pair_combine(a, b)
-            return (
-                min(a[1], b[1]), max(a[2], b[2]), min(a[3], b[3]), max(a[4], b[4]),
-                min(a[5], b[5]), max(a[6], b[6]), min(a[7], b[7]), max(a[8], b[8]),
-            )
-        end
-
         @inline function _cuda_pic_source_field_bounds_value(
             x, px, y, py, z, sL, sR, opposing_center, half,
         )
@@ -2618,39 +2637,6 @@ if _HAS_CUDA
                 width=T(new_width),
                 height=T(new_height),
             )
-        end
-
-        function _cuda_pic_solve_field_with_green_fft(solver::PICPoissonSolver, x, y,
-                                                      source_grid, green_fft,
-                                                      charge=nothing, timing=nothing)
-            nx, ny = solver.grid
-            T = eltype(x)
-            hx = T(source_grid.width) / T(nx - 1)
-            hy = T(source_grid.height) / T(ny - 1)
-            charge = charge === nothing ? CUDA.zeros(T, 2nx, 2ny) : charge
-            fill!(charge, zero(T))
-            method_code = Symbol(solver.deposit_method) == :CIC ? Int32(1) : Int32(2)
-            deposit_threads = _cuda_pic_threads(:deposition)
-            blocks = cld(length(x), deposit_threads)
-            stream = CUDA.stream()
-            t_deposit = time_ns()
-            CUDA.@cuda threads=deposit_threads blocks=blocks stream=stream _cuda_pic_deposit_nomask_kernel!(
-                charge, x, y, T(source_grid.x0), T(source_grid.y0), hx, hy,
-                Int32(nx), Int32(ny), method_code,
-            )
-            _cuda_pic_add_time!(timing, :field_deposit, t_deposit)
-            t_fft = time_ns()
-            phi_pad = real(ifft(fft(charge) .* green_fft))
-            phi = phi_pad[1:nx, 1:ny]
-            _cuda_pic_add_time!(timing, :field_fft, t_fft)
-            Ex = similar(phi)
-            Ey = similar(phi)
-            field_threads = _cuda_pic_threads(:field)
-            blocks_grid = cld(nx * ny, field_threads)
-            t_derivative = time_ns()
-            CUDA.@cuda threads=field_threads blocks=blocks_grid stream=stream _cuda_pic_field_kernel!(Ex, Ey, phi, hx, hy, Int32(nx), Int32(ny), _pic_fourth_order(solver))
-            _cuda_pic_add_time!(timing, :field_derivative, t_derivative)
-            return phi, Ex, Ey
         end
 
         function _cuda_pic_solve_drifted_field_with_green_fft(solver::PICPoissonSolver, source, drift_s,
@@ -2757,7 +2743,6 @@ if _HAS_CUDA
                 luminosity_q1=CUDA.zeros(T, lnx + 1, lny + 1, npairs),
                 luminosity_q2=CUDA.zeros(T, lnx + 1, lny + 1, npairs),
                 luminosity_scale=CUDA.zeros(T, npairs),
-                luminosity_accum=CUDA.zeros(T, 1),
                 luminosity_overlap_partials=CUDA.zeros(
                     # Sized for the full (lnx+1) x (lny+1) node plane the
                     # overlap kernels now sweep (2026-08-05 audit, U5-8).
@@ -2817,7 +2802,6 @@ if _HAS_CUDA
                 luminosity_q1=@view(base.luminosity_q1[:, :, 1:npairs]),
                 luminosity_q2=@view(base.luminosity_q2[:, :, 1:npairs]),
                 luminosity_scale=@view(base.luminosity_scale[1:npairs]),
-                luminosity_accum=base.luminosity_accum,
                 luminosity_overlap_partials=@view(
                     base.luminosity_overlap_partials[1:overlap_length]
                 ),
@@ -3080,7 +3064,9 @@ if _HAS_CUDA
                 CUDA.@cuda threads=spectral_threads blocks=blocks_spectral stream=stream _cuda_pic_multiply_spectral_stack_kernel!(
                     spectral, green_spectral,
                 )
-            elseif _cuda_pic_stack_cached_green_enabled()
+            else
+                # The cached per-pair tables, copied into one stack and applied
+                # by the one multiply kernel the fused path uses too.
                 t_green_stack = time_ns()
                 _cuda_pic_copy_green_spectral_stack!(wf.green_spectral, green12, green21, stream)
                 _cuda_pic_add_time!(timing, :green_lookup, t_green_stack)
@@ -3089,15 +3075,6 @@ if _HAS_CUDA
                 CUDA.@cuda threads=spectral_threads blocks=blocks_spectral stream=stream _cuda_pic_multiply_spectral_stack_kernel!(
                     spectral, wf.green_spectral,
                 )
-            else
-                for n in 1:npairs
-                    offset = 4 * (n - 1)
-                    spectral_threads = _cuda_pic_threads(:spectral)
-                    _cuda_pic_apply_green_plane!(spectral, green12[n], Int32(offset + 1), spectral_threads, stream)
-                    _cuda_pic_apply_green_plane!(spectral, green12[n], Int32(offset + 2), spectral_threads, stream)
-                    _cuda_pic_apply_green_plane!(spectral, green21[n], Int32(offset + 3), spectral_threads, stream)
-                    _cuda_pic_apply_green_plane!(spectral, green21[n], Int32(offset + 4), spectral_threads, stream)
-                end
             end
             phi_batch = real(ifft(spectral, (1, 2)))
             _cuda_pic_add_time!(timing, :field_fft, t_fft)
@@ -3197,7 +3174,7 @@ if _HAS_CUDA
                 CUDA.@cuda threads=spectral_threads blocks=blocks_spectral stream=stream _cuda_pic_multiply_spectral_stack_kernel!(
                     spectral, green_spectral,
                 )
-            elseif _cuda_pic_stack_cached_green_enabled()
+            else
                 t_green_stack = time_ns()
                 _cuda_pic_copy_green_spectral_stack!(wf.green_spectral, green12, green21, stream)
                 _cuda_pic_add_time!(timing, :green_lookup, t_green_stack)
@@ -3205,14 +3182,6 @@ if _HAS_CUDA
                 CUDA.@cuda threads=spectral_threads blocks=blocks_spectral stream=stream _cuda_pic_multiply_spectral_stack_kernel!(
                     spectral, wf.green_spectral,
                 )
-            else
-                for n in 1:npairs
-                    offset = 4 * (n - 1)
-                    _cuda_pic_apply_green_plane!(spectral, green12[n], Int32(offset + 1), spectral_threads, stream)
-                    _cuda_pic_apply_green_plane!(spectral, green12[n], Int32(offset + 2), spectral_threads, stream)
-                    _cuda_pic_apply_green_plane!(spectral, green21[n], Int32(offset + 3), spectral_threads, stream)
-                    _cuda_pic_apply_green_plane!(spectral, green21[n], Int32(offset + 4), spectral_threads, stream)
-                end
             end
             phi_batch = real(ifft(spectral, (1, 2)))
             _cuda_pic_add_time!(timing, :field_fft, t_fft)
@@ -3309,14 +3278,6 @@ if _HAS_CUDA
             source_y0[plane] = T(source_grid.y0)
             hx[plane] = T(source_grid.width) / T(nx - 1)
             hy[plane] = T(source_grid.height) / T(ny - 1)
-            return nothing
-        end
-
-        function _cuda_pic_apply_green_plane!(spectral, green, plane::Int32, threads::Integer, stream)
-            blocks = cld(size(spectral, 1) * size(spectral, 2), threads)
-            CUDA.@cuda threads=threads blocks=blocks stream=stream _cuda_pic_apply_green_plane_kernel!(
-                spectral, green, plane,
-            )
             return nothing
         end
 
@@ -3845,9 +3806,6 @@ if _HAS_CUDA
 
         function _cuda_pic_wavefront_luminosity(solver::PICPoissonSolver, valid, klum,
                                                 workspace::_CUDAPICWorkspace, timing=nothing)
-            if _cuda_pic_batched_luminosity_enabled()
-                return _cuda_pic_wavefront_luminosity_batched(solver, valid, klum, workspace, timing)
-            end
             T = eltype(valid[1].slice1.coords.x)
             t_luminosity = time_ns()
             luminosity = zero(T)
@@ -3861,96 +3819,6 @@ if _HAS_CUDA
             end
             _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
             return luminosity
-        end
-
-        function _cuda_pic_wavefront_luminosity_batched(solver::PICPoissonSolver, valid, klum,
-                                                        workspace::_CUDAPICWorkspace, timing=nothing)
-            npairs = length(valid)
-            npairs == 0 && return zero(eltype(workspace.batch_charges))
-            nx, ny = _pic_luminosity_grid(solver)
-            T = eltype(valid[1].slice1.coords.x)
-            wf = _cuda_pic_wavefront_workspace!(workspace, solver, T, 4 * npairs)
-            q1 = wf.luminosity_q1
-            q2 = wf.luminosity_q2
-            scale = wf.luminosity_scale
-            accum = wf.luminosity_accum
-            fill!(q1, zero(T))
-            fill!(q2, zero(T))
-            fill!(accum, zero(T))
-            scale_host = Vector{T}(undef, npairs)
-            threads = _cuda_pic_threads(:luminosity)
-            stream = CUDA.stream()
-            t_luminosity = time_ns()
-            method_code = _pic_luminosity_deposit_method(solver) == :CIC ? Int32(1) : Int32(2)
-            for n in 1:npairs
-                item = valid[n]
-                rep1 = item.slice1.coords
-                rep2 = item.slice2.coords
-                p1 = item.p1
-                p2 = item.p2
-                s1 = T(0.5) * (T(p1.center) - T(p2.center))
-                s2 = -s1
-                x1 = rep1.x .+ rep1.px .* s1
-                y1 = rep1.y .+ rep1.py .* s1
-                x2 = rep2.x .+ rep2.px .* s2
-                y2 = rep2.y .+ rep2.py .* s2
-                xmin = min(T(minimum(x1)), T(minimum(x2)))
-                xmax = max(T(maximum(x1)), T(maximum(x2)))
-                ymin = min(T(minimum(y1)), T(minimum(y2)))
-                ymax = max(T(maximum(y1)), T(maximum(y2)))
-                width, height = _pic_resolve_transverse_extent(
-                    solver, T(xmax - xmin), T(ymax - ymin),
-                    "CUDA PIC batched luminosity grid")
-                tx = width / T(nx - 1.1)
-                ty = height / T(ny - 1.1)
-                width += T(0.1) * tx
-                height += T(0.1) * ty
-                xmin -= T(0.05) * tx
-                ymin -= T(0.05) * ty
-                hx = width / T(nx - 1)
-                hy = height / T(ny - 1)
-                scale_host[n] = T(klum) / (hx * hy)
-                CUDA.@cuda threads=threads blocks=cld(length(rep1.x), threads) stream=stream _cuda_pic_deposit_drifted_plane_kernel!(
-                    q1, Int32(n), rep1.x, rep1.px, rep1.y, rep1.py, s1,
-                    xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), method_code,
-                )
-                CUDA.@cuda threads=threads blocks=cld(length(rep2.x), threads) stream=stream _cuda_pic_deposit_drifted_plane_kernel!(
-                    q2, Int32(n), rep2.x, rep2.px, rep2.y, rep2.py, s2,
-                    xmin, ymin, hx, hy, Int32(nx + 1), Int32(ny + 1), method_code,
-                )
-            end
-            copyto!(scale, scale_host)
-            # Node counts, not cell counts: the overlap must cover the full
-            # (nx+1) x (ny+1) deposit extent (2026-08-05 audit, U5-8).
-            blocks_grid = cld((nx + 1) * (ny + 1) * npairs, threads)
-            CUDA.@cuda threads=threads blocks=blocks_grid stream=stream _cuda_pic_luminosity_wavefront_kernel!(
-                accum, q1, q2, scale, Int32(nx + 1), Int32(ny + 1), Int32(npairs),
-            )
-            CUDA.synchronize(stream)
-            if _ACTIVE_PIC_LUMINOSITY_PAIR_SINK[] !== nothing
-                # The accumulation kernel above only produces the batch total,
-                # so resolve the per-pair values for the trace with the
-                # overlap-partials kernel (the indexed route's reduction) on
-                # the same q1/q2/scale. Trace-only work; the returned total
-                # stays the accumulation kernel's, so tracing cannot change
-                # the luminosity a run reports.
-                blocks_per_pair = cld((nx + 1) * (ny + 1), threads)
-                overlap_blocks = blocks_per_pair * npairs
-                CUDA.@cuda threads=threads blocks=overlap_blocks shmem=threads*sizeof(T) stream=stream _cuda_pic_luminosity_overlap_partials_kernel!(
-                    wf.luminosity_overlap_partials, q1, q2, scale,
-                    Int32(nx + 1), Int32(ny + 1), Int32(blocks_per_pair), Int32(npairs),
-                )
-                partials = Array(@view(wf.luminosity_overlap_partials[1:overlap_blocks]))
-                for n in 1:npairs
-                    first_block = (n - 1) * blocks_per_pair + 1
-                    pair_luminosity = sum(@view(partials[first_block:(first_block + blocks_per_pair - 1)]))
-                    item = valid[n]
-                    _cuda_pic_push_pair_luminosity!(
-                        (Int(item.pair.i), Int(item.pair.j)), pair_luminosity)
-                end
-            end
-            _cuda_pic_add_time!(timing, :luminosity, t_luminosity)
-            return T(CUDA.@allowscalar accum[1])
         end
 
         function _cuda_pic_wavefront_luminosity_indexed(solver::PICPoissonSolver, valid,
@@ -3997,17 +3865,12 @@ if _HAS_CUDA
                 xmax = max(T(bounds1[2]), T(bounds2[2]))
                 ymin = min(T(bounds1[3]), T(bounds2[3]))
                 ymax = max(T(bounds1[4]), T(bounds2[4]))
-                width, height = _pic_resolve_transverse_extent(
-                    solver, xmax - xmin, ymax - ymin,
-                    "CUDA PIC indexed luminosity grid")
-                tx = width / T(nx - 1.1)
-                ty = height / T(ny - 1.1)
-                width += T(0.1) * tx
-                height += T(0.1) * ty
-                xmin -= T(0.05) * tx
-                ymin -= T(0.05) * ty
-                hx = width / T(nx - 1)
-                hy = height / T(ny - 1)
+                # The CPU's `_pic_luminosity_mesh`: ONE function for the overlap
+                # mesh on every route and backend, the same expressions in the
+                # same order (2026-10-18 audit, F-14: three hand copies of its
+                # arithmetic lived in this file).
+                mesh = _pic_luminosity_mesh(solver, T, xmin, xmax, ymin, ymax)
+                xmin = mesh.xmin; ymin = mesh.ymin; hx = mesh.hx; hy = mesh.hy
                 scale_host[n] = T(klum) / (hx * hy)
                 CUDA.@cuda threads=threads blocks=cld(length(item.idx1), threads) stream=stream _cuda_pic_deposit_drifted_indexed_plane_kernel!(
                     q1, Int32(n), rep1.x, rep1.px, rep1.y, rep1.py, item.idx1, s1,
@@ -4064,17 +3927,9 @@ if _HAS_CUDA
             xmax = max(T(maximum(x1)), T(maximum(x2)))
             ymin = min(T(minimum(y1)), T(minimum(y2)))
             ymax = max(T(maximum(y1)), T(maximum(y2)))
-            width, height = _pic_resolve_transverse_extent(
-                solver, T(xmax - xmin), T(ymax - ymin),
-                "CUDA PIC luminosity grid")
-            tx = width / T(nx - 1.1)
-            ty = height / T(ny - 1.1)
-            width += T(0.1) * tx
-            height += T(0.1) * ty
-            xmin -= T(0.05) * tx
-            ymin -= T(0.05) * ty
-            hx = width / T(nx - 1)
-            hy = height / T(ny - 1)
+            # The CPU's one mesh rule, `_pic_luminosity_mesh` (F-14).
+            mesh = _pic_luminosity_mesh(solver, T, xmin, xmax, ymin, ymax)
+            xmin = mesh.xmin; ymin = mesh.ymin; hx = mesh.hx; hy = mesh.hy
             q1 = workspace === nothing ? CUDA.zeros(T, nx + 1, ny + 1) : workspace.luminosity_q1
             q2 = workspace === nothing ? CUDA.zeros(T, nx + 1, ny + 1) : workspace.luminosity_q2
             fill!(q1, zero(T))
@@ -4834,21 +4689,6 @@ if _HAS_CUDA
             return nothing
         end
 
-        function _cuda_pic_apply_green_plane_kernel!(spectral, green, plane::Int32)
-            index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
-            stride = CUDA.gridDim().x * CUDA.blockDim().x
-            n1 = size(spectral, 1)
-            n2 = size(spectral, 2)
-            total = n1 * n2
-            while index <= total
-                i = (index - 1) % n1 + 1
-                j = (index - 1) ÷ n1 + 1
-                @inbounds spectral[i, j, plane] *= green[i, j]
-                index += stride
-            end
-            return nothing
-        end
-
         # `nx`/`ny` here are the NODE counts of the deposit planes (grid+1 on
         # each axis), so the sweep covers the full deposit extent including the
         # top-edge row/column TSC reaches (2026-08-05 audit, U5-8).
@@ -4881,26 +4721,6 @@ if _HAS_CUDA
             end
             if tid == 1
                 @inbounds partials[CUDA.blockIdx().x] = shared[1]
-            end
-            return nothing
-        end
-
-        # `nx`/`ny` are NODE counts (grid+1 per axis) — see the partials kernel
-        # above (2026-08-05 audit, U5-8).
-        function _cuda_pic_luminosity_wavefront_kernel!(accum, q1, q2, scale,
-                                                        nx::Int32, ny::Int32, npairs::Int32)
-            linear = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
-            stride = CUDA.gridDim().x * CUDA.blockDim().x
-            plane_size = Int(nx) * Int(ny)
-            total = plane_size * Int(npairs)
-            while linear <= total
-                pair0 = (linear - 1) ÷ plane_size
-                local_index = linear - pair0 * plane_size
-                i = Int32((local_index - 1) % Int(nx) + 1)
-                j = Int32((local_index - 1) ÷ Int(nx) + 1)
-                plane = Int32(pair0 + 1)
-                @inbounds CUDA.@atomic accum[1] += q1[i, j, plane] * q2[i, j, plane] * scale[plane]
-                linear += stride
             end
             return nothing
         end
@@ -5549,7 +5369,7 @@ if _HAS_CUDA
                                 batches=0, widest_batch=0))
             kbb1 = _strong_strong_kbb1(solver, beam1, beam2)
             kbb2 = _strong_strong_kbb2(solver, beam1, beam2)
-            klum1, klum2 = _strong_strong_luminosity_scales(solver, beam1, beam2)
+            klum1, klum2 = _strong_strong_luminosity_scales(solver, beam1, beam2, slices1, slices2)
             T = eltype(beam1.rep.x)
             # Working precision for slice moments and luminosity: the solver's
             # min_sigma scalar promotes exactly as in the CPU
@@ -5732,15 +5552,18 @@ if _HAS_CUDA
             flags === nothing || sum(flags) > 0 || throw(ArgumentError(
                 "longitudinal slicing requires at least one live particle; " *
                 "all $(length(rep.z)) are non-finite"))
-            if method == :equal_width || method == :equal_spaced
+            # The canonical method from the ONE table the CPU dispatch and the
+            # constructor read (`_LONGITUDINAL_SLICING_METHODS`, F-21).
+            canonical = _longitudinal_slicing_method(method)
+            if canonical === :equal_width
                 return _cuda_equal_width_slices(rep, slicing, flags)
-            elseif method == :equal_area
+            elseif canonical === :equal_area
                 return _cuda_equal_area_slices(rep, slicing, flags)
-            elseif method == :normal_quantile || method == :gaussian || method == :Gaussian
+            elseif canonical === :normal_quantile
                 return _cuda_gaussian_slices(rep, slicing, flags)
-            elseif method == :specified
+            elseif canonical === :specified
                 return _cuda_specified_slices(rep, slicing, flags)
-            elseif method == :equal_count
+            elseif canonical === :equal_count
                 return _cuda_equal_count_slices(rep, slicing, flags)
             else
                 throw(ArgumentError("unknown longitudinal slicing method $method"))
@@ -5954,7 +5777,8 @@ if _HAS_CUDA
             z_host = Array(rep.z)
             T = eltype(z_host)
             ns = length(boundaries) - 1
-            total = T(_cuda_live_count(flags, length(rep)))
+            live = _cuda_live_count(flags, length(rep))
+            total = T(live)
             centers = Vector{T}(undef, ns)
             weights = Vector{T}(undef, ns)
             indices = Vector{Any}(undef, ns)
@@ -5976,7 +5800,7 @@ if _HAS_CUDA
                     throw(ArgumentError("unknown slice center_position $(slicing.center_position)"))
                 end
             end
-            return LongitudinalSlices(centers, weights, boundaries, indices)
+            return LongitudinalSlices(centers, weights, boundaries, indices, Int(live))
         end
 
         function _cuda_slices_from_boundaries(rep::Phase6DRep, slicing::LongitudinalSlicing,
@@ -6003,7 +5827,8 @@ if _HAS_CUDA
             end
             # Fraction of the *live* beam, so weights still sum to one when part
             # of the beam is dead.
-            total = T(_cuda_live_count(flags, length(rep)))
+            live = _cuda_live_count(flags, length(rep))
+            total = T(live)
             centers = Vector{T}(undef, ns)
             weights = Vector{T}(undef, ns)
             indices = Vector{Any}(undef, ns)
@@ -6037,7 +5862,7 @@ if _HAS_CUDA
                     throw(ArgumentError("unknown slice center_position $(slicing.center_position)"))
                 end
             end
-            return LongitudinalSlices(centers, weights, boundaries, indices)
+            return LongitudinalSlices(centers, weights, boundaries, indices, Int(live))
         end
 
         # Zero-width distribution: every live particle in slice 1, matching the
@@ -6050,7 +5875,8 @@ if _HAS_CUDA
             ns = length(boundaries) - 1
             mask = flags === nothing ? isfinite.(z) : copy(flags)
             idx1 = _cuda_indices_from_mask(mask)
-            total = T(max(length(idx1), 1))
+            live = length(idx1)
+            total = T(max(live, 1))
             centers = fill(T(boundaries[1]), ns)
             weights = zeros(T, ns)
             indices = Vector{Any}(undef, ns)
@@ -6059,7 +5885,7 @@ if _HAS_CUDA
             for s in 2:ns
                 indices[s] = CUDA.CuArray{Int}(undef, 0)
             end
-            return LongitudinalSlices(centers, weights, boundaries, indices)
+            return LongitudinalSlices(centers, weights, boundaries, indices, live)
         end
 
         # Concatenate a beam's per-slice index vectors into one contiguous device
@@ -6341,8 +6167,8 @@ if _HAS_CUDA
                         moments2.moments, kbb_slice, S, xx, yy,
                         x, px, y, py, z, pz)
                     if LONGITUDINAL
-                        pz += 0.5 * ((px - px0) * moments2.mpx +
-                                    (py - py0) * moments2.mpy)
+                        pz += oftype(S, 0.5) * ((px - px0) * moments2.mpx +
+                                                (py - py0) * moments2.mpy)
                     else
                         pz = pz0
                     end
@@ -6538,7 +6364,7 @@ if _HAS_CUDA
                     x, px, y, py, z, pz, density = _cuda_cp_covariance_kick(
                         mstruct, kbb_slice, S, xx, yy, x, px, y, py, z, pz)
                     if LONGITUDINAL
-                        pz += 0.5 * ((px - px0) * mmpx + (py - py0) * mmpy)
+                        pz += oftype(S, 0.5) * ((px - px0) * mmpx + (py - py0) * mmpy)
                     else
                         pz = pz0
                     end

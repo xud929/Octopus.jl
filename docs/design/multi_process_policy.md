@@ -453,27 +453,36 @@ layout only:
 
 - the COORDINATOR is the first rank of `G1_i`; it forms the pair's mesh
   extents and its luminosity mesh;
-- each PLANE of the pair (`(direction, plane)`: two planes per direction,
-  three under `:quadratic`) has an OWNER, dealt round-robin over all `P`
-  ranks from the pair's position in its batch (pairs of a batch in `(i, j)`
-  order), so a batch's solves spread over every rank -- `ceil(planes / P)`
-  each, one at 64 ranks -- rather than four on one rank; the owner keeps that
-  plane's Green table in its own slice-pair cache, keyed by `(i, j,
-  direction)`, and the deal is the same every turn while the batches are
-  (a re-ordered batch costs one rebuild, counted in the cache receipts).
+- each DIRECTION of the pair has an OWNER -- two owners, one per DIRECTION,
+  dealt from the pair's position `q` in its batch (pairs of a batch in
+  `(i, j)` order) as ranks `2(q-1) mod P` and `2(q-1)+1 mod P` -- which
+  owns every plane of that direction (two, three under `:quadratic`), so a
+  batch's solves spread over the ranks rather than four on one; the owner
+  keeps the direction's Green table in its own slice-pair cache, keyed by
+  `(i, j, direction)`, and the deal is the same every turn while the
+  batches are (a re-ordered batch costs one rebuild, counted in the cache
+  receipts). (An earlier draft of this section dealt one owner per PLANE
+  and sent the reduced record to every rank of the pair; the code never
+  did, and the text was corrected in the 2026-10-18 audit's fix batch 3,
+  F-19.)
 
 The stages of a batch, every message point-to-point (`Isend`/`Irecv` posted
 from the main thread between stages, tagged by pair, stage, direction and
 plane, waited with `_mp_wait_all`; the seam's `:funneled` tripwire covers
-them), seven hops in all:
+them), eight hops in all:
 
 1. Every member of both groups sends the coordinator one record: its local
    extents and `:sigma` sums as source and as field, its local count, its
    first member's five coordinates, and a non-finite flag from its own data.
    The coordinator folds the records in group rank order and sends the
-   reduced record (and the verdict) to every rank involved in the pair --
-   members and plane owners -- each of which forms the same grids from the
-   same numbers.
+   reduced record to the two owners, one per DIRECTION. Each owner takes the
+   pair's non-finite verdict from the folded flag AND from BOTH directions'
+   mesh extents -- the same verdict on both owners and, through the next
+   hop, on every member (a per-direction verdict left the owner of a finite
+   direction waiting for partials the members never sent; 2026-10-18 audit,
+   F-11) -- forms its direction's grids and Green table from the folded
+   numbers, and sends every member of the pair a nine-number grids message,
+   the verdict first.
 2. Members of the source group deposit the nx x ny interior of each plane
    at that plane's drift and send it to the plane's owner. The owner WAITS
    FOR EVERY PARTIAL, then folds them in group rank order (never on
@@ -913,8 +922,11 @@ count -- because a NaN handed to `_mp_allminmax`/`_mp_allmax!` comes back
 different on different ranks, and a rank that decided from an exchanged bound
 would throw while its peers walked into the next collective. Same rule the
 PIC collide follows. `_spectral_luminosity_scale` divided by
-`length(beam.rep)`, the 4c shard-count defect still live in spectral; it now
-reads the scoped global count.
+`length(beam.rep)`, the 4c shard-count defect still live in spectral; from 4g
+it read the scoped global count, and since the 2026-10-18 audit's fix batch 3
+(F-8) it reads the beams' LIVE counts the slicing folded
+(`LongitudinalSlices.live`), so under `allow_lost_particles` the luminosity
+renormalizes to the live beam as the kick does.
 
 `_reject_undivided_solver` has nothing left to refuse, so it became a
 deny-by-default tripwire: `_solver_divides` answers `false` for

@@ -294,18 +294,20 @@ end
 _spectral_kbb1(solver, beam1, beam2) = _strong_strong_kbb1(solver, beam1, beam2)
 _spectral_kbb2(solver, beam1, beam2) = _strong_strong_kbb2(solver, beam1, beam2)
 
-# Density-overlap luminosity scale, identical to PICPoissonSolver: divides by both
+# Density-overlap luminosity scale, the PIC form: divides by both
 # macroparticle counts (a grid overlap of the two deposited slices carries both
-# 1/nmacro factors).
-function _spectral_luminosity_scale(solver, beam1, beam2)
+# 1/nmacro factors) -- the LIVE counts, as the slicing folded them
+# (`LongitudinalSlices.live`, the beams' and the same on every rank, no
+# collective). Not PIC's full counts: this solver renormalizes to the live beam
+# like the soft-Gaussian (the slice weights are live fractions and each plane
+# is normalized by its slice's live count, so a half-dead beam delivers its
+# full charge's kick), and its luminosity follows the same convention; with the
+# full counts it fell by the survival fraction while the kick did not -- the
+# split the 2026-10-18 audit found in the soft-Gaussian (F-8) and named here as
+# the same family's.
+function _spectral_luminosity_scale(solver, beam1, beam2, slices1, slices2)
     solver.luminosity_scale !== nothing && return solver.luminosity_scale
-    # The BEAMS' macroparticle counts, not the shards' (multi-process step 4g;
-    # the same defect step 4c fixed in `_pic_luminosity_scale`, still live here
-    # because spectral had not been divided yet). Read from the shards the
-    # collide scoped at its entry, so no collective.
-    n1 = last(_mp_current_shard(beam1.rep))
-    n2 = last(_mp_current_shard(beam2.rep))
-    return beam1.params.npart * beam2.params.npart / (n1 * n2)
+    return beam1.params.npart * beam2.params.npart / (slices1.live * slices2.live)
 end
 
 # Luminosity scheduling, same convention as PICPoissonSolver: when the schedule
@@ -1582,10 +1584,11 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
     slices2 = longitudinal_slices(beam2.rep, solver.slicing2)
     kbb1 = _spectral_kbb1(solver, beam1, beam2)
     kbb2 = _spectral_kbb2(solver, beam1, beam2)
-    # Density-overlap luminosity uses the PIC scale npart1*npart2/(nmacro1*nmacro2)
-    # (the Gaussian's klum divides by only nmacro1 because its per-particle kick sum
-    # supplies the other factor; a grid overlap needs both).
-    klum = _spectral_luminosity_scale(solver, beam1, beam2)
+    # Density-overlap luminosity uses the PIC form npart1*npart2/(nlive1*nlive2)
+    # over the beams' LIVE counts (the Gaussian's klum divides by only one count
+    # because its per-particle kick sum supplies the other factor; a grid
+    # overlap needs both).
+    klum = _spectral_luminosity_scale(solver, beam1, beam2, slices1, slices2)
     divided = _mp_nranks() > 1
     # Divided (step 4g): rank 0's verdict on every rank, because a
     # `PredicateSchedule` is user code and its answer gates collectives.
@@ -1713,7 +1716,7 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
     slices2 = longitudinal_slices(beam2.rep, solver.slicing2)
     kbb1 = _spectral_kbb1(solver, beam1, beam2)
     kbb2 = _spectral_kbb2(solver, beam1, beam2)
-    klum = _spectral_luminosity_scale(solver, beam1, beam2)
+    klum = _spectral_luminosity_scale(solver, beam1, beam2, slices1, slices2)
     divided = _mp_nranks() > 1
     # Divided (step 4g): rank 0's verdict on every rank, because a
     # `PredicateSchedule` is user code and its answer gates the luminosity

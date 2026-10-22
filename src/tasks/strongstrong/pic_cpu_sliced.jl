@@ -199,90 +199,6 @@ function _pic_mig_state!(sc::_PICMigrationScratch{T}, s::Int, n::Int) where {T}
 end
 
 """
-Migrate one beam in: pack the live members slice by slice with their slice
-index, send each to the rank the layout gives its position, and bucket what
-arrives by slice. The position of a member within its slice is this rank's
-prefix of the slice's members over the ranks before it plus its local order
--- the prefix from one all-sum of the per-rank slice counts.
-"""
-function _pic_sliced_migrate_in(rep::Phase6DRep, slices, layout::_PICSlicedLayout,
-                                sc::_PICMigrationScratch{T}, ::Type{T}) where {T}
-    ns = length(layout.counts)
-    P = _mp_nranks()
-    rank = _mp_rank()
-    size(sc.counts) == (ns, P) || (sc.counts = zeros(Float64, ns, P))
-    local_counts = sc.counts
-    fill!(local_counts, 0.0)
-    for s in 1:ns
-        local_counts[s, rank + 1] = length(slices.indices[s])
-    end
-    _mp_allsum!(local_counts)
-    prefix = zeros(Int, ns)
-    for s in 1:ns, q in 1:rank
-        prefix[s] += Int(local_counts[s, q])
-    end
-    ncols = sum(length, slices.indices; init=0)
-    cols = _pic_mig_matrix!(sc.cols, 7, ncols)
-    dest = _pic_mig_ints!(sc.dest, ncols)
-    home = _pic_mig_ints!(sc.home, ncols)
-    c = 0
-    for s in 1:ns
-        for (o, i) in enumerate(slices.indices[s])
-            c += 1
-            @inbounds begin
-                cols[1, c] = rep.x[i]; cols[2, c] = rep.px[i]
-                cols[3, c] = rep.y[i]; cols[4, c] = rep.py[i]
-                cols[5, c] = rep.z[i]; cols[6, c] = rep.pz[i]
-                cols[7, c] = T(s)
-            end
-            dest[c] = _pic_sliced_rank(layout, s, prefix[s] + o)
-            home[c] = i
-        end
-    end
-    order = _pic_mig_ints!(sc.order, ncols)     # the stable order the exchange applies
-    sortperm!(order, dest; alg=MergeSort, initialized=false)
-    received, from_counts = _mp_exchange_columns(cols, dest)
-    m = size(received, 2)
-    slice_of = _pic_mig_ints!(sc.slice_of, m)
-    for j in 1:m
-        @inbounds slice_of[j] = Int(received[7, j])
-    end
-    bucket = _pic_mig_ints!(sc.bucket, m)
-    sortperm!(bucket, slice_of; alg=MergeSort, initialized=false)
-    senders = _pic_mig_ints!(sc.senders, m)
-    j = 0
-    for (q, n) in enumerate(from_counts), _ in 1:n
-        j += 1
-        senders[j] = q - 1
-    end
-    states = Dict{Int,NamedTuple{(:x, :px, :y, :py, :z, :pz),NTuple{6,Vector{T}}}}()
-    starts = Dict{Int,Int}()
-    mine = _pic_sliced_mine(layout, rank)
-    b = 1
-    for (s, _) in mine
-        n = 0
-        while b + n <= m && slice_of[bucket[b + n]] == s
-            n += 1
-        end
-        st = _pic_mig_state!(sc, s, n)
-        for o in 1:n
-            col = bucket[b + o - 1]
-            @inbounds begin
-                st.x[o] = received[1, col]; st.px[o] = received[2, col]
-                st.y[o] = received[3, col]; st.py[o] = received[4, col]
-                st.z[o] = received[5, col]; st.pz[o] = received[6, col]
-            end
-        end
-        states[s] = st
-        starts[s] = b
-        b += n
-    end
-    b - 1 == m || error("received $(m) columns but bucketed $(b - 1): a column of a slice this rank does not hold")
-    return _PICSlicedBeam{T}(layout, mine, states, bucket, starts, senders, home, order,
-                             ncols, m)
-end
-
-"""
 Migrate BOTH beams in with ONE exchange.
 
 The migration is the collide's largest MPI term at high rank counts and it is
@@ -451,41 +367,6 @@ function _pic_sliced_migrate_pair_out!(rep1::Phase6DRep, sb1::_PICSlicedBeam{T},
         idx = sc.order[k]
         i = sc.home[idx]
         rep = sc.beam_home[idx] == 1 ? rep1 : rep2
-        @inbounds begin
-            rep.x[i] = back[1, k]; rep.px[i] = back[2, k]
-            rep.y[i] = back[3, k]; rep.py[i] = back[4, k]
-            rep.z[i] = back[5, k]; rep.pz[i] = back[6, k]
-        end
-    end
-    return nothing
-end
-
-"""
-Migrate one beam back: every column returns to its sender in the order it
-arrived, so the home rank's columns come back in the order it sent them and
-land in their home slots through the order it remembered.
-"""
-function _pic_sliced_migrate_out!(rep::Phase6DRep, beam::_PICSlicedBeam{T},
-                                  sc::_PICMigrationScratch{T}) where {T}
-    m = length(beam.bucket)
-    cols = _pic_mig_matrix!(sc.out, 6, m)
-    for (s, _) in beam.slices
-        st = beam.states[s]
-        b0 = beam.starts[s]
-        for o in eachindex(st.x)
-            col = beam.bucket[b0 + o - 1]
-            @inbounds begin
-                cols[1, col] = st.x[o]; cols[2, col] = st.px[o]
-                cols[3, col] = st.y[o]; cols[4, col] = st.py[o]
-                cols[5, col] = st.z[o]; cols[6, col] = st.pz[o]
-            end
-        end
-    end
-    back, _ = _mp_exchange_columns(cols, beam.senders)
-    size(back, 2) == length(beam.home) || error(
-        "$(size(back, 2)) columns came home, $(length(beam.home)) were sent")
-    for k in eachindex(beam.home)
-        i = beam.home[beam.order[k]]
         @inbounds begin
             rep.x[i] = back[1, k]; rep.px[i] = back[2, k]
             rep.y[i] = back[3, k]; rep.py[i] = back[4, k]
@@ -1013,23 +894,53 @@ function _pic_sliced_overlap(q1, q2, q1s, q2s, mesh, klum, lnx::Int, lny::Int,
 end
 
 """
-    _sliced_owner_grids!(g, solver, T, red, d, param_source, param_field,
+    _pic_sliced_pair_bad(solver, T, red, param1, param2) -> Bool
+
+The pair's non-finite verdict, the SAME on every rank that evaluates it from
+the folded record: the coordinator's flag (`red[61]`, a non-finite record
+bound) or a non-finite mesh extent in EITHER direction. Both owners take it
+from the same numbers, so they agree with each other and, through the grids
+message, with every member. Taken per direction -- each owner judging only
+its own extents -- a pair whose `:sigma` estimator overflowed as a source
+(nonzero drift) and not as a field (zero drift) was finite in one direction
+and not the other: the members skipped it on either flag, the owner of the
+finite direction did not, and that owner then waited for partials no member
+sent -- a deadlock where the design promises the agreed throw (2026-10-18
+audit, F-11; the trigger needs |px| ~ 1e22 in Float32, priced latent).
+"""
+function _pic_sliced_pair_bad(solver::PICPoissonSolver, ::Type{T}, red, param1, param2) where {T}
+    red[61] > 0 && return true
+    _pic_sliced_extents(solver, T, red, 1, param1, param2) === nothing && return true
+    _pic_sliced_extents(solver, T, red, 2, param2, param1) === nothing && return true
+    return false
+end
+
+"""
+    _sliced_owner_grids!(g, solver, T, red, d, param1, param2,
                          workspace, green_cache, cache_key) -> owned or nothing
 
-One direction's mesh on its owner: the extents from the coordinator's folded
+One direction's mesh on its owner: the pair's verdict (`_pic_sliced_pair_bad`,
+joint across both directions), the extents from the coordinator's folded
 record, the grids, the pair's Green table, and the message `g` that tells
 every member of the pair what the owner decided. `nothing` (with `g[1]` set)
-when the record carries a non-finite verdict or the extents are not finite.
+when the pair is bad; `param1`/`param2` are the pair's two slice parameters
+(direction `d` reads `param_source = d == 1 ? param1 : param2`), passed whole
+so the verdict can see both directions.
 """
 function _sliced_owner_grids!(g, solver::PICPoissonSolver, ::Type{T}, red, d::Int,
-                              param_source, param_field, workspace::_PICCPUWorkspace,
+                              param1, param2, workspace::_PICCPUWorkspace,
                               green_cache, cache_key) where {T}
-    grids = red[61] > 0 ? nothing :
-            _pic_sliced_grids(solver, T, red, d, param_source, param_field)
-    if grids === nothing
+    if _pic_sliced_pair_bad(solver, T, red, param1, param2)
         g[1] = one(T)
         return nothing
     end
+    param_source = d == 1 ? param1 : param2
+    param_field = d == 1 ? param2 : param1
+    grids = _pic_sliced_grids(solver, T, red, d, param_source, param_field)
+    # The verdict above saw this direction's extents finite; the grids are a
+    # function of the same numbers, so `nothing` here is an invariant broken.
+    grids === nothing && error(
+        "PIC sliced collide: direction $(d) of a pair the joint verdict passed has no finite mesh")
     source_grid0, field_grid0, sbnd, fbnd = grids
     source_grid, field_grid, green_fft = _pic_slice_pair_green!(
         workspace, solver, T, green_cache, cache_key, source_grid0, field_grid0, sbnd, fbnd)
@@ -1232,11 +1143,9 @@ function _pic_collide_sliced!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, ba
             for d in 1:2
                 if rank == pr.owner[d]
                     red = pr.grids_out[d]
-                    param_source = d == 1 ? pr.param1 : pr.param2
-                    param_field = d == 1 ? pr.param2 : pr.param1
                     g = _pic_sliced_record!(sc, _sliced_grids_len(solver))
-                    owned = _sliced_owner_grids!(g, solver, T, red, d, param_source,
-                                                 param_field, workspace, green_cache,
+                    owned = _sliced_owner_grids!(g, solver, T, red, d, pr.param1,
+                                                 pr.param2, workspace, green_cache,
                                                  (pr.i, pr.j, d))
                     pr.owned = Base.setindex(pr.owned, owned, d)
                     pr.grids_out = Base.setindex(pr.grids_out, g, d)
@@ -1870,11 +1779,9 @@ function _pic_collide_dataflow!(sb1::_PICSlicedBeam{T}, sb2::_PICSlicedBeam{T}, 
             for d in 1:2
                 rank == pr.owner[d] || continue
                 red = pr.reduced_in[d]
-                param_source = d == 1 ? pr.param1 : pr.param2
-                param_field = d == 1 ? pr.param2 : pr.param1
                 g = _pic_df_take_rec!(pr, pool, _sliced_grids_len(solver))
-                pr.owned[d] = _sliced_owner_grids!(g, solver, T, red, d, param_source,
-                                                   param_field, workspace, green_cache,
+                pr.owned[d] = _sliced_owner_grids!(g, solver, T, red, d, pr.param1,
+                                                   pr.param2, workspace, green_cache,
                                                    (pr.i, pr.j, d))
                 pr.grids_out[d] = g
                 for r in members

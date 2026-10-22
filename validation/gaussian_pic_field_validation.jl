@@ -70,7 +70,7 @@ added: 2.36e-16 (CIC), 4.27e-15 (TSC).
 """
 function check_profile_against_shipped(; atol=1.0e-12)
     worst = 0.0
-    for method in (:CIC, :TSC), (nnode, h, mu, s) in (
+    for method in Octopus._PIC_DEPOSIT_METHODS, (nnode, h, mu, s) in (
             (33, 0.25, 0.3, 1.1), (64, 0.1, -0.7, 0.45), (17, 0.5, 0.0, 2.0))
         x0 = -h * (nnode ÷ 2)
         nodes = [x0 + h * (k - 1) for k in 1:nnode]

@@ -650,7 +650,7 @@ if _HAS_CUDA
             slices2 = _cuda_longitudinal_slices(beam2.rep, solver.slicing2)
             kbb1 = _spectral_kbb1(solver, beam1, beam2)
             kbb2 = _spectral_kbb2(solver, beam1, beam2)
-            klum = _spectral_luminosity_scale(solver, beam1, beam2)
+            klum = _spectral_luminosity_scale(solver, beam1, beam2, slices1, slices2)
             compute_luminosity = _spectral_compute_luminosity(solver, ctx)
             lnx, lny = solver.grid
             T = eltype(beam1.rep.x)
@@ -827,7 +827,7 @@ if _HAS_CUDA
             slices2 = _cuda_longitudinal_slices(beam2.rep, solver.slicing2)
             kbb1 = _spectral_kbb1(solver, beam1, beam2)
             kbb2 = _spectral_kbb2(solver, beam1, beam2)
-            klum = _spectral_luminosity_scale(solver, beam1, beam2)
+            klum = _spectral_luminosity_scale(solver, beam1, beam2, slices1, slices2)
             compute_luminosity = _spectral_compute_luminosity(solver, ctx)
             lnx, lny = solver.grid
             T = eltype(beam1.rep.x)
@@ -879,7 +879,14 @@ if _HAS_CUDA
                                 solver, ws, r1, idx1, param1.center,
                                 ws.snapx, ws.snappx, ws.snapy, ws.snappy,
                                 n2, param2.center, klum, lnx, lny)
-                        ndep += length(idx1) + n2
+                        # NOT added to `ndep`, as on the transverse route
+                        # (U11-2): the luminosity mesh covers both slices'
+                        # drifted extrema, so these deposits cannot clip and
+                        # only diluted the fraction -- and made it depend on
+                        # the luminosity schedule: the same 298.876726 units
+                        # of dropped charge read nsource 3072 / 9.73e-02 on a
+                        # turn with luminosity and 2048 / 1.46e-01 on a turn
+                        # without (2026-10-18 audit, F-5).
                     end
                     v2x = @view ws.snapx[1:n2]
                     v2px = @view ws.snappx[1:n2]
