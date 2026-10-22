@@ -1,5 +1,7 @@
-# Draft of src/elements/floor_plan.jl — reviewed against the theory note
-# before installation; installed only after the audit commit lands.
+# The floor-plan survey: the global position and orientation at every element
+# exit (docs/theory/floor_plan_survey.md), composed from per-element frame
+# steps that the misaligned-line (girder) wrap consumes as well, so the two
+# geometries cannot disagree.
 export FloorFrame, survey
 
 """
@@ -43,18 +45,22 @@ const _FP_IDENTITY = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
 One element's LOCAL geometric contribution: displacement `d` of the exit
 origin and rotation `R` of the exit frame, both in the entry frame
-(theory note §2). Derived generically rather than per kind:
+(theory note §2), read from the MERGED placement parameters (`getparam` on a
+`LineEntry` merges its overrides, as the compile does). Derived generically
+rather than per kind:
 
 - any spec with frame curvature `h ≠ 0` and arc length `L` bends by
-  `α = h·L` in the plane rolled by `ref_tilt` — the SURVEY follows `h` and
-  never `b0`, exactly as the misalignment survey does, and this one rule
-  covers `:sbend`, the curved solenoid, and any future curved kind without
-  an enumeration to go stale;
+  `α = h·L` — the SURVEY follows `h` and never `b0`, exactly as the
+  misalignment survey does, and this one rule covers `:sbend`, the curved
+  solenoid, and any future curved kind without an enumeration to go stale;
 - a patch contributes its `(dx, dy, dz)` and its `_patch_rotation` matrix —
   the same matrix its tracking map applies to coordinates, transposed,
   because coordinates and frames transform contragradiently (pinned by the
-  `srot`/`yrot` MAD-X fixtures and by the note's §4 item 2);
-- everything else is straight: `d = (0, 0, L)` with the placement length.
+  `srot`/`yrot` MAD-X fixtures and by the note's §4 item 2), in the
+  composition order `_patch_madx` reads for the tracking map too;
+- everything else is straight: `d = (0, 0, L)` with the placement length;
+- and every step is then rolled by the element's `ref_tilt` (`_floor_roll`),
+  the design roll `_ref_tilt_wrap` conjugates the tracking map with.
 """
 function _floor_step(entry)
     spec = entry isa LineEntry ? getfield(entry, :spec) : entry
@@ -66,11 +72,27 @@ function _floor_step(entry)
         ax = Float64(getparam(entry, :angle_x, 0.0))
         ay = Float64(getparam(entry, :angle_y, 0.0))
         as = Float64(getparam(entry, :angle_s, 0.0))
-        madx = getparam(entry, :convention, :bmad) === :madx
-        R = _fp_transpose(_patch_rotation(Float64, ax, ay, as, madx))
-        return (dx, dy, dz), R
+        R = _fp_transpose(_patch_rotation(Float64, ax, ay, as, _patch_madx(entry)))
+        return _floor_roll(entry, (dx, dy, dz), R)
     end
     return _floor_arc_step(entry, Float64(L))
+end
+
+# The design roll of one element's step. `ref_tilt` conjugates the local
+# displacement and rotation by R_z(t), exactly as `_ref_tilt_wrap` conjugates
+# the element's tracking map (`RefTilted`) and as the bend row of the theory
+# note rolls the bending plane (pinned against MAD-X `tilt` by the
+# `vertical_bend` fixture). Applied to every kind the compile wraps, the patch
+# included: the survey dropped a patch's roll until the 2026-10-18 audit
+# (F-129 -- `PatchSpec(angle_y=0.1, ref_tilt=pi/2)` tracked as a vertical
+# deflection and surveyed in the horizontal plane, 0.2995 m apart after a 3 m
+# drift, and a misaligned girder holding it tracked 1.0e-4 away from the one
+# holding the equivalent `angle_x=-0.1`).
+function _floor_roll(entry, d, R)
+    t = Float64(getparam(entry, :ref_tilt, 0.0))
+    iszero(t) && return d, R
+    rt = _fp_rz(t)
+    return _fp_apply(rt, d), _fp_mul(rt, _fp_mul(R, _fp_transpose(rt)))
 end
 
 # The arc-or-straight tail of `_floor_step`, at an arbitrary length `ell`
@@ -81,17 +103,17 @@ end
 function _floor_arc_step(entry, ell::Float64)
     h = Float64(getparam(entry, :h, 0.0))
     if !iszero(h) && !iszero(ell)
-        alpha = h * ell
-        rho = 1.0 / h
-        t = Float64(getparam(entry, :ref_tilt, 0.0))
-        d0 = (rho * (cos(alpha) - 1.0), 0.0, rho * sin(alpha))
-        rt = _fp_rz(t)
-        return _fp_apply(rt, d0), _fp_mul(rt, _fp_mul(_fp_ry(-alpha), _fp_transpose(rt)))
+        # The arc's origin through the same cancellation-free helpers
+        # `_survey_frame` and the drift use (lattice_magnets.jl), so a single
+        # arc reproduces `_survey_frame` bitwise at every size. The former
+        # `rho (cos alpha - 1)` lost every digit as alpha -> 0: relative error
+        # 1.0 at h ell = 1e-10, 8e-4 at 1e-7, 8e-8 at 1e-5, while the absolute
+        # error stayed below 4e-15 m (2026-10-18 audit, F-134).
+        d0 = (-_curv_vers(h, ell), 0.0, _curv_sin(h, ell))
+        return _floor_roll(entry, d0, _fp_ry(-h * ell))
     end
     return (0.0, 0.0, ell), _FP_IDENTITY
 end
-
-_floor_children(line::ElementSpec{:line}) = line_entries(line)
 
 """
     survey(elements) -> Vector{FloorFrame}
@@ -99,12 +121,19 @@ _floor_children(line::ElementSpec{:line}) = line_entries(line)
 The floor plan: global position and orientation at every element exit, from
 the initial frame `V = 0`, `W = I` (local `s` along global `+Z`), in MAD-X
 `SURVEY` conventions. Accepts a line spec, a `BeamLine`, or a tuple of
-specs/placements; kept-whole sub-lines are DESCENDED (their bends turn the
-frame — the opposite choice from the arc walker, and deliberate on both
-sides). Misalignments and `tilt` never move the survey; `ref_tilt` and
-patches do. External check: `MADXSurveyConsistencyContract` compares every
-column against MAD-X per element. Derivation and the measured convention
-anchors: docs/theory/floor_plan_survey.md.
+specs/placements. A line spec goes through the same walk as a placed line,
+so its own `ref_tilt` rolls the plan exactly as `compile_runtime` rolls its
+tracking map (until the 2026-10-18 audit `survey(line)` handed the entries
+to the walk and dropped the roll, F-127: exit positions 0.288 m apart from
+`survey((line,))` at 0.4 rad). Kept-whole sub-lines are DESCENDED, one row
+per element, their `ref_tilt` read from the MERGED placement parameters
+(F-128, F-232) and conjugating the sub-walk as `RefTilted` conjugates the
+sub-line's map; the task's arc walker (`_collect_spec_s!`) descends them the
+same way since 2026-10-18, and only `s_positions(line)` keeps the
+one-row-per-placement view. Misalignments and `tilt` never move the survey;
+`ref_tilt` and patches do. External check: `MADXSurveyConsistencyContract`
+compares every column against MAD-X per element. Derivation and the measured
+convention anchors: docs/theory/floor_plan_survey.md.
 """
 function survey(elements)
     out = FloorFrame[]
@@ -114,7 +143,6 @@ function survey(elements)
     V, W = _survey_walk!(out, elements, V, W, s)
     return out
 end
-survey(line::ElementSpec{:line}) = survey(line_entries(line))
 
 function _survey_walk!(out, elements::Union{Tuple,AbstractVector}, V, W, s)
     for e in elements
@@ -131,10 +159,15 @@ function _survey_walk!(out, entry, V, W, s)
         # (RefTilted). Until the 2026-08-18 neighbour audit the descent
         # ignored it: tracking rolled a nested cell's bends while the survey
         # laid them flat (measured 6.4e-2 exit-position error at
-        # ref_tilt=0.4, angle=0.3). Misalignments and `tilt` on the sub-line
-        # stay excluded: those are errors about the design frame this walk
+        # ref_tilt=0.4, angle=0.3). Read from the MERGED placement, `entry`,
+        # not the spec: a `ref_tilt` placement override is what the placement
+        # compiles (`compile_runtime(entry)` merges first), and reading the
+        # spec here left the survey 0.288 m from tracking and a misaligned
+        # parent's girder faces 2.3e-5 to 1.5e-2 off (2026-10-18 audit,
+        # F-128, F-232). Misalignments and `tilt` on the sub-line stay
+        # excluded: those are errors about the design frame this walk
         # computes.
-        psi = Float64(getparam(spec, :ref_tilt, 0.0))
+        psi = Float64(getparam(entry, :ref_tilt, 0.0))
         iszero(psi) && return _survey_walk!(out, line_entries(spec), V, W, s)
         rt = _fp_rz(psi)
         V, W = _survey_walk!(out, line_entries(spec), V, _fp_mul(W, rt), s)
@@ -158,9 +191,10 @@ end
 
 # Geometry-bearing entries of a line, flattened to (entry, Q) pairs where Q
 # is the accumulated DESIGN-ROLL conjugation of the enclosing sub-lines: a
-# nested sub-line's ref_tilt rolls its whole subtree about that subtree's
-# entrance s-axis, exactly as `_survey_walk!` conjugates its descent (and as
-# RefTilted conjugates the tracking map -- 2026-08-18 neighbour audit).
+# nested sub-line's ref_tilt, read from its MERGED placement (F-128), rolls
+# its whole subtree about that subtree's entrance s-axis, exactly as
+# `_survey_walk!` conjugates its descent (and as RefTilted conjugates the
+# tracking map -- 2026-08-18 neighbour audit).
 # Kept-whole sub-lines are descended (their bends turn the frame), in-line
 # hooks are dropped. Explicit flattening rather than a recursive closure so
 # nothing mutable is captured (the `Core.Box` class).
@@ -168,7 +202,7 @@ function _girder_flat_entries!(out, entries, Q=_FP_IDENTITY)
     for e in entries
         spec = e isa LineEntry ? getfield(e, :spec) : e
         if spec isa ElementSpec{:line}
-            psi = Float64(getparam(spec, :ref_tilt, 0.0))
+            psi = Float64(getparam(e, :ref_tilt, 0.0))
             Qs = iszero(psi) ? Q : _fp_mul(Q, _fp_rz(psi))
             _girder_flat_entries!(out, line_entries(spec), Qs)
         elseif spec isa AbstractElementSpec
@@ -189,15 +223,17 @@ design exit frame, both in the line's entrance coordinates. The reference
 point may fall INSIDE a member, in which case that member contributes a
 partial arc step; on an exact member boundary the frame after the crossing is
 taken. The step and frame conventions here are the SAME row-major forms
-`_survey_frame` uses (a single arc reproduces it identically -- pinned by the
-girder testset), so the composed frames drop into the misalignment machinery
-with no conversion.
+`_survey_frame` uses, the arc routed through the same `_curv_vers`/`_curv_sin`
+helpers (a single arc reproduces it bitwise at every size -- pinned by the
+girder testset and by the F-134 regression), so the composed frames drop into
+the misalignment machinery with no conversion.
 
 Computed in `Float64`, like every floor-plan quantity: the design geometry
 carries no dependence on the girder's own alignment parameters, so
-alignment-seeded duals differentiate correctly through the wrap; a dual
-seeded on a MEMBER's design length or curvature is truncated here, as it is
-in `survey` itself.
+alignment-seeded duals differentiate correctly through the wrap (the wrap is
+built in the widened type, `_wrap_numeric_type`); a dual seeded on a MEMBER's
+design length or curvature is refused by the `Float64` conversion here, as it
+is in `survey` itself -- the floor plan is not a differentiable quantity.
 """
 function _girder_design_frames(line::ElementSpec{:line}, starget::Float64)
     V = (0.0, 0.0, 0.0)

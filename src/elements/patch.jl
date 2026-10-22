@@ -144,6 +144,16 @@ rather than by two association orders agreeing: a purely longitudinal patch
 has `sxy = 0`, `ref_excess = 0` and `q == p` exactly, so it IS the drift bit
 for bit; the on-axis reference particle has `ds == s` and `q == W (0, 0, 1)`
 exactly, so `excess == ref_excess` bitwise and it lands at exactly `z = 0`.
+
+The reference bookkeeping used to live in a reference-length helper that
+returned the new origin's displacement PROJECTED onto the new `s` axis
+under a docstring claiming the projection was what the reference particle
+traverses. It is not: the particle drifts `s/q3`, not `s`, to reach the face,
+so a patch carrying both a `dz` and a transverse-axis rotation shifted `z` by
+`dz (cos theta - 1)` (-1.943e-5 at `dz=0.23, angle_y=0.013`, -2.498e-3 at
+`dz=0.50, angle_y=0.100`; 2026-08-05_b audit, U16-4). `ref_excess` above is
+the corrected form, inline; the helper outlived its caller and was retired
+(2026-10-18 audit, F-137).
 """
 @inline function _patch_map(elem::Patch{M,T}, x, px, y, py, z, pz) where {M,T}
     ps = sqrt((1 + pz)^2 - px * px - py * py)
@@ -165,34 +175,6 @@ exactly, so `excess == ref_excess` bitwise and it lands at exactly `z = 0`.
     ref_excess = s * _pt2_fused(q1r, q2r) / (q3r * (one(T) + q3r))
     sxy = W[7] * x + W[8] * y
     return xn, q1, yn, q2, z + sxy + ref_excess - excess + elem.t_offset, pz
-end
-
-"""
-Reference path length through the patch: the distance the on-axis, on-momentum
-reference particle actually travels to reach the new entrance face. Subtracting
-it is what keeps `z` measured against the reference rather than against the old
-frame.
-
-This returned the new origin's displacement PROJECTED onto the new `s` axis,
-under a docstring claiming that projection was what the reference particle
-traverses. It is not. Run the map above at `(0,0,0,0,0,0)`: the projection is
-`ds`, while the particle drifts `ds/q3` to reach the face, so a patch carrying
-both a `dz` and a transverse-axis rotation shifted `z` by exactly
-`dz*(cos(theta) - 1)` -- and the headline identity in this file's own docstring,
-that composing a patch with its exact inverse is the identity, failed in `z` by
-that amount. Measured: -1.943e-5 at `dz=0.23, angle_y=0.013`, -2.498e-3 at
-`dz=0.50, angle_y=0.100` (2026-08-05_b audit, U16-4).
-
-Single-parameter patches are unaffected -- with no rotation `q3 = 1` and the two
-lengths coincide -- which is why every one-parameter round trip passed at
-<= 6.7e-18 and nothing caught it.
-"""
-@inline function _patch_reference_length(elem::Patch, W)
-    _, _, s = _patch_apply(W, elem.dx, elem.dy, elem.dz)
-    # The reference particle's own direction cosine along the new s axis: it
-    # enters along the OLD s axis, so rotate (0, 0, 1) into the new frame.
-    _, _, q3 = _patch_apply(W, zero(s), zero(s), one(s))
-    return s / q3
 end
 
 @inline track_particle(::NonSymplectic6DMap, elem::Patch, x, px, y, py, z, pz) =
@@ -231,8 +213,16 @@ PatchSpec(angle_x = 12.5e-3)          # a VERTICAL frame rotation: this
 PatchSpec(dx = 0.05, dz = 1.2)        # a beamline junction
 ```
 
-Composing a patch with its exact inverse is the identity, which is the cheapest
-check that the rotation is composed in the right direction.
+Composing a patch with its exact inverse (the transposed rotation -- the
+`:madx` order with negated angles -- and the origin `-W·(dx, dy, dz)`) is the
+identity in the transverse coordinates and momenta, which is the cheapest
+check that the rotation is composed in the right direction. It is NOT the
+identity in `z`: each patch measures `z` against its own entrance reference
+particle (see `_patch_map`), so the round trip shifts every particle by the
+same constant `R1 + R2 = (W31 dx + W32 dy + (W33 - 1) dz)/W33` -- the two
+reference particles' paths -- which `t_offset = -(R1 + R2)` on the inverse
+removes (measured -1.033905e-3 at `dx=0.03, dy=-0.02, dz=0.4` with all three
+angles nonzero, equal to the derivation; 2026-10-18 audit, F-135).
 
 `PatchSpec{T}(; ...)` is the typed form: `T` is the number type the patch
 compiles in (`numeric_type`; `Float32` for a Float32 line).
@@ -260,14 +250,31 @@ function Patch(spec::ElementSpec{:patch},
     ay = getparam(spec, :angle_y, 0)
     as = getparam(spec, :angle_s, 0)
     dt = getparam(spec, :t_offset, 0)
-    conv = Symbol(getparam(spec, :convention, :bmad))
-    conv in (:bmad, :madx) || throw(ArgumentError(
-        "patch convention must be :bmad or :madx; got $(repr(conv))"))
     # `numeric_type(spec)`: the stored type of a `PatchSpec{T}`, else the
     # Float64-floor promotion of the stored parameters (one rule, 2026-10-16).
     T = numeric_type(spec)
     return Patch{typeof(method),T}(method, T(dx), T(dy), T(dz),
-                                   T(ax), T(ay), T(as), T(dt), conv === :madx)
+                                   T(ax), T(ay), T(as), T(dt), _patch_madx(spec))
+end
+
+"""
+    _patch_madx(spec_or_entry) -> Bool
+
+The patch's rotation-composition order as the ONE normalisation both consumers
+read: `true` for `:madx`, `false` for `:bmad`, a String spelling accepted
+either way, anything else refused by name. The tracking constructor above and
+the floor plan's `_floor_step` each had their own reading -- `Symbol(...)` here,
+`=== :madx` there -- so `convention="madx"` tracked in the `:madx` order and
+surveyed in the `:bmad` order (5.9e-2 apart in the rotation matrix at 0.2 and
+0.3 rad), and a misspelt String surveyed silently as `:bmad` (2026-10-18 audit,
+F-133). A `LineEntry` reads through its merged parameters, like every placement
+parameter.
+"""
+function _patch_madx(entry)
+    conv = Symbol(getparam(entry, :convention, :bmad))
+    conv in (:bmad, :madx) || throw(ArgumentError(
+        "patch convention must be :bmad or :madx; got $(repr(conv))"))
+    return conv === :madx
 end
 
 @element_spec begin
@@ -293,5 +300,5 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = PatchSpec(angle_x=12.5e-3)
-    construction_help = "Friendly constructor: PatchSpec(; dx=0, dy=0, dz=0, angle_x=0, angle_y=0, angle_s=0, t_offset=0, convention=:bmad, tracking_method=NonSymplectic6DMap()). A DELIBERATE frame change -- a crossing angle, a beamline junction, a spectrometer arm -- not a misalignment: the new frame persists downstream instead of being restored. The map is exact in delta and amplitude because it is geometry, and composing a patch with its inverse is the identity. Derivation: docs/theory/misalignment_and_patch_maps.md Section 7.5. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form PatchSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "Friendly constructor: PatchSpec(; dx=0, dy=0, dz=0, angle_x=0, angle_y=0, angle_s=0, t_offset=0, convention=:bmad, tracking_method=NonSymplectic6DMap()). A DELIBERATE frame change -- a crossing angle, a beamline junction, a spectrometer arm -- not a misalignment: the new frame persists downstream instead of being restored. The map is exact in delta and amplitude because it is geometry; composing a patch with its exact inverse restores the transverse coordinates and momenta, while z shifts by the two reference particles' path constant (see the docstring). Derivation: docs/theory/misalignment_and_patch_maps.md Section 7.5. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form PatchSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end

@@ -276,7 +276,9 @@ BeamLine
 - **`s` computed and cached**, extending `_aperture_s_positions` to all entries.
 - **`find_entries(line, sel)`** as §5, with an assembly name as one more thing `sel`
   accepts — the engineer's `find_entries(line, sel"ARC1/CQS[12]")` and the physicist's
-  `find(line, QuadrupoleSpec)` are the same call.
+  `find_entries(line, QuadrupoleSpec)` are the same call (a friendly constructor
+  type selects its kind through the registry; until the 2026-10-18 audit the
+  `Type` selector tested `isa` alone and this example returned `Int[]`, F-240).
 - **An assembly is a legitimate misalignment target.** This is what Bmad's
   girder buys and it is the point of naming assemblies at all: displacing a
   cryostat displaces its magnets together. Octopus already composes
@@ -396,11 +398,20 @@ That is the entire mechanism. It is deliberately *not* a classification of
 parameters: `k1` is not forbidden on a placement, nor `x_offset` on a spec.
 Which one you reach for is guidance, not a rule —
 
-| you want | write | effect of a later `qf.params[:k1] = 1.9` |
+| you want | write | effect of a later `qf.kn = (0.0, 1.9)` |
 |---|---|---|
 | the whole family retunes together | share `qf` | moves every placement |
-| one magnet is different, full stop | `line[3].k1 = …` | leaves `line[3]` behind |
+| one magnet is different, full stop | `line[3].kn = (0.0, 1.9)` | leaves `line[3]` behind |
 | one magnet follows the family **plus** a trim | a knob expression | moves it, trim included |
+
+The recipe is the PROPERTY form, `qf.kn = …` and `line[3].kn = …`, for two
+reasons the code enforces: `k1` is construction sugar folded into `kn[2]`, so
+an assignment named `k1` is refused rather than stored (`_reject_folded_override`,
+on specs and placements alike), and a raw `qf.params[:kn] = …` Dict write skips
+the recompile epoch, so a task built from the line would keep tracking the stale
+compile (`set_param!` is the door for out-of-schema metadata). An earlier
+version of this table wrote `qf.params[:k1] = 1.9`, which did neither
+(2026-10-18 audit, F-240).
 
 The middle row is worth stating out loud because it surprises people: an
 override **detaches** that placement from the family permanently. That is right
@@ -419,9 +430,10 @@ break the third row. This is cheap to get right and expensive to discover late.
 
 Everything else falls out rather than needing machinery:
 
-- Matching works with what already exists. `qf.params[:k1] = ...` bumps
-  `_SPEC_EPOCH`, and every task holding that line recompiles at the next
-  `execute!`. No family registry, no controller element.
+- Matching works with what already exists. `qf.kn = (0.0, 1.9)` (the property
+  form; see the table above) bumps `_SPEC_EPOCH`, and every task holding that
+  line recompiles at the next `execute!`. No family registry, no controller
+  element.
 - The family is recoverable without naming it:
   `findall(e -> e.spec === qf, entries)` is the family, by identity.
 - Misalignment normally moves from the spec to the placement, since every
@@ -533,7 +545,18 @@ Two consequences, both accepted:
 
 - **No in-line hooks inside a composite assembly.** A BPM inside a cryostat
   cannot be a line-level `ScheduledObserver`, because the assembly is one entry.
-  Place it outside the composite, which is where a real pickup sits.
+  Place it outside the composite, which is where a real pickup sits. The rule
+  is exactly "where the line dissolves": a hook is honoured only when its line
+  dissolves into the task's bare `elements` argument (`TrackingTask(line)`,
+  the line carrying no parameters of its own). A line that compiles whole --
+  one carrying parameters of its own, or any line placed inside a tuple, a
+  vector or another line's placement (`_element_tuple` keeps it whole) -- is
+  refused by name with the remedy, at task construction and at the compile
+  walk (`_refuse_hooks_in_whole_line`, `src/tasks/Tasks.jl`; fix batch 3,
+  unit F) and at the line compile itself (`compile_runtime(::ElementSpec{:line})`;
+  unit K), so no path reaches a `CompositeLine` with a hook inside. Until the
+  2026-10-18 audit both were a raw `MethodError` at the first `execute!`
+  (F-81, F-240).
 - ~~**The assembly's own survey stays 1D.**~~ Misaligning a straight cryostat is
   exact today through `_misalignment_wrap`. One containing bends needs the 3D
   geometry layer to place its contents relative to the girder frame, and that

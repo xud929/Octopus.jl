@@ -78,10 +78,48 @@ function Base.setproperty!(entry::LineEntry, name::Symbol, value)
         throw(ArgumentError("LineEntry.$(name) is structural and cannot be assigned; \
                              set a parameter instead, or rebuild the line"))
     _reject_folded_override(getfield(entry, :spec), name)
+    _reject_line_placement_override(getfield(entry, :spec), name)
     getfield(entry, :overrides)[name] = value
     _SPEC_EPOCH[] += 1
     return value
 end
+
+"""
+A LINE placement refuses the keys that are not parameters of the line but its
+structure or its derived length, at the assignment rather than downstream:
+
+- `L`: a line's arc length is computed from its entries (`_reject_line_length`
+  on both constructors); the placement used to store an `L` override and
+  `_placement_length` refused it only at the next arc-length walk --
+  `s_positions`, `total_length`, `compile_runtime` -- so the lattice broke at
+  compile or report time instead of where the value was written (2026-10-18
+  audit, F-131; the walker keeps the same refusal for a hand-built entry).
+- `entries`, `name`: the line's STRUCTURE (`_line_has_own_state`), fixed with
+  every placement's provenance path when the line was built. An `entries`
+  override was stored, compiled by the placement (`compile_runtime(entry)`
+  merges first: a 7 m drift tracked in place of the 0.4 m quadrupole) and
+  ignored by `total_length`, `s_positions` and `survey`, which read the spec's
+  entries (F-138). A different line is a different line: build it.
+"""
+function _reject_line_placement_override(spec, name::Symbol)
+    spec isa ElementSpec{:line} || return nothing
+    name === :L && throw(ArgumentError(_line_placement_length_message(spec)))
+    (name === :entries || name === :name) && throw(ArgumentError(
+        "`$(name)` is the structure of line $(repr(line_name(spec))), fixed with its " *
+        "placements' provenance paths when the line was built, so a placement " *
+        "override named `$(name)` would be tracked by the compiled placement and " *
+        "ignored by every walker over the line (total_length, s_positions, survey). " *
+        "Build the line you mean instead: BeamLine(name, children...) or " *
+        "BeamLine(; name, entries)."))
+    return nothing
+end
+
+_line_placement_length_message(spec) =
+    "a beam line's arc length is computed from its entries and cannot be " *
+    "overridden on the placement either: `L` was set on this placement of " *
+    "line $(repr(getparam(spec, :name, ""))). `total_length` re-sums the " *
+    "entries regardless, so the two would disagree. Change the entries, or " *
+    "wrap the line in an element that does carry its own length."
 
 Base.propertynames(entry::LineEntry, ::Bool=false) =
     (sort!(collect(keys(_merged_params(entry))); by=string)..., _ENTRY_FIELDS...)
@@ -89,10 +127,14 @@ Base.propertynames(entry::LineEntry, ::Bool=false) =
 """
 Named strengths are folded into `kn`/`ks` by the friendly constructors, and
 `angle` into `h`/`b0`, so a spec built as `QuadrupoleSpec(k1=1.7)` stores `kn`
-and no `k1` at all. An override named `k1` would therefore be written, reported
-and never read — the silent no-op the parameter-effectiveness contract exists to
-catch. Rejected at the point of assignment, where the message can say what to
-write instead.
+and no `k1` at all. A later assignment or placement override named `k1` is a
+SECOND spelling of a strength the spec stores as a tuple, and which spelling a
+compile honours would depend on the kind's fold path (the friendly constructors
+fold at construction; a kind that folds a raw spec's named strengths at compile
+reads them) -- a convention nobody declared, and on the friendly path a stored
+value that nothing reads, the silent no-op the parameter-effectiveness contract
+exists to catch. One spelling per strength: rejected at the point of
+assignment, where the message can say what to write instead.
 """
 function _reject_folded_override(spec, name::Symbol)
     spec isa ElementSpec || return nothing
@@ -117,8 +159,9 @@ function _reject_folded_override(spec, name::Symbol)
             tuple_name = String(name === nkey ? nk : sk)
             throw(ArgumentError(
                 "`$(name)` is folded into `$(tuple_name)[$(idx + 1)]` when the element \
-                 is constructed, so an override or assignment named `$(name)` would \
-                 never be read. Assign `$(tuple_name)` instead, e.g. \
+                 is constructed, so an override or assignment named `$(name)` would be \
+                 a second spelling of the strength `$(tuple_name)` already stores, one \
+                 no compile path is promised to read. Assign `$(tuple_name)` instead, e.g. \
                  `$(tuple_name) = $(ntuple(i -> i == idx + 1 ? :value : 0.0, idx + 1))`."))
         end
     end
@@ -364,12 +407,23 @@ Rebuild a line from placements that already exist, skipping expansion.
 This is how a slice becomes a line — `BeamLine(; name="HEAD", entries=arc[1:5])` —
 and it is the form reflection introspection uses, since every element kind must
 be constructible from its parameters by keyword alone.
+
+The placements are COPIED (`_copy_line_entry`), never stored as given: the
+keyword form used to alias the caller's `LineEntry` objects, so an alignment
+override written on the slice wrote the source line through the shared
+`overrides` Dict (`head[1].x_offset = 1e-3` set `arc[1]`'s) -- the U15-3
+defect of `reverse` on the other constructor, and the design note's "error
+parameters must not share" (§7b) broken again (2026-10-18 audit, F-132). The
+spec is shared, as two placements of one magnet should be; the provenance
+path stays as given, since a slice says where it came from, which is what the
+positional form `BeamLine("HEAD", arc[1:5]...)` deliberately does NOT keep (it
+re-roots).
 """
 function BeamLine(; name::AbstractString="", entries=LineEntry[], kwargs...)
     params = Dict{Symbol,Any}(kwargs)
     _reject_line_length(params)
     params[:name] = String(name)
-    params[:entries] = collect(LineEntry, entries)
+    params[:entries] = LineEntry[_copy_line_entry(e) for e in entries]
     return ElementSpec{:line}(params)
 end
 
@@ -445,15 +499,14 @@ function _placement_length(entry::LineEntry)
         # rule for element placements, and honouring it HERE would re-open the
         # split U15-6 closed: `total_length` always re-sums the entries, so a
         # line whose placement claimed a different length would be one length to
-        # one walker and another to the other. The constructor already refuses
-        # `L` on a line for exactly that reason, so the placement refuses it too
-        # rather than storing a value it will not use.
-        haskey(getfield(entry, :overrides), :L) && throw(ArgumentError(
-            "a beam line's arc length is computed from its entries and cannot be " *
-            "overridden on the placement either: `L` was set on this placement of " *
-            "line $(repr(getparam(spec, :name, ""))). `total_length` re-sums the " *
-            "entries regardless, so the two would disagree. Change the entries, or " *
-            "wrap the line in an element that does carry its own length."))
+        # one walker and another to the other. The constructor refuses `L` on
+        # a line for exactly that reason and so does `setproperty!` on the
+        # placement (F-131, 2026-10-18 audit: it used to store the value and
+        # leave this walk to refuse it later); this walker-side refusal, with
+        # the same message, remains for an entry built by hand with an `L` in
+        # its overrides Dict.
+        haskey(getfield(entry, :overrides), :L) &&
+            throw(ArgumentError(_line_placement_length_message(spec)))
         return total_length(spec)
     end
     return _placement_length_value(getparam(entry, :L, 0.0))
@@ -597,12 +650,17 @@ lookup, as Accelerator Toolbox does with `Refpts`, instead of a family of
 
 `selector` may be a [`Selector`](@ref), a `String` (parsed as one), a `Regex`
 matched against the rendered path, a `Symbol` matched against tags, a `Type`
-matched against the spec, or any predicate `LineEntry -> Bool`.
+matched against the spec -- the stored spec's own type (`ElementSpec{:drift}`,
+a hook type such as `ScheduledObserver`) or a kind's FRIENDLY constructor type
+(`QuadrupoleSpec`, `RBendSpec`), which selects every placement of the kind the
+registry resolves it to, as `element_help` resolves it -- or any predicate
+`LineEntry -> Bool`.
 
 ```julia
 find_entries(line, sel"ARC1/CQS[3]")
 find_entries(line, r"^ARC1/CQS")
 find_entries(line, :cryostat)                     # a tag
+find_entries(line, QuadrupoleSpec)                # every quadrupole, by kind
 find_entries(line, e -> getparam(e, :L, 0) > 1)   # anything else
 ```
 """
@@ -613,7 +671,19 @@ _entry_matches(e::LineEntry, s::Selector) = _path_matches(s.segments, getfield(e
 _entry_matches(e::LineEntry, s::AbstractString) = _entry_matches(e, _parse_selector(s))
 _entry_matches(e::LineEntry, s::Regex) = occursin(s, entry_path(e))
 _entry_matches(e::LineEntry, s::Symbol) = s in getfield(e, :tags)
-_entry_matches(e::LineEntry, s::Type) = getfield(e, :spec) isa s
+# A friendly constructor type is an abstract type the registry keys a kind's
+# metadata by (`ELEMENT_META_BY_FRIENDLY_TYPE`, aliases such as `RBendSpec`
+# included); no `ElementSpec{kind}` is a subtype of it, so the `isa` test alone
+# answered the design note's own example `find_entries(line, QuadrupoleSpec)`
+# with an empty vector, silently (2026-10-18 audit, F-240). The registry's own
+# resolver (`_element_meta_or_nothing`, the one `element_help` uses) is the
+# single table, and the suite derives the check for every registered kind.
+function _entry_matches(e::LineEntry, s::Type)
+    spec = getfield(e, :spec)
+    spec isa s && return true
+    meta = _element_meta_or_nothing(s)
+    return meta !== nothing && spec isa meta.spec_type
+end
 _entry_matches(e::LineEntry, s) = Bool(s(e))
 
 # ---------------------------------------------------------------------------
@@ -736,6 +806,27 @@ function compile_runtime(spec::ElementSpec{:line}, args...)
         "with its spec's tracking_method. Set tracking_method on the " *
         "placements instead of passing one to compile_runtime for the line."))
     resolved = resolve_knobs(spec)
+    # An in-line hook (a `ScheduledObserver`) has no runtime op: the task
+    # walker honours it where its line DISSOLVES, i.e. when the line is the
+    # task's bare `elements` argument. A line that compiles whole -- one with
+    # state of its own, or a structural one placed inside a tuple or vector,
+    # which `_element_tuple` keeps whole -- used to die here with a raw
+    # `MethodError: no method matching compile_runtime(::ScheduledObserver)`
+    # at the first `execute!` (2026-10-18 audit, F-240 through the design
+    # note's §10 promise; F-81 is the task walkers' row). Refused by name,
+    # with the remedy.
+    for e in line_entries(resolved)
+        child = getfield(e, :spec)
+        child isa AbstractElementSpec || throw(ArgumentError(
+            "line $(repr(line_name(resolved))) holds an in-line hook " *
+            "($(nameof(typeof(child))) at $(entry_path(e))) and is being compiled " *
+            "as ONE element, which has no runtime for a hook. A hook inside a line " *
+            "is honoured only where the line dissolves into the task's bare " *
+            "`elements` argument (TrackingTask(line)); a line carrying state of " *
+            "its own (a misalignment, a ref_tilt) or placed inside a tuple or " *
+            "vector compiles whole. Place the hook outside the line, or hand the " *
+            "line itself to the task."))
+    end
     ops = Tuple(compile_runtime(e) for e in line_entries(resolved))
     # The survey needs the line's length, which is derived rather than stored --
     # storing it would count as "own state" and stop every line from dissolving.
@@ -805,7 +896,7 @@ end
         ref_tilt=_PLACEMENT_PARAMS.ref_tilt,
     )
     example = BeamLine("CELL", QuadrupoleSpec(L=0.4, k1=1.7, nst=2))
-    construction_help = "Friendly constructor: BeamLine(name, children...; tags=(), kwargs...); children may be element specs, other lines, in-line hooks, or vectors/tuples of those. Nesting, reverse (reflection -- ORDER ONLY, it does not swap e1/e2) and repeat are construction syntax and expand away, with provenance kept per placement so ARC1/CQS[3] stays addressable. A line given a misalignment does NOT dissolve: it stays one placement and moves its contents rigidly, which is how a cryostat or girder is expressed. Select with find_entries(line, sel\"ARC1/CQS[3]\"), which also takes a Regex, a tag Symbol, a Type or a predicate. Keyword form BeamLine(; name, entries) rebuilds a line from existing placements. The misalignment keywords x_offset, y_offset, z_offset, x_pitch, y_pitch and tilt displace the WHOLE line rigidly and are what make it a girder, with misalign_convention choosing the reference point and rotation order exactly as it does for a single magnet. A line's arc length L is COMPUTED from its entries and is not a keyword: setting it is rejected, because the walkers that read a stored L and the ones that re-sum the entries would then disagree (2026-08-05_b audit, U15-6). Design: docs/theory/beam_line_composition.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: BeamLine(name, children...; tags=(), kwargs...); children may be element specs, other lines, in-line hooks, or vectors/tuples of those. Nesting, reverse (reflection -- ORDER ONLY, it does not swap e1/e2) and repeat are construction syntax and expand away, with provenance kept per placement so ARC1/CQS[3] stays addressable. A line given a misalignment does NOT dissolve: it stays one placement and moves its contents rigidly, which is how a cryostat or girder is expressed. Select with find_entries(line, sel\"ARC1/CQS[3]\"), which also takes a Regex, a tag Symbol, a Type (a kind's friendly constructor such as QuadrupoleSpec, or a spec type) or a predicate. Keyword form BeamLine(; name, entries) rebuilds a line from existing placements. The misalignment keywords x_offset, y_offset, z_offset, x_pitch, y_pitch and tilt displace the WHOLE line rigidly and are what make it a girder, with misalign_convention choosing the reference point and rotation order exactly as it does for a single magnet. A line's arc length L is COMPUTED from its entries and is not a keyword: setting it is rejected, because the walkers that read a stored L and the ones that re-sum the entries would then disagree (2026-08-05_b audit, U15-6). Design: docs/theory/beam_line_composition.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
 end
 
 # ---------------------------------------------------------------------------
@@ -834,7 +925,12 @@ inert until it is stored on a spec parameter, and findability begins there.
 
 Placement overrides are read through the merged view, so an
 expression-valued override reports at its placement path. Expressions
-nested in tuple strengths report with their index (`kn[2]`). Sites whose
+nested in tuple strengths report with their index (`kn[2]`). A line's OWN
+parameters are sites too: a kept-whole line's (a girder's knob-driven
+`x_offset`) report at the line's placement path, through the merged view
+like any placement, and a bare line's under its name -- the report said "No
+knob-driven parameters" for both while `_has_knob_parameters` counted them
+and the compiled wrap read the knob (2026-10-18 audit, F-130). Sites whose
 expressions read no knob under `prefix` are filtered out when a prefix is
 given.
 
@@ -902,22 +998,35 @@ _site_knobs(expr) = knob_dependencies(expr)
 
 _knob_binding_sites!(out, elements::Union{Tuple,AbstractVector}, ordinal) =
     (foreach(e -> _knob_binding_sites!(out, e, ordinal), elements); out)
-_knob_binding_sites!(out, line::ElementSpec{:line}, ordinal) =
-    _knob_binding_sites!(out, line_entries(line), ordinal)
+# A line's OWN parameters are knob sites: a girder whose `x_offset` is a knob
+# expression compiles knob-dependent (`_has_knob_parameters` says so and the
+# wrap reads the resolved value), and the report answered "No knob-driven
+# parameters" for it because every line method descended without visiting the
+# line itself (2026-10-18 audit, F-130). A bare line reports under its name, a
+# kept-whole placement under its path and through its MERGED parameters, so a
+# knob override written on the placement reports as well; the members follow
+# at their own paths. The suite asserts `_has_knob_parameters` and this walk
+# agree on every container shape.
+function _knob_binding_sites!(out, line::ElementSpec{:line}, ordinal)
+    _knob_param_sites!(out, _line_site(line), getfield(line, :params))
+    return _knob_binding_sites!(out, line_entries(line), ordinal)
+end
+_line_site(line::ElementSpec{:line}) = (n = line_name(line); isempty(n) ? "line" : n)
 function _knob_binding_sites!(out, entry::LineEntry, ordinal)
     spec = getfield(entry, :spec)
-    spec isa ElementSpec{:line} &&
+    if spec isa ElementSpec{:line}
+        _knob_param_sites!(out, entry_path(entry), _merged_params(entry))
         return _knob_binding_sites!(out, line_entries(spec), ordinal)
+    end
     spec isa AbstractElementSpec || return out
     ordinal[] += 1
     _knob_param_sites!(out, entry_path(entry), _merged_params(entry))
     return out
 end
+# A line spec never reaches this method (its own method above is more
+# specific), so the former in-method line branch was dead and is gone.
 function _knob_binding_sites!(out, element, ordinal)
     element isa AbstractElementSpec || return out
-    if element isa ElementSpec{:line}
-        return _knob_binding_sites!(out, line_entries(element), ordinal)
-    end
     ordinal[] += 1
     _knob_param_sites!(out, "elements[$(ordinal[])] ($(kind(element)))",
                        getfield(element, :params))

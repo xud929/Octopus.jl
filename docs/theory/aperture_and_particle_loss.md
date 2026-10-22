@@ -405,7 +405,17 @@ The justification given there for private slots over an atomic append is also
 wrong as stated: an atomic "would fire for every particle" only if it sat outside
 the `newly_lost` branch, and it does not. Inside that branch it fires once per
 loss, which is the same rarity argument used to accept an atomic for the survival
-counter. The defensible reasons for private slots are **determinism** -- slot `i`
-is always particle `i`, so CPU and CUDA logs are byte-identical, which this
-codebase enforces by contract -- and that `N` slots is an exact bound no run can
+counter. The defensible reasons for private slots are **ordering** -- slot `i`
+is always particle `i`, so CPU and CUDA agree on which record is whose with no
+ordering to reconcile -- and that `N` slots is an exact bound no run can
 overflow. Both are good reasons; neither is the one originally given.
+
+That is an ordering claim, not a bit-equality claim. This section used to
+call the two backends' loss logs byte-identical, "enforced by contract"; the
+`LossRecord` docstring retracted that (2026-08-05_b audit, U15-13) and this
+note now follows it (2026-10-18 audit, F-136): for a stochastic line the
+recorded coordinates differ between backends by up to 2 ulp on about 13% of
+samples (135/1024 entries, max 3.4e-21 absolute, measured on a line holding
+only a `LumpedRadSpec`, so the recorded coordinate IS the counter-RNG normal
+draw), twelve orders inside the 1e-10 the backend-consistency contract asks
+for, while drift-only and quadrupole-only lines record bit-identically.
