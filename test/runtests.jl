@@ -25702,6 +25702,105 @@ end
     end
 end
 
+# Derivations for the clock tripwire below: the top-level method definitions
+# of a parsed file (docstring wrappers unwrapped), as `name => body`, and every
+# call expression inside a body.
+_clock_callee(x::Symbol) = x
+_clock_callee(x::GlobalRef) = x.name
+_clock_callee(x::Expr) =
+    x.head === :. && length(x.args) == 2 && x.args[2] isa QuoteNode ? x.args[2].value :
+    x.head === :curly ? _clock_callee(x.args[1]) : nothing
+_clock_callee(x) = nothing
+function _clock_defs!(out, ex)
+    ex isa Expr || return out
+    if ex.head === :macrocall && !isempty(ex.args) && _clock_callee(ex.args[1]) === Symbol("@doc")
+        return _clock_defs!(out, ex.args[end])
+    end
+    if ex.head === :function || ex.head === :(=)
+        sig = ex.args[1]
+        while sig isa Expr && sig.head === :where
+            sig = sig.args[1]
+        end
+        if sig isa Expr && sig.head === :call
+            name = _clock_callee(sig.args[1])
+            name isa Symbol && push!(out, name => ex.args[2])
+        end
+        return out
+    end
+    ex.head === :module && return _clock_defs!(out, ex.args[3])   # the extension is one module block
+    ex.head in (:block, :toplevel) && foreach(a -> _clock_defs!(out, a), ex.args)
+    return out
+end
+function _clock_calls!(out, ex)
+    ex isa Expr || return out
+    ex.head === :call && push!(out, ex)
+    foreach(a -> _clock_calls!(out, a), ex.args)
+    return out
+end
+
+@testset "Every collective the MPI extension implements is clocked under its receipt kind" begin
+    # F-183 (2026-10-18 audit; fix batch 3, unit M): `_mp_bcast_impl!`,
+    # `_mp_bcast_scalar_impl`, `_mp_barrier_impl` and `_mp_gather_rows_impl`
+    # called MPI without `_mp_timed`, so `_mp_collective_times()` -- "per kind
+    # of collective, the nanoseconds spent inside the extension's MPI calls",
+    # the table the collide benchmark prints -- omitted four kinds the core
+    # records receipts for, the barrier among them, whose time is pure load
+    # imbalance; an absent row reads as zero cost. Two hand-kept kind lists
+    # with nothing between them. DERIVED here, so a new collective cannot join
+    # unclocked: every core wrapper that records a literal kind and calls an
+    # `_mp_*_impl` names a pair, and the extension's method for that impl must
+    # wrap `_mp_timed`, under a kind that reaches it. Source-level, so CI (no
+    # MPI child in this process) sees it; the unit's hand `mpiexec -n 2` run
+    # measured the table itself (`result/fix_batch3_2026_10_20/probes/M/`).
+    root = pkgdir(Octopus)
+    core = Pair{Symbol,Any}[]
+    _clock_defs!(core, Meta.parseall(read(joinpath(root, "src", "policies", "Policies.jl"), String)))
+    pairs = Pair{Symbol,Symbol}[]                 # receipt kind => impl it reaches
+    for (_, body) in core
+        calls = _clock_calls!(Expr[], body)
+        kinds = Symbol[c.args[2].value for c in calls
+                       if _clock_callee(c.args[1]) === :_record_collective! &&
+                          length(c.args) >= 2 && c.args[2] isa QuoteNode]
+        impls = unique!(Symbol[_clock_callee(c.args[1]) for c in calls
+                               if _clock_callee(c.args[1]) isa Symbol &&
+                                  occursin(r"^_mp_\w+_impl!?$", string(_clock_callee(c.args[1])))])
+        for k in kinds, i in impls
+            push!(pairs, k => i)
+        end
+    end
+    unique!(pairs)
+    @test length(pairs) >= 12                     # the twelve literal kinds the audit counted
+    ext = Pair{Symbol,Any}[]
+    _clock_defs!(ext, Meta.parseall(read(joinpath(root, "ext", "OctopusMPIExt.jl"), String)))
+    extbody = Dict{Symbol,Any}(ext)
+    reach = Dict{Symbol,Vector{Symbol}}()         # impl => the receipt kinds that reach it
+    clocks = Dict{Symbol,Vector{Symbol}}()        # impl => the literal kinds it is clocked under
+    for (kind, impl) in pairs
+        push!(get!(Vector{Symbol}, reach, impl), kind)
+        @testset let kind = kind, impl = impl
+            @test haskey(extbody, impl)           # the extension has the method
+            if haskey(extbody, impl)
+                timed = [c for c in _clock_calls!(Expr[], extbody[impl])
+                         if _clock_callee(c.args[1]) === :_mp_timed]
+                @test !isempty(timed)             # clocked at all (F-183: four were not)
+                clocks[impl] = unique!(Symbol[a.value for c in timed for a in c.args[2:end]
+                                               if a isa QuoteNode])
+            end
+        end
+    end
+    # The clock is named after a receipt kind that reaches it. An impl shared
+    # by several kinds (`_mp_allsum_impl!` serves allsum and lane_fold) is
+    # clocked under one of them, which the table's reader should know.
+    for (impl, named) in clocks
+        isempty(named) && continue                # clocked under a run-time stage name (the waits)
+        @testset let impl = impl, named = named, reaching = reach[impl]
+            @test all(n -> n in reaching, named)
+        end
+        length(reach[impl]) > 1 &&
+            @info "receipt kinds $(reach[impl]) share the clock $(named) of $(impl)"
+    end
+end
+
 if _lane_gate("The multi-process seam runs under an MPI launcher")
 @testset "The multi-process seam runs under an MPI launcher" begin
     # The only place the MPI half of the seam executes. Everything above this
@@ -33802,6 +33901,231 @@ end
         @test_throws ArgumentError eexpr^2
         @test_throws ArgumentError Int(eexpr)
         @test_throws ArgumentError Float64(eexpr)
+    finally
+        reset_knobs!()
+    end
+end
+
+# A vector whose iteration moves a knob: stands in, deterministically, for a
+# `set_knob!` arriving from another thread while `resolve_knobs` walks a spec
+# (the receipt-epoch pin of the knob-edges testset below). Top level, because
+# a struct cannot be declared inside a testset's block.
+struct _KnobMutatingVector <: AbstractVector{Any}
+    items::Vector{Any}
+    knob::Symbol
+end
+Base.size(v::_KnobMutatingVector) = size(v.items)
+function Base.getindex(v::_KnobMutatingVector, i::Int)
+    set_knob!(v.knob, knob_value(v.knob) + 1.0)
+    return v.items[i]
+end
+
+@testset "Knob edges: the derivative path, the namespace views, the constant right-hand side and the receipt epoch" begin
+    # The knob rows of the 2026-10-18 comprehensive audit (F-181, F-182,
+    # F-184; fix batch 3, unit M). One block per finding; every block was RED
+    # on the unfixed tree for its finding's own reason (the unit report quotes
+    # the runs). Private namespaces throughout; the registry is wiped after.
+    reset_knobs!()
+    try
+        # --- F-181: the differentiation variable is looked up ----------------
+        # `knob_derivative(e, path)` never consulted the registry for `path`,
+        # so a typo gave the constant 0.0 -- a silent column of zeros in a
+        # response matrix -- where set_knob!, knob_value, knob_dependents and
+        # @knob_expr all refuse the same typo by name.
+        @knob t_kd.brho = 81.1
+        @knob t_kd.xfer = 0.05
+        @knob t_kd.current = 1000.0
+        @knob t_kd.k1 = t_kd.current * t_kd.xfer / t_kd.brho
+        e = knob_expression("t_kd.k1 * t_kd.brho")
+        # the correct call still chains through the dependent knob
+        @test knob_value(knob_derivative(e, "t_kd.current")) ≈ 0.05
+        @test knob_value(knob_derivative("t_kd.k1", "t_kd.current")) ≈ 0.05 / 81.1
+        @test knob_derivative("t_kd.current", "t_kd.current") == Octopus.KnobConst(1.0)
+        # a typo or an undeclared name, in both argument forms and both
+        # modes: refused by name
+        for bad in (Symbol("t_kd.curent"), "nosuch.knob"), through in (true, false)
+            @test_throws ArgumentError knob_derivative(e, bad; through_registry=through)
+        end
+        err = try; knob_derivative(e, "t_kd.curent"); nothing; catch x; x; end
+        @test err isa ArgumentError && occursin("unknown knob t_kd.curent", sprint(showerror, err))
+        # a DEPENDENT differentiation variable: the total derivative is not
+        # defined (which of its inputs moves?), and the old answer depended on
+        # the spelling -- 0.0 for the knob's own expression, t_kd.brho for a
+        # tree naming it. Refused with directions under through_registry=true...
+        err = try; knob_derivative(e, "t_kd.k1"); nothing; catch x; x; end
+        @test err isa ArgumentError && occursin("through_registry=false", sprint(showerror, err))
+        @test_throws ArgumentError knob_derivative("t_kd.k1", "t_kd.k1")
+        # ...and the partial derivative that treats it as a free symbol is
+        # still there for the asking.
+        @test knob_derivative(e, "t_kd.k1"; through_registry=false) ==
+              Octopus.KnobRef(Symbol("t_kd.brho"))
+        # a tree naming a FORGOTTEN knob: knob_value refuses it, and so does the
+        # derivative that consults the registry (it used to answer `t_kd.b` as
+        # if the name were an independent knob); the free-symbol partial stands
+        @knob t_kd.a = 2.0
+        @knob t_kd.b = 3.0
+        ef = knob_expression("t_kd.a * t_kd.b")
+        Octopus._forget_knob!("t_kd.b")
+        @test_throws ArgumentError knob_value(ef)
+        @test_throws ArgumentError knob_derivative(ef, "t_kd.a")
+        @test knob_derivative(ef, "t_kd.a"; through_registry=false) ==
+              Octopus.KnobRef(Symbol("t_kd.b"))
+
+        # --- F-184: the docstring example runs ---------------------------------
+        # `knob_derivative(:m.k1, :m.current)` parsed as getproperty(:m, :k1)
+        # (a FieldError) and never declared m.current. The fenced example is
+        # executed here, in a sandbox module, so it cannot rot unseen again.
+        doc = string(Base.Docs.doc(Base.Docs.Binding(Octopus, :knob_derivative)))
+        # the example is the fenced block declaring knobs (the signature block
+        # renders fenced too)
+        fenced = [m.captures[1] for m in eachmatch(r"```julia\n(.*?)```"s, doc)
+                  if occursin("@knob", m.captures[1])]
+        @test length(fenced) == 1
+        if length(fenced) == 1
+            sandbox = Module(:knob_derivative_docstring)
+            Core.eval(sandbox, :(using Main.Octopus))
+            @test (Core.eval(sandbox, Meta.parseall(only(fenced))); true)   # the example runs at all
+            @test knob_value(Core.eval(sandbox, :dk1_dI)) ≈ 0.05 / 81.1
+        end
+
+        # --- F-182 (a): a negative-zero literal as the base of `^` ----------
+        # printed without its parentheses, so the documented round trip
+        # knob_expression(string(e)) == e re-associated it to -(0.0 ^ 2.0) and
+        # the value flipped sign. `-0.0 < 0` is false; `signbit(-0.0)` is not.
+        @knob t_kd.u = 2.0
+        ez = Octopus.KnobCall(:^, Octopus.AbstractKnobExpression[
+            Octopus.KnobConst(-0.0), Octopus.KnobConst(2.0)])
+        @test string(ez) == "(-0.0) ^ 2.0"
+        @test knob_expression(string(ez)) == ez
+        @test knob_value(knob_expression(string(ez))) === knob_value(ez) === 0.0
+        ezk = Octopus.KnobCall(:^, Octopus.AbstractKnobExpression[
+            Octopus.KnobConst(-0.0), Octopus.KnobRef(Symbol("t_kd.u"))])
+        @test knob_expression(string(ezk)) == ezk
+        # at the top level the literal still prints bare and reads back as itself
+        @test string(Octopus.KnobConst(-0.0)) == "-0.0"
+        @test knob_expression("-0.0") == Octopus.KnobConst(-0.0)
+
+        # --- F-182 (b): propertynames of a non-ASCII namespace ----------------
+        # sliced a byte index by a character count: a root with one two-byte
+        # character reported Symbol("") as its child, a root whose character
+        # count lands inside a multi-byte character threw a StringIndexError.
+        # The namespace itself always worked; only its property list lied.
+        Octopus._knob_define!(Symbol("tΔ_kd.x"), Meta.parse("1.0"))
+        Octopus._knob_define!(Symbol("tΔΔ.y"), Meta.parse("2.0"))
+        @test propertynames(Octopus.knobs.tΔ_kd) == (:x,)
+        @test propertynames(Octopus.knobs.tΔΔ) == (:y,)
+        @test Symbol("tΔ_kd") in propertynames(Octopus.knobs)
+        @test Octopus.knobs.tΔ_kd.x == 1.0
+
+        # --- F-182 (c): a right-hand side over constants only -----------------
+        # (`2pi`, `2 * 3`, `sqrt(16.0)`) installed a DEPENDENT knob with no
+        # inputs: set_knob! then refused with "set its independent inputs
+        # instead", and there were none. A knob that reads no knob is a value.
+        @knob t_kd.twopi = 2pi
+        @test knob_value("t_kd.twopi") == 2pi
+        @test knob_dependencies("t_kd.twopi") == Symbol[]
+        @test Octopus._KNOB_TABLE[Symbol("t_kd.twopi")].expression === nothing
+        @test set_knob!("t_kd.twopi", 1.0) == 1.0
+        @test knob_value("t_kd.twopi") == 1.0
+        @knob t_kd.n::Int = 2 * 3
+        @test knob_value("t_kd.n") === 6
+        @test_throws ArgumentError @knob(t_kd.third::Int = 1 / 3)   # lossy, refused as any value is
+        @test !(Symbol("t_kd.third") in list_knobs())
+        # a constant redefinition of a dependent knob makes it independent too
+        @knob t_kd.dep = t_kd.u * 2.0
+        @test knob_dependents("t_kd.u") == [Symbol("t_kd.dep")]
+        @knob t_kd.dep = sqrt(16.0)
+        @test knob_value("t_kd.dep") == 4.0
+        @test knob_dependents("t_kd.u") == Symbol[]
+        @test set_knob!("t_kd.dep", 5.0) == 5.0
+
+        # --- F-182 (d): list_knobs(prefix) and knob_report(; prefix) ----------
+        # selected by STRING prefix: "t_ns" also took t_nsx.y, and "t_ns.power"
+        # took t_ns.power_supply.arc_quad and t_ns.powerful.other although no
+        # namespace of that name exists. A namespace prefix selects the knobs
+        # under it (or the knob of exactly that path), the rule the registry's
+        # structural walkers already apply.
+        @knob t_ns.power_supply.arc_quad = 1000.0
+        @knob t_ns.powerful.other = 1.0
+        @knob t_nsx.y = 2.0
+        @test list_knobs("t_ns") ==
+              [Symbol("t_ns.power_supply.arc_quad"), Symbol("t_ns.powerful.other")]
+        @test list_knobs("t_ns.power") == Symbol[]
+        @test list_knobs("t_ns.power_supply") == [Symbol("t_ns.power_supply.arc_quad")]
+        @test list_knobs("t_ns.powerful.other") == [Symbol("t_ns.powerful.other")]
+        @test list_knobs("t_nsx") == [Symbol("t_nsx.y")]
+        buf = IOBuffer()
+        knob_report(prefix="t_ns", io=buf)
+        report = String(take!(buf))
+        @test occursin("t_ns.powerful.other", report) && !occursin("t_nsx.y", report)
+        knob_report(prefix="t_ns.power", io=buf)
+        @test occursin("No knobs are registered under \"t_ns.power\"", String(take!(buf)))
+
+        # --- F-182 (e): knob_value on a plain number ---------------------------
+        # cast it to Float64 -- against the docstring ("the result has the
+        # knob's declared type") and against `_eval_knob_node`'s own refusal
+        # to cast, which exists so a knob carrying a dual or a BigFloat keeps
+        # it. A number passes through unchanged.
+        @test knob_value(1) === 1
+        @test knob_value(1.0f0) === 1.0f0
+        @test knob_value(big(1.0)) isa BigFloat
+        @test knob_value(3 // 4) === 3 // 4
+
+        # --- F-184: declare-then-use inside ONE function body -----------------
+        # The root constant a dotted @knob binds is created at run time, so a
+        # function compiled before it existed reads it in an older world:
+        # Julia 1.12 warns ("access to binding ... in a world prior to its
+        # definition world") and a future version errors. The @knob docstring
+        # and the design note now say so and name the forms safe from any
+        # scope: the `knobs` root (precompiled into Octopus), knob_value and
+        # set_knob!. Pinned: the safe form works where the warning would fire,
+        # and the docstring carries the caveat.
+        function _knob_declare_then_use()
+            @knob t_kd_fn.x = 1.5
+            Octopus.knobs.t_kd_fn.x = 2.5
+            return Octopus.knobs.t_kd_fn.x + knob_value("t_kd_fn.x")
+        end
+        @test _knob_declare_then_use() == 5.0
+        @test occursin("world age", string(Base.Docs.doc(Base.Docs.Binding(Octopus, Symbol("@knob")))))
+
+        # --- F-184: the script-mode weak-dependency gate ------------------------
+        # `const _HAS_SYMBOLICS_SCRIPT_MODE = try @eval import Symbolics; true
+        # catch false end` turned a Symbolics that was importable but FAILED TO
+        # LOAD into "adapter inactive, install Symbolics". The gate now closes
+        # quietly only on the import's own not-available verdict (an
+        # ArgumentError, which is also what package mode throws) and warns, by
+        # package name and error, on anything else.
+        @test isdefined(Octopus, :_script_mode_weakdep_gate)   # the gate is a function, not an inline try
+        if isdefined(Octopus, :_script_mode_weakdep_gate)
+            gate = Octopus._script_mode_weakdep_gate
+            @test (@test_logs gate(:NoSuchWeakDep,
+                                   () -> throw(ArgumentError("Package NoSuchWeakDep not found in current path")))) === false
+            @test (@test_logs gate(:NoSuchWeakDep,
+                                   () -> throw(ArgumentError("Package Octopus does not have NoSuchWeakDep in its dependencies")))) === false
+            @test (@test_logs (:warn, r"BrokenWeakDep.*failed to load") match_mode=:any gate(
+                      :BrokenWeakDep, () -> error("Failed to precompile BrokenWeakDep"))) === false
+            @test gate(:FineWeakDep, () -> nothing) === true
+        end
+        @test Octopus._HAS_SYMBOLICS_SCRIPT_MODE isa Bool
+
+        # --- F-184: the receipt's epoch is the one its values were read under --
+        # `resolve_knobs` evaluated every parameter and only then read the
+        # epoch, so a set_knob! interleaved between the two stamped the
+        # :knob_resolution receipt with an epoch newer than its values. The
+        # epoch is read first now, as the recompile gates read it before they
+        # compile; the container above moves the knob on every access and
+        # stands in for the concurrent mutator.
+        @knob t_kd.r = 0.3
+        spec_mv = ElementSpec{:quadrupole}(; L=0.4, nst=4,
+            kn=_KnobMutatingVector(Any[0.0, knob_expression("t_kd.r")], Symbol("t_kd.r")))
+        e_before = knob_epoch()
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do
+            Octopus.resolve_knobs(spec_mv)
+        end
+        rec = only(filter(r -> r.consumer === :knob_resolution, execution_receipts(audit)))
+        @test knob_epoch() > e_before                   # the mutator did move it during the walk
+        @test rec.values.epoch == e_before              # the receipt names the epoch its walk began under
     finally
         reset_knobs!()
     end
