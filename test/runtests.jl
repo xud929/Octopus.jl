@@ -14727,6 +14727,585 @@ end
     end
 end
 
+# ---------------------------------------------------------------------------
+# Fix batch 3, unit H (2026-10-21): element kinds' silent reads and conventions
+# (comprehensive audit 2026-10-18, F-92..F-99, F-160..F-167). Each testset of
+# this region was shown red on the unfixed tree and green on the fixed one;
+# the record is result/fix_batch3_2026_10_20/units/H_report.md.
+# ---------------------------------------------------------------------------
+
+@testset "A raw spec with only its required keys compiles with the schema's declared defaults (F-93)" begin
+    # The five runtime constructors the 2026-10-18 audit found reading declared
+    # defaults through a bare `spec.params[key]` (U19-3): the documented flexible
+    # form `ElementSpec{:crab_dispersion}(; zeta1=0.1)` died with `KeyError: key
+    # :zeta2 not found` while the schema declared zeta2 = 0. Each raw spec built
+    # from its required keys alone must compile to the map the friendly form
+    # compiles to, and to the map the raw spec compiles to with every declared
+    # default spelled out -- the defaults DERIVED from the schema, never retyped
+    # (the placement table's keys are left out: they are the wraps', not the
+    # constructor's).
+    u = (1.1e-3, -2.0e-4, 0.7e-3, 1.3e-4, -1.5e-3, 4.0e-4)
+    cases = (
+        (:crab_dispersion, (zeta1=0.1,), CrabDispersionSpec(zeta1=0.1)),
+        (:momentum_dispersion, (eta2=0.2,), MomentumDispersionSpec(eta2=0.2)),
+        (:xy_coupling, (r1=0.01,), XYCouplingSpec(r1=0.01)),
+        (:chromaticity_kick, (xi=(1.0, 1.0), beta=(1.0, 1.0)),
+         ChromaticityKickSpec(xi=(1.0, 1.0), beta=(1.0, 1.0))),
+        (:lumped_radiation, (damping_turns=(1.0e3, 1.0e3, 1.0e3), rng_id=0x4a93),
+         LumpedRadSpec(damping_turns=(1.0e3, 1.0e3, 1.0e3), rng_id=0x4a94)),
+    )
+    for (k, required, friendly) in cases
+        schema = Octopus.parameter_schema(ElementSpec{k})
+        defaults = Dict(key => pm.default for (key, pm) in pairs(schema)
+                        if !pm.required && pm.default !== nothing &&
+                           !(key in keys(required)) && !(key in keys(Octopus._PLACEMENT_PARAMS)))
+        @test !isempty(defaults)
+        raw = ElementSpec{k}(; required...)
+        spelled = ElementSpec{k}(; required..., defaults...)
+        @testset let kind = k
+            out = collect(compile_runtime(raw)(u...))        # KeyError before the fix
+            @test out == collect(compile_runtime(spelled)(u...))
+            @test out == collect(compile_runtime(friendly)(u...))
+        end
+    end
+    # A REQUIRED key absent from the raw form is refused by name -- the kind,
+    # the key -- not with a raw KeyError.
+    err = try
+        compile_runtime(ElementSpec{:chromaticity_kick}(; xi=(1.0, 1.0)))
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    @test err isa ArgumentError && occursin("beta", err.msg) && occursin("chromaticity_kick", err.msg)
+end
+
+
+@testset "The untyped ChromaticityKickSpec promotes its named parameters over the Float64 floor (F-94)" begin
+    # The three linear-map constructors promote through `_linear_map_eltype`;
+    # this one hard-coded `Float64`, so a complex chromaticity died with
+    # `InexactError: Float64(1.0 + 0.1im)` while the kind's construction help
+    # promised the floor promotion (2026-10-18 audit, U19-4).
+    s = ChromaticityKickSpec(xi=(1.0 + 0.1im, 1.0), beta=(1.0, 1.0))
+    @test Octopus.numeric_type(s) == ComplexF64
+    @test compile_runtime(s) isa ChromaticityKick{Symplectic6DMap,ComplexF64}
+    # A BigFloat beta widens too, and through a tuple-valued parameter.
+    @test Octopus.numeric_type(ChromaticityKickSpec(xi=(1.0, 1.0), beta=(big(1.0), 1.0))) == BigFloat
+    # The untyped form stores no type (the floor form re-derives at compile);
+    # integers and Float32 land on Float64; only the typed form narrows.
+    @test !hasparam(s, :numeric_type)
+    @test Octopus.numeric_type(ChromaticityKickSpec(xi=(1, 1), beta=(1, 1))) == Float64
+    @test Octopus.numeric_type(ChromaticityKickSpec(xi=(1.0f0, 1.0f0), beta=(1.0f0, 1.0f0))) == Float64
+    @test Octopus.numeric_type(ChromaticityKickSpec{Float32}(xi=(1, 1), beta=(1, 1))) == Float32
+    @test Octopus.numeric_type(ChromaticityKickSpec(xi=(1, 1), beta=(1, 1), numeric_type=Float32)) == Float32
+    # The promoted element tracks: the complex-step derivative of px with
+    # respect to xi_x at the origin of pz is zero (mu = 2 pi xi pz vanishes),
+    # and the real part is the Float64 map.
+    u = (1.1e-3, -2.0e-4, 0.7e-3, 1.3e-4, -1.5e-3, 4.0e-4)
+    ref = collect(compile_runtime(ChromaticityKickSpec(xi=(1.0, 1.0), beta=(1.0, 1.0)))(u...))
+    cs = collect(compile_runtime(ChromaticityKickSpec(xi=(1.0 + 1.0e-30im, 1.0), beta=(1.0, 1.0)))(u...))
+    @test real.(cs) == ref
+    @test all(isfinite, imag.(cs))
+end
+
+
+@testset "Dispersion parameters state the canonical convention, the coupling mode declares every value the runtime accepts, the cavity's L meta names the slip's owner (F-97, F-98, F-99)" begin
+    u = (1.1e-3, -2.0e-4, 0.7e-3, 1.3e-4, -1.5e-3, 4.0e-4)
+    # F-97: `xy_coupling` declared alternatives (XY_MODEA, XY_MODEB) while the
+    # kernel, `_inverse` and the rounding class all carry an XY_UNDEF branch
+    # (the identity), so the accepted enumeration was wider than the declared
+    # one and the effectiveness sweep never visited the third value.
+    mode_meta = Octopus.parameter_schema(ElementSpec{:xy_coupling})[:mode]
+    @test Set(mode_meta.alternatives) == Set(instances(XYCouplingMode))
+    @test mode_meta.default in mode_meta.alternatives
+    @test occursin("identity", mode_meta.meaning)
+    @test collect(compile_runtime(XYCouplingSpec(r1=0.01, mode=XY_UNDEF))(u...)) == collect(u)
+    @test collect(compile_runtime(XYCouplingSpec(r1=0.01, mode=XY_MODEA))(u...)) != collect(u)
+    # F-99: every zeta/eta parameter of every registered kind is the canonical
+    # pair of docs/theory/twiss_dispersion.md (D6)-(D8), as the analysis reports
+    # it, and says so where it is declared -- the 2026-10-18 lesson "one
+    # quantity, one convention", restated at every consumer. The set of
+    # parameters is DERIVED from the registry by name, so a new dispersion
+    # parameter cannot join without the statement.
+    dispersion_keys = Tuple{Symbol,Symbol}[]
+    for (k, meta) in Octopus.ELEMENT_META_BY_KIND, (key, pm) in pairs(meta.parameters)
+        name = String(key)
+        (startswith(name, "zeta") || startswith(name, "eta")) || continue
+        push!(dispersion_keys, (k, key))
+        @testset let kind = k, parameter = key
+            @test occursin("canonical", pm.meaning)
+            @test occursin("(D8)", pm.meaning)
+        end
+    end
+    @test length(dispersion_keys) >= 16   # 4 + 4 + 2 + 2 + 4 (crab, momentum, chromaticity, radiation, linear6d)
+    for k in (:crab_dispersion, :momentum_dispersion, :chromaticity_kick, :lumped_radiation, :linear6d)
+        @test any(pair -> pair[1] == k, dispersion_keys)
+    end
+    # The maps realise (D6) with the canonical pair: composing the crab and
+    # momentum maps as the chromaticity kick and the radiation element do
+    # (coupling, eta, zeta) gives r = zeta z + eta pz and pz_out = h pz with
+    # h = 1 - zeta' S4 eta; the parameter is the canonical eta, not the slope.
+    zeta = (0.1, 0.02, -0.03, 0.01); eta = (0.4, 0.05, 0.02, -0.01)
+    cz = compile_runtime(CrabDispersionSpec(zeta1=zeta[1], zeta2=zeta[2], zeta3=zeta[3], zeta4=zeta[4]))
+    me = compile_runtime(MomentumDispersionSpec(eta1=eta[1], eta2=eta[2], eta3=eta[3], eta4=eta[4]))
+    S4 = [0.0 1.0 0.0 0.0; -1.0 0.0 0.0 0.0; 0.0 0.0 0.0 1.0; 0.0 0.0 -1.0 0.0]
+    h = 1 - collect(zeta)' * S4 * collect(eta)
+    out = collect(cz(me(0.0, 0.0, 0.0, 0.0, 0.0, 1.0e-3)...))
+    @test out[1:4] ≈ collect(eta) .* 1.0e-3 .+ collect(zeta) .* out[5] rtol=1e-12
+    @test out[6] ≈ h * 1.0e-3 rtol=1e-12
+    # F-98: the thin RF cavity's `L` meta no longer claims "no velocity-slip
+    # term": a task-compiled cavity has carried the slip since the F16 closure.
+    Lmeta = Octopus.parameter_schema(ElementSpec{:thin_rf_cavity})[:L]
+    @test !occursin("no velocity-slip term", Lmeta.meaning)
+    @test occursin("velocity slip", Lmeta.meaning) && occursin("ds_turn", Lmeta.meaning)
+end
+
+
+@testset "The thin kinds refuse a key their shared runtime reads but they do not declare (F-92)" begin
+    # Seven kinds share `ThinMultipole(spec)`, which reads knl, ksl, hkick and
+    # vkick for all of them while each declares its own subset, so an undeclared
+    # key was warned about as "NOT being tracked" and then tracked:
+    # `HKickerSpec(hkick=0.0, knl=(0.0, 0.1))` kicked px by -1e-4 at x = 1e-3
+    # (2026-10-18 audit, U19-2). The kinds are derived from the registry (every
+    # kind whose runtime is ThinMultipole), the read keys from the constructor's
+    # own list, and every read key must be declared by at least one of them.
+    thin_kinds = sort!([k for (k, m) in Octopus.ELEMENT_META_BY_KIND if m.runtime_type === ThinMultipole])
+    @test length(thin_kinds) == 7
+    read_keys = Octopus._THIN_RUNTIME_KEYS
+    declared(k) = Octopus.parameter_schema(ElementSpec{k})
+    @test Set(key for k in thin_kinds for key in read_keys if haskey(declared(k), key)) == Set(read_keys)
+    u = (1.0e-3, 0.0, 0.0, 0.0, 0.0, 0.0)
+    refused = 0
+    for k in thin_kinds, key in read_keys
+        haskey(declared(k), key) && continue
+        value = key in (:knl, :ksl) ? (0.0, 0.1) : 1.0e-3
+        raw = @test_logs (:warn, r"unknown parameter") match_mode=:any ElementSpec{k}(; key => value)
+        err = try
+            compile_runtime(raw)
+            nothing
+        catch e
+            e
+        end
+        @testset let kind = k, parameter = key
+            @test err isa ArgumentError
+            @test err isa ArgumentError && occursin(String(key), err.msg) && occursin(String(k), err.msg)
+        end
+        refused += 1
+    end
+    # 16 today: hkick and vkick on the four multipole kinds (8), knl and ksl on
+    # the three kickers (6), the kicker each lacks (2); a schema change moves it.
+    @test refused == 16
+    @test refused == sum(count(key -> !haskey(declared(k), key), read_keys) for k in thin_kinds)
+    # The declared keys keep tracking exactly as before, friendly and raw alike.
+    @test collect(compile_runtime(HKickerSpec(hkick=1.0e-3))(u...))[2] == 1.0e-3
+    @test collect(compile_runtime(ElementSpec{:hkicker}(; hkick=1.0e-3))(u...))[2] == 1.0e-3
+    @test collect(compile_runtime(ThinQuadrupoleSpec(knl=(0.0, 0.1)))(u...))[2] == -1.0e-4
+    @test collect(compile_runtime(KickerSpec(hkick=1.0e-4, vkick=-5.0e-5))(u...))[[2, 4]] == [1.0e-4, -5.0e-5]
+end
+
+
+@testset "The radiation element warns when nothing it was asked for can run, and refuses an unkeyed excitation draw (F-95, F-96)" begin
+    coords = (1.0e-3, -2.0e-4, 0.7e-3, 1.0e-4, -2.0e-3, 3.0e-4)
+    # F-96: a LumpedRad whose only requested component is unavailable compiled
+    # to the identity with no warning: Diffusion6DMap with the default sigma
+    # (excitation disabled by sigma), Radiation6DMap with is_damping=false and
+    # the default sigma, Damping6DMap with damping switched off (2026-10-18
+    # audit, U19-6 A6). The flag semantics stay -- the element IS the identity,
+    # as "Lumped radiation method and flag semantics" pins -- but it says so.
+    inert = (
+        LumpedRadSpec(damping_turns=(1.0e3, 1.0e3, 1.0e3), tracking_method=Diffusion6DMap(), rng_id=0x4a95),
+        LumpedRadSpec(damping_turns=(1.0e3, 1.0e3, 1.0e3), is_damping=false, rng_id=0x4a96),
+        LumpedRadSpec(damping_turns=(1.0e3, 1.0e3, 1.0e3), is_damping=false, sigma=(1.0e-3, 1.0e-3, 1.0e-3),
+                      tracking_method=Damping6DMap(), rng_id=0x4a97),
+    )
+    for spec in inert
+        op = @test_logs (:warn, r"lumped_radiation compiles to the identity") match_mode=:any compile_runtime(spec)
+        @test !op.is_damping && !op.is_excitation
+        @test op(TrackingContext(), 1, coords...) == coords
+    end
+    # A request that can run is silent, and so is an explicit request for
+    # nothing (both flags false): neither is a surprise.
+    live = LumpedRadSpec(damping_turns=(1.0e3, 1.0e3, 1.0e3), sigma=(1.0e-3, 1.0e-3, 1.0e-3), rng_id=0x4a98)
+    @test_logs min_level=Base.CoreLogging.Warn compile_runtime(live)
+    @test_logs min_level=Base.CoreLogging.Warn compile_runtime(LumpedRadSpec(damping_turns=(1.0e3, 1.0e3, 1.0e3),
+                                                                    is_damping=false, is_excitation=false, rng_id=0x4a99))
+    # F-95: the contextless call with excitation drew `Random.randn()` -- the
+    # task-local stateful RNG, keyed by nothing, Float64 whatever the element,
+    # so the deprecated CPU backend-tag route parted from the CUDA route by the
+    # full excitation amplitude (4.5e-4) where the context routes agree to one
+    # ulp (U19-5). It is refused by name; the context route is keyed and
+    # reproducible; damping alone stays available contextless and deterministic.
+    ex = compile_runtime(live)
+    err = try
+        ex(coords...)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError && occursin("TrackingContext", err.msg) && occursin("lumped_radiation", err.msg)
+    ctx = TrackingContext(turn=3, seed=0x1234, rng_method=:philox)
+    @test ex(ctx, 7, coords...) == ex(ctx, 7, coords...)
+    @test ex(ctx, 7, coords...) != coords
+    diff = compile_runtime(LumpedRadSpec(damping_turns=(1.0e3, 1.0e3, 1.0e3), sigma=(1.0e-3, 1.0e-3, 1.0e-3),
+                                         tracking_method=Diffusion6DMap(), rng_id=0x4a9b))
+    @test_throws ArgumentError diff(coords...)
+    damp = compile_runtime(LumpedRadSpec(damping_turns=(1.0e3, 1.0e3, 1.0e3), rng_id=0x4a9a))
+    @test damp.is_damping && !damp.is_excitation
+    @test damp(coords...) == damp(TrackingContext(), 1, coords...)
+    d32 = compile_runtime(LumpedRadSpec{Float32}(damping_turns=(1.0f3, 1.0f3, 1.0f3), rng_id=0x4a9c))
+    @test all(v -> v isa Float32, d32(Float32.(coords)...))
+    # Nothing in src/elements draws from the stateful RNG any more: the one
+    # unkeyed draw was this element's (the beam builder's seeded draw is not
+    # an element).
+    for f in readdir(joinpath(pkgdir(Octopus), "src", "elements"); join=true)
+        calls = [l for l in eachline(f) if occursin("Random.randn(", l) && !startswith(strip(l), "#")]
+        @test isempty(calls)
+    end
+end
+
+
+@testset "Linear6DSpec refuses the matrix and the optics form together, and the raw optics form reads its declared and partner defaults (F-165)" begin
+    # `Linear6DSpec(matrix=I6, beta1=..., dmu=...)` stored the matrix and
+    # silently discarded the optics keywords (2026-10-18 audit, U17-7): a
+    # configuration you set that the code never read. Both forms together are
+    # refused by name, friendly and raw; each form alone builds as before.
+    I6 = Matrix{Float64}(I, 6, 6)
+    err = try
+        Linear6DSpec(matrix=I6, beta1=(1.0, 2.0, 3.0), dmu=(0.1, 0.2, 0.3))
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError && occursin("beta1", err.msg) && occursin("dmu", err.msg)
+    @test_throws ArgumentError Linear6DSpec(matrix=I6, alpha1=(0.5, 0.0, 0.0))
+    @test_throws ArgumentError Linear6DSpec{Float32}(matrix=I6, R2=(0.1, 0.0, 0.0, 0.0))
+    @test hasparam(Linear6DSpec(matrix=I6), :matrix)
+    s = Linear6DSpec(beta1=(1.0, 2.0, 3.0), dmu=(0.1, 0.2, 0.3))
+    @test !hasparam(s, :matrix) && param(s, :beta2) == param(s, :beta1)
+    raw_both = ElementSpec{:linear6d}(; matrix=I6, beta1=(1.0, 2.0, 3.0), dmu=(0.1, 0.2, 0.3))
+    @test_throws ArgumentError compile_runtime(raw_both)
+    # The raw optics form compiles with the schema's declared defaults and the
+    # partner defaults the friendly constructor applies (beta2 = beta1,
+    # alpha2 = alpha1, zeta2 = zeta1, eta2 = eta1, R2 = R1), which the schema
+    # now states instead of declaring a literal default the constructor never
+    # applied.
+    kw = (beta1=(1.0, 2.0, 3.0), dmu=(0.1, 0.2, 0.3), zeta1=(0.01, 0.0, 0.0, 0.0), alpha1=(0.1, -0.2, 0.0))
+    @test Matrix(compile_runtime(ElementSpec{:linear6d}(; kw...))) == Matrix(compile_runtime(Linear6DSpec(; kw...)))
+    sch = Octopus.parameter_schema(Linear6DSpec)
+    for (k, partner) in ((:beta2, "beta1"), (:alpha2, "alpha1"), (:zeta2, "zeta1"), (:eta2, "eta1"), (:R2, "R1"))
+        @test occursin("defaults to $(partner)", sch[k].meaning) && sch[k].default === nothing
+    end
+    # A raw optics spec missing one of the two keys the form needs is refused
+    # by name, not with a KeyError.
+    err2 = try
+        compile_runtime(ElementSpec{:linear6d}(; beta1=(1.0, 2.0, 3.0)))
+        nothing
+    catch e
+        e
+    end
+    @test err2 isa ArgumentError && occursin("dmu", err2.msg)
+end
+
+
+@testset "The curved solenoid's gauge function and its derivative are one consistent pair (F-166)" begin
+    # `_sol_g` is `2 ln(1+hx)/h - x` through the u^7 series of `_sol_log_over_h`
+    # below the crossover, while `_sol_gp` was the exact derivative of the
+    # UNTRUNCATED log, so the curved solenoid's vector field was not exactly
+    # Hamiltonian: in exact arithmetic the implicit-midpoint map had a
+    # symplecticity floor of ~1e-17 that no step or sweep count removed,
+    # invisible at double precision (2026-10-18 audit, U17-8). `_sol_gp` is now
+    # the derivative of `_sol_g` AS COMPUTED on each side of the crossover.
+    O = Octopus
+    setprecision(BigFloat, 256) do
+        step = big(1.0e-40)
+        # u = h x: three points on the series side (9e-3, 3.6e-3, 3e-4), one on
+        # the closed side (7.2e-2), which was consistent before as well.
+        for (h, x) in ((0.18, 0.05), (0.18, 0.02), (1.0e-3, 0.3), (0.18, 0.4))
+            hb, xb = big(h), big(x)
+            cs = imag(O._sol_g(hb, xb + im * step)) / step
+            gp = O._sol_gp(hb, xb)
+            @testset let h = h, x = x, u = h * x, mismatch = Float64(abs(gp - cs))
+                # One pair: agreement to the 256-bit floor; the complex step's
+                # own error is O(step^2) = 1e-80. The old mismatch was
+                # 2 u^8 / (1 + u): 8.5e-17 at u = 9e-3, 1.3e-28 at u = 3e-4.
+                @test mismatch < 1.0e-60
+            end
+        end
+        # The 4D implicit-midpoint map of the code's own field in exact
+        # arithmetic (the audit's probe I at reduced size: 256 bits, nst = 8,
+        # 60 sweeps; q = |L ks|/(2 nst) = 0.138, so the fixed point's floor is
+        # q^60 = 1e-52 and the central-difference step's 1e-60): the
+        # symplectic residual |J' S4 J - S4| over the sweep that carries the
+        # orbit through both sides of the crossover (|h x| reaches 0.018).
+        hb, kb, Lb, pzb = big(0.18), big(1.7), big(1.3), big(1.1e-3)
+        field(v) = collect(O._sol_curved_deriv(hb, kb, v[1], v[2], v[3], v[4], pzb)[1:4])
+        function onestep(d, v)
+            m = v
+            for _ in 1:60
+                m = v .+ (d / 2) .* field(m)
+            end
+            return v .+ d .* field(m)
+        end
+        function nsteps(v)
+            d = Lb / 8
+            for _ in 1:8
+                v = onestep(d, v)
+            end
+            return v
+        end
+        q0 = BigFloat[1.3e-3, 3.0e-4, -0.9e-3, -2.2e-4]
+        hs = big(1.0e-30)
+        J = zeros(BigFloat, 4, 4)
+        for j in 1:4
+            qp = copy(q0); qm = copy(q0)
+            qp[j] += hs; qm[j] -= hs
+            J[:, j] = (nsteps(qp) .- nsteps(qm)) ./ (2hs)
+        end
+        S4 = kron(Matrix{BigFloat}(I, 2, 2), BigFloat[0 1; -1 0])
+        residual = Float64(maximum(abs, J' * S4 * J - S4))
+        @testset let symplectic_residual = residual
+            # Measured 2026-10-21 (probes/H/logs/f166_*.log): the old pairing
+            # 1.9e-18 here (the audit's 1.1e-17 at nst = 16), the consistent
+            # pairing 9.0e-49 (nst = 8) and 1.4e-48 (nst = 16), the fixed
+            # point's floor; the bound sits between them with eight orders
+            # on each side.
+            @test residual < 1.0e-40
+        end
+    end
+end
+
+
+@testset "An unphysical particle dies instead of aborting the run, and a curved drift refuses a quarter turn per step (F-163, F-167)" begin
+    O = Octopus
+    # Dead as the loss design defines it (`is_live`): any non-finite coordinate;
+    # a map writes NaN into the coordinates it writes and leaves the rest.
+    dead(r) = !all(isfinite, collect(r)) && any(isnan, collect(r))
+    live(r) = all(isfinite, collect(r))
+    # F-167: every longitudinal-momentum radicand of the lattice family marks a
+    # particle whose transverse momentum exceeds its total momentum DEAD (NaN,
+    # the loss design's marker: `is_live`, `allow_lost_particles`) instead of
+    # throwing a DomainError from `sqrt` on the CPU and a KernelException on
+    # CUDA, which aborted the whole run for one particle (2026-10-18 audit,
+    # U17-9; the `_delta_from_pt` precedent of U14-3). The drift, the bend
+    # (particle and design orbit), the pole-face maps, the solenoids and the
+    # patch all answer alike.
+    @test dead(O._lattice_drift(Val(false), 0.0, 1.0, 0.0, 1.5, 0.0, 0.0, 0.0, 0.0))
+    @test dead(O._lattice_drift(Val(true), 0.3, 1.0, 0.0, 1.5, 0.0, 0.0, 0.0, 0.0))
+    @test dead(O._lattice_bend(0.3, -0.3, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    @test dead(O._lattice_bend(0.3, 0.3, 0.5, 0.0, 1.2, 0.0, 0.0, 0.0, 0.0))
+    @test dead(O._rot_xz(0.1, 0.0, 1.2, 0.0, 0.0, 0.0, 0.0))
+    @test dead(O._wedge(0.1, 0.3, 0.0, 1.2, 0.0, 0.0, 0.0, 0.0))
+    @test dead(O._fringe_dipole_exact(0.3, 0.0, 0.0, 1.0, 0.0, 1.2, 0.0, 0.0, 0.0, 0.0))
+    @test dead(O._solenoid_map(1.7, 1.3, 0.0, 1.5, 0.0, 0.0, 0.0, 0.0))
+    @test dead(O._solenoid_curved_map(0.18, 1.7, 1.3, 4, 0.0, 1.5, 0.0, 0.0, 0.0, 0.0))
+    @test dead(compile_runtime(PatchSpec(angle_y=0.01))(0.0, 1.2, 0.0, 0.0, 0.0, 0.0))
+    # The dead stay dead and the live are unchanged in kind: a healthy particle
+    # through the same maps is finite.
+    @test dead(O._lattice_bend(0.3, 0.3, 0.5, NaN, NaN, NaN, NaN, NaN, NaN))
+    @test live(O._lattice_bend(0.3, 0.3, 0.5, 1.0e-3, 2.0e-4, -5.0e-4, 1.0e-4, 2.0e-3, 1.0e-3))
+    @test live(O._wedge(0.1, 0.3, 1.0e-3, 2.0e-4, -5.0e-4, 1.0e-4, 2.0e-3, 1.0e-3))
+    # Through a task the run completes, the particle is counted dead and the
+    # live one tracks; the loss accounting reports the unattributed loss.
+    rep = Phase6DRep([0.0, 1.0e-3], [1.5, 2.0e-4], zeros(2), zeros(2), zeros(2), zeros(2))
+    task = TrackingTask((DriftSpec(L=1.0),); policy=CPUThreadsExecutionPolicy())
+    @test_logs (:warn, r"non-finite") match_mode=:any execute!(task, rep; turns=1)
+    @test count_dead(rep) == 1
+    @test rep.x[2] ≈ 1.0e-3 + 2.0e-4 / sqrt(1 - 4.0e-8) rtol=1e-14
+    # F-163: a curved drift's frame may not turn a quarter turn or more in one
+    # body step -- no straight trajectory reaches an exit face rotated that far
+    # in front of the particle -- so it is refused at compile by name, naming
+    # the step count that would do; `DriftSpec(L=1.0, h=1.6)` returned exit
+    # x = -22.03 m silently before. The exact bend model handles the regime
+    # through its direct branch and stays compilable; a drift-kick bend's body
+    # IS the curved drift and follows the guard per sub-step.
+    err = try
+        compile_runtime(DriftSpec(L=1.0, h=1.6))
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError && occursin("quarter turn", err.msg) && occursin("nst", err.msg)
+    # A drift-kick bend steps its drift by L/(2 nst): 1.6 rad at nst = 1 is 0.8
+    # per half drift, so it compiles -- and its design particle dies in the
+    # second half (it threw a DomainError before); at 3.2 rad the half step is
+    # the quarter turn and the compile refuses; nst = 2 traverses 1.6 rad.
+    @test dead(compile_runtime(SBendSpec(L=1.0, angle=1.6, bend_model=:drift_kick, nst=1))(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    @test_throws ArgumentError compile_runtime(SBendSpec(L=1.0, angle=3.2, bend_model=:drift_kick, nst=1))
+    @test live(compile_runtime(SBendSpec(L=1.0, angle=1.6, bend_model=:drift_kick, nst=2))(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    @test live(compile_runtime(SBendSpec(L=1.0, angle=1.6, nst=1))(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    @test live(compile_runtime(DriftSpec(L=1.0, h=1.5))(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    # A curved quadrupole splits its drift per sub-step: the guard sees the
+    # sub-step, not the element length.
+    @test compile_runtime(QuadrupoleSpec(L=1.0, k1=0.3, h=1.6, nst=2)) isa LatticeMagnet
+    @test_throws ArgumentError compile_runtime(QuadrupoleSpec(L=4.0, k1=0.3, h=1.6, nst=1, integrator_order=4))
+    # Below the quarter turn a particle whose momentum along the exit normal is
+    # not forward never reaches the face either: dead, where it came back with
+    # a finite wrong exit (x = -19.8 m at h = 0.5, L = 1, px = 0.9).
+    @test dead(O._lattice_drift(Val(true), 0.5, 1.0, 0.0, 0.9, 0.0, 0.0, 0.0, 0.0))
+    @test live(O._lattice_drift(Val(true), 0.5, 1.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.0))
+end
+
+
+@testset "The bend's design excess is cancellation-free at b0 = 2h as well (F-161)" begin
+    # The design orbit's share of the bend's path-length excess,
+    # `kappa S1 + (asin(pxd) - pxd)` with kappa = h - b0 and pxd = kappa C1,
+    # vanishes identically at kappa = 0 (the sector bend, exact by
+    # construction since unit K) AND at kappa = -h, b0 = 2h: a circle of half
+    # the frame's radius, internally tangent to it, has the frame's arc length.
+    # The two terms, each O(u^3/6) and rounded at eps of themselves (the
+    # direct `asin(t) - t` from |pxd| = 0.4 on), cancelled to a residue that
+    # landed on z: 4.8 / 56.7 / 757 / 1073 / 2136 ulp of max(|z|, |E|) at
+    # L = 0.5 / 1 / 1.4 / 2 / 2.5, h = 0.3 (2026-10-18 audit, U17-2;
+    # probes/H/logs/f161_probe_unfixed.log reproduces every row). Within
+    # |2h - b0| <= |h|/16 the excess is now formed from the small quantities
+    # that make it small (`_bend_design_excess`); the sweep and metric are the
+    # unit-K pins' (BigFloat twin of the same kernel, ulps of max(|z|, |E|)).
+    O = Octopus
+    kulps(got, ref, zin) = Float64(abs(big(got) - ref) / big(eps(max(abs(Float64(zin)), abs(Float64(big(zin) - ref))))))
+    cerr(got, ref, scale) = Float64(abs(big(got) - ref) / big(eps(Float64(scale))))
+    krng = Random.Xoshiro(2026)
+    kparts = [(1.0e-3, 2.0e-4, -5.0e-4, 1.0e-4, 2.0e-3, 1.0e-3)]
+    for _ in 1:100
+        push!(kparts, (1.0e-3 * randn(krng), 1.0e-3 * randn(krng), 1.0e-3 * randn(krng), 1.0e-3 * randn(krng),
+                       rand(krng, (-1, 1)) * (2.0e-4 + 4.8e-3 * rand(krng)), 1.0e-3 * randn(krng)))
+    end
+    setprecision(BigFloat, 256) do
+        # Measured 2026-10-21 after the repair (probes/H/logs/f161_probe_fixed*.log):
+        # inside the band 2-27 ulp, at its edges (b0/h = 1.9375, 2.0625) up to 43,
+        # just outside on the direct form (1.93, 2.07) up to 39; the weak bend
+        # h = 0.05 sits at its own class (32-34 here, 42 on its sector orbit).
+        # Bounds: the measured worst rounded up to the next power of two, as the
+        # unit-K pins are.
+        for (h, L, zb) in ((0.3, 0.5, 16), (0.3, 1.0, 64), (0.3, 1.4, 64), (0.3, 2.0, 64), (0.3, 2.5, 64), (0.05, 2.0, 64)),
+            ratio in (2.0, 1.99, 2.01, 1.95, 2.05, 1.9375, 2.0625, 1.93, 2.07)
+            b0 = ratio * h
+            wz = 0.0; wt = 0.0
+            for u in kparts
+                r64 = O._lattice_bend(h, b0, L, u...)
+                rb = O._lattice_bend(big(h), big(b0), big(L), big.(u)...)
+                wz = max(wz, kulps(r64[5], rb[5], u[5]))
+                for i in (1, 2, 3)
+                    wt = max(wt, cerr(r64[i], rb[i], max(abs(Float64(rb[i])), abs(u[i]))))
+                end
+            end
+            @testset let h = h, b0_over_h = ratio, L = L, z_ulps = wz, transverse_ulps = wt
+                @test z_ulps <= zb
+                @test transverse_ulps <= 32
+            end
+        end
+    end
+    # On the frame's axis at b0 = 2h the excess is zero EXACTLY (the audit's
+    # one-liner returned z - 2e-3 = 5.8e-17 at L = 2 and -4.0e-17 at L = 1.4).
+    for L in (1.4, 2.0)
+        r = O._lattice_bend(0.3, 0.6, L, 0.0, 0.0, 0.0, 0.0, 2.0e-3, 0.0)
+        @test r[5] === 2.0e-3
+    end
+    # The switch is a rule on the parameters alone (|2h - b0| <= |h|/16), the
+    # same on every backend, and both sides are pinned above against the same
+    # BigFloat twin, so nothing physics cares about moves across it.
+end
+
+
+@testset "bend_fringe is PTC's BEND_FRINGE, on by default for the bend kind and off on the straight kinds; the pole-face geometry follows its parameters (F-160)" begin
+    # `bend_fringe` defaulted to true for every lattice-magnet kind, so a
+    # straight magnet with a dipole component and `fringe=:multipole` ran PTC's
+    # FRINGE_DIPOLE and dropped the dipole from the multipole fringe -- which
+    # PTC does only for bends: against MAD-X 5.03.06 PTC the default was off by
+    # 4.0e-6 to 1.1e-5 where `bend_fringe=false` agreed to 1.3e-12 (2026-10-18
+    # audit, U17-1). The switch now means exactly PTC's BEND_FRINGE (the
+    # Maxwell-required hard-edge dipole fringe with FINT/HGAP, and the dipole
+    # term's exclusion from the multipole fringe), declared per kind in the
+    # schema and read from it; the pole-face geometry (rotation, face
+    # curvature, wedge) follows e1/e2/hface on every kind, as PTC's edge maps
+    # do, so `e1` on a quadrupole keeps acting (the U9-2 pin) and a bend with
+    # `bend_fringe=false` keeps its pole-face rotation.
+    O = Octopus
+    u = (2.3e-3, 4.1e-4, -1.7e-3, -3.2e-4, 1.5e-3, 9.0e-4)
+    track(spec) = collect(compile_runtime(spec)(u...))
+    # (i) the declared default, per kind, derived from the registry
+    lattice_kinds = sort!([k for (k, m) in O.ELEMENT_META_BY_KIND if m.runtime_type === LatticeMagnet])
+    @test length(lattice_kinds) == 6
+    for k in lattice_kinds
+        pm = O.parameter_schema(ElementSpec{k})[:bend_fringe]
+        @testset let kind = k, default = pm.default
+            @test default === (k === :sbend)
+            @test occursin("BEND_FRINGE", pm.meaning)
+        end
+    end
+    # (ii) a straight magnet with a dipole component: the default is the
+    # bend_fringe=false map, bitwise, and differs from bend_fringe=true
+    q = (L=0.4, k1=1.7, kn=(0.1,), nst=4, fringe=:multipole, highest_fringe=2)
+    @test track(QuadrupoleSpec(; q...)) == track(QuadrupoleSpec(; q..., bend_fringe=false))
+    @test track(QuadrupoleSpec(; q...)) != track(QuadrupoleSpec(; q..., bend_fringe=true))
+    @test !O._has(compile_runtime(QuadrupoleSpec(; q...)), O.FRINGE_BEND)
+    @test track(MultipoleSpec(L=0.3, k0=0.05, k1=1.2, nst=4, fringe=:multipole, highest_fringe=2)) ==
+          track(MultipoleSpec(L=0.3, k0=0.05, k1=1.2, nst=4, fringe=:multipole, highest_fringe=2, bend_fringe=false))
+    # (iii) the bend keeps it on by default (the PTC fixtures' setting)
+    b = (L=1.1, angle=0.198, nst=4, fint1=0.5, fint2=0.5, hgap1=0.03, hgap2=0.03)
+    @test track(SBendSpec(; b...)) == track(SBendSpec(; b..., bend_fringe=true))
+    @test track(SBendSpec(; b...)) != track(SBendSpec(; b..., bend_fringe=false))
+    @test O._has(compile_runtime(SBendSpec(L=1.1, angle=0.198)), O.FRINGE_BEND)
+    # (iv) the pole-face geometry follows its parameters, not the switch
+    @test track(QuadrupoleSpec(L=0.3, k1=1.2, e1=0.2)) != track(QuadrupoleSpec(L=0.3, k1=1.2))
+    @test track(QuadrupoleSpec(L=0.3, k1=1.2, e1=0.2)) == track(QuadrupoleSpec(L=0.3, k1=1.2, e1=0.2, bend_fringe=false))
+    @test track(SBendSpec(L=1.0, angle=0.1, e1=0.1, bend_fringe=false)) != track(SBendSpec(L=1.0, angle=0.1, bend_fringe=false))
+    @test track(SBendSpec(L=1.0, angle=0.1, hface1=0.02, bend_fringe=false)) != track(SBendSpec(L=1.0, angle=0.1, bend_fringe=false))
+    # (v) fint/hgap feed only the switched fringe: set on a straight kind that
+    # leaves the switch at its default, they warn; given either way, silence.
+    fq = (L=0.3, k1=1.2, fint1=0.5, hgap1=0.03)
+    @test_logs (:warn, r"bend_fringe") match_mode=:any compile_runtime(QuadrupoleSpec(; fq...))
+    @test_logs min_level=Base.CoreLogging.Warn compile_runtime(QuadrupoleSpec(; fq..., bend_fringe=true))
+    @test_logs min_level=Base.CoreLogging.Warn compile_runtime(QuadrupoleSpec(; fq..., bend_fringe=false))
+    @test_logs min_level=Base.CoreLogging.Warn compile_runtime(SBendSpec(; b...))
+    # (vi) the effectiveness contract's straight probes keep fint/hgap reachable
+    @test O._LATTICE_BODY_PROBE.bend_fringe === true
+end
+
+
+@testset "The conventions note's SAD cubic carries the code's 1/(1+delta) (F-164)" begin
+    # docs/theory/lattice_hamiltonian_and_conventions.md 6.3.1 wrote the SAD
+    # cubic of the hard-edge dipole fringe without the `1/(1+delta)` that the
+    # code (`c3 = b^2/(72 fg)/p`) and PTC carry, and with the z term one power
+    # short: the pair is the exact kick of V = b^2 y^4 / (72 FG (1+delta)),
+    # dp_y = -dV/dy, dz = +dV/ddelta in the z = s - l convention (2026-10-18
+    # audit, U17-6; PTC agreement to 4e-12 at delta = 0.09 where the
+    # factor-free form parts by 8e-8). The note states the code's pair and the
+    # kernel still forms it that way: two textual tripwires, one each.
+    note = read(joinpath(pkgdir(Octopus), "docs", "theory", "lattice_hamiltonian_and_conventions.md"), String)
+    @test occursin("\\frac{h^2y^3}{18\\,FG\\,(1+\\delta)}", note)
+    @test occursin("\\frac{h^2y^4}{72\\,FG\\,(1+\\delta)^2}", note)
+    @test !occursin("\\Delta z=+\\frac{h^2y^4}{72\\,FG}\\cdot\\frac{1+\\delta}{(1+\\delta)^2}", note)
+    src = read(joinpath(pkgdir(Octopus), "src", "elements", "lattice_magnets.jl"), String)
+    @test occursin("c3 = b * b / (72 * fg) / p", src) && occursin("py -= 4 * c3 * y^3", src) && occursin("z -= c3 * y^4 / p", src)
+    # And the kick IS that of V: at the exit face with fint*hgap != 0, the cubic's
+    # share of (dp_y, dz) at two deltas scales as 1/(1+delta) and 1/(1+delta)^2
+    # relative to each other, read off the kernel by differencing against the
+    # same face with the integrals' cubic removed through fg -> 0 at fixed
+    # Phi (the main fringe term depends on fg too, so compare the DIFFERENCE
+    # of two gap values, which isolates the fg-dependent part, and check the
+    # delta scaling of its cubic-in-y component by a y^3 / y^4 fit).
+    O = Octopus
+    function cubic_share(delta, y)
+        a = O._fringe_dipole_exact(0.3, 0.5, 0.03, 1.0, 0.0, 0.0, y, 0.0, 0.0, delta)
+        b = O._fringe_dipole_exact(0.3, 0.5, 0.0, 1.0, 0.0, 0.0, y, 0.0, 0.0, delta)
+        return a[4] - b[4], a[5] - b[5]
+    end
+    # The fg-dependent part at small y: the cubic (y^3 in py, y^4 in z) plus
+    # the main term's fg pieces (linear in y and higher). Isolate the cubic by
+    # the odd/even y combination y^3: f(y) - 2 f(y/2)*... simpler: fit on two y.
+    for delta in (0.0, 0.09)
+        p1, z1 = cubic_share(delta, 1.0e-3)
+        p2, z2 = cubic_share(delta, 2.0e-3)
+        # py: main fg term is linear in y (tan Phi's fg share), so the y^3 part is
+        # (p2 - 2 p1)/6 per (1e-3)^3; z: main fg share is y^2, the cubic y^4:
+        # (z2 - 4 z1)/12 per (1e-3)^4
+        c3 = 0.3^2 / (72 * 0.5 * 0.03) / (1 + delta)
+        @test isapprox((p2 - 2 * p1) / 6, -4 * c3 * (1.0e-3)^3; rtol=2.0e-3)
+        @test isapprox((z2 - 4 * z1) / 12, -c3 * (1.0e-3)^4 / (1 + delta); rtol=2.0e-3)
+    end
+end
+
+
 
 @testset "Thin elements, markers and RBEND" begin
     u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
@@ -31990,9 +32569,11 @@ end
     on = (u0[1], u0[2], u0[3], u0[4], u0[5], 0.0)
     @test sol(1.7, 1.3)(off...)[1] != sol(1.7, 1.3)(on...)[1]
 
-    # Over-momentum throws, exactly as the drift does. Recorded as a property
-    # rather than a feature: see docs/theory/solenoid.md Section 9.1.
-    @test_throws DomainError sol(1.7, 1.3)(0.0, 1.5, 0.0, 0.0, 0.0, 0.0)
+    # Over-momentum is a dead particle (NaN), exactly as the drift's: the loss
+    # design's marker, counted and reported by the task, instead of the
+    # DomainError that aborted the run (2026-10-18 audit, F-167; see
+    # docs/theory/solenoid.md Section 9.1).
+    @test !all(isfinite, collect(sol(1.7, 1.3)(0.0, 1.5, 0.0, 0.0, 0.0, 0.0)))
     # A dead particle stays dead and does not resurrect.
     @test all(isnan, collect(sol(1.7, 1.3)(NaN, NaN, NaN, NaN, NaN, NaN)))
 end

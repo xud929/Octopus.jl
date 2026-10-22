@@ -13,9 +13,25 @@ longitudinal coordinate `z` by the chromatic transverse actions.
 `beta` and `alpha` may use the shared three-plane optics interface; this
 element uses only their horizontal and vertical components. Legacy
 two-component tuples remain accepted.
+
+Without the explicit `{T}`, the element type is the promotion of the named
+parameters (`xi`, `beta`, `alpha`, `zeta`, `eta`, `R`) over a `Float64` floor,
+as the three linear maps promote through `_linear_map_eltype`: a `Dual` or
+`Complex` chromaticity differentiates without the caller spelling the type.
+Integers, rationals and `Float32` land on `Float64`; narrowing stays behind the
+explicit `{T}` form or `numeric_type=T`. Extra keyword arguments are descriptive
+metadata and take no part in the promotion. Until the 2026-10-18 comprehensive
+audit this constructor hard-coded `Float64`, so `ChromaticityKickSpec(xi=(1.0 +
+0.1im, 1.0), beta=(1.0, 1.0))` died with `InexactError: Float64(1.0 + 0.1im)`
+while the kind's construction help promised the floor promotion (F-94).
 """
-ChromaticityKickSpec(; numeric_type=nothing, kwargs...) =
-    _floor_form(ChromaticityKickSpec{something(numeric_type, Float64)}(; kwargs...), numeric_type)
+function ChromaticityKickSpec(; xi, beta, alpha=(0, 0, 0), zeta=(0, 0, 0, 0),
+                              eta=(0, 0, 0, 0), R=(0, 0, 0, 0), numeric_type=nothing,
+                              kwargs...)
+    T = something(numeric_type, _linear_map_eltype(xi, beta, alpha, zeta, eta, R))
+    return _floor_form(ChromaticityKickSpec{T}(; xi=xi, beta=beta, alpha=alpha, zeta=zeta,
+                                                eta=eta, R=R, kwargs...), numeric_type)
+end
 function (::Type{ChromaticityKickSpec{T}})(;
                                           xi,
                                           beta,
@@ -74,9 +90,12 @@ end
 
 function ChromaticityKick(spec::ElementSpec{:chromaticity_kick},
                           method::AbstractTrackingMethod=tracking_method(spec))
-    xi = param(spec, :xi)
-    beta = param(spec, :beta)
-    alpha = param(spec, :alpha)
+    # Declared defaults read from the schema (`_declared_param`), the required
+    # pair refused by name when absent: a raw `ElementSpec{:chromaticity_kick}(;
+    # xi, beta)` died on `alpha` with a KeyError until the 2026-10-18 audit (F-93).
+    xi = _declared_param(spec, :xi)
+    beta = _declared_param(spec, :beta)
+    alpha = _declared_param(spec, :alpha)
     # `numeric_type(spec)`, the one rule of every kind: the stored type of a
     # `ChromaticityKickSpec{T}`, else the Float64-floor promotion of the stored
     # parameters, so integer tuples through the flexible spec form promote to
@@ -92,9 +111,9 @@ function ChromaticityKick(spec::ElementSpec{:chromaticity_kick},
         alfx, alfy,
         (one(T) + alfx * alfx) / betx,
         (one(T) + alfy * alfy) / bety,
-        CrabDispersion(Symplectic6DMap(), _quad_tuple(param(spec, :zeta), T)...),
-        MomentumDispersion(Symplectic6DMap(), _quad_tuple(param(spec, :eta), T)...),
-        XYCoupling(_quad_tuple(param(spec, :R), T)..., XY_MODEA),
+        CrabDispersion(Symplectic6DMap(), _quad_tuple(_declared_param(spec, :zeta), T)...),
+        MomentumDispersion(Symplectic6DMap(), _quad_tuple(_declared_param(spec, :eta), T)...),
+        XYCoupling(_quad_tuple(_declared_param(spec, :R), T)..., XY_MODEA),
     )
 end
 
@@ -225,8 +244,8 @@ end
         xi=ParamMeta(required=true, meaning="horizontal and vertical chromaticities"),
         beta=ParamMeta(required=true, meaning="two- or three-plane beta functions; only horizontal and vertical values are used"),
         alpha=ParamMeta(default=(0, 0, 0), meaning="two- or three-plane alpha functions; only horizontal and vertical values are used"),
-        zeta=ParamMeta(default=(0, 0, 0, 0), meaning="crab dispersion coefficients"),
-        eta=ParamMeta(default=(0, 0, 0, 0), meaning="momentum dispersion coefficients"),
+        zeta=ParamMeta(default=(0, 0, 0, 0), meaning="crab dispersion coefficients (zeta1..zeta4), removed before the kick and restored after it. " * _CANONICAL_DISPERSION_NOTE),
+        eta=ParamMeta(default=(0, 0, 0, 0), meaning="momentum dispersion coefficients (eta1..eta4), removed before the kick and restored after it. " * _CANONICAL_DISPERSION_NOTE),
         R=ParamMeta(default=(0, 0, 0, 0), meaning="x-y coupling coefficients"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,

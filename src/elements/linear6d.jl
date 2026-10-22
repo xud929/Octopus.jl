@@ -23,39 +23,78 @@ every lattice magnet promotes through `numeric_type(spec)` (2026-08-05_b
 audit, U9-6). Integers, rationals and `Float32` still land on `Float64`;
 narrowing stays behind the explicit `{T}` form. Extra keyword arguments are
 descriptive metadata and take no part in the promotion.
+
+The two forms are exclusive: `matrix` beside any optics keyword is refused by
+name, at construction and again when a raw spec carrying both compiles. Until
+the 2026-10-18 comprehensive audit the matrix won and the optics keywords
+were dropped silently -- `Linear6DSpec(matrix=I6, beta1=..., dmu=...)` stored
+`[:matrix, :tracking_method]` and nothing else (F-165). In the optics form
+each exit parameter defaults to its entrance partner (`beta2 = beta1`,
+`alpha2 = alpha1`, `zeta2 = zeta1`, `eta2 = eta1`, `R2 = R1`), through the
+friendly constructor and the raw form alike, and the schema says so instead of
+declaring a literal default the constructor never applied.
 """
-Linear6DSpec(; matrix=nothing, beta1=nothing, dmu=nothing, beta2=beta1,
-              alpha1=(0, 0, 0), alpha2=alpha1,
-              zeta1=(0, 0, 0, 0), eta1=(0, 0, 0, 0), R1=(0, 0, 0, 0),
-              zeta2=zeta1, eta2=eta1, R2=R1, numeric_type=nothing, kwargs...) =
+Linear6DSpec(; matrix=nothing, beta1=nothing, dmu=nothing, beta2=nothing,
+              alpha1=nothing, alpha2=nothing,
+              zeta1=nothing, eta1=nothing, R1=nothing,
+              zeta2=nothing, eta2=nothing, R2=nothing, numeric_type=nothing, kwargs...) =
     _floor_form(Linear6DSpec{something(numeric_type,
                                        _linear_map_eltype(matrix, beta1, dmu, beta2, alpha1, alpha2,
                                                           zeta1, eta1, R1, zeta2, eta2, R2))}(;
         matrix=matrix, beta1=beta1, dmu=dmu, beta2=beta2,
         alpha1=alpha1, alpha2=alpha2, zeta1=zeta1, eta1=eta1, R1=R1,
         zeta2=zeta2, eta2=eta2, R2=R2, kwargs...), numeric_type)
+# The optics form's keys, in one place for the two refusals of "both forms at
+# once" (the typed constructor and `Linear6D(spec)` on a raw spec).
+const _LINEAR6D_OPTICS_KEYS = (:beta1, :dmu, :beta2, :alpha1, :alpha2,
+                               :zeta1, :eta1, :R1, :zeta2, :eta2, :R2)
+
+_linear6d_both_forms(given) = ArgumentError(
+    "Linear6DSpec takes either matrix or the optics form (beta1, dmu, ...), not both: " *
+    "matrix was given beside $(join(string.(given), ", ")), which a stored matrix would " *
+    "silently override because the optics keywords are never read when a matrix is " *
+    "stored (2026-10-18 audit, F-165); give one form")
+
 function (::Type{Linear6DSpec{T}})(; matrix=nothing,
                                   beta1=nothing,
                                   dmu=nothing,
-                                  beta2=beta1,
-                                  alpha1=(zero(T), zero(T), zero(T)),
-                                  alpha2=alpha1,
-                                  zeta1=(zero(T), zero(T), zero(T), zero(T)),
-                                  eta1=(zero(T), zero(T), zero(T), zero(T)),
-                                  R1=(zero(T), zero(T), zero(T), zero(T)),
-                                  zeta2=zeta1,
-                                  eta2=eta1,
-                                  R2=R1,
+                                  beta2=nothing,
+                                  alpha1=nothing,
+                                  alpha2=nothing,
+                                  zeta1=nothing,
+                                  eta1=nothing,
+                                  R1=nothing,
+                                  zeta2=nothing,
+                                  eta2=nothing,
+                                  R2=nothing,
                                   tracking_method=Symplectic6DMap(),
                                   kwargs...) where {T}
     params = _stamp_numeric_type!(_spec_params(; tracking_method=tracking_method, kwargs...), T)
+    optics = (; beta1, dmu, beta2, alpha1, alpha2, zeta1, eta1, R1, zeta2, eta2, R2)
+    @assert keys(optics) == _LINEAR6D_OPTICS_KEYS
     if matrix !== nothing
+        given = [k for (k, v) in pairs(optics) if v !== nothing]
+        isempty(given) || throw(_linear6d_both_forms(given))
         typed_matrix = _matrix66_tuple(matrix, T)
         _validate_linear6d_symplectic(typed_matrix; source="Linear6DSpec matrix")
         params[:matrix] = typed_matrix
     else
         beta1 === nothing && throw(ArgumentError("Linear6DSpec requires either matrix or beta1"))
         dmu === nothing && throw(ArgumentError("Linear6DSpec requires either matrix or dmu"))
+        # Each exit parameter defaults to its entrance partner, the entrance
+        # ones to zero; `nothing` is the "not given" sentinel so that the
+        # matrix branch above can tell a given keyword from a default.
+        z3 = (zero(T), zero(T), zero(T))
+        z4 = (zero(T), zero(T), zero(T), zero(T))
+        beta2 = something(beta2, beta1)
+        alpha1 = something(alpha1, z3)
+        alpha2 = something(alpha2, alpha1)
+        zeta1 = something(zeta1, z4)
+        eta1 = something(eta1, z4)
+        R1 = something(R1, z4)
+        zeta2 = something(zeta2, zeta1)
+        eta2 = something(eta2, eta1)
+        R2 = something(R2, R1)
         params[:beta1] = _linear6d_tuple(beta1, 3, T)
         params[:beta2] = _linear6d_tuple(beta2, 3, T)
         params[:alpha1] = _linear6d_tuple(alpha1, 3, T)
@@ -98,7 +137,15 @@ Base.Matrix(elem::Linear6D{M,T}) where {M,T} =
 
 function Linear6D(spec::ElementSpec{:linear6d},
                   method::AbstractTrackingMethod=tracking_method(spec))
-    matrix = hasparam(spec, :matrix) ? param(spec, :matrix) : _linear6d_matrix_from_optics(spec)
+    # A raw spec carrying both forms is refused here as the constructor refuses
+    # them: the matrix would win and the optics keys would never be read.
+    stored_optics = [k for k in _LINEAR6D_OPTICS_KEYS if hasparam(spec, k)]
+    if hasparam(spec, :matrix)
+        isempty(stored_optics) || throw(_linear6d_both_forms(stored_optics))
+        matrix = param(spec, :matrix)
+    else
+        matrix = _linear6d_matrix_from_optics(spec)
+    end
     # `numeric_type(spec)`, the one rule of every kind: the stored type of a
     # `Linear6DSpec{T}`, else the Float64-floor promotion of the stored
     # parameters, so an integer matrix still becomes Float64 and a dual number
@@ -248,21 +295,43 @@ function _minv66(A::NTuple{36,T}) where {T}
 end
 
 function _linear6d_matrix_from_optics(spec::ElementSpec{:linear6d})
+    # The raw form's reads mirror the friendly constructor: beta1 and dmu are
+    # what the optics form needs (refused by name together when absent), the
+    # entrance parameters take the schema's declared defaults
+    # (`_declared_param`), and each exit parameter defaults to its entrance
+    # partner, as the schema states. A raw spec died here with a KeyError on
+    # `beta2` until the 2026-10-18 audit (F-165, the F-93 class).
+    (hasparam(spec, :beta1) && hasparam(spec, :dmu)) || throw(ArgumentError(
+        "ElementSpec{:linear6d} needs either matrix or both beta1 and dmu (the optics " *
+        "form); it has $(join(string.(filter(k -> hasparam(spec, k), (:beta1, :dmu))), ", ")) " *
+        "of the two (see construction_help(Linear6DSpec))"))
+    partner(key, fallback) = hasparam(spec, key) ? param(spec, key) : fallback
     beta1 = param(spec, :beta1)
-    beta2 = param(spec, :beta2)
-    alpha1 = param(spec, :alpha1)
-    alpha2 = param(spec, :alpha2)
     dmu = param(spec, :dmu)
+    # The entrance parameters default to zeros IN THE OPTICS FORM, the exit
+    # ones to their partners; neither is a schema default, because the kind's
+    # other form (a stored matrix) has no such parameter at all and the
+    # validator passes every declared default beside the example, which the
+    # two-forms refusal would reject. The schema states both rules in words.
+    alpha1 = partner(:alpha1, (0, 0, 0))
+    zeta1 = partner(:zeta1, (0, 0, 0, 0))
+    eta1 = partner(:eta1, (0, 0, 0, 0))
+    R1 = partner(:R1, (0, 0, 0, 0))
+    beta2 = partner(:beta2, beta1)
+    alpha2 = partner(:alpha2, alpha1)
+    zeta2 = partner(:zeta2, zeta1)
+    eta2 = partner(:eta2, eta1)
+    R2 = partner(:R2, R1)
     # The promotion has to span EVERY optics parameter that reaches the matrix,
     # not just the Twiss block: it used to cover beta/alpha/dmu only, so a Dual
     # or Complex zeta/eta/R died at the `_linear6d_tuple(..., T)` conversions
     # below with `Float64(::Dual)`. Unreachable through the friendly
     # constructor, which pre-converts, but reachable through a raw `ElementSpec`
     # -- which is the documented flexible form (2026-08-05_b audit, U9-6).
-    T = promote_type(map(typeof, (beta1..., beta2..., alpha1..., alpha2..., dmu...,
-                                  param(spec, :zeta1)..., param(spec, :eta1)...,
-                                  param(spec, :R1)..., param(spec, :zeta2)...,
-                                  param(spec, :eta2)..., param(spec, :R2)...))...)
+    # `numeric_type(spec)` is the floor (Float64 for an all-integer raw spec).
+    T = promote_type(numeric_type(spec),
+                     map(typeof, (beta1..., beta2..., alpha1..., alpha2..., dmu...,
+                                  zeta1..., eta1..., R1..., zeta2..., eta2..., R2...))...)
     B = _zero66(T)
     for i in 1:3
         s = sin(T(dmu[i]))
@@ -278,12 +347,12 @@ function _linear6d_matrix_from_optics(spec::ElementSpec{:linear6d})
                   sqrt(T(beta1[i]) / T(beta2[i])) * (c - T(alpha2[i]) * s))
     end
 
-    zeta1 = _linear6d_tuple(param(spec, :zeta1), 4, T)
-    eta1 = _linear6d_tuple(param(spec, :eta1), 4, T)
-    R1 = _linear6d_tuple(param(spec, :R1), 4, T)
-    zeta2 = _linear6d_tuple(param(spec, :zeta2), 4, T)
-    eta2 = _linear6d_tuple(param(spec, :eta2), 4, T)
-    R2 = _linear6d_tuple(param(spec, :R2), 4, T)
+    zeta1 = _linear6d_tuple(zeta1, 4, T)
+    eta1 = _linear6d_tuple(eta1, 4, T)
+    R1 = _linear6d_tuple(R1, 4, T)
+    zeta2 = _linear6d_tuple(zeta2, 4, T)
+    eta2 = _linear6d_tuple(eta2, 4, T)
+    R2 = _linear6d_tuple(R2, 4, T)
 
     return _mmul66(
         _mmul66(_mmul66(_mmul66(_mmul66(_mzeta66(zeta2), _meta66(eta2)), _mR66(R2)), B),
@@ -351,18 +420,18 @@ end
         matrix=ParamMeta(meaning="explicit canonical-symplectic 6x6 transfer matrix, or length-36 row-major collection"),
         beta1=ParamMeta(meaning="initial beta functions for optics construction"),
         beta2=ParamMeta(meaning="final beta functions for optics construction; defaults to beta1"),
-        alpha1=ParamMeta(default=(0, 0, 0), meaning="initial alpha functions"),
-        alpha2=ParamMeta(default=(0, 0, 0), meaning="final alpha functions; defaults to alpha1"),
+        alpha1=ParamMeta(meaning="initial alpha functions for optics construction; defaults to (0, 0, 0) in the optics form (no schema default: the matrix form has no such parameter, and matrix beside any optics keyword is refused)"),
+        alpha2=ParamMeta(meaning="final alpha functions for optics construction; defaults to alpha1 (the constructor and the raw form alike, so no literal default is declared)"),
         dmu=ParamMeta(meaning="phase advances in radians"),
-        zeta1=ParamMeta(default=(0, 0, 0, 0), meaning="initial crab dispersion coefficients"),
-        eta1=ParamMeta(default=(0, 0, 0, 0), meaning="initial momentum dispersion coefficients"),
-        R1=ParamMeta(default=(0, 0, 0, 0), meaning="initial x-y coupling coefficients"),
-        zeta2=ParamMeta(default=(0, 0, 0, 0), meaning="final crab dispersion coefficients"),
-        eta2=ParamMeta(default=(0, 0, 0, 0), meaning="final momentum dispersion coefficients"),
-        R2=ParamMeta(default=(0, 0, 0, 0), meaning="final x-y coupling coefficients"),
+        zeta1=ParamMeta(meaning="initial crab dispersion coefficients; defaults to zeros in the optics form (see alpha1). " * _CANONICAL_DISPERSION_NOTE),
+        eta1=ParamMeta(meaning="initial momentum dispersion coefficients; defaults to zeros in the optics form (see alpha1). " * _CANONICAL_DISPERSION_NOTE),
+        R1=ParamMeta(meaning="initial x-y coupling coefficients; defaults to zeros in the optics form (see alpha1)"),
+        zeta2=ParamMeta(meaning="final crab dispersion coefficients; defaults to zeta1. " * _CANONICAL_DISPERSION_NOTE),
+        eta2=ParamMeta(meaning="final momentum dispersion coefficients; defaults to eta1. " * _CANONICAL_DISPERSION_NOTE),
+        R2=ParamMeta(meaning="final x-y coupling coefficients; defaults to R1"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = Linear6DSpec(matrix=Matrix{Float64}(I, 6, 6))
-    construction_help = "Friendly constructor: Linear6DSpec{T}(; matrix, tracking_method=Symplectic6DMap(), kwargs...), where matrix must be canonical symplectic, or Linear6DSpec{T}(; beta1, dmu, beta2=beta1, alpha1=(0,0,0), alpha2=alpha1, zeta1=(0,0,0,0), eta1=(0,0,0,0), R1=(0,0,0,0), zeta2=zeta1, eta2=eta1, R2=R1, tracking_method=Symplectic6DMap(), kwargs...). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form Linear6DSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "Friendly constructor: Linear6DSpec{T}(; matrix, tracking_method=Symplectic6DMap(), kwargs...), where matrix must be canonical symplectic, or Linear6DSpec{T}(; beta1, dmu, beta2=beta1, alpha1=(0,0,0), alpha2=alpha1, zeta1=(0,0,0,0), eta1=(0,0,0,0), R1=(0,0,0,0), zeta2=zeta1, eta2=eta1, R2=R1, tracking_method=Symplectic6DMap(), kwargs...). The two forms are exclusive: matrix beside any optics keyword is refused by name, at construction and when a raw spec carrying both compiles. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form Linear6DSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end

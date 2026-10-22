@@ -447,8 +447,10 @@ if _HAS_CUDA
 				#
 				# i.e. the excitation was perfectly coherent and its variance too
 				# large by a factor of `turns`. The CPU sibling never had this: its
-				# contextless path calls the context-free `fusedTrack`, which draws
-				# from a stateful RNG, so its turns differ by construction.
+				# contextless path calls the context-free `fusedTrack`, which drew
+				# from a stateful RNG, so its turns differed by construction --
+				# and since the 2026-10-18 audit (F-95) refuses an excitation draw
+				# without a context outright, damping alone staying deterministic.
 				base_ctx = TrackingContext()
 				for turn in 1:turns
 					turn_ctx = with_turn(base_ctx, base_ctx.turn + Int64(turn - 1))

@@ -386,16 +386,22 @@ held constant, not $L\to0$ at fixed $k_s$.
 
 **$k_s=0$ at finite $L$** is the exact drift, Section 6.
 
-**Over-momentum particles throw, matching the drift.** If
+**Over-momentum particles die, matching the drift.** If
 $P_x^2+P_y^2>(1+\delta)^2$ the particle is moving transversely faster than its
-total momentum allows and $p_s$ is imaginary. `_lattice_drift` raises a
-`DomainError` in exactly this situation, so the solenoid does too and the
-behaviour is uniform across the lattice. Worth recording rather than fixing
-here: with the aperture work in place a particle that goes over-momentum through
-a numerical blowup now *crashes the run* instead of being marked non-finite and
-counted as a loss. That is a pre-existing property of every exact map in the
-code, not something the solenoid introduces, and closing it would be a decision
-about `sqrt` guards across all of `src/elements/`.
+total momentum allows and $p_s$ is imaginary. Every longitudinal-momentum
+radicand of the lattice family (`_ps_or_dead`, `src/elements/lattice_magnets.jl`:
+the two drifts, the bend, the pole-face maps, the hard-edge dipole fringe, both
+solenoid maps, the patch) returns NaN there, so the particle is *dead* in the
+loss design's sense -- a non-finite coordinate (`allow_lost_particles`,
+`count_dead`) -- the run continues over the survivors and the task reports the
+loss as unattributed at the end of `execute!`. Until the 2026-10-18
+comprehensive audit (F-167) `_lattice_drift` raised a `DomainError` in exactly
+this situation and the solenoid did the same, so one particle that went
+over-momentum through a numerical blowup crashed the run on the CPU and aborted
+the launch on the device; this paragraph recorded that as a pre-existing
+property of every exact map pending a decision about `sqrt` guards across
+`src/elements/`, and that decision was taken with the audit's fix batch
+(the strong beam's virtual drifts keep their `sqrt` until their own repair).
 
 **Dead particles propagate.** A particle already carrying `NaN` produces `NaN`
 throughout — every operation in the map is arithmetic on the incoming values,

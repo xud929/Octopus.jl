@@ -124,8 +124,43 @@ function _cross_backend_rounding(op::ThinMultipole)
         why="the kick recurrence `(tr x - ti y)/n` from the sextupole order up, and `kn tr - ks ti` with both strengths set, fuse on the device where the host rounds twice (27 and 11401 of 1e5 particles part in px for a thin sextupole and a normal-plus-skew quadrupole; 1 ulp of scale); x, y, z, pz are never written")
 end
 
+"""
+    _THIN_RUNTIME_KEYS
+    _refuse_undeclared_thin_keys(spec::ElementSpec)
+
+The keys `ThinMultipole(spec)` reads for every one of the seven thin kinds it
+compiles, and the refusal of one a kind does not declare. Each kind declares
+its own subset (a kicker its kick, a thin multipole its strengths), so a key
+read through the shared runtime but absent from the kind's schema was warned
+about as "NOT being tracked" at construction and then tracked: until the
+2026-10-18 comprehensive audit `HKickerSpec(hkick=0.0, knl=(0.0, 0.1))` kicked
+px by -1e-4 at x = 1e-3 and `ThinQuadrupoleSpec(hkick=1e-3)` by 1e-3 (F-92;
+U19-2). Refused by name here, at compile, because the kind IS its schema: a
+kicker with a quadrupole kick is a thin multipole, not a kicker. The suite
+derives the thin kinds from the registry and requires every key of this list
+to be declared by at least one of them, so the list cannot drift from the
+schemas; a kind outside the registry is left alone.
+"""
+const _THIN_RUNTIME_KEYS = (:knl, :ksl, :hkick, :vkick)
+
+function _refuse_undeclared_thin_keys(spec::ElementSpec)
+    meta = get(ELEMENT_META_BY_KIND, kind(spec), nothing)
+    meta === nothing && return nothing
+    params = getfield(spec, :params)
+    undeclared = [k for k in _THIN_RUNTIME_KEYS if haskey(params, k) && !haskey(meta.parameters, k)]
+    isempty(undeclared) && return nothing
+    own = [k for k in _THIN_RUNTIME_KEYS if haskey(meta.parameters, k)]
+    throw(ArgumentError(
+        "ElementSpec{:$(kind(spec))} carries $(join(string.(undeclared), ", ")), which the " *
+        "shared thin-element runtime reads but this kind does not declare, so the value " *
+        "would be tracked as a $(kind(spec)) parameter it is not; a $(kind(spec)) takes " *
+        "$(join(string.(own), ", ")) -- build a ThinMultipoleSpec for multipole strengths " *
+        "or a kicker kind (HKickerSpec, VKickerSpec, KickerSpec) for a steering kick"))
+end
+
 function ThinMultipole(spec::ElementSpec,
                        method::AbstractTrackingMethod=tracking_method(spec))
+    _refuse_undeclared_thin_keys(spec)
     T = numeric_type(spec)
     knl_stored, ksl_stored = _thin_strengths(spec)
     knraw = collect(T, knl_stored)

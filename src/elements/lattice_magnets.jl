@@ -173,6 +173,40 @@ have no `fma`.
 end
 @inline _diff_of_products(a, b, c, d) = a * b - c * d
 
+"""
+    _ps_or_dead(radicand)
+    _dead(x, px, y, py, z, pz)
+
+The longitudinal momentum `p_s = sqrt((1 + p_z)^2 - p_x^2 - p_y^2)` of a body
+or face map, NaN when the radicand is negative, and the six coordinates as NaN
+of their own types. A particle whose transverse momentum exceeds its total
+momentum has no real `p_s` and no forward trajectory, and the loss design
+defines a dead particle by a non-finite coordinate (`is_live`,
+`allow_lost_particles`, src/beam/Beam.jl), counts it (`count_dead`) and
+reports an unattributed loss at the end of every `execute!`. Until the
+2026-10-18 comprehensive audit every such radicand went to `sqrt` unguarded,
+so one unphysical particle threw a nameless `DomainError` from the CPU kernel
+and a `KernelException` from the device, aborting the whole run where the loss
+machinery could not see it (F-167, U17-9; `_delta_from_pt` had the same repair
+in 2026-08-05_b U14-3, and docs/theory/solenoid.md section 9.1 had recorded the
+throw as a property pending exactly this decision). `real(radicand)`, as
+there: a complex-step argument must not reach a complex comparison. A NaN that
+enters a later `sqrt`, `asin` or `atan` stays NaN without a throw, so the dead
+particle passes through the rest of the element and the line (every map
+returns NaN for NaN: the suite's "a dead particle stays dead" pins). Used by
+the two drifts, the bend (the particle's and the design orbit's radicands),
+the pole-face rotation and wedge, the hard-edge dipole fringe, both solenoid
+maps and the patch, so the lattice family answers alike; the strong beam's
+virtual drifts keep their own `sqrt` until their repair.
+"""
+@inline _ps_or_dead(r) = real(r) < 0 ? oftype(r, NaN) : sqrt(r)
+# The same for the momentum rotation angles of the bend's and the wedge's
+# direct branches: `asin` of a sine beyond 1 (a particle or design orbit turned
+# past the plane) is the dead particle, not a DomainError.
+@inline _asin_or_dead(t) = abs(real(t)) > 1 ? oftype(t, NaN) : asin(t)
+@inline _dead(x, px, y, py, z, pz) =
+    (oftype(x, NaN), oftype(px, NaN), oftype(y, NaN), oftype(py, NaN), oftype(z, NaN), oftype(pz, NaN))
+
 # Two-argument arctangent that also admits complex-step arguments: Base has no
 # `atan(::Complex, ::Complex)`, and the suite differentiates the bend by complex
 # step. Wherever real(x) > 0 the one-argument form is the same function, and
@@ -208,7 +242,7 @@ end
         end
         return acc
     end
-    return asin(t) - t
+    return _asin_or_dead(t) - t
 end
 
 @inline function _curv_sin_excess(h, L)
@@ -223,19 +257,101 @@ end
     return (sin(u) - u) / h
 end
 
+# `(sin u - u cos u)/h`, `u = hL`: the excess of the frame's sine over its
+# cosine-projected length, O(u^3/3), formed without subtracting two numbers
+# near `u` -- the alternating series `L u^2 sum_{k>=1} (-1)^(k+1) 2k u^(2k-2)/(2k+1)!`
+# to `u^20` for `|u| < 1` (the next term is below `2e-19` of the leading one at
+# the seam), the direct difference beyond, where it keeps its digits. Used by
+# the bend's design excess near b0 = 2h (`_bend_design_excess`).
+@inline function _sin_minus_ucos(h, L)
+    u = h * L
+    T = typeof(u)
+    u2 = u * u
+    if abs(u) < real(T)(1)
+        return L * u2 / 3 * (one(T) - u2 / 10 * (one(T) - u2 / 28 * (one(T) - u2 / 54 * (one(T) - u2 / 88 *
+               (one(T) - u2 / 130 * (one(T) - u2 / 180 * (one(T) - u2 / 238 * (one(T) - u2 / 304 *
+               (one(T) - u2 / 378)))))))))
+    end
+    return (sin(u) - u * cos(u)) / h
+end
+
+"""
+    _bend_design_excess(h, b0, L, kappa, C1, S1, s, c, pxd, psd)
+
+The design orbit's share of the bend's path-length excess (see `_lattice_bend`),
+`asin(pxd) - kappa L = kappa S1 + (asin(pxd) - pxd)` with `kappa = h - b0`,
+`pxd = kappa C1` the sine of the design orbit's exit angle, `S1 = C1 - L`. It
+vanishes identically at `kappa = 0` (the sector bend, exact by construction)
+AND at `kappa = -h`, i.e. `b0 = 2h`: a circle of half the frame's radius,
+internally tangent to it, has exactly the frame's arc length (`asin(-sin u) =
+-u` for `|u| <= pi/2`). There the two terms, each O(u^3/6) and rounded at eps
+of themselves -- from `|pxd| = 0.4` on `_asin_excess` is the direct
+`asin(t) - t`, rounded at eps(asin t) -- cancelled to a residue that landed on
+z: measured against the same kernel in BigFloat over the unit-K sweep, in ulps
+of max(|z|, |E|), 4.8 / 56.7 / 112 / 757 / 1073 / 2136 at h = 0.3, b0 = 2h and
+L = 0.5 / 1 / 1.3 / 1.4 / 2 / 2.5; 461 / 861 at b0 = 1.99h / 2.01h, L = 2;
+on the frame's axis at b0 = 2h the kernel returned z - z_in = 5.8e-17 where the
+exact value is 0 (2026-10-18 comprehensive audit, F-161, U17-2; the first
+cancellation, at kappa = 0, was unit K's 2026-10-17 repair).
+
+Within `|2h - b0| <= |h|/16` and `|hL| < pi/2` the excess is formed from the
+quantities that make it small. With `eps = 2h - b0 = h + kappa`, `s = sin u`,
+`c = cos u` and `psd = sqrt(1 - pxd^2)`:
+
+    asin(pxd) - kappa L = [asin(s) - asin(-pxd)] - eps L            (asin s = u)
+    asin(s) - asin(-pxd) = asin(y),  y = eps b0 C1^2 / den,  den = s psd - pxd c
+
+by the difference identity `asin p - asin q = asin(p sqrt(1-q^2) - q sqrt(1-p^2))`
+(both arguments of one sign here), its numerator `p^2 - q^2 = (s + pxd)(s - pxd)
+= (eps C1)(b0 C1)`. Then, splitting `asin y = y + (asin y - y)`,
+
+    design = (asin y - y) + eps (R - L),   R = b0 C1^2 / den,
+    R - L  = b0 C1 [G - eps L h C1^2 / (psd + c)] / den,   G = (sin u - u cos u)/h,
+
+using `b0 C1^2 - L den = C1 [b0 (C1 - L c) - L h (psd - c)]` and `psd - c =
+(s - pxd)(s + pxd)/(psd + c) = eps b0 C1^2/(psd + c)`. Every factor is a small
+quantity formed as such (`_asin_excess` of a small y, `_sin_minus_ucos` for G);
+nothing cancels, and at `eps = 0` the result is exactly zero. The band is
+narrow on purpose: the form's own rounding, eps |eps| tan(u)/h, grows with
+|eps| while the direct form's does not depend on it, and outside the band the
+direct form measures 2-9 ulps (b0 = 1.6h, 2.4h). Measured after the repair,
+same sweep and metric: see the suite's pins (F-161 testset).
+"""
+@inline function _bend_design_excess(h::T, b0::T, L::T, kappa, C1, S1, s, c, pxd, psd) where {T}
+    eps_b = h + kappa                       # 2h - b0, exact by Sterbenz when small
+    if abs(real(eps_b)) <= abs(real(h)) / 16 && abs(real(h * L)) < real(T)(pi) / 2
+        den = s * psd - pxd * c             # sin u sqrt(1 - pxd^2) - pxd cos u, both terms of one sign
+        y = eps_b * b0 * C1 * C1 / den
+        G = _sin_minus_ucos(h, L)
+        RmL = b0 * C1 * (G - eps_b * L * h * C1 * C1 / (psd + c)) / den
+        return _asin_excess(y) + eps_b * RmL
+    end
+    return kappa * S1 + _asin_excess(pxd)
+end
+
 @inline function _lattice_drift(::Val{false}, h::T, L::T, x, px, y, py, z, pz) where {T}
-    ps0 = sqrt((1 + pz)^2 - px * px - py * py)
+    ps0 = _ps_or_dead((1 + pz)^2 - px * px - py * py)
     return x + px / ps0 * L, px, y + py / ps0 * L, py,
            z - L * _pt2_fused(px, py) / (ps0 * ((1 + pz) + ps0)), pz
 end
 
 @inline function _lattice_drift(::Val{true}, h::T, L::T, x, px, y, py, z, pz) where {T}
-    ps0 = sqrt((1 + pz)^2 - px * px - py * py)
+    ps0 = _ps_or_dead((1 + pz)^2 - px * px - py * py)
     c, s = cos(h * L), sin(h * L)
     C1 = _curv_sin(h, L)
     C2 = _curv_vers(h, L)
     pxn = px * c + ps0 * s
     psn = -px * s + ps0 * c
+    # The momentum along the exit normal must be forward: `psn <= 0` means the
+    # straight trajectory meets the exit plane behind the particle (it leaves
+    # through the frame's outer side), and the closed forms below returned a
+    # finite wrong exit for it -- x = -19.8 m at h = 0.5, L = 1, px = 0.9, and
+    # x = -22.03 m on axis past a quarter turn of frame rotation, silently
+    # (2026-10-18 audit, F-163). Dead, the loss design's answer (`_dead`); the
+    # quarter turn itself is refused at compile (`_lattice_magnet`). `real`,
+    # as the bend's branch tests, so complex-step differentiation keeps one
+    # branch; a NaN `ps0` (an over-momentum particle) lands here too.
+    real(psn) > 0 || return _dead(x, px, y, py, z, pz)
     xn = (ps0 * C2 + px * C1 + x * ps0) / psn
     w2 = (1 + pz)^2 - py * py
     Delta = (-px * C2 + ps0 * C1 + xn * pxn - x * px) / w2
@@ -269,7 +385,7 @@ Exact sector bend: frame curvature `h`, dipole strength `b0`, independent.
 sector bend on its design orbit.
 """
 @inline function _lattice_bend(h::T, b0::T, L::T, x, px, y, py, z, pz) where {T}
-    ps0 = sqrt((1 + pz)^2 - px * px - py * py)
+    ps0 = _ps_or_dead((1 + pz)^2 - px * px - py * py)
     w2 = (1 + pz)^2 - py * py
     C1 = _curv_sin(h, L)
     C2 = _curv_vers(h, L)
@@ -292,7 +408,7 @@ sector bend on its design orbit.
     pxd = kappa * C1
     dp = px * c + s * ((pz * (2 + pz) - _pt2_fused(px, py)) / (1 + ps0)) - b0 * h * x * C1
     pxn = pxd + dp
-    psn = sqrt(w2 - pxn * pxn)
+    psn = _ps_or_dead(w2 - pxn * pxn)
     den = psn + psr
     U = psn * s - pxn * c
     V = pxn * s + psn * c
@@ -327,7 +443,7 @@ sector bend on its design orbit.
         dpx0 = -b0 * q + h * ps0
         w = sqrt(w2)
         xn = x + ((psn - ps0) + px * s + dpx0 * C2) / b0
-        Δ = (h * L - (asin(pxn / w) - asin(px / w))) / b0
+        Δ = (h * L - (_asin_or_dead(pxn / w) - _asin_or_dead(px / w))) / b0
     end
     # The path-length excess E = (1 + pz) Δ - L, so z -> z - E. With
     # phi = asin(pxn/w) - asin(px/w) the in-plane momentum rotation and
@@ -336,7 +452,8 @@ sector bend on its design orbit.
     # phi_d = asin(kappa C1) the design orbit's rotation. The first term is the
     # design orbit's own excess, -(kappa S1 + (asin(pxd) - pxd))/b0 with
     # S1 = C1 - L (zero on a sector bend with h = b0; the straight-frame bend's
-    # (asin(b0 L) - b0 L)/b0); the second is the particle's departure, the
+    # (asin(b0 L) - b0 L)/b0; formed from small quantities near its second
+    # zero b0 = 2h by `_bend_design_excess`, F-161); the second is the particle's departure, the
     # angle of (psn + i pxn)(psd - i pxd)(ps0 - i px) formed from `dp` so the
     # near-equal products never meet; the third is small by itself. Where the
     # field is weaker than half the frame's curvature the bend is a curved
@@ -349,11 +466,11 @@ sector bend on its design orbit.
     # over the sweep (h = b0 = 0.3, L = 0.5), 41519 at L = 2.
     if abs(real(b0)) > abs(real(h)) / 2
         S1 = _curv_sin_excess(h, L)
-        psd = sqrt(one(T) - pxd * pxd)
+        psd = _ps_or_dead(one(T) - pxd * pxd)
         Pi = dp * psd + pxd * (((py * py - pz * (2 + pz)) + dp * (pxn + pxd)) / (psd + psn))
         Pr = psn * psd + pxn * pxd
         dphi = _atan2(_diff_of_products(Pi, ps0, Pr, px), Pr * ps0 + Pi * px)
-        E = -(kappa * S1 + _asin_excess(pxd)) / b0 - dphi / b0 + pz * Δ
+        E = -_bend_design_excess(h, b0, L, kappa, C1, S1, s, c, pxd, psd) / b0 - dphi / b0 + pz * Δ
     else
         E = (1 + pz) * Δ - L
     end
@@ -630,7 +747,7 @@ drifted onto it: `s* = x tan(A) / PT` with `PT = 1 - px tan(A) / ps`.
 """
 @inline function _rot_xz(A::T, x, px, y, py, z, pz) where {T}
     A == 0 && return x, px, y, py, z, pz
-    ps = sqrt((1 + pz)^2 - px * px - py * py)
+    ps = _ps_or_dead((1 + pz)^2 - px * px - py * py)
     t = tan(A)
     PT = 1 - px * t / ps
     sstar = x * t / PT
@@ -645,9 +762,9 @@ limit `L -> 0`, `h -> inf`, `A = hL` fixed. Degenerates to `_rot_xz` at `b1 = 0`
 @inline function _wedge(A::T, b1::T, x, px, y, py, z, pz) where {T}
     b1 == 0 && return _rot_xz(A, x, px, y, py, z, pz)
     A == 0 && return x, px, y, py, z, pz
-    ps = sqrt((1 + pz)^2 - px * px - py * py)
+    ps = _ps_or_dead((1 + pz)^2 - px * px - py * py)
     pxn = px * cos(A) + (ps - b1 * x) * sin(A)
-    psn = sqrt((1 + pz)^2 - pxn * pxn - py * py)
+    psn = _ps_or_dead((1 + pz)^2 - pxn * pxn - py * py)
     xn = x * cos(A) + (x * px * sin(2A) + sin(A)^2 * (2 * x * ps - b1 * x * x)) /
                       (psn + ps * cos(A) - px * sin(A))
     # Δ = (A + asin(px/w) - asin(pxn/w)) / b1 is an O(b1) angle assembled from
@@ -676,7 +793,7 @@ limit `L -> 0`, `h -> inf`, `A = hL` fixed. Degenerates to `_rot_xz` at `b1 = 0`
         Δ = G * _atan_over(b1 * G)
     else
         w = sqrt((1 + pz)^2 - py * py)
-        Δ = (A + asin(px / w) - asin(pxn / w)) / b1
+        Δ = (A + _asin_or_dead(px / w) - _asin_or_dead(pxn / w)) / b1
     end
     return xn, pxn, y + py * Δ, py, z - Δ * (1 + pz), pz
 end
@@ -699,7 +816,7 @@ of `y_new = y + B y_new^2 / 2`, written cancellation-free.
     b1 == 0 && return x, px, y, py, z, pz
     b = σ * b1
     p = 1 + pz
-    ps = sqrt(p * p - px * px - py * py)
+    ps = _ps_or_dead(p * p - px * px - py * py)
     xp = px / ps
     yp = py / ps
     fg = fint * hgap
@@ -983,16 +1100,44 @@ end
 
 const _FRINGE_MODES = (:none, :multipole, :soft_quad, :all)
 
-function _fringe_bits(mode::Symbol, edge::Bool)
+function _fringe_bits(mode::Symbol, bend_fringe::Bool, geometry::Bool)
     mode in _FRINGE_MODES || throw(ArgumentError(
         "fringe must be one of $(_FRINGE_MODES); got $(repr(mode))"))
     bits = 0
     (mode === :multipole || mode === :all) && (bits |= FRINGE_MULTIPOLE)
     (mode === :soft_quad || mode === :all) && (bits |= FRINGE_SOFT_QUAD)
-    # The hard-edge dipole fringe is Maxwell-required rather than an edge-angle
-    # effect, so it follows the same switch instead of being a separate opt-in.
-    edge && (bits |= FRINGE_DIPOLE_EDGE | FRINGE_BEND)
+    # Two switches, as PTC has them. `bend_fringe` is PTC's BEND_FRINGE: the
+    # Maxwell-required hard-edge dipole fringe (FINT/HGAP) at both faces and
+    # the dipole term's exclusion from the multipole fringe, a bend's by
+    # default and never a straight magnet's. The pole-face geometry (exact
+    # rotation, face curvature, wedge) is `geometry`, which follows the
+    # pole-face parameters on every kind. One switch carried both until the
+    # 2026-10-18 audit (F-160), so a straight magnet with a dipole component
+    # ran the dipole fringe PTC never applies to it.
+    bend_fringe && (bits |= FRINGE_BEND)
+    geometry && (bits |= FRINGE_DIPOLE_EDGE)
     return bits
+end
+
+"""
+    _warn_fringe_integrals_without_bend_fringe(spec, bend_fringe, fint1, fint2, hgap1, hgap2)
+
+`fint`/`hgap` feed only the hard-edge dipole fringe that `bend_fringe`
+switches; set on a kind whose declared default leaves that switch off (the
+straight kinds, F-160) and with `bend_fringe` not given, they would be read
+and do nothing -- a silently ignored non-default request -- so the compile
+warns once per kind and names both remedies. Given either way, silence.
+"""
+function _warn_fringe_integrals_without_bend_fringe(spec::ElementSpec, bend_fringe::Bool,
+                                                    fint1, fint2, hgap1, hgap2)
+    (bend_fringe || hasparam(spec, :bend_fringe)) && return nothing
+    all(iszero, (fint1, fint2, hgap1, hgap2)) && return nothing
+    @warn "ElementSpec{$(repr(kind(spec)))}: fint1/fint2/hgap1/hgap2 feed the hard-edge dipole " *
+          "fringe, which bend_fringe switches and which is off by default on this kind (PTC's " *
+          "BEND_FRINGE is a bend's); they are read and do nothing here. Set bend_fringe=true " *
+          "to apply the fringe, or bend_fringe=false to say the integrals are deliberate " *
+          "metadata." kind = kind(spec) fint1 = fint1 fint2 = fint2 hgap1 = hgap1 hgap2 = hgap2 maxlog = 1 _id = Symbol(:lattice_fint_without_bend_fringe_, kind(spec))
+    return nothing
 end
 
 """
@@ -1070,8 +1215,49 @@ function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Ty
     curved_order >= 1 || throw(ArgumentError("curved_order must be positive, got $curved_order"))
     psi = combined ? _curved_potential_coeffs(T, kn, ks, hc, curved_order) : ()
     mc = combined ? curved_order : 0
-    edge = Bool(getparam(spec, :bend_fringe, true))
-    bits = _fringe_bits(Symbol(getparam(spec, :fringe, :none)), edge)
+    # A curved-frame body step may not turn the frame a quarter turn or more:
+    # the integrable part of every b0 = 0 element -- a curved drift, a curved
+    # quadrupole, a drift-kick bend -- is `_lattice_drift(Val(true))`, whose
+    # straight trajectory must meet the exit plane in FRONT of the particle,
+    # and from |h d| = pi/2 on it never does (the on-axis exit landed at
+    # x = -22.03 m for h = 1.6, L = 1, silently, until the 2026-10-18 audit;
+    # F-163). Refused here by name. A pure drift takes its length in ONE exact
+    # step whatever nst; a loaded body steps by L/nst (half of it per Strang
+    # drift, _FR_D1 of it per Forest-Ruth outer drift). The exact bend
+    # (b0 != 0) keeps its direct-form branch for the regime.
+    if iszero(b0) && !iszero(hc)
+        single = isempty(kn) && isempty(psi)
+        scale = order == 2 ? 0.5 : _FR_D1
+        dmax = single ? L : scale * L / nst
+        turn = abs(real(hc * dmax))
+        if turn >= real(T)(pi) / 2
+            needed = floor(Int, abs(real(hc * scale * L)) / (real(T)(pi) / 2)) + 1
+            throw(ArgumentError(
+                "ElementSpec{:$(kind(spec))}: the curved frame turns by |h d| = $(turn) rad in one " *
+                "body step (h = $(hc), d = $(dmax) of L = $(L)), a quarter turn or more, where a " *
+                "straight trajectory never reaches the exit face in front of the particle; a curved " *
+                "drift body needs |h d| < pi/2. " *
+                (single ? "A pure curved drift takes its length in one exact step whatever nst: split it " *
+                          "into drifts of |h L| < pi/2 or give it a field" :
+                          "Give nst >= $(needed) for integrator_order = $(order), or shorten the element") *
+                " (bend_model = :exact keeps a bend's dipole in the exact map, which handles the regime)."))
+        end
+    end
+    # `bend_fringe` is read from the kind's schema (`_declared_param`): the
+    # bend declares it true, the five straight kinds false -- PTC's
+    # BEND_FRINGE is a bend's, and a quadrupole with a dipole component
+    # measured 4.0e-6 to 1.1e-5 from MAD-X PTC with it on, 1.3e-12 with it off
+    # (2026-10-18 audit, F-160). The pole-face geometry follows its own
+    # parameters on every kind (and rides along with the switch, so a bend
+    # compiles to the same bits as before).
+    bend_fringe = Bool(_declared_param(spec, :bend_fringe))
+    e1 = T(getparam(spec, :e1, zero(T))); e2 = T(getparam(spec, :e2, zero(T)))
+    fint1 = T(getparam(spec, :fint1, zero(T))); fint2 = T(getparam(spec, :fint2, zero(T)))
+    hgap1 = T(getparam(spec, :hgap1, zero(T))); hgap2 = T(getparam(spec, :hgap2, zero(T)))
+    hface1 = T(getparam(spec, :hface1, zero(T))); hface2 = T(getparam(spec, :hface2, zero(T)))
+    geometry = bend_fringe || !iszero(e1) || !iszero(e2) || !iszero(hface1) || !iszero(hface2)
+    _warn_fringe_integrals_without_bend_fringe(spec, bend_fringe, fint1, fint2, hgap1, hgap2)
+    bits = _fringe_bits(Symbol(getparam(spec, :fringe, :none)), bend_fringe, geometry)
     hf = Int(getparam(spec, :highest_fringe, 0))
     hf >= 0 || throw(ArgumentError("highest_fringe must be non-negative, got $hf"))
     wc = getparam(spec, :wedge_coeff, (1, 2))
@@ -1079,10 +1265,7 @@ function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Ty
         "wedge_coeff must hold two values, got $(length(wc))"))
     return LatticeMagnet{typeof(method),T,length(kn),order,bits,mc,length(psi),curved}(
         method, L, hc, b0, kn, ks, psi, nst,
-        T(getparam(spec, :e1, zero(T))), T(getparam(spec, :e2, zero(T))),
-        T(getparam(spec, :fint1, zero(T))), T(getparam(spec, :fint2, zero(T))),
-        T(getparam(spec, :hgap1, zero(T))), T(getparam(spec, :hgap2, zero(T))),
-        T(getparam(spec, :hface1, zero(T))), T(getparam(spec, :hface2, zero(T))),
+        e1, e2, fint1, fint2, hgap1, hgap2, hface1, hface2,
         T(getparam(spec, :va, zero(T))), T(getparam(spec, :vs, zero(T))),
         T(wc[1]), T(wc[2]), hf,
         Bool(getparam(spec, :kill_ent_fringe, false)),
@@ -1129,19 +1312,19 @@ const _COMMON_PARAMS = (
 # entry in its own `parameters = merge(_LATTICE_BODY_PARAMS, (...))` call --
 # later keys win, so a curated meaning can never be clobbered by this table.
 const _LATTICE_BODY_PARAMS = (
-    h=ParamMeta(default=0, meaning="reference-frame curvature 1/rho; the frame of any lattice-magnet kind may be curved, a curved drift included. Independent of the dipole strength b0"),
+    h=ParamMeta(default=0, meaning="reference-frame curvature 1/rho; the frame of any lattice-magnet kind may be curved, a curved drift included. Independent of the dipole strength b0. A b0 = 0 body (a curved drift, a curved quadrupole, a drift-kick bend) may not turn its frame a quarter turn or more in one body step, |h d| < pi/2: refused at compile, naming the step count that would do"),
     b0=ParamMeta(default=0, meaning="dipole strength q B0 / P0; independent of the frame curvature h. Read for every lattice-magnet kind by the one shared runtime, so setting it on any kind adds a real dipole field"),
     kn=ParamMeta(default=(), meaning="normal multipole strengths as a positional tuple; index i holds K_{i-1}, so kn[2] is K1. The named kinds fold their defining strengths (k1, k2, ...) into this at construction and use the tuple for measured field errors on top"),
     ks=ParamMeta(default=(), meaning="skew partners of kn"),
     bend_model=ParamMeta(default=:exact, alternatives=(:exact, :drift_kick), meaning="where the dipole sits in the splitting: :exact puts it in the integrable map (no splitting error, exact at nst=1); :drift_kick puts it in the kick, reproducing PTC MODEL=1 at finite nst"),
     curved=ParamMeta(default=nothing, meaning="force the curved or straight body path. `nothing` lets the frame decide, i.e. curved when h != 0. Resolved at compile_runtime and carried in the type, so no curvature test happens inside the tracking kernel. `true` at h = 0 exercises the curved closed form where the straight one also applies; `false` at h != 0 ignores the curvature and warns"),
     curved_order=ParamMeta(default=8, meaning="truncation order of the curved-frame field expansion used by curved multipole bodies (Section 4.4); a convergence parameter, unused when h == 0 or the magnet is a pure dipole"),
-    bend_fringe=ParamMeta(default=true, meaning="pole-face maps (exact rotation, face curvature, FINT/HGAP, wedge) and the Maxwell-required hard-edge dipole fringe. Defaults ON because it is first-order optics whenever e1 or e2 is nonzero: measured J[4,3] moves from 0 to -0.036 at e1=e2=0.1. With perpendicular faces it is purely nonlinear (linear map identical to 0 ulp), but it is still what PTC does and what Maxwell requires. Set false only to obtain the bare integrable map"),
+    bend_fringe=ParamMeta(default=true, meaning="PTC's BEND_FRINGE: the Maxwell-required hard-edge dipole fringe with FINT/HGAP at both faces, and the dipole term's exclusion from the multipole fringe. A bend's by default and a straight magnet's never: the bend kind declares it true, the five straight kinds false, read from the schema at compile (a quadrupole with a dipole component measured 4.0e-6 to 1.1e-5 from MAD-X PTC with it on and 1.3e-12 with it off; 2026-10-18 audit, F-160). With perpendicular faces and no gap it is purely nonlinear (linear map identical to 0 ulp) but still what PTC does and Maxwell requires. The pole-face geometry (exact rotation, face curvature, wedge) is not this switch's: it follows e1, e2, hface1, hface2 on every kind"),
     fringe=_COMMON_PARAMS.fringe,
     highest_fringe=_COMMON_PARAMS.highest_fringe,
-    wedge_coeff=ParamMeta(default=(1, 2), meaning="coefficients of the quadrupole-in-wedge kick applied at an angled pole face, PTC's wedge_coeff. The default (1,2) is what PTC's MAD8_WEDGE branch hardcodes and is its behaviour with fringes off; PTC's other branch reads a module variable left with no initializer, so (0,0) reproduces that. Inactive unless bend_fringe is on, a pole-face angle is nonzero, and the magnet carries a quadrupole component"),
-    e1=ParamMeta(default=0, meaning="entrance pole-face angle"),
-    e2=ParamMeta(default=0, meaning="exit pole-face angle"),
+    wedge_coeff=ParamMeta(default=(1, 2), meaning="coefficients of the quadrupole-in-wedge kick applied at an angled pole face, PTC's wedge_coeff. The default (1,2) is what PTC's MAD8_WEDGE branch hardcodes and is its behaviour with fringes off; PTC's other branch reads a module variable left with no initializer, so (0,0) reproduces that. Inactive unless a pole-face angle is nonzero and the magnet carries a quadrupole component"),
+    e1=ParamMeta(default=0, meaning="entrance pole-face angle; the exact pole-face rotation and the wedge apply whenever it is nonzero, on every kind, whatever bend_fringe"),
+    e2=ParamMeta(default=0, meaning="exit pole-face angle; applied whenever nonzero, as e1"),
     fint1=ParamMeta(default=0, meaning="entrance fringe-field integral"),
     fint2=ParamMeta(default=0, meaning="exit fringe-field integral"),
     hgap1=ParamMeta(default=0, meaning="entrance half gap"),
@@ -1157,10 +1340,17 @@ const _LATTICE_BODY_PARAMS = (
 # Derived, not hand-listed: the authoritative key list IS the table above.
 const _LATTICE_BODY_KEYS = keys(_LATTICE_BODY_PARAMS)
 
+# The straight kinds' `bend_fringe`: the ONE table's entry with the default
+# PTC gives a straight magnet (off), declared once and referenced by the five
+# kinds so the per-kind default cannot drift (F-160). `_lattice_magnet` reads
+# the default from the schema, so declaring it here IS setting it.
+const _STRAIGHT_BEND_FRINGE = ParamMeta(default=false, unit=_LATTICE_BODY_PARAMS.bend_fringe.unit,
+    meaning="PTC's BEND_FRINGE, OFF by default on this straight kind as in PTC (the bend kind declares it on): the Maxwell-required hard-edge dipole fringe with FINT/HGAP and the dipole term's exclusion from the multipole fringe act only when set true. The pole-face geometry (e1, e2, hface1, hface2, wedge) applies whenever set, whatever this switch. " * _LATTICE_BODY_PARAMS.bend_fringe.meaning)
+
 # One shared construction_help sentence naming every body key, concatenated
 # into each kind's help so the metadata validator's mention check holds for
 # all six without six hand-copied enumerations.
-const _LATTICE_BODY_HELP = " Body keys read by the ONE shared lattice-magnet runtime for every kind (drift, quadrupole, sextupole, octupole, multipole, sbend), so any of these is legal and tracked on any of the six -- the kind names the intent, the keys carry the field and geometry: h (frame curvature; a curved drift is real), b0 (dipole strength; a drift given b0 bends), kn and ks (multipole strengths; index i holds K_{i-1}), bend_model (:exact or :drift_kick), curved and curved_order (body-path override and curved-frame truncation order), bend_fringe with pole-face geometry e1, e2, fint1, fint2, hgap1, hgap2, hface1, hface2 and wedge_coeff, fringe with highest_fringe, va, vs (soft-edge quadrupole fringe), kill_ent_fringe, kill_exi_fringe."
+const _LATTICE_BODY_HELP = " Body keys read by the ONE shared lattice-magnet runtime for every kind (drift, quadrupole, sextupole, octupole, multipole, sbend), so any of these is legal and tracked on any of the six -- the kind names the intent, the keys carry the field and geometry: h (frame curvature; a curved drift is real), b0 (dipole strength; a drift given b0 bends), kn and ks (multipole strengths; index i holds K_{i-1}), bend_model (:exact or :drift_kick), curved and curved_order (body-path override and curved-frame truncation order), bend_fringe (PTC's BEND_FRINGE, the hard-edge dipole fringe with fint1, fint2, hgap1, hgap2: on by default for sbend, off on the straight kinds), the pole-face geometry e1, e2, hface1, hface2 and wedge_coeff (applied whenever set, on every kind), fringe with highest_fringe, va, vs (soft-edge quadrupole fringe), kill_ent_fringe, kill_exi_fringe."
 
 # ---------------------------------------------------------------------------
 # Named strength keywords.
@@ -1474,6 +1664,7 @@ end
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = merge(_LATTICE_BODY_PARAMS, (
+        bend_fringe=_STRAIGHT_BEND_FRINGE,
         L=ParamMeta(required=true, meaning="arc length in metres"),
         nst=ParamMeta(default=1, meaning="integration steps; a PURE drift is exact and ignores them, but the shared lattice-magnet runtime reads body strengths on every kind, so a drift given kn/ks content splits and steps like any magnet"),
         integrator_order=ParamMeta(default=2, meaning="unused by a pure drift, which is exact; splits a drift carrying body strengths, as on any magnet"),
@@ -1495,6 +1686,7 @@ end
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = merge(_LATTICE_BODY_PARAMS, (
+        bend_fringe=_STRAIGHT_BEND_FRINGE,
         L=_COMMON_PARAMS.L,
         k1=ParamMeta(default=0, meaning="normal quadrupole strength K1; the normal way to build a quadrupole. Folded into kn[2] at construction"),
         k1s=ParamMeta(default=0, meaning="skew quadrupole strength; folded into ks[2] at construction"),
@@ -1533,6 +1725,7 @@ end
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = merge(_LATTICE_BODY_PARAMS, (
+        bend_fringe=_STRAIGHT_BEND_FRINGE,
         L=_COMMON_PARAMS.L,
         k2=ParamMeta(default=0, meaning="normal sextupole strength K2; the normal way to build a sextupole. Folded into kn[3] at construction"),
         k2s=ParamMeta(default=0, meaning="skew sextupole strength; folded into ks[3] at construction"),
@@ -1571,6 +1764,7 @@ end
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = merge(_LATTICE_BODY_PARAMS, (
+        bend_fringe=_STRAIGHT_BEND_FRINGE,
         L=_COMMON_PARAMS.L,
         k3=ParamMeta(default=0, meaning="normal octupole strength K3; the normal way to build an octupole. Folded into kn[4] at construction"),
         k3s=ParamMeta(default=0, meaning="skew octupole strength; folded into ks[4] at construction"),
@@ -1609,6 +1803,7 @@ end
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = merge(_LATTICE_BODY_PARAMS, (
+        bend_fringe=_STRAIGHT_BEND_FRINGE,
         L=_COMMON_PARAMS.L,
         k0=ParamMeta(default=0, meaning="normal dipole strength K0, i.e. a corrector kick; folded into kn[1] at construction"),
         k0s=ParamMeta(default=0, meaning="skew dipole strength; folded into ks[1] at construction"),
