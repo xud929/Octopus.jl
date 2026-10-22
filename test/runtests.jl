@@ -14490,6 +14490,77 @@ end
 end
 
 
+@testset "An unphysical particle dies instead of aborting the run, and a curved drift refuses a quarter turn per step (F-163, F-167)" begin
+    O = Octopus
+    # Dead as the loss design defines it (`is_live`): any non-finite coordinate;
+    # a map writes NaN into the coordinates it writes and leaves the rest.
+    dead(r) = !all(isfinite, collect(r)) && any(isnan, collect(r))
+    live(r) = all(isfinite, collect(r))
+    # F-167: every longitudinal-momentum radicand of the lattice family marks a
+    # particle whose transverse momentum exceeds its total momentum DEAD (NaN,
+    # the loss design's marker: `is_live`, `allow_lost_particles`) instead of
+    # throwing a DomainError from `sqrt` on the CPU and a KernelException on
+    # CUDA, which aborted the whole run for one particle (2026-10-18 audit,
+    # U17-9; the `_delta_from_pt` precedent of U14-3). The drift, the bend
+    # (particle and design orbit), the pole-face maps, the solenoids and the
+    # patch all answer alike.
+    @test dead(O._lattice_drift(Val(false), 0.0, 1.0, 0.0, 1.5, 0.0, 0.0, 0.0, 0.0))
+    @test dead(O._lattice_drift(Val(true), 0.3, 1.0, 0.0, 1.5, 0.0, 0.0, 0.0, 0.0))
+    @test dead(O._lattice_bend(0.3, -0.3, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    @test dead(O._lattice_bend(0.3, 0.3, 0.5, 0.0, 1.2, 0.0, 0.0, 0.0, 0.0))
+    @test dead(O._rot_xz(0.1, 0.0, 1.2, 0.0, 0.0, 0.0, 0.0))
+    @test dead(O._wedge(0.1, 0.3, 0.0, 1.2, 0.0, 0.0, 0.0, 0.0))
+    @test dead(O._fringe_dipole_exact(0.3, 0.0, 0.0, 1.0, 0.0, 1.2, 0.0, 0.0, 0.0, 0.0))
+    @test dead(O._solenoid_map(1.7, 1.3, 0.0, 1.5, 0.0, 0.0, 0.0, 0.0))
+    @test dead(O._solenoid_curved_map(0.18, 1.7, 1.3, 4, 0.0, 1.5, 0.0, 0.0, 0.0, 0.0))
+    @test dead(compile_runtime(PatchSpec(angle_y=0.01))(0.0, 1.2, 0.0, 0.0, 0.0, 0.0))
+    # The dead stay dead and the live are unchanged in kind: a healthy particle
+    # through the same maps is finite.
+    @test dead(O._lattice_bend(0.3, 0.3, 0.5, NaN, NaN, NaN, NaN, NaN, NaN))
+    @test live(O._lattice_bend(0.3, 0.3, 0.5, 1.0e-3, 2.0e-4, -5.0e-4, 1.0e-4, 2.0e-3, 1.0e-3))
+    @test live(O._wedge(0.1, 0.3, 1.0e-3, 2.0e-4, -5.0e-4, 1.0e-4, 2.0e-3, 1.0e-3))
+    # Through a task the run completes, the particle is counted dead and the
+    # live one tracks; the loss accounting reports the unattributed loss.
+    rep = Phase6DRep([0.0, 1.0e-3], [1.5, 2.0e-4], zeros(2), zeros(2), zeros(2), zeros(2))
+    task = TrackingTask((DriftSpec(L=1.0),); policy=CPUThreadsExecutionPolicy())
+    @test_logs (:warn, r"non-finite") match_mode=:any execute!(task, rep; turns=1)
+    @test count_dead(rep) == 1
+    @test rep.x[2] ≈ 1.0e-3 + 2.0e-4 / sqrt(1 - 4.0e-8) rtol=1e-14
+    # F-163: a curved drift's frame may not turn a quarter turn or more in one
+    # body step -- no straight trajectory reaches an exit face rotated that far
+    # in front of the particle -- so it is refused at compile by name, naming
+    # the step count that would do; `DriftSpec(L=1.0, h=1.6)` returned exit
+    # x = -22.03 m silently before. The exact bend model handles the regime
+    # through its direct branch and stays compilable; a drift-kick bend's body
+    # IS the curved drift and follows the guard per sub-step.
+    err = try
+        compile_runtime(DriftSpec(L=1.0, h=1.6))
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError && occursin("quarter turn", err.msg) && occursin("nst", err.msg)
+    # A drift-kick bend steps its drift by L/(2 nst): 1.6 rad at nst = 1 is 0.8
+    # per half drift, so it compiles -- and its design particle dies in the
+    # second half (it threw a DomainError before); at 3.2 rad the half step is
+    # the quarter turn and the compile refuses; nst = 2 traverses 1.6 rad.
+    @test dead(compile_runtime(SBendSpec(L=1.0, angle=1.6, bend_model=:drift_kick, nst=1))(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    @test_throws ArgumentError compile_runtime(SBendSpec(L=1.0, angle=3.2, bend_model=:drift_kick, nst=1))
+    @test live(compile_runtime(SBendSpec(L=1.0, angle=1.6, bend_model=:drift_kick, nst=2))(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    @test live(compile_runtime(SBendSpec(L=1.0, angle=1.6, nst=1))(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    @test live(compile_runtime(DriftSpec(L=1.0, h=1.5))(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    # A curved quadrupole splits its drift per sub-step: the guard sees the
+    # sub-step, not the element length.
+    @test compile_runtime(QuadrupoleSpec(L=1.0, k1=0.3, h=1.6, nst=2)) isa LatticeMagnet
+    @test_throws ArgumentError compile_runtime(QuadrupoleSpec(L=4.0, k1=0.3, h=1.6, nst=1, integrator_order=4))
+    # Below the quarter turn a particle whose momentum along the exit normal is
+    # not forward never reaches the face either: dead, where it came back with
+    # a finite wrong exit (x = -19.8 m at h = 0.5, L = 1, px = 0.9).
+    @test dead(O._lattice_drift(Val(true), 0.5, 1.0, 0.0, 0.9, 0.0, 0.0, 0.0, 0.0))
+    @test live(O._lattice_drift(Val(true), 0.5, 1.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.0))
+end
+
+
 
 @testset "Thin elements, markers and RBEND" begin
     u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
@@ -29989,9 +30060,11 @@ end
     on = (u0[1], u0[2], u0[3], u0[4], u0[5], 0.0)
     @test sol(1.7, 1.3)(off...)[1] != sol(1.7, 1.3)(on...)[1]
 
-    # Over-momentum throws, exactly as the drift does. Recorded as a property
-    # rather than a feature: see docs/theory/solenoid.md Section 9.1.
-    @test_throws DomainError sol(1.7, 1.3)(0.0, 1.5, 0.0, 0.0, 0.0, 0.0)
+    # Over-momentum is a dead particle (NaN), exactly as the drift's: the loss
+    # design's marker, counted and reported by the task, instead of the
+    # DomainError that aborted the run (2026-10-18 audit, F-167; see
+    # docs/theory/solenoid.md Section 9.1).
+    @test !all(isfinite, collect(sol(1.7, 1.3)(0.0, 1.5, 0.0, 0.0, 0.0, 0.0)))
     # A dead particle stays dead and does not resurrect.
     @test all(isnan, collect(sol(1.7, 1.3)(NaN, NaN, NaN, NaN, NaN, NaN)))
 end

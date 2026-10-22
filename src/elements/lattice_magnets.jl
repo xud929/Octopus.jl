@@ -173,6 +173,40 @@ have no `fma`.
 end
 @inline _diff_of_products(a, b, c, d) = a * b - c * d
 
+"""
+    _ps_or_dead(radicand)
+    _dead(x, px, y, py, z, pz)
+
+The longitudinal momentum `p_s = sqrt((1 + p_z)^2 - p_x^2 - p_y^2)` of a body
+or face map, NaN when the radicand is negative, and the six coordinates as NaN
+of their own types. A particle whose transverse momentum exceeds its total
+momentum has no real `p_s` and no forward trajectory, and the loss design
+defines a dead particle by a non-finite coordinate (`is_live`,
+`allow_lost_particles`, src/beam/Beam.jl), counts it (`count_dead`) and
+reports an unattributed loss at the end of every `execute!`. Until the
+2026-10-18 comprehensive audit every such radicand went to `sqrt` unguarded,
+so one unphysical particle threw a nameless `DomainError` from the CPU kernel
+and a `KernelException` from the device, aborting the whole run where the loss
+machinery could not see it (F-167, U17-9; `_delta_from_pt` had the same repair
+in 2026-08-05_b U14-3, and docs/theory/solenoid.md section 9.1 had recorded the
+throw as a property pending exactly this decision). `real(radicand)`, as
+there: a complex-step argument must not reach a complex comparison. A NaN that
+enters a later `sqrt`, `asin` or `atan` stays NaN without a throw, so the dead
+particle passes through the rest of the element and the line (every map
+returns NaN for NaN: the suite's "a dead particle stays dead" pins). Used by
+the two drifts, the bend (the particle's and the design orbit's radicands),
+the pole-face rotation and wedge, the hard-edge dipole fringe, both solenoid
+maps and the patch, so the lattice family answers alike; the strong beam's
+virtual drifts keep their own `sqrt` until their repair.
+"""
+@inline _ps_or_dead(r) = real(r) < 0 ? oftype(r, NaN) : sqrt(r)
+# The same for the momentum rotation angles of the bend's and the wedge's
+# direct branches: `asin` of a sine beyond 1 (a particle or design orbit turned
+# past the plane) is the dead particle, not a DomainError.
+@inline _asin_or_dead(t) = abs(real(t)) > 1 ? oftype(t, NaN) : asin(t)
+@inline _dead(x, px, y, py, z, pz) =
+    (oftype(x, NaN), oftype(px, NaN), oftype(y, NaN), oftype(py, NaN), oftype(z, NaN), oftype(pz, NaN))
+
 # Two-argument arctangent that also admits complex-step arguments: Base has no
 # `atan(::Complex, ::Complex)`, and the suite differentiates the bend by complex
 # step. Wherever real(x) > 0 the one-argument form is the same function, and
@@ -208,7 +242,7 @@ end
         end
         return acc
     end
-    return asin(t) - t
+    return _asin_or_dead(t) - t
 end
 
 @inline function _curv_sin_excess(h, L)
@@ -224,18 +258,28 @@ end
 end
 
 @inline function _lattice_drift(::Val{false}, h::T, L::T, x, px, y, py, z, pz) where {T}
-    ps0 = sqrt((1 + pz)^2 - px * px - py * py)
+    ps0 = _ps_or_dead((1 + pz)^2 - px * px - py * py)
     return x + px / ps0 * L, px, y + py / ps0 * L, py,
            z - L * _pt2_fused(px, py) / (ps0 * ((1 + pz) + ps0)), pz
 end
 
 @inline function _lattice_drift(::Val{true}, h::T, L::T, x, px, y, py, z, pz) where {T}
-    ps0 = sqrt((1 + pz)^2 - px * px - py * py)
+    ps0 = _ps_or_dead((1 + pz)^2 - px * px - py * py)
     c, s = cos(h * L), sin(h * L)
     C1 = _curv_sin(h, L)
     C2 = _curv_vers(h, L)
     pxn = px * c + ps0 * s
     psn = -px * s + ps0 * c
+    # The momentum along the exit normal must be forward: `psn <= 0` means the
+    # straight trajectory meets the exit plane behind the particle (it leaves
+    # through the frame's outer side), and the closed forms below returned a
+    # finite wrong exit for it -- x = -19.8 m at h = 0.5, L = 1, px = 0.9, and
+    # x = -22.03 m on axis past a quarter turn of frame rotation, silently
+    # (2026-10-18 audit, F-163). Dead, the loss design's answer (`_dead`); the
+    # quarter turn itself is refused at compile (`_lattice_magnet`). `real`,
+    # as the bend's branch tests, so complex-step differentiation keeps one
+    # branch; a NaN `ps0` (an over-momentum particle) lands here too.
+    real(psn) > 0 || return _dead(x, px, y, py, z, pz)
     xn = (ps0 * C2 + px * C1 + x * ps0) / psn
     w2 = (1 + pz)^2 - py * py
     Delta = (-px * C2 + ps0 * C1 + xn * pxn - x * px) / w2
@@ -269,7 +313,7 @@ Exact sector bend: frame curvature `h`, dipole strength `b0`, independent.
 sector bend on its design orbit.
 """
 @inline function _lattice_bend(h::T, b0::T, L::T, x, px, y, py, z, pz) where {T}
-    ps0 = sqrt((1 + pz)^2 - px * px - py * py)
+    ps0 = _ps_or_dead((1 + pz)^2 - px * px - py * py)
     w2 = (1 + pz)^2 - py * py
     C1 = _curv_sin(h, L)
     C2 = _curv_vers(h, L)
@@ -292,7 +336,7 @@ sector bend on its design orbit.
     pxd = kappa * C1
     dp = px * c + s * ((pz * (2 + pz) - _pt2_fused(px, py)) / (1 + ps0)) - b0 * h * x * C1
     pxn = pxd + dp
-    psn = sqrt(w2 - pxn * pxn)
+    psn = _ps_or_dead(w2 - pxn * pxn)
     den = psn + psr
     U = psn * s - pxn * c
     V = pxn * s + psn * c
@@ -327,7 +371,7 @@ sector bend on its design orbit.
         dpx0 = -b0 * q + h * ps0
         w = sqrt(w2)
         xn = x + ((psn - ps0) + px * s + dpx0 * C2) / b0
-        Δ = (h * L - (asin(pxn / w) - asin(px / w))) / b0
+        Δ = (h * L - (_asin_or_dead(pxn / w) - _asin_or_dead(px / w))) / b0
     end
     # The path-length excess E = (1 + pz) Δ - L, so z -> z - E. With
     # phi = asin(pxn/w) - asin(px/w) the in-plane momentum rotation and
@@ -349,7 +393,7 @@ sector bend on its design orbit.
     # over the sweep (h = b0 = 0.3, L = 0.5), 41519 at L = 2.
     if abs(real(b0)) > abs(real(h)) / 2
         S1 = _curv_sin_excess(h, L)
-        psd = sqrt(one(T) - pxd * pxd)
+        psd = _ps_or_dead(one(T) - pxd * pxd)
         Pi = dp * psd + pxd * (((py * py - pz * (2 + pz)) + dp * (pxn + pxd)) / (psd + psn))
         Pr = psn * psd + pxn * pxd
         dphi = _atan2(_diff_of_products(Pi, ps0, Pr, px), Pr * ps0 + Pi * px)
@@ -630,7 +674,7 @@ drifted onto it: `s* = x tan(A) / PT` with `PT = 1 - px tan(A) / ps`.
 """
 @inline function _rot_xz(A::T, x, px, y, py, z, pz) where {T}
     A == 0 && return x, px, y, py, z, pz
-    ps = sqrt((1 + pz)^2 - px * px - py * py)
+    ps = _ps_or_dead((1 + pz)^2 - px * px - py * py)
     t = tan(A)
     PT = 1 - px * t / ps
     sstar = x * t / PT
@@ -645,9 +689,9 @@ limit `L -> 0`, `h -> inf`, `A = hL` fixed. Degenerates to `_rot_xz` at `b1 = 0`
 @inline function _wedge(A::T, b1::T, x, px, y, py, z, pz) where {T}
     b1 == 0 && return _rot_xz(A, x, px, y, py, z, pz)
     A == 0 && return x, px, y, py, z, pz
-    ps = sqrt((1 + pz)^2 - px * px - py * py)
+    ps = _ps_or_dead((1 + pz)^2 - px * px - py * py)
     pxn = px * cos(A) + (ps - b1 * x) * sin(A)
-    psn = sqrt((1 + pz)^2 - pxn * pxn - py * py)
+    psn = _ps_or_dead((1 + pz)^2 - pxn * pxn - py * py)
     xn = x * cos(A) + (x * px * sin(2A) + sin(A)^2 * (2 * x * ps - b1 * x * x)) /
                       (psn + ps * cos(A) - px * sin(A))
     # Δ = (A + asin(px/w) - asin(pxn/w)) / b1 is an O(b1) angle assembled from
@@ -676,7 +720,7 @@ limit `L -> 0`, `h -> inf`, `A = hL` fixed. Degenerates to `_rot_xz` at `b1 = 0`
         Δ = G * _atan_over(b1 * G)
     else
         w = sqrt((1 + pz)^2 - py * py)
-        Δ = (A + asin(px / w) - asin(pxn / w)) / b1
+        Δ = (A + _asin_or_dead(px / w) - _asin_or_dead(pxn / w)) / b1
     end
     return xn, pxn, y + py * Δ, py, z - Δ * (1 + pz), pz
 end
@@ -699,7 +743,7 @@ of `y_new = y + B y_new^2 / 2`, written cancellation-free.
     b1 == 0 && return x, px, y, py, z, pz
     b = σ * b1
     p = 1 + pz
-    ps = sqrt(p * p - px * px - py * py)
+    ps = _ps_or_dead(p * p - px * px - py * py)
     xp = px / ps
     yp = py / ps
     fg = fint * hgap
@@ -1070,6 +1114,34 @@ function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Ty
     curved_order >= 1 || throw(ArgumentError("curved_order must be positive, got $curved_order"))
     psi = combined ? _curved_potential_coeffs(T, kn, ks, hc, curved_order) : ()
     mc = combined ? curved_order : 0
+    # A curved-frame body step may not turn the frame a quarter turn or more:
+    # the integrable part of every b0 = 0 element -- a curved drift, a curved
+    # quadrupole, a drift-kick bend -- is `_lattice_drift(Val(true))`, whose
+    # straight trajectory must meet the exit plane in FRONT of the particle,
+    # and from |h d| = pi/2 on it never does (the on-axis exit landed at
+    # x = -22.03 m for h = 1.6, L = 1, silently, until the 2026-10-18 audit;
+    # F-163). Refused here by name. A pure drift takes its length in ONE exact
+    # step whatever nst; a loaded body steps by L/nst (half of it per Strang
+    # drift, _FR_D1 of it per Forest-Ruth outer drift). The exact bend
+    # (b0 != 0) keeps its direct-form branch for the regime.
+    if iszero(b0) && !iszero(hc)
+        single = isempty(kn) && isempty(psi)
+        scale = order == 2 ? 0.5 : _FR_D1
+        dmax = single ? L : scale * L / nst
+        turn = abs(real(hc * dmax))
+        if turn >= real(T)(pi) / 2
+            needed = floor(Int, abs(real(hc * scale * L)) / (real(T)(pi) / 2)) + 1
+            throw(ArgumentError(
+                "ElementSpec{:$(kind(spec))}: the curved frame turns by |h d| = $(turn) rad in one " *
+                "body step (h = $(hc), d = $(dmax) of L = $(L)), a quarter turn or more, where a " *
+                "straight trajectory never reaches the exit face in front of the particle; a curved " *
+                "drift body needs |h d| < pi/2. " *
+                (single ? "A pure curved drift takes its length in one exact step whatever nst: split it " *
+                          "into drifts of |h L| < pi/2 or give it a field" :
+                          "Give nst >= $(needed) for integrator_order = $(order), or shorten the element") *
+                " (bend_model = :exact keeps a bend's dipole in the exact map, which handles the regime)."))
+        end
+    end
     edge = Bool(getparam(spec, :bend_fringe, true))
     bits = _fringe_bits(Symbol(getparam(spec, :fringe, :none)), edge)
     hf = Int(getparam(spec, :highest_fringe, 0))
@@ -1129,7 +1201,7 @@ const _COMMON_PARAMS = (
 # entry in its own `parameters = merge(_LATTICE_BODY_PARAMS, (...))` call --
 # later keys win, so a curated meaning can never be clobbered by this table.
 const _LATTICE_BODY_PARAMS = (
-    h=ParamMeta(default=0, meaning="reference-frame curvature 1/rho; the frame of any lattice-magnet kind may be curved, a curved drift included. Independent of the dipole strength b0"),
+    h=ParamMeta(default=0, meaning="reference-frame curvature 1/rho; the frame of any lattice-magnet kind may be curved, a curved drift included. Independent of the dipole strength b0. A b0 = 0 body (a curved drift, a curved quadrupole, a drift-kick bend) may not turn its frame a quarter turn or more in one body step, |h d| < pi/2: refused at compile, naming the step count that would do"),
     b0=ParamMeta(default=0, meaning="dipole strength q B0 / P0; independent of the frame curvature h. Read for every lattice-magnet kind by the one shared runtime, so setting it on any kind adds a real dipole field"),
     kn=ParamMeta(default=(), meaning="normal multipole strengths as a positional tuple; index i holds K_{i-1}, so kn[2] is K1. The named kinds fold their defining strengths (k1, k2, ...) into this at construction and use the tuple for measured field errors on top"),
     ks=ParamMeta(default=(), meaning="skew partners of kn"),

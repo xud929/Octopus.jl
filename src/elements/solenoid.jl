@@ -172,7 +172,7 @@ is exactly why the straight map's closed form does not survive `h != 0`.
     k = ks / 2
     Px = px + k * y
     Py = py - k * _sol_g(h, x)
-    ps = sqrt((1 + pz)^2 - Px * Px - Py * Py)
+    ps = _ps_or_dead((1 + pz)^2 - Px * Px - Py * Py)
     hx = one(T) + h * x
     gp = _sol_gp(h, x)
     return (hx * Px / ps,                       # x'
@@ -326,7 +326,7 @@ is what makes this closed-form rather than an expansion.
     # most likely error here, and it is invisible at small amplitude because the
     # two agree to first order in k.
     Px, Py = _solenoid_edge(k, x, y, px, py)
-    ps = sqrt((1 + pz)^2 - Px * Px - Py * Py)
+    ps = _ps_or_dead((1 + pz)^2 - Px * Px - Py * Py)
     kappa = ks / ps
     # Momentum rotates by -kappa*L; the displacement runs along the *half*
     # angle. That half is the Larmor angle and is the factor-of-two check.

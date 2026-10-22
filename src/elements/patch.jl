@@ -146,7 +146,7 @@ for bit; the on-axis reference particle has `ds == s` and `q == W (0, 0, 1)`
 exactly, so `excess == ref_excess` bitwise and it lands at exactly `z = 0`.
 """
 @inline function _patch_map(elem::Patch{M,T}, x, px, y, py, z, pz) where {M,T}
-    ps = sqrt((1 + pz)^2 - px * px - py * py)
+    ps = _ps_or_dead((1 + pz)^2 - px * px - py * py)
     W = _patch_rotation(T, elem.angle_x, elem.angle_y, elem.angle_s, elem.madx)
     # Position relative to the new origin, and the full three-momentum.
     r1, r2, r3 = _patch_apply(W, x - elem.dx, y - elem.dy, -elem.dz)
