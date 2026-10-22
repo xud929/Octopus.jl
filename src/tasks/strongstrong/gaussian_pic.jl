@@ -1191,7 +1191,8 @@ function _gpic_collide_fresh!(solver::GaussianPICPoissonSolver, beam1::Beam,
                               beam2::Beam, ctx)
     T = _pic_cpu_scalar_type(solver.pic, beam1, beam2)
     nx, ny = solver.pic.grid
-    workspaces = [_pic_cpu_workspace(T, nx, ny) for _ in 1:_pic_pool_size(solver.pic)]
+    workspaces = [_pic_cpu_workspace(T, nx, ny; luminosity_grid=_pic_luminosity_grid(solver.pic))
+                  for _ in 1:_pic_pool_size(solver.pic)]
     green_cache = _pic_green_cache(solver.pic, T)
     # Both beams' shards in scope for the whole collide, as `_pic_collide!`,
     # `_spectral_collide!` and the soft-Gaussian entry all do. gpic was the one
@@ -1286,14 +1287,24 @@ _sliced_pic(g::GaussianPICPoissonSolver) = g.pic
 The profile buffers of one plane, from the workspace's own scratch so a
 plane's subtraction allocates nothing. `green` is 2nx x 2ny and free at this
 point -- the table the solve convolves with is the cached `green_fft`, not
-this scratch -- so its first columns serve as the six profiles the coupled
-subtraction needs and the first two as the uncoupled pair's.
+this scratch -- so six disjoint LINEAR ranges of it serve as the profiles the
+coupled subtraction needs (three of length nx, three of length ny), the first
+and fourth as the uncoupled pair's. Linear ranges, not columns: the length-ny
+profiles used to be `view(g, 1:ny, k)`, a slice along the FIRST dimension
+whose extent is 2nx, so any legal grid with ny > 2nx (the constructor accepts
+nx, ny >= 5) threw `BoundsError` on this route alone while the undivided route
+ran it (2026-10-18 audit, F-41). The scratch always holds them:
+3nx + 3ny <= 4 nx ny for every accepted grid.
 """
 function _gpic_profile_buffers(workspace::_PICCPUWorkspace{T}, nx::Int, ny::Int,
                                ::Type{T}) where {T}
     g = workspace.green
-    return (view(g, 1:nx, 1), view(g, 1:nx, 2), view(g, 1:nx, 3),
-            view(g, 1:ny, 4), view(g, 1:ny, 5), view(g, 1:ny, 6))
+    3nx + 3ny <= length(g) || error(
+        "Gaussian-PIC profile buffers need 3nx + 3ny = $(3nx + 3ny) scratch entries; " *
+        "the workspace's green table holds $(length(g))")
+    return (view(g, 1:nx), view(g, (nx + 1):(2nx)), view(g, (2nx + 1):(3nx)),
+            view(g, (3nx + 1):(3nx + ny)), view(g, (3nx + ny + 1):(3nx + 2ny)),
+            view(g, (3nx + 2ny + 1):(3nx + 3ny)))
 end
 const _GPIC_MODE_CODES = (:pic, :uncoupled, :coupled)
 @inline _gpic_mode_code(mode::Symbol) = findfirst(==(mode), _GPIC_MODE_CODES)
@@ -1338,13 +1349,17 @@ carries the mode, the count, the origin and the sums onward, so the field
 members rebuild the same moments for the analytic add-back.
 """
 function _sliced_owner_grids!(gmsg, g::GaussianPICPoissonSolver, ::Type{T}, red, d::Int,
-                              param_source, param_field, workspace::_PICCPUWorkspace,
+                              param1, param2, workspace::_PICCPUWorkspace,
                               green_cache, cache_key) where {T}
     pic = g.pic
-    if red[61] > 0
+    # PIC's joint verdict (`_pic_sliced_pair_bad`): both directions' extents,
+    # so the two owners and every member agree (F-11).
+    if _pic_sliced_pair_bad(pic, T, red, param1, param2)
         gmsg[1] = one(T)
         return nothing
     end
+    param_source = d == 1 ? param1 : param2
+    param_field = d == 1 ? param2 : param1
     o = d == 1 ? 0 : 30
     ns = Int(red[o + 9]) ÷ 2          # PIC's record carries 2 * nsource
     origin = (red[o + 21], red[o + 22], red[o + 23], red[o + 24])
@@ -1368,10 +1383,10 @@ function _sliced_owner_grids!(gmsg, g::GaussianPICPoissonSolver, ::Type{T}, red,
         end
     end
     grids = _pic_sliced_grids(pic, T, red, d, param_source, param_field, margin_box)
-    if grids === nothing
-        gmsg[1] = one(T)
-        return nothing
-    end
+    # The joint verdict saw this direction's extents finite (the margin only
+    # widens finite extents), so `nothing` here is an invariant broken.
+    grids === nothing && error(
+        "Gaussian-PIC sliced collide: direction $(d) of a pair the joint verdict passed has no finite mesh")
     source_grid0, field_grid0, sbnd, fbnd = grids
     source_grid, field_grid, green_fft = _pic_slice_pair_green!(
         workspace, pic, T, green_cache, cache_key, source_grid0, field_grid0, sbnd, fbnd)

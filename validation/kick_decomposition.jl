@@ -194,7 +194,7 @@ open(OUT2, "w") do io
     println(io, "family\tgrid\tdeposit\tn_macro\tR\tbias\tfluctuation\ttotal_median\tbias_floor_bootstrap\tbias_floor_rayleigh\tbias_floor_bootstrap_uncentered")
     for (fam, sx, sy) in (("round", 2.0e-3, 2.0e-3), ("flat11", 2.0e-3, 2.0e-3 / 11))
         for grid in (64, 128, 256)
-            for method in (:CIC, :TSC)
+            for method in Octopus._PIC_DEPOSIT_METHODS
                 n = 100_000
                 # The ensemble seed was hardcoded, so every archived row came
                 # from ONE source-realization draw and carried no uncertainty.

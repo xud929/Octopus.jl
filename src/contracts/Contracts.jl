@@ -1318,11 +1318,13 @@ function validate(contract::StrongStrongPICBackendConsistencyContract; kwargs...
     contract.n_particles > 0 || return ContractResult(false, "n_particles must be positive.")
     contract.turns > 0 || return ContractResult(false, "turns must be positive.")
     contract.nslices > 0 || return ContractResult(false, "nslices must be positive.")
-    contract.deposit_method in (:CIC, :TSC) || return ContractResult(false,
-        "deposit_method must be :CIC or :TSC; got $(contract.deposit_method).")
+    # The solver's own tuple, `_PIC_DEPOSIT_METHODS` (interface.jl), not a copy
+    # of it (2026-10-18 audit, F-25).
+    contract.deposit_method in _PIC_DEPOSIT_METHODS || return ContractResult(false,
+        "deposit_method must be one of $(_PIC_DEPOSIT_METHODS); got $(contract.deposit_method).")
     (contract.luminosity_deposit_method === nothing ||
-     contract.luminosity_deposit_method in (:CIC, :TSC)) || return ContractResult(false,
-        "luminosity_deposit_method must be nothing, :CIC, or :TSC; got $(contract.luminosity_deposit_method).")
+     contract.luminosity_deposit_method in _PIC_DEPOSIT_METHODS) || return ContractResult(false,
+        "luminosity_deposit_method must be nothing or one of $(_PIC_DEPOSIT_METHODS); got $(contract.luminosity_deposit_method).")
     if contract.green_cache == :slice_pair && contract.turns < 2
         return ContractResult(false,
             "slice-pair cache consistency requires at least two turns to exercise reuse.")
@@ -2021,7 +2023,9 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    SymplecticityContract(; step=3.0e-7, default_tolerance=1.0e-11, lorentz_angle=0.01)
+    SymplecticityContract(; step=3.0e-7, default_tolerance=1.0e-11, lorentz_angle=0.01,
+                          lorentz_inverse_tolerance=1.0e-10,
+                          lorentz_determinant_tolerance=2.0e-7)
 
 Finite-difference symplecticity of the six-dimensional runtime maps: for each
 checked element the Jacobian `J` of the map at a reference phase-space point
@@ -2318,7 +2322,7 @@ function validate(contract::SymplecticityContract; kwargs...)
     all_passed &= isempty(uncovered)
 
     message = if !isempty(uncovered)
-        "kinds declare SymplecticityContract but have no case in the contract's list: " *
+        "kinds tracking with Symplectic6DMap have no case in the contract's list: " *
         join(sort(uncovered), ", ")
     elseif all_passed
         "All 6D runtime maps are finite-difference symplectic within tolerance; the Lorentz crossing pair is exact-inverse quasi-symplectic."
@@ -2406,7 +2410,7 @@ function _wsl_weakstrong_reference!(source, probe, solver)
     slices_source = longitudinal_slices(source.rep, solver.slicing1)
     slices_probe = longitudinal_slices(probe.rep, solver.slicing2)
     kbb = _strong_strong_kbb2(solver, source, probe)
-    _, klum_probe = _strong_strong_luminosity_scales(solver, source, probe)
+    _, klum_probe = _strong_strong_luminosity_scales(solver, source, probe, slices_source, slices_probe)
     luminosity = zero(eltype(probe.rep.x))
     for (_, i, j) in _slice_collision_order(slices_source, slices_probe)
         moments = _slice_transverse_moments(

@@ -761,7 +761,17 @@ mutable struct _PICSlicePairGreenCache{T}
     lock::ReentrantLock
 end
 
-function _pic_cpu_workspace(::Type{T}, nx::Integer, ny::Integer) where {T}
+# `luminosity_grid` sizes the two luminosity overlap buffers: `_pic_luminosity`
+# wants `_pic_luminosity_grid(solver) .+ 1`, which is the solver grid only
+# while `luminosity_grid` is unset. Sized from the solver grid regardless, any
+# other `luminosity_grid` failed the consumer's size check and took the
+# allocating fallback for every slice pair of every turn, silently (68 kB per
+# call at (64, 64) against 416 B; 2026-10-18 audit, F-26). The collide paths
+# and the pool pass the luminosity grid; the default keeps the direct callers
+# (tests, validation) that size their own arrays unchanged.
+function _pic_cpu_workspace(::Type{T}, nx::Integer, ny::Integer;
+                            luminosity_grid=(nx, ny)) where {T}
+    lnx, lny = Int(luminosity_grid[1]), Int(luminosity_grid[2])
     charge = zeros(T, 2nx, 2ny)
     spectral = zeros(Complex{T}, 2nx, 2ny)
     green = zeros(T, 2nx, 2ny)
@@ -774,7 +784,7 @@ function _pic_cpu_workspace(::Type{T}, nx::Integer, ny::Integer) where {T}
     mid = Base.RefValue{Union{Nothing,_PICFieldWorkspace{T}}}(nothing)
     return _PICCPUWorkspace{T}(
         charge, spectral, green, green_fft, fft_plan, ifft_plan, local_charge, left, right, mid,
-        Base.RefValue(0), zeros(T, nx + 1, ny + 1), zeros(T, nx + 1, ny + 1),
+        Base.RefValue(0), zeros(T, lnx + 1, lny + 1), zeros(T, lnx + 1, lny + 1),
         [T[], T[]], [T[], T[]],
     )
 end
@@ -833,14 +843,42 @@ Base.isequal(a::LongitudinalSlicing, b::LongitudinalSlicing) = a == b
 Base.hash(s::LongitudinalSlicing, h::UInt) =
     hash((s.nslices, s.method, s.resolution, s.center_position, s.positions), h)
 
+# ONE source for the accepted `LongitudinalSlicing.method` symbols: each
+# canonical method with its aliases, the canonical name first. The constructor's
+# membership test, the CPU dispatch (`longitudinal_slices`, slicing.jl) and the
+# CUDA dispatch (`_cuda_longitudinal_slices`, pic_cuda.jl) all read it through
+# `_longitudinal_slicing_method`, so a method cannot be accepted by one and
+# unknown to another; the suite walks the table and slices with every alias
+# (2026-10-18 audit, F-21: three hand-copied lists, two aliases no test used).
+const _LONGITUDINAL_SLICING_METHODS = (
+    equal_area=(:equal_area,),
+    equal_count=(:equal_count,),
+    equal_width=(:equal_width, :equal_spaced),
+    normal_quantile=(:normal_quantile, :gaussian, :Gaussian),
+    specified=(:specified,),
+)
+
+"""
+    _longitudinal_slicing_method(method::Symbol) -> canonical Symbol or nothing
+
+The canonical slicing method `method` names (an alias resolves to its
+canonical name), or `nothing` when `_LONGITUDINAL_SLICING_METHODS` does not
+list it.
+"""
+function _longitudinal_slicing_method(method::Symbol)
+    for (canonical, aliases) in pairs(_LONGITUDINAL_SLICING_METHODS)
+        method in aliases && return canonical
+    end
+    return nothing
+end
+
 function LongitudinalSlicing(; nslices::Integer=1, method::Symbol=:equal_area,
                              resolution::Integer=100,
                              center_position::Symbol=:centroid,
                              positions=Float64[])
     nslices > 0 || throw(ArgumentError("nslices must be positive"))
     resolution > 0 || throw(ArgumentError("slicing resolution must be positive"))
-    method in (:equal_area, :equal_count, :equal_width, :equal_spaced,
-               :normal_quantile, :gaussian, :Gaussian, :specified) ||
+    _longitudinal_slicing_method(method) === nothing &&
         throw(ArgumentError("unsupported longitudinal slicing method $(repr(method))"))
     center_position in (:centroid, :midpoint) || throw(ArgumentError(
         "center_position must be :centroid or :midpoint"))
@@ -904,7 +942,8 @@ end
                            longitudinal_kick=true,
                            virtual_drift=:hirata,
                            include_sigma_xy=false,
-                           batch_mode=:wavefront)
+                           batch_mode=:wavefront,
+                           luminosity_schedule=nothing)
 
 Soft-Gaussian strong-strong collision solver. At each collision it computes
 longitudinal slices of both live beams, orders slice-pair collisions by
@@ -941,8 +980,15 @@ kbb2 = beam1.charge * beam2.charge * beam2.r0 * beam1.npart * beam2.mc2 / beam2.
 ```
 
 `luminosity_scale` defaults to a macroparticle-to-physical-particle
-normalization for the beam sampled by the luminosity estimate. This solver is a
-sliced moment-based Poisson approximation, not a grid PIC solver.
+normalization for the beam sampled by the luminosity estimate,
+`beam1.npart * beam2.npart / n_live`, with `n_live` the sampled beam's LIVE
+macroparticle count as the slicing folded it (`LongitudinalSlices.live`): the
+same renormalizing convention as the slice weights, so under
+`allow_lost_particles` a beam's luminosity, like its kick, is that of the beam
+without the corpses (2026-10-18 audit, F-8: the default divided by the count
+including the dead, so the luminosity fell with the survival fraction while the
+kick did not). This solver is a sliced moment-based Poisson approximation, not
+a grid PIC solver.
 
 `luminosity_schedule` gates luminosity REPORTING (2026-08-19): this solver's
 luminosity is an inseparable free by-product of the kick, so unscheduled
@@ -1374,7 +1420,11 @@ divided internally by the source macroparticle count; a user-supplied override
 therefore means the same physical quantity as it does for `GaussianPoissonSolver`.
 `luminosity_scale` overrides the PIC grid-overlap luminosity normalization
 `beam1.npart * beam2.npart / (n_macro1 * n_macro2)`; it differs in form from the
-soft-Gaussian sampled estimator because PIC deposits both beams onto grids.
+soft-Gaussian sampled estimator because PIC deposits both beams onto grids. The
+counts are the beams' FULL macroparticle counts, dead particles included: PIC
+keeps the charge-reducing convention (a dead particle stops depositing and the
+bunch carries proportionally less charge), so its luminosity follows its charge,
+where the soft-Gaussian and spectral solvers renormalize to the live count.
 
 `min_transverse_extent` is a physical lower bound on the unpadded interaction
 mesh width in `(x, y)`, in the same length units as the particle coordinates. A
@@ -1461,8 +1511,8 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
     grid_value = (Int(grid[1]), Int(grid[2]))
     all(>=(5), grid_value) || throw(ArgumentError(
         "PICPoissonSolver grid dimensions must both be at least 5; got $(grid)."))
-    deposit_method in (:CIC, :TSC) || throw(ArgumentError(
-        "deposit_method must be :CIC or :TSC; got $(repr(deposit_method))."))
+    deposit_method in _PIC_DEPOSIT_METHODS || throw(ArgumentError(
+        "deposit_method must be one of $(join(repr.(_PIC_DEPOSIT_METHODS), " or ")); got $(repr(deposit_method))."))
     green_type in (:integrated, :standard, :lattice) || throw(ArgumentError(
         "green_type must be :integrated, :standard or :lattice; got $(repr(green_type))."))
     green_cache in (:none, :slice_pair) || throw(ArgumentError(
@@ -1501,9 +1551,9 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
         "luminosity_grid dimensions must both be at least 3; got $(luminosity_grid)."
     ))
     (luminosity_deposit_method === nothing ||
-     luminosity_deposit_method === :CIC || luminosity_deposit_method === :TSC) ||
+     luminosity_deposit_method in _PIC_DEPOSIT_METHODS) ||
         throw(ArgumentError(
-            "luminosity_deposit_method must be nothing, :CIC, or :TSC; got $(repr(luminosity_deposit_method))."
+            "luminosity_deposit_method must be nothing or one of $(join(repr.(_PIC_DEPOSIT_METHODS), " or ")); got $(repr(luminosity_deposit_method))."
         ))
     configs = Tuple(backend_configurations)
     all(config -> config isa CUDAPICLaunchConfig, configs) || throw(ArgumentError(
@@ -1546,6 +1596,15 @@ function PICPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
 end
 
 PICPoissonSolver(; kwargs...) = PICPoissonSolver{Float64}(; kwargs...)
+
+# ONE source for the PIC deposition/interpolation methods: the constructor's
+# `deposit_method` and `luminosity_deposit_method` checks, `_validate_pic_solver`
+# (pic_cpu.jl) and the backend-consistency contract's own refusals
+# (Contracts.jl) all read this tuple, and the suite's sweep holds the literal to
+# this one site (2026-10-18 audit, F-25: three hand copies in src/, two more in
+# the suite's loops). The CUDA launch sites encode the method as its position in
+# this tuple (`:CIC` = 1, `:TSC` = 2).
+const _PIC_DEPOSIT_METHODS = (:CIC, :TSC)
 
 _pic_launch_solver(solver::PICPoissonSolver) = solver
 
@@ -2543,6 +2602,10 @@ function execute!(task::StrongStrongTask, beam1::Beam, beam2::Beam;
                   turns::Integer=1, start_turn=nothing)
     nturns, first_turn, next_turn =
         _task_execution_window(task.next_turn[], turns, start_turn)
+    # A new run: the luminosity-schedule memo's key changes, so no verdict a
+    # previous run (this task's or another's sharing the schedule object)
+    # memoised at the same turn is handed to this one (F-6; the memo's comment).
+    _LUM_SCHEDULE_EPOCH[] += 1
     empty!(task.turn_times)
     empty!(task.pic_phase_times)
     policy = _resolve_strong_strong_policy(task, beam1, beam2)
@@ -2858,7 +2921,8 @@ function _execute_strong_strong_task!(
         nvtx=task.diagnostics.nvtx,
     ))
     # The `:strong_strong_output` receipt is recorded below, AFTER the artifact
-    # is prepared (2026-10-16 fix batch, S4-2): recorded here it carried the
+    # is prepared, the observers are prepared and the window is committed
+    # (2026-10-16 fix batch, S4-2; fix batch 3, U6-5): recorded here it carried the
     # artifact's `append` and `record_turn_modulation` as REQUESTED, before
     # the prepare decided whether the file was continued or created fresh and
     # whether the line had anything to record (Measured Lesson 11). Those two
@@ -2944,12 +3008,6 @@ function _execute_strong_strong_task!(
                               aperture_names=(beam_1=beam_apertures[1], beam_2=beam_apertures[2]),
                               task_kind=string(nameof(typeof(task))))
     end
-    # The task's output receipt, the consumer `strong_strong_task_option_schema().artifact`
-    # names, AFTER the prepare: the path and the collision labels the
-    # artifact's luminosity channels opened with (2026-10-16 fix batch, S4-2;
-    # a prepare refusal leaves no output receipt claiming a run).
-    _record_execution!(:strong_strong_output, backend_type(policy),
-                       _ra_task_output_receipt(task.artifact, labels))
     # Absolute window, matching Tasks.jl: `should_run` sees `first_turn + offset`.
     # A refusal here (a duplicate probe name, a continued group's column
     # mismatch) must not leave the artifact open: the task would then refuse
@@ -2975,6 +3033,18 @@ function _execute_strong_strong_task!(
         task.artifact === nothing || finalize_run_artifact!(task.artifact)
         rethrow()
     end
+    # The task's output receipt, the consumer `strong_strong_task_option_schema().artifact`
+    # names: the path and the collision labels the artifact's luminosity
+    # channels opened with. AFTER the artifact's prepare, the observers'
+    # prepare and the commit -- the last refusals that can stop the run -- so
+    # a refused run leaves no output receipt claiming it ran. It moved past
+    # the artifact's prepare in the 2026-10-16 fix batch (S4-2) and past the
+    # observers' prepare in the 2026-10-18 audit's fix batch 3 (U6-5: a
+    # duplicate probe name refused the run with `channels = ["ip"]` already
+    # in the audit; the TrackingTask twin's `:tracking_output` moved the same
+    # way, unit F).
+    _record_execution!(:strong_strong_output, backend_type(policy),
+                       _ra_task_output_receipt(task.artifact, labels))
     # Recorded only when a line has a modulated element, so an unmodulated
     # run's ledger is unchanged; the window RESOLVED for this call, not the
     # turns completed (a crash mid-way leaves it, as the ledger row does).
@@ -3316,8 +3386,17 @@ end
 # One slot is enough and cannot grow: the two calls are adjacent, and a later
 # collision in the same turn simply replaces the entry. Keyed by the SCHEDULE's
 # identity rather than the solver's so two collisions sharing one schedule
-# object still get one evaluation per (schedule, turn).
-const _LUM_SCHEDULE_MEMO = Ref{Tuple{UInt,Int64,Bool}}((UInt(0), typemin(Int64), false))
+# object still get one evaluation per (schedule, turn) -- and by the RUN:
+# `_LUM_SCHEDULE_EPOCH` counts the strong-strong `execute!` calls of the
+# process, so the key is (schedule, run, turn). Keyed by (schedule, turn)
+# alone, a second task sharing the schedule OBJECT inherited the first task's
+# verdict at the same turn without consulting it (measured: task A turn 0 ->
+# one predicate call, task B turn 0 -> none), and a run repositioned with
+# `start_turn` onto a memoised turn did the same (2026-10-18 audit, F-6). The
+# epoch is bumped at `execute!` entry on every rank alike, so the divided
+# broadcast below still runs the same number of times everywhere.
+const _LUM_SCHEDULE_MEMO = Ref{Tuple{UInt,UInt64,Int64,Bool}}((UInt(0), UInt64(0), typemin(Int64), false))
+const _LUM_SCHEDULE_EPOCH = Ref{UInt64}(0)
 
 _pic_compute_luminosity(::PICPoissonSolver, ::Nothing) = true
 _pic_compute_luminosity(solver::PICPoissonSolver, ctx::TrackingContext) =
@@ -3337,18 +3416,18 @@ _pic_compute_luminosity(solver::PICPoissonSolver, ctx::TrackingContext) =
 # other three solvers, sharing this body, consulted 4 times and agreed
 # (2026-09-06 neighbour audit, found while closing its hand-copy row).
 #
-# The memo is keyed on the SCHEDULE, not on the consumer, so two solvers sharing
-# one schedule object in one turn get one evaluation and one receipt, named for
-# whichever consulted first. That is the memo's existing contract; it is noted
-# rather than fixed because two solvers sharing a schedule object still owe the
-# same answer.
+# The memo is keyed on the SCHEDULE and the RUN (`_LUM_SCHEDULE_EPOCH`), not on
+# the consumer, so two solvers sharing one schedule object in one turn of one
+# run get one evaluation and one receipt, named for whichever consulted first.
+# That is the memo's contract: two solvers sharing a schedule object in one run
+# still owe the same answer, while two RUNS sharing it do not (F-6).
 function _luminosity_schedule_evaluated(schedule, ctx::TrackingContext,
                                         consumer::Symbol=:pic_luminosity_schedule)
     if schedule !== nothing
         key = objectid(schedule)
         memo = _LUM_SCHEDULE_MEMO[]
-        if memo[1] == key && memo[2] == Int64(ctx.turn)
-            return memo[3]
+        if memo[1] == key && memo[2] == _LUM_SCHEDULE_EPOCH[] && memo[3] == Int64(ctx.turn)
+            return memo[4]
         end
     end
     evaluated = schedule === nothing || should_run(schedule, ctx)
@@ -3367,7 +3446,7 @@ function _luminosity_schedule_evaluated(schedule, ctx::TrackingContext,
         evaluated = _mp_bcast(evaluated)
     end
     schedule === nothing ||
-        (_LUM_SCHEDULE_MEMO[] = (objectid(schedule), Int64(ctx.turn), evaluated))
+        (_LUM_SCHEDULE_MEMO[] = (objectid(schedule), _LUM_SCHEDULE_EPOCH[], Int64(ctx.turn), evaluated))
     active_policy = _ACTIVE_RESOLVED_POLICY[]
     active_backend = active_policy isa AbstractResolvedExecutionPolicy ?
         backend_type(active_policy) : :unknown

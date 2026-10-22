@@ -15,7 +15,8 @@ end
 function _pic_collide!(solver::PICPoissonSolver, beam1::Beam, beam2::Beam, ctx)
     T = _pic_cpu_scalar_type(solver, beam1, beam2)
     nx, ny = solver.grid
-    workspaces = [_pic_cpu_workspace(T, nx, ny) for _ in 1:_pic_pool_size(solver)]
+    workspaces = [_pic_cpu_workspace(T, nx, ny; luminosity_grid=_pic_luminosity_grid(solver))
+                  for _ in 1:_pic_pool_size(solver)]
     green_cache = _pic_green_cache(solver, T)
     # Both beams' shards in scope for the whole collide (step 4c, as the
     # soft-Gaussian's entry does since 4b): a task has already scoped them
@@ -380,9 +381,10 @@ end
     _pic_collide_pair!(lum_parts, p, solver, ..., workspace, ..., batched) -> Bool
 
 One slice-pair collision, writing its luminosity into `lum_parts[p]` and
-returning whether it ran at all (an empty slice on either side, or a node mesh
-that could not be built, is a skip — and a skip must not contribute to the fold
-or to the per-pair trace).
+returning whether it ran at all (an empty slice on either side is a skip — and
+a skip must not contribute to the fold or to the per-pair trace; a node mesh
+the cache does not hold is a loud invariant violation in `_pic_node_grid!`,
+not a skip, since the 2026-10-18 audit's F-16).
 
 Everything it touches is either private to this pair (the extracted slice
 coordinates, the returned virtual positions) or exclusive to `workspace` for the
@@ -458,7 +460,6 @@ function _pic_collide_pair!(lum_parts, p::Int, solver::PICPoissonSolver,
                               slices1.indices, slices1.boundary, i)
         gR2 = _pic_node_grid!(nc2, solver, T, coord2, param2.center, beam1.rep,
                               slices1.indices, slices1.boundary, i + 1)
-        (gL1 === nothing || gR1 === nothing || gL2 === nothing || gR2 === nothing) && return false
         vx1, vy1 = _pic_interaction_node!(
             solver, coord1, param1, field2, param2, kbb2, workspace, gL1, gR1;
             vslot=1, divided=divided)
@@ -546,16 +547,16 @@ That used to read "silent at zero, which is every run with the default
 gated on `grid_extent !== :extrema`, and `:node`/`:source_slice` have
 `:extrema` forced on them, so the two modes whose meshes are built pre-collision
 could never report anything (2026-08-05_b audit, U6-1).
-"""
-function _pic_report_dropped(workspace::_PICCPUWorkspace)
-    return _pic_report_dropped_count(Int(workspace.dropped[]))
-end
 
-# Pool form: the batched pair loop gives each worker its own workspace, so the
-# count a run must report is the SUM over the pool, not one worker's share. One
-# warning per collide either way -- summing here rather than warning per
-# workspace keeps a dropped particle exactly as loud as it was when the loop was
-# sequential, instead of N times louder or, worse, N-1 times quieter.
+The one entry point takes the POOL: the batched pair loop gives each worker
+its own workspace, so the count a run must report is the SUM over the pool,
+not one worker's share. One warning per collide either way -- summing here
+rather than warning per workspace keeps a dropped particle exactly as loud as
+it was when the loop was sequential, instead of N times louder or, worse, N-1
+times quieter. A single-workspace method used to sit beside this one with no
+caller and without the cross-rank sum and the rank-0 gate below (2026-10-18
+audit, F-17); a single workspace is reported as `_pic_report_dropped((ws,))`.
+"""
 function _pic_report_dropped(workspaces)
     total = 0
     for ws in workspaces
@@ -602,7 +603,7 @@ in place when a later call wants more.
 `n` is deliberately NOT part of the key. Keying on it would strand a whole pool
 every time the worker count changed, and a workspace is ~8 MB at grid 128
 (sixteen padded deposit grids); growing keeps exactly one pool per
-(label, T, grid) for the process's lifetime.
+(label, T, grid, luminosity grid) for the process's lifetime.
 
 Because it only grows, `length(pool)` is the HIGH-WATER MARK of every policy
 this label has run under, not the policy in force now — so it is storage, never
@@ -617,10 +618,13 @@ the solve that reads them -- and `dropped` is a counter that
 function _pic_cpu_workspace_pool!(runtime_cache::Dict, label::Symbol,
                                   solver::PICPoissonSolver, ::Type{T},
                                   n::Integer) where {T}
-    key = (:cpu_pic_workspace_pool, label, T, solver.grid)
+    # Keyed by the luminosity grid as well: the luminosity buffers are sized
+    # from it (F-26), so two solvers differing only there cannot share a pool.
+    key = (:cpu_pic_workspace_pool, label, T, solver.grid, _pic_luminosity_grid(solver))
     pool = get!(() -> _PICCPUWorkspace{T}[], runtime_cache, key)::Vector{_PICCPUWorkspace{T}}
     while length(pool) < n
-        push!(pool, _pic_cpu_workspace(T, solver.grid...))
+        push!(pool, _pic_cpu_workspace(T, solver.grid...;
+                                       luminosity_grid=_pic_luminosity_grid(solver)))
     end
     return pool
 end
@@ -647,11 +651,11 @@ function _validate_pic_solver(solver::PICPoissonSolver)
     nx, ny = solver.grid
     _validate_pic_grid(nx, ny)
     method = Symbol(solver.deposit_method)
-    (method == :CIC || method == :TSC) ||
-        throw(ArgumentError("PICPoissonSolver deposit_method must be :CIC or :TSC"))
+    method in _PIC_DEPOSIT_METHODS ||
+        throw(ArgumentError("PICPoissonSolver deposit_method must be one of $(_PIC_DEPOSIT_METHODS)"))
     luminosity_method = _pic_luminosity_deposit_method(solver)
-    (luminosity_method == :CIC || luminosity_method == :TSC) ||
-        throw(ArgumentError("PICPoissonSolver luminosity_deposit_method must resolve to :CIC or :TSC"))
+    luminosity_method in _PIC_DEPOSIT_METHODS ||
+        throw(ArgumentError("PICPoissonSolver luminosity_deposit_method must resolve to one of $(_PIC_DEPOSIT_METHODS)"))
     green = Symbol(solver.green_type)
     (green == :integrated || green == :standard || green == :lattice) ||
         throw(ArgumentError("PICPoissonSolver green_type must be :integrated, :standard or :lattice"))
@@ -1668,11 +1672,24 @@ function _pic_prebuild_node_caches!(node_cache::Dict, solver::PICPoissonSolver, 
     return node_cache
 end
 
-"""Node mesh for node `b`, building the whole set on first use."""
+"""
+Node mesh for node `b`, building the whole set on first use. A node the set
+does not hold is an invariant broken, not a skip: `_pic_build_node_grids!`
+stores every node adjacent to a slice with a finite field box, and both nodes
+of a pair whose slices have particles are such nodes, so the lookup throws by
+name rather than handing the pair loop a `nothing` it used to skip the whole
+pair on -- no kick, no luminosity, no warning (2026-10-18 audit, F-16).
+"""
 function _pic_node_grid!(cache::Dict, solver::PICPoissonSolver, ::Type{T}, source, center,
                          rep, slice_indices, boundary, b::Int) where {T}
     _pic_build_node_grids!(cache, solver, T, source, center, rep, slice_indices, boundary)
-    return get(cache, b, nothing)
+    g = get(cache, b, nothing)
+    g === nothing && error(
+        "PIC node mesh cache holds no node $(b) of $(length(boundary)) (nodes held: " *
+        "$(sort!(collect(keys(cache))))); _pic_build_node_grids! stores every node adjacent " *
+        "to a slice with a finite field box, so a pair whose slices have particles must " *
+        "find both of its nodes.")
+    return g
 end
 
 """
@@ -1723,10 +1740,17 @@ function _pic_interaction_node!(solver::PICPoissonSolver, source, param_source, 
     # (2026-08-05_b audit, U6-1; that docstring's claim that "the zero-weight
     # deposition guard counts any escapee" was not implemented anywhere).
     #
-    # Each drift plane is counted against the mesh IT deposits into, so a
-    # particle outside at both sL and sR counts twice -- two deposits, two lots
-    # of lost charge. The field side is counted against the mesh the
-    # interpolation reads, after the drift loop above has moved it.
+    # Each deposit is counted against the mesh IT deposits into -- sL on gL,
+    # sR on gR, and under the longitudinal kick the phi_Z plane's sR deposit
+    # on gL -- so a particle outside at both drifts counts twice, two deposits,
+    # two lots of lost charge; and each interpolation against the mesh it
+    # reads: the kick blends gL's and gR's planes, so the field side is counted
+    # on BOTH, after the drift loop above has moved it. The gR and phi_Z
+    # counts are the 2026-10-18 audit's F-9: with the field side counted on gL
+    # alone and no phi_Z count, 117 right-mesh and 103 phi_Z escapes went
+    # uncounted beside 1284 shipped on a graded beam at kbb = 3e-7. The CUDA
+    # twins (`_cuda_pic_interaction_node!`, the wavefront node route) count
+    # the same five events.
     workspace.dropped[] += _pic_count_outside_box_drifted(
         source.x, source.px, source.y, source.py, sL, sL,
         gL.source_grid.x0, gL.source_grid.x0 + gL.source_grid.width,
@@ -1735,10 +1759,20 @@ function _pic_interaction_node!(solver::PICPoissonSolver, source, param_source, 
         source.x, source.px, source.y, source.py, sR, sR,
         gR.source_grid.x0, gR.source_grid.x0 + gR.source_grid.width,
         gR.source_grid.y0, gR.source_grid.y0 + gR.source_grid.height)
+    if solver.longitudinal_kick
+        workspace.dropped[] += _pic_count_outside_box_drifted(
+            source.x, source.px, source.y, source.py, sR, sR,
+            gL.source_grid.x0, gL.source_grid.x0 + gL.source_grid.width,
+            gL.source_grid.y0, gL.source_grid.y0 + gL.source_grid.height)
+    end
     workspace.dropped[] += _pic_count_outside_box(
         field.x, field.y,
         gL.field_grid.x0, gL.field_grid.x0 + gL.field_grid.width,
         gL.field_grid.y0, gL.field_grid.y0 + gL.field_grid.height)
+    workspace.dropped[] += _pic_count_outside_box(
+        field.x, field.y,
+        gR.field_grid.x0, gR.field_grid.x0 + gR.field_grid.width,
+        gR.field_grid.y0, gR.field_grid.y0 + gR.field_grid.height)
 
     phiL, ExL, EyL = _pic_solve_drifted_field_with_green_fft!(
         workspace.left, solver, source, sL, gL.source_grid, gL.green_fft, workspace;
@@ -3029,6 +3063,11 @@ function _pic_luminosity(solver::PICPoissonSolver, x1, y1, x2, y2, klum,
                          workspace::_PICCPUWorkspace; divided::Bool=false)
     nx, ny = _pic_luminosity_grid(solver)
     if size(workspace.luminosity_q1) != (nx + 1, ny + 1)
+        # A workspace not built for this solver's luminosity grid: a direct
+        # caller's. The collide paths and the pool size their buffers from
+        # `_pic_luminosity_grid(solver)` (F-26), so they never take this
+        # allocating branch -- which they did for every slice pair of every
+        # turn whenever `luminosity_grid` differed from `grid`, silently.
         return _pic_luminosity(solver, x1, y1, x2, y2, klum; divided=divided)
     end
     return _pic_luminosity!(solver, x1, y1, x2, y2, klum,
@@ -3042,9 +3081,11 @@ _pic_extremum(f::F, a, init) where {F} = isempty(a) ? init : f(a)
 """
 The luminosity overlap mesh from the extrema of both slices' virtual
 positions: its origin, spacings and their inverses. ONE function for the
-per-pair path and the batched exchange (`pic_cpu_divided.jl`), so the two
-cannot drift apart by a rounding; the expressions are the ones
-`_pic_luminosity!` always evaluated, in the same order.
+per-pair path, the slice-aligned exchange (`pic_cpu_sliced.jl`) and the CUDA
+routes (`_cuda_pic_luminosity`, `_cuda_pic_wavefront_luminosity_indexed`,
+since the 2026-10-18 audit's F-14; they carried three hand copies of this
+arithmetic), so none can drift apart by a rounding; the expressions are the
+ones `_pic_luminosity!` always evaluated, in the same order.
 """
 function _pic_luminosity_mesh(solver::PICPoissonSolver, ::Type{T}, xmin, xmax, ymin, ymax) where {T}
     nx, ny = _pic_luminosity_grid(solver)

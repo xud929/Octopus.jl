@@ -3,6 +3,13 @@ struct LongitudinalSlices{T,I}
     weight::Vector{T}
     boundary::Vector{T}
     indices::I
+    # The whole beam's LIVE macroparticle count, the same on every rank: the
+    # denominator of `weight` (`members / live`), folded once by the slicing.
+    # The luminosity scales of the renormalizing solvers divide by it, so a
+    # dead particle leaves the luminosity as it leaves every kick (2026-10-18
+    # audit, F-8: they divided by the full count, dead included, and the
+    # luminosity fell with the survival fraction while the kick did not).
+    live::Int
 end
 
 """
@@ -76,7 +83,10 @@ function longitudinal_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
     # not learn where its particles sit in the beam's order without moving
     # them. Every other method sizes its boundaries from the longitudinal
     # statistics, which ARE folds and are already global.
-    if method == :equal_count && _mp_nranks() > 1
+    # The canonical method from the ONE table (`_LONGITUDINAL_SLICING_METHODS`,
+    # interface.jl); an alias dispatches as its canonical method.
+    canonical = _longitudinal_slicing_method(method)
+    if canonical === :equal_count && _mp_nranks() > 1
         throw(ArgumentError(
             "longitudinal slicing method :equal_count needs a global ordering " *
             "of the beam, which the collective seam does not provide, so it " *
@@ -85,17 +95,19 @@ function longitudinal_slices(rep::Phase6DRep, slicing::LongitudinalSlicing)
             "which are summed across the ranks: :equal_area, :equal_width, " *
             ":normal_quantile and :specified all run divided."))
     end
-    if method == :equal_area
+    if canonical === :equal_area
         return _longitudinal_slices_equal_area(rep, slicing, flags)
-    elseif method == :equal_count
+    elseif canonical === :equal_count
         return _longitudinal_slices_equal_count(rep, slicing, flags)
-    elseif method == :equal_width || method == :equal_spaced
+    elseif canonical === :equal_width
         return _longitudinal_slices_equal_width(rep, slicing, flags)
-    elseif method == :normal_quantile || method == :gaussian || method == :Gaussian
+    elseif canonical === :normal_quantile
         return _longitudinal_slices_gaussian(rep, slicing, flags)
-    elseif method == :specified
+    elseif canonical === :specified
         return _longitudinal_slices_specified(rep, slicing, flags)
     else
+        # Reachable only through the inner constructor: the keyword constructor
+        # refuses every symbol the table does not list.
         throw(ArgumentError("unknown longitudinal slicing method $method"))
     end
 end
@@ -116,19 +128,30 @@ function _strong_strong_kbb2(solver, beam1, beam2)
     return p1.charge * p2.charge * p2.r0 * p1.npart * p2.mc2 / p2.E0
 end
 
-function _strong_strong_luminosity_scales(solver, beam1, beam2)
+"""
+    _strong_strong_luminosity_scales(solver, beam1, beam2, slices1, slices2)
+
+The soft-Gaussian's default luminosity scales, `(klum1, klum2)`: `klum1` goes
+with sampling beam 1 against beam 2's Gaussian, `klum2` with sampling beam 2.
+Each is `npart1 * npart2 / n_live` of the SAMPLED beam -- its live
+macroparticle count as the slicing folded it (`LongitudinalSlices.live`, the
+whole beam's and the same on every rank, no collective here). The live count,
+not the full one: the kick renormalizes to the live beam (slice weights are
+live fractions summing to one), and the luminosity follows the same
+convention, so under `allow_lost_particles` a masked beam's luminosity is the
+survivors' as its kick is (2026-10-18 audit, F-8: `last(_mp_current_shard(rep))`
+counted the dead too, and the luminosity fell by the survival fraction while
+the kick did not; measured L/L0 = 0.49976 with half the sampled beam dead).
+"""
+function _strong_strong_luminosity_scales(solver, beam1, beam2, slices1, slices2)
     if solver.luminosity_scale !== nothing
         return solver.luminosity_scale, solver.luminosity_scale
     end
     p1, p2 = beam1.params, beam2.params
-    # The macroparticle counts here are the BEAMS', not the shards': the scale
-    # turns a per-macroparticle overlap into a physical luminosity, and a rank
-    # dividing by its own count would scale its contribution by the rank count.
-    # Read from the shards the collide scoped at its entry -- no collective.
-    n1 = last(_mp_current_shard(beam1.rep))
-    n2 = last(_mp_current_shard(beam2.rep))
-    n1 == 0 && throw(ArgumentError("strong-strong luminosity requires a nonempty beam1"))
-    n2 == 0 && throw(ArgumentError("strong-strong luminosity requires a nonempty beam2"))
+    n1 = slices1.live
+    n2 = slices2.live
+    n1 == 0 && throw(ArgumentError("strong-strong luminosity requires a live beam1"))
+    n2 == 0 && throw(ArgumentError("strong-strong luminosity requires a live beam2"))
     return p1.npart * p2.npart / n1,
            p1.npart * p2.npart / n2
 end
@@ -697,7 +720,7 @@ function _finish_longitudinal_slices(rep::Phase6DRep, slicing, indices, boundari
             zsums[s] / members[s]
         end
     end
-    return LongitudinalSlices(centers, weights, collect(boundaries), indices)
+    return LongitudinalSlices(centers, weights, collect(boundaries), indices, Int(total))
 end
 
 function _slice_collision_order(slices1, slices2)

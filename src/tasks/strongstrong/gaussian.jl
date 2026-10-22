@@ -19,7 +19,7 @@ function _cpu_gaussian_collide!(solver::GaussianPoissonSolver, beam1::Beam, beam
     slices2 = longitudinal_slices(beam2.rep, solver.slicing2)
     kbb1 = _strong_strong_kbb1(solver, beam1, beam2)
     kbb2 = _strong_strong_kbb2(solver, beam1, beam2)
-    klum1, klum2 = _strong_strong_luminosity_scales(solver, beam1, beam2)
+    klum1, klum2 = _strong_strong_luminosity_scales(solver, beam1, beam2, slices1, slices2)
     T = eltype(beam1.rep.x)
     order = _slice_collision_order(slices1, slices2)
     npairs = length(order)
@@ -229,8 +229,12 @@ end
         _soft_gaussian_covariance(moments2), kbb_slice, S, xx, yy,
         x, px, y, py, z, pz)
     if LONGITUDINAL
-        pz += 0.5 * ((px - px0) * moments2.mpx +
-                    (py - py0) * moments2.mpy)
+        # `oftype(S, 0.5)`: the drift's working type, as the weak-strong twins
+        # `_cp_kick`/`_cuda_cp_kick` state it since fix H (2026-10-16) and the
+        # CUDA slice-kick kernels do -- a bare literal widened a Float32
+        # solver's pz to Float64 mid-kick (2026-10-18 audit, F-22).
+        pz += oftype(S, 0.5) * ((px - px0) * moments2.mpx +
+                                (py - py0) * moments2.mpy)
     else
         pz = pz0
     end

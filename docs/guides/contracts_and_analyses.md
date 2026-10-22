@@ -26,9 +26,12 @@ criteria over bitwise equality, and state every tolerance explicitly.
 `ElementTrackingBackendConsistencyContract` is one of several implementation
 contracts in `src/contracts/Contracts.jl`. After changing generic, fused,
 stochastic, or CUDA tracking, or an element implementation it covers, run
-`validation/tracking_backend_consistency.jl`. Kinds that declare
-`SymplecticityContract` need a case in `_symplecticity_contract_cases()`
-(`elements.md`) and are exercised by `validation/symplecticity_validation.jl`.
+`validation/tracking_backend_consistency.jl`. Kinds that track with
+`Symplectic6DMap` need a case in `_symplecticity_contract_cases()`
+(`elements.md`) and are exercised by `validation/symplecticity_validation.jl`;
+the obligation is derived from the kind's tracking-method declaration, not
+from a `SymplecticityContract` entry in its contracts (2026-08-05_b audit,
+U4-8), and the contract's tripwire names it that way.
 `PTCConsistencyContract` is checked in the suite against the committed
 reference table, which `validation/generate_ptc_reference.jl` regenerates when
 MAD-X is on `PATH`.

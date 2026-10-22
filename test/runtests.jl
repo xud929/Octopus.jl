@@ -18474,7 +18474,7 @@ end
         # one particle fewer is not -- the boundary itself is pinned.
         @test Octopus._pic_deposit_parallel(n, nx, ny)
         @test !Octopus._pic_deposit_parallel(n - 1, nx, ny)
-        for method in (:CIC, :TSC)
+        for method in Octopus._PIC_DEPOSIT_METHODS      # the solver's own tuple (F-25)
             grids = map(counts) do k
                 ws = Octopus._pic_cpu_workspace(Float64, nx, ny)
                 ch = zeros(2nx, 2ny)
@@ -21985,6 +21985,16 @@ end
     end
 end
 
+# A line observer whose prepare refuses the run. The observers' prepare is the
+# last refusal that can stop a strong-strong run before its first turn, and
+# the one the audit's probe reached (a duplicate probe name) moved into the
+# artifact's own prepare in fix batch 1 (F-56/F-58), ahead of the task's
+# output receipt; this observer refuses where the probe once did, so the
+# receipt's position is still measured (2026-10-18 audit, U6-5).
+struct ThrowingPrepareObserver <: Octopus.AbstractBeamObserver end
+Octopus.prepare_observer!(::ThrowingPrepareObserver, runtime_elems) =
+    throw(ArgumentError("ThrowingPrepareObserver refuses to prepare"))
+
 @testset "The run artifact records the realised turn modulation" begin
     # docs/design/turn_modulation_record.md (2026-10-15, stage 1): the artifact
     # option `record_turn_modulation` records, turn by turn, the OFFSETS the
@@ -23053,6 +23063,22 @@ end
             StrongStrongTask((ip, plain), (ip, plain); artifact=RunArtifact(pS; append=true)), b1, b2; turns=1)))
         @test !any(r -> r.consumer in (:strong_strong_output, :run_artifact_output), rsS3)
         @test any(r -> r.consumer === :strong_strong_diagnostics, rsS3)
+        # The OBSERVERS' prepare is the last refusal that can stop the run, and
+        # it refused AFTER the task's output receipt was recorded (2026-10-18
+        # audit, U6-5, measured with a duplicate probe name, a refusal that has
+        # since moved into the artifact's prepare; `ThrowingPrepareObserver`
+        # above refuses where it did). The TrackingTask twin's
+        # `:tracking_output` moved the same way in fix batch 3, unit F. The
+        # receipt sits after the commit now, beside the per-run receipts, so a
+        # run the observers refuse leaves no `:strong_strong_output` claiming
+        # it ran. (The artifact's own `:run_artifact_output`, recorded by its
+        # prepare in RunArtifact.jl, is the artifact's seam and not asserted.)
+        pS5 = joinpath(dir, "S5.h5")
+        refusing = (ip, plain, ScheduledObserver(ThrowingPrepareObserver()))
+        rsS5 = quiet(() -> audited(() -> @test_throws ArgumentError execute!(
+            StrongStrongTask(refusing, (ip, plain); artifact=RunArtifact(pS5)), b1, b2; turns=1)))
+        @test !any(r -> r.consumer === :strong_strong_output, rsS5)       # was recorded: (artifact=pS5, channels=["ip"])
+        @test any(r -> r.consumer === :strong_strong_diagnostics, rsS5)
         # The strong-strong receipt under a modulated line resolves `recording`.
         pS2 = joinpath(dir, "S2.h5")
         cav(rng_id) = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,),
@@ -24724,8 +24750,8 @@ end
         ("pic_cuda.jl", :_cuda_pic_finalize_force_bounds_kernel!, 1, bounds_fixed),         # 54
         ("pic_cuda.jl", :_cuda_pic_count_outside_drifted_kernel!, 1, :device),              # 24
         ("pic_cuda.jl", :_cuda_pic_count_outside_zdrift_kernel!, 1, :device),               # 24
-        ("pic_cuda.jl", :_cuda_pic_deposit_nomask_kernel!, 3, :device),                     # 48
-        ("pic_cuda.jl", :_cuda_pic_field_kernel!, 2, :device),                              # 40
+        ("pic_cuda.jl", :_cuda_pic_deposit_nomask_kernel!, 2, :device),                     # 48 (3 before F-13 deleted the caller-less solve)
+        ("pic_cuda.jl", :_cuda_pic_field_kernel!, 1, :device),                              # 40 (2 before F-13)
         ("pic_cuda.jl", :_cuda_pic_deposit_drifted_nomask_kernel!, 1, :device),             # 48
         ("pic_cuda.jl", :_cuda_pic_apply_green_batch_kernel!, 1, :device),                  # 36
         ("pic_cuda.jl", :_cuda_pic_field_batch_kernel!, 1, :device),                        # 40
@@ -24735,13 +24761,11 @@ end
         ("pic_cuda.jl", :_cuda_gpic_subtract_kernel!, 2, :device),                          # 36
         ("pic_cuda.jl", :_cuda_pic_multiply_spectral_stack_kernel!, 4, :device),            # 36
         ("pic_cuda.jl", :_cuda_pic_green_stack_kernel!, 1, :device),                        # 53
-        ("pic_cuda.jl", :_cuda_pic_apply_green_plane_kernel!, 1, :device),                  # 28 (ComplexF64)
-        ("pic_cuda.jl", :_cuda_pic_deposit_drifted_plane_kernel!, 3, :device),              # 56
+        ("pic_cuda.jl", :_cuda_pic_deposit_drifted_plane_kernel!, 1, :device),              # 56 (3 before F-15 deleted the batched luminosity)
         ("pic_cuda.jl", :_cuda_pic_deposit_drifted_indexed_plane_kernel!, 3, :device),      # 56
         ("pic_cuda.jl", :_cuda_pic_deposit_drifted_indexed_plane_pair_kernel!, 1, :device), # 64, at the edge
         ("pic_cuda.jl", :_cuda_pic_green_kernel!, 1, :device),                              # 61
-        ("pic_cuda.jl", :_cuda_pic_luminosity_wavefront_kernel!, 1, :device),               # 36
-        ("pic_cuda.jl", :_cuda_pic_luminosity_overlap_partials_kernel!, 2, :device),        # 38, power-of-two threads
+        ("pic_cuda.jl", :_cuda_pic_luminosity_overlap_partials_kernel!, 1, :device),        # 38, power-of-two threads (2 before F-15)
         ("pic_cuda.jl", :_cuda_lane_z_moment_kernel!, 4, :device),                          # 24
         ("pic_cuda.jl", :_cuda_equal_area_histogram_kernel!, 1, :device),                   # 23
         ("pic_cuda.jl", :_cuda_lane_indexed_sum_kernel!, 1, :device),                       # 28
@@ -25843,6 +25867,104 @@ end
     @test Octopus._reject_undivided_solver(pic()) === nothing
 end
 
+@testset "The sliced pair's non-finite verdict is joint across its two directions" begin
+    # 2026-10-18 audit F-11 (U5-1, latent): on the slice-aligned route the
+    # coordinator's folded record carries one non-finite flag for the record
+    # BOUNDS (red[61]), but each direction's owner then judged its own mesh
+    # extents alone, so a pair whose `:sigma` estimator overflowed as a SOURCE
+    # (nonzero drift) and not as a FIELD (zero drift) was finite in one
+    # direction and `nothing` in the other. The members skip the pair on
+    # either flag; the owner of the finite direction did not, and posted
+    # receives for partials no member would send -- a deadlock, not the
+    # agreed throw. The verdict is now taken from BOTH directions' extents on
+    # every owner (`_pic_sliced_pair_bad`), so both owners and every member
+    # agree. The fixture is the audit's probe: Float32, `grid_extent=:sigma`,
+    # a two-member slice whose |px| ~ 1e22 overflows the shifted second moment
+    # at the source drifts and not at the field's; coordinates no physical
+    # beam reaches, which is why the row was priced latent.
+    T = Float32
+    set_global_rng!(seed=4242, method=:philox)
+    mk(n, px) = (x=T.(1.0e-5 .* randn(n)), px=T.(px), y=T.(1.0e-5 .* randn(n)),
+                 py=T.(1.0e-6 .* randn(n)), z=zeros(T, n), pz=zeros(T, n))
+    part1 = mk(50, 1.0e-6 .* randn(50))                 # G1: ordinary
+    part2 = mk(2, [1.0e22, -1.0e22])                    # G2: the overflowing pair
+    part3 = mk(2, [1.0e-6, -1.0e-6])                    # G2: a finite control
+    param1 = (weight=T(0.5), lb=T(-1.0e-2), center=T(0.0), rb=T(1.0e-2))
+    param2 = (weight=T(0.5), lb=T(1.0e-2), center=T(2.0e-2), rb=T(3.0e-2))
+    slc = LongitudinalSlicing(nslices=3, method=:equal_area)
+    pic = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(16, 16),
+                           green_cache=:slice_pair, grid_extent=:sigma, grid_extent_sigma=4.0,
+                           slicing=slc)
+    # Gaussian-PIC forces `:extrema`, so the `:sigma` split cannot arise there;
+    # it shares the verdict through PIC's record, and that is what its arm
+    # below exercises (the folded flag and the finite control).
+    gpic = GaussianPICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(16, 16),
+                                    green_cache=:slice_pair, slicing=slc)
+    record(solver, part, own, other) =
+        Octopus._pic_sliced_record(zeros(T, Octopus._sliced_record_len(solver)), solver, part, own, other, nothing)
+    reduce(solver, r1, r2) =
+        Octopus._pic_sliced_reduce(zeros(T, Octopus._sliced_reduced_len(solver)), solver, [r1], [r2])
+    owner(solver, red, d, ws) = begin
+        g = zeros(T, Octopus._sliced_grids_len(solver))
+        (Octopus._sliced_owner_grids!(g, solver, T, red, d, param1, param2, ws, nothing, (1, 1, d)), g[1])
+    end
+    # PIC under `:sigma`: the audit's split. The precondition it measured --
+    # the folded flag clear, the per-direction extents finite in direction 1
+    # and not in direction 2 -- and then the verdict both owners now take.
+    red = reduce(pic, record(pic, part1, param1, param2), record(pic, part2, param2, param1))
+    @test red[61] == 0
+    @test Octopus._pic_sliced_extents(pic, T, red, 1, param1, param2) !== nothing
+    @test Octopus._pic_sliced_extents(pic, T, red, 2, param2, param1) === nothing
+    @test Octopus._pic_sliced_pair_bad(pic, T, red, param1, param2)
+    ws = Octopus._pic_cpu_workspace(T, 16, 16)
+    for d in 1:2
+        owned, flag = owner(pic, red, d, ws)
+        @test owned === nothing                          # was: direction 1 built its grids
+        @test flag == 1                                  # the members' skip flag
+    end
+    # Both solvers: a finite pair builds both owners' grids with the flag
+    # clear, and the coordinator's folded flag (a non-finite record bound) is
+    # bad on both owners.
+    for solver in (pic, gpic)
+        base = Octopus._sliced_pic(solver)
+        red_ok = reduce(solver, record(solver, part1, param1, param2), record(solver, part3, param2, param1))
+        @test !Octopus._pic_sliced_pair_bad(base, T, red_ok, param1, param2)
+        for d in 1:2
+            owned, flag = owner(solver, red_ok, d, ws)
+            @test owned !== nothing && flag == 0
+        end
+        red_bad = copy(red_ok)
+        red_bad[61] = one(T)
+        @test Octopus._pic_sliced_pair_bad(base, T, red_bad, param1, param2)
+        for d in 1:2
+            owned, flag = owner(solver, red_bad, d, ws)
+            @test owned === nothing && flag == 1
+        end
+    end
+end
+
+@testset "Gaussian-PIC profile buffers fit every legal grid" begin
+    # 2026-10-18 audit F-41 (U9-1): `_gpic_profile_buffers` carved its three
+    # length-ny profile vectors as `view(green, 1:ny, k)` -- along the FIRST
+    # dimension of the 2nx x 2ny scratch, whose extent is 2nx -- so any legal
+    # grid with ny > 2nx threw BoundsError on the multi-process route (measured:
+    # (8, 32) and (5, 11) throw, (16, 16), (32, 8), (5, 10) run). The six
+    # vectors are now carved as disjoint linear ranges of the scratch, which
+    # always holds them: 3nx + 3ny <= 4 nx ny for every grid the constructor
+    # accepts (nx, ny >= 5).
+    for (nx, ny) in ((16, 16), (32, 8), (8, 32), (5, 11), (5, 10), (5, 5), (64, 5))
+        ws = Octopus._pic_cpu_workspace(Float64, nx, ny)
+        bufs = Octopus._gpic_profile_buffers(ws, nx, ny, Float64)          # was BoundsError for ny > 2nx
+        @test map(length, bufs) == (nx, nx, nx, ny, ny, ny)
+        # Disjoint storage: each buffer keeps its own fill.
+        for (k, b) in enumerate(bufs)
+            fill!(b, Float64(k))
+        end
+        @test all(all(==(Float64(k)), b) for (k, b) in enumerate(bufs))
+        @test 3nx + 3ny <= length(ws.green)
+    end
+end
+
 @testset "A Gaussian-PIC task under the multi-process policy is the task it composes" begin
     # Multi-process step 4f. Gaussian-PIC rides the slice-aligned transport
     # PIC uses, and adds three things of its own: the reference Gaussian's
@@ -25863,6 +25985,11 @@ end
         (:nomargin, gpic(margin_sigma=0.0)),       # no Gaussian margin on the mesh
         (:noneutral, gpic(neutralize=false)),      # the amplitude that is NOT the grid total
         (:sequential, gpic(batch_mode=:sequential)),
+        # 2026-10-18 audit F-41 (U9-1): a tall grid (ny > 2nx) threw BoundsError
+        # in `_gpic_profile_buffers` on this route alone -- the profile vectors
+        # were carved along the wrong dimension of the 2nx x 2ny scratch -- while
+        # the undivided route ran it. Every legal grid runs here, bit for bit.
+        (:tall_8x32, gpic(grid=(8, 32))),
     )
     line(which, solver) = (L6((0.31, 0.27, 0.02)),
                            StrongStrongCollision(:ip; poisson_solver=solver),
@@ -29866,6 +29993,37 @@ end
             end
         end
     end
+    # 2026-10-18 audit F-6 (U6-4): the memo was keyed by (schedule, turn)
+    # alone, so a second task sharing the schedule OBJECT inherited the first
+    # task's verdict at the same turn without consulting it (measured: task A
+    # turn 0 -> 1 predicate call, task B turn 0 -> 0), and a run repositioned
+    # with `start_turn` onto a memoised turn did the same. The key now carries
+    # the execute! -- an epoch every strong-strong run increments -- so each
+    # run consults the shared schedule on its own turns in turn order; the
+    # memo's own property, ONE consult per turn for gate and solver together,
+    # holds inside each run, and no verdict crosses a run boundary. Three
+    # ONE-TURN runs of two tasks on one schedule object, every run at turn 0
+    # (the one-slot memo holds the LAST turn consulted, so a two-turn first run
+    # would leave turn 1 in the slot and the second run's turn 0 would miss
+    # even under the old key -- the audit's probe ran one turn each): three
+    # consults, every (run, turn) exactly once.
+    let consulted = Tuple{Int,Int}[], run_id = Ref(0)
+        shared = PredicateSchedule(ctx -> (push!(consulted, (run_id[], ctx.turn)); true))
+        mkb6(id, q, m, E) = (set_global_rng!(seed=4242, method=:philox);
+                             Beam(64, CPUThreadsExecutionPolicy(), Float64; beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0),
+                                  sigma=(106.0e-6, 9.5e-6, 1.0e-2), cutoff=5.0, rng_id=id, charge=q, mc2=m, E0=E,
+                                  r0=RE * ME0 / m, npart=1.7e11))
+        ip6 = StrongStrongCollision(:ip; poisson_solver=GaussianPoissonSolver(
+            slicing=LongitudinalSlicing(nslices=2, method=:equal_area), luminosity_schedule=shared))
+        taskA = StrongStrongTask((ip6,), (ip6,))
+        taskB = StrongStrongTask((ip6,), (ip6,))
+        for (id, task, kw) in ((1, taskA, (turns=1,)), (2, taskB, (turns=1,)),
+                               (3, taskA, (turns=1, start_turn=0)))
+            run_id[] = id
+            execute!(task, mkb6(1, -1.0, EMASS_EV, 10.0e9), mkb6(2, 1.0, PMASS_EV, 275.0e9); kw...)
+        end
+        @test consulted == [(1, 0), (2, 0), (3, 0)]   # was [(1, 0)]: B and the re-run hit A's memoised verdict
+    end
 end
 
 # Deterministic beam of `n` particles, with `dead` marked non-finite in a
@@ -30194,6 +30352,34 @@ end
     # The two semantics must stay distinguishable: if a change collapsed them,
     # both ratios would agree and this margin would vanish.
     @test abs(r_spec - r_gpic) > 0.05
+
+    # 2026-10-18 audit F-8 (U8-1): the DEFAULT luminosity scale of the two
+    # renormalizing solvers divided by the macroparticle count INCLUDING the
+    # dead (`last(_mp_current_shard(rep))`) while their kicks renormalize to the
+    # live count, so the reported luminosity fell with the survival fraction of
+    # the sampled beam and the kick did not (measured L/L0 = 0.49976 with half
+    # of the sampled beam dead against a kick rms ratio of 1.0013); every pin
+    # above sets `luminosity_scale=1.0` and so bypassed the default. The default
+    # now divides by the LIVE count the slicing folded (`LongitudinalSlices.live`),
+    # so under the default scale the masked beam's luminosity is the survivors'
+    # -- bit for bit for the Gaussian, whose folds run over the slice members,
+    # and to the sibling pin's 1e-4 for spectral, whose lane folds over the
+    # array see the corpses' slots. The charge-reducing family keeps the full
+    # count -- its luminosity follows its charge -- pinned beside it so the two
+    # conventions stay distinguishable under the default scales too. The 1e-3
+    # on the PIC ratios: the sibling pins hold the two runs' overlap sums to
+    # 1e-4 (the kicked coordinates differ by the live fraction between the
+    # runs), and the effect being discriminated is 0.1.
+    lg_m0, lg_s0, _, _ = masked_vs_survivors(GaussianPoissonSolver(kbb1=kbb, kbb2=kbb, slicing=sl))
+    @test lg_m0 == lg_s0                                   # was live_frac x: 0.9
+    _, lsp_m0, lsp_s0 = kick_ratio(SpectralPoissonSolver(kbb1=kbb, kbb2=kbb, grid=(64, 64), slicing=sl))
+    @test isapprox(lsp_m0, lsp_s0; rtol=1.0e-4)            # was live_frac x
+    _, lp_m0, lp_s0 = kick_ratio(PICPoissonSolver(kbb1=kbb, kbb2=kbb, grid=(64, 64),
+                                                  green_cache=:none, slicing=sl))
+    @test isapprox(lp_m0 / lp_s0, live_frac; rtol=1.0e-3)      # keeps the live fraction
+    _, lgp_m0, lgp_s0 = kick_ratio(GaussianPICPoissonSolver(kbb1=kbb, kbb2=kbb, grid=(64, 64),
+                                                            green_cache=:none, slicing=sl))
+    @test isapprox(lgp_m0 / lgp_s0, live_frac; rtol=1.0e-3)
 end
 
 @testset "Lost particles are dropped from every slicing method" begin
@@ -30252,6 +30438,40 @@ end
         e
     end
     @test err isa ArgumentError && occursin("at least one live particle", err.msg)
+end
+
+@testset "Longitudinal slicing methods come from one table" begin
+    # 2026-10-18 audit F-21 (U8-5): the accepted `LongitudinalSlicing.method`
+    # symbols were enumerated twice -- the constructor's membership test and the
+    # `longitudinal_slices` dispatch chain (a third time in the CUDA twin) -- so
+    # a symbol added to one list and not the other reached the "unknown method"
+    # throw at the first collision, and two of the three aliases
+    # (`:equal_spaced`, `:Gaussian`) were exercised by no test. One table now,
+    # `_LONGITUDINAL_SLICING_METHODS` (canonical method => its aliases), read by
+    # the constructor and both dispatches; every alias constructs, slices, and
+    # is bit-identical to its canonical method, and a symbol outside the table
+    # is refused by name at construction AND at dispatch (the inner constructor
+    # can still build one).
+    table = Octopus._LONGITUDINAL_SLICING_METHODS
+    @test keys(table) == (:equal_area, :equal_count, :equal_width, :normal_quantile, :specified)
+    set_global_rng!(seed=4242, method=:philox)
+    rep = Beam(400, CPUThreadsExecutionPolicy(), Float64; beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0),
+               sigma=(1.0e-4, 1.0e-5, 1.0e-2), cutoff=5.0, rng_id=1).rep
+    for (canonical, aliases) in pairs(table)
+        @test first(aliases) === canonical
+        positions = canonical === :specified ? [-0.6, 0.0, 0.6] : Float64[]
+        ref = Octopus.longitudinal_slices(rep, LongitudinalSlicing(nslices=4, method=canonical, positions=positions))
+        for alias in aliases
+            @test Octopus._longitudinal_slicing_method(alias) === canonical
+            s = Octopus.longitudinal_slices(rep, LongitudinalSlicing(nslices=4, method=alias, positions=positions))
+            @test s.center == ref.center && s.weight == ref.weight &&
+                  s.boundary == ref.boundary && s.indices == ref.indices && s.live == ref.live
+        end
+    end
+    @test Octopus._longitudinal_slicing_method(:bogus) === nothing
+    @test_throws ArgumentError LongitudinalSlicing(nslices=2, method=:bogus)
+    bogus = LongitudinalSlicing(2, :bogus, 100, :centroid, Float64[])
+    @test_throws ArgumentError Octopus.longitudinal_slices(rep, bogus)
 end
 
 @testset "Lost-particle masking agrees between CPU and CUDA" begin
@@ -32530,6 +32750,12 @@ end
             end
         end
         @test materialised == 3                            # all three nodes ran
+        # 2026-10-18 audit F-16 (U4-4): a node the cache did not hold came back
+        # as `nothing`, and the pair loop then skipped the whole pair silently
+        # (no kick, no luminosity, no warning) where its sibling check two lines
+        # earlier is a loud invariant violation. The lookup now throws by name,
+        # and the pair loop has no `nothing` left to skip on.
+        @test_throws ErrorException get_node(length(s2.boundary) + 1)
     end
 end
 
@@ -32691,7 +32917,7 @@ end
     y1 = [1.0e-4 * ((i * 7) % n) / n for i in 1:n]
     x2 = copy(x1); y2 = reverse(y1)
     results = Dict{Symbol,Any}()
-    for method in (:CIC, :TSC)
+    for method in Octopus._PIC_DEPOSIT_METHODS      # the solver's own tuple (F-25)
         solver = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, grid=(16, 16),
                                   deposit_method=method)
         nx, ny = Octopus._pic_luminosity_grid(solver)
@@ -32741,6 +32967,107 @@ end
         call()                                   # warm
         @test @allocated(call()) < 1_000_000
     end
+end
+
+@testset "The CPU PIC workspace sizes its luminosity buffers from the luminosity grid" begin
+    # 2026-10-18 audit F-26 (U4-2): `_pic_cpu_workspace` built `luminosity_q1/q2`
+    # as (nx+1, ny+1) of the SOLVER grid while `_pic_luminosity` wants
+    # `_pic_luminosity_grid(solver) .+ 1`, so any `luminosity_grid` differing
+    # from `grid` failed the size check and fell back to the allocating method
+    # for every slice pair of every turn, with no receipt (measured 68,336 B per
+    # call at (64, 64) against 416 B when the grids matched; 21.6 MiB per
+    # 225-pair collide against 6.2). The workspace and the pool now size the
+    # buffers from the luminosity grid, and the pool is keyed by it. The
+    # allocation bound below is the defect's own size: two fresh
+    # (lnx+1) x (lny+1) Float64 grids.
+    solver = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, grid=(32, 32), luminosity_grid=(64, 64),
+                              slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
+    lnx, lny = Octopus._pic_luminosity_grid(solver)
+    @test (lnx, lny) == (64, 64)
+    pool = Octopus._pic_cpu_workspace_pool!(Dict{Any,Any}(), :ip, solver, Float64, 2)
+    @test all(w -> size(w.luminosity_q1) == (lnx + 1, lny + 1), pool)     # was (33, 33)
+    # The consumer takes the workspace path: well below two fresh grids.
+    n = 300
+    x1 = [1.0e-4 * sin(0.7i) for i in 1:n]; y1 = [1.0e-4 * sin(0.31i) for i in 1:n]
+    x2 = [1.0e-4 * sin(1.1i) for i in 1:n]; y2 = [1.0e-4 * sin(0.53i) for i in 1:n]
+    w = first(pool)
+    Octopus._pic_luminosity(solver, x1, y1, x2, y2, 1.0, w)          # compile
+    bytes = @allocated Octopus._pic_luminosity(solver, x1, y1, x2, y2, 1.0, w)
+    @test bytes < 2 * (lnx + 1) * (lny + 1) * sizeof(Float64)            # was 68,336 >= 67,600
+    # Two solvers that differ only in the luminosity grid do not share a pool.
+    cache = Dict{Any,Any}()
+    Octopus._pic_cpu_workspace_pool!(cache, :ip, solver, Float64, 1)
+    other = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, grid=(32, 32),
+                             slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
+    Octopus._pic_cpu_workspace_pool!(cache, :ip, other, Float64, 1)
+    @test length(cache) == 2
+    @test size(first(cache[(:cpu_pic_workspace_pool, :ip, Float64, (32, 32), (32, 32))]).luminosity_q1) == (33, 33)
+    # The constructor states the grid it sizes for.
+    ws = Octopus._pic_cpu_workspace(Float64, 32, 32; luminosity_grid=(lnx, lny))
+    @test size(ws.luminosity_q1) == (lnx + 1, lny + 1) == size(ws.luminosity_q2)
+end
+
+@testset "Strong-strong solver stack: one source per convention, no dead twin" begin
+    # 2026-10-18 audit, the strong-strong stack's Minor rows (F-13 to F-25).
+    # Each check is a tripwire on a convention that lived in several hand
+    # copies, a document that stated a superseded protocol, or a twin nothing
+    # executed; the fix moved each to one source, corrected the text, or
+    # deleted the twin, and the sweep fails if a copy comes back.
+    root = pkgdir(Octopus)
+    src_files = String[]
+    for (dir, _, files) in walkdir(joinpath(root, "src")), f in files
+        endswith(f, ".jl") && push!(src_files, joinpath(dir, f))
+    end
+    occurrences(needle; files=src_files) = Dict(
+        relpath(f, root) => length(findall(needle, read(f, String)))
+        for f in files if occursin(needle, read(f, String)))
+    pic_family = [joinpath(root, "src", "tasks", "strongstrong", f) for f in
+                  ("pic_cpu.jl", "pic_cuda.jl", "pic_cpu_sliced.jl", "gaussian_pic.jl", "gaussian_pic_cuda.jl")]
+    # F-25: the PIC deposition methods are ONE tuple, `_PIC_DEPOSIT_METHODS`,
+    # read by the solver constructor, `_validate_pic_solver` and the backend
+    # contract; the literal appears in src/ once, at the definition.
+    @test Octopus._PIC_DEPOSIT_METHODS == (:CIC, :TSC)
+    @test occurrences("(:CIC, :TSC)") == Dict("src/tasks/strongstrong/interface.jl" => 1)   # was 3 sites
+    @test_throws ArgumentError PICPoissonSolver(deposit_method=:NGP)
+    @test_throws ArgumentError PICPoissonSolver(luminosity_deposit_method=:NGP)
+    # F-14: the PIC luminosity overlap mesh (`nx - 1.1`, the 0.1-cell widening,
+    # the 0.05-cell shift) lives in `_pic_luminosity_mesh` alone; the CUDA
+    # routes call it instead of carrying hand copies.
+    @test occurrences(" - 1.1)"; files=pic_family) == Dict("src/tasks/strongstrong/pic_cpu.jl" => 2)   # tx, ty; was 8 in 4 functions
+    @test occurrences("_pic_luminosity_mesh("; files=pic_family)["src/tasks/strongstrong/pic_cuda.jl"] == 2
+    # F-22: the moving-centroid pz term takes the drift's working type at every
+    # site, as the weak-strong twins have since fix H (2026-10-16).
+    @test isempty(occurrences("0.5 * ((px - px0)"))                                   # the bare literal; was 3 sites
+    @test occurrences("oftype(S, 0.5) * ((px - px0)") == Dict(
+        "src/tasks/strongstrong/gaussian.jl" => 1, "src/tasks/strongstrong/pic_cuda.jl" => 2,
+        "src/elements/strong_beam.jl" => 1, "src/track/strong_beam_track.jl" => 1)
+    # F-13, F-15, F-17, F-18: the dead twins are deleted, not kept honest by
+    # nothing (CUDA names exist only where the extension loaded; the check is
+    # then the deletion's, elsewhere vacuous).
+    for name in (:_cuda_pic_solve_field_with_green_fft, :_cuda_pic_bounds_pair_combine,
+                 :_cuda_pic_batched_luminosity_enabled, :_cuda_pic_wavefront_luminosity_batched,
+                 :_cuda_pic_luminosity_wavefront_kernel!, :_cuda_pic_stack_cached_green_enabled,
+                 :_cuda_pic_apply_green_plane!, :_cuda_pic_apply_green_plane_kernel!,
+                 :_pic_sliced_migrate_in, :_pic_sliced_migrate_out!)
+        @test !isdefined(Octopus, name)
+    end
+    @test length(methods(Octopus._pic_report_dropped)) == 1        # the pool form; the single-workspace twin is gone
+    # F-20, F-23: a documented constructor is the constructor -- the signature
+    # block names every keyword the struct takes.
+    sig(doc) = first(split(string(doc), "\n\n"))
+    @test occursin("luminosity_schedule", sig(@doc GaussianPoissonSolver))
+    @test all(f -> occursin(string(f), sig(@doc SymplecticityContract)), fieldnames(SymplecticityContract))
+    # F-24: the symplecticity tripwire's message and the guide state the rule
+    # the code applies (tracking with `Symplectic6DMap`), not the superseded
+    # declaration rule.
+    @test !occursin("kinds declare SymplecticityContract", read(joinpath(root, "src", "contracts", "Contracts.jl"), String))
+    @test !occursin("declare `SymplecticityContract`", read(joinpath(root, "docs", "guides", "contracts_and_analyses.md"), String))
+    # F-19: the design note describes the protocol the code runs -- the reduced
+    # record goes to the two DIRECTION owners, which tell the members.
+    note = read(joinpath(root, "docs", "design", "multi_process_policy.md"), String)
+    @test !occursin("every rank involved in the pair", note)
+    @test !occursin("each PLANE of the pair", note)
+    @test occursin("one per DIRECTION", note)
 end
 
 @testset "Spectral field absolute normalization is derived, not fitted" begin
@@ -34292,6 +34619,40 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             grid=(64, 64), slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
         @test_logs (:warn, r"clipped charge at the Dirichlet wall") match_mode = :any collide!(
             sp64, strong_gpu(256), strong_gpu(256), Octopus.CUDABackend)
+        # 2026-10-18 audit F-5 (U7-1): the 6D route added the luminosity
+        # deposits -- which cannot clip: their mesh covers both slices'
+        # drifted extrema -- to the tripwire denominator, while the transverse
+        # route (U11-2) did not, so ONE dropped charge read two fractions
+        # across a luminosity-schedule boundary (measured: nsource 3072 and
+        # 9.729e-02 on a turn with luminosity, 2048 and 1.459e-01 on a turn
+        # without, the same 298.876726 units dropped). The denominator is the
+        # clippable deposits alone -- two drifted plane solves per direction
+        # per non-empty pair -- DERIVED here from the slice populations, and
+        # identical whether or not the schedule evaluated the luminosity.
+        let sched = SpectralPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+                grid=(64, 64), slicing=LongitudinalSlicing(nslices=2, method=:equal_count),
+                luminosity_schedule=AtTurns([0]))
+            nsource(turn) = begin
+                b1, b2 = strong_gpu(256), strong_gpu(256)
+                s1 = Octopus._cuda_longitudinal_slices(b1.rep, sched.slicing1)
+                s2 = Octopus._cuda_longitudinal_slices(b2.rep, sched.slicing2)
+                expected = sum(2 * (length(i1) + length(i2))
+                               for i1 in s1.indices, i2 in s2.indices
+                               if !isempty(i1) && !isempty(i2))
+                logs, lum = Test.collect_test_logs() do
+                    collide!(sched, b1, b2, Octopus.CUDABackend, TrackingContext(turn=turn))
+                end
+                warns = [l for l in logs if occursin("clipped charge", string(l.message))]
+                (expected, [l.kwargs[:nsource] for l in warns], lum)
+            end
+            exp0, ns0, lum0 = nsource(0)      # luminosity evaluated this turn
+            exp1, ns1, lum1 = nsource(1)      # luminosity skipped
+            @test !isnan(lum0) && isnan(lum1)                    # the schedule did act
+            @test length(ns0) == 1 && length(ns1) == 1           # one aggregate warning each
+            @test exp0 == exp1 == 2048
+            @test ns0 == [exp0]                                   # was [3072]
+            @test ns1 == [exp1]
+        end
 
         # THE TRANSVERSE PATH, with `longitudinal_kick=false` so the 6D route
         # above cannot be what warns. Both backends must see it, or the
@@ -36243,6 +36604,88 @@ end
         @test ws.dropped[] > before
     end
 
+    # 2026-10-18 audit F-9 (U4-1): the node tally counted the field side against
+    # `gL.field_grid` only, never against `gR.field_grid` the kick blend also
+    # reads, and never the longitudinal plane (node s+1 at drift sR deposited
+    # onto gL's mesh for `phi_L - phi_Z`), so a field particle inside gL but
+    # outside gR and a source particle inside gL at sL but outside it at sR both
+    # vanished through the zero-weight branch uncounted (measured at kbb = 3e-7
+    # on a graded beam: 1284 shipped, 117 right-mesh and 103 phi_Z escapes
+    # uncounted). Every deposit and every interpolation is now counted against
+    # the mesh IT reads -- five events per pair under the longitudinal kick --
+    # and the expectation is DERIVED here from those five box tests on the
+    # meshes the interaction read, so the pin is the definition, not a number.
+    # The fixture makes the two meshes differ: an asymmetric source so one drift
+    # can be inside where the other is outside, and a WIDE field slice 1 beside
+    # a NARROW field slice 2, so node 2's field box (slices 1 and 2) exceeds
+    # node 3's (slice 2 alone); field slice 2 reads gL = node 2, gR = node 3.
+    node_fixture() = begin
+        nx = 8; ny = 8
+        solver = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0,
+            grid=(nx, ny), green_cache=:none, interaction_grid=:node,
+            slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
+        ns = 800; nf = 400; half = nf ÷ 2
+        source = (x=[1.0e-4 * (1 + sin(0.7i)) for i in 1:ns], px=zeros(ns),
+                  y=[1.0e-4 * sin(0.31i) for i in 1:ns], py=zeros(ns),
+                  z=zeros(ns), pz=zeros(ns))
+        fx = [(i <= half ? 2.0e-4 : 1.0e-4) * sin(1.1i) for i in 1:nf]
+        fy = [(i <= half ? 2.0e-4 : 1.0e-4) * sin(0.53i) for i in 1:nf]
+        field_all = (x=fx, px=zeros(nf), y=fy, py=zeros(nf), z=zeros(nf), pz=zeros(nf))
+        slice1 = (x=fx[1:half], px=zeros(half), y=fy[1:half], py=zeros(half),
+                  z=zeros(half), pz=zeros(half))
+        field = (x=fx[(half + 1):nf], px=zeros(nf - half), y=fy[(half + 1):nf],
+                 py=zeros(nf - half), z=zeros(nf - half), pz=zeros(nf - half))
+        boundary = [-1.0e-3, 0.0, 1.0e-3]
+        psrc = (weight=1.0, lb=-1.0e-3, center=0.0, rb=1.0e-3)
+        pfld = (weight=0.5, lb=0.0, center=5.0e-4, rb=1.0e-3)       # field slice 2
+        (; nx, ny, solver, source, field_all, slice1, field, boundary, psrc, pfld, half, nf)
+    end
+    # The two injected escapes, placed from the BUILT meshes: a field particle
+    # midway between gR's right edge and gL's (inside gL, outside gR), and a
+    # source particle whose sR drift carries it half a mesh width past gL's
+    # left edge while its sL drift (zero for this slice pair) leaves it put.
+    function node_inject!(f, gL, gR)
+        right(g) = g.x0 + g.width
+        @test right(gL.field_grid) > right(gR.field_grid)          # the premise
+        f.field.x[1] = 0.5 * (right(gR.field_grid) + right(gL.field_grid))
+        sL = 0.5 * (f.psrc.center - f.pfld.lb)
+        sR = 0.5 * (f.psrc.center - f.pfld.rb)
+        @test sL == 0.0 && sR < 0.0
+        f.source.x[1] = 1.0e-4
+        f.source.px[1] = (gL.source_grid.x0 - 0.5 * gL.source_grid.width - f.source.x[1]) / sR
+        return sL, sR
+    end
+    # The definition: each of the five deposits/interpolations against the
+    # mesh it reads -- source at sL on gL, at sR on gR, at sR on gL (phi_Z),
+    # field on gL and on gR.
+    node_expected(f, gL, gR, sL, sR) = begin
+        box(g) = (g.x0, g.x0 + g.width, g.y0, g.y0 + g.height)
+        s = f.source
+        Octopus._pic_count_outside_box_drifted(s.x, s.px, s.y, s.py, sL, sL, box(gL.source_grid)...) +
+        Octopus._pic_count_outside_box_drifted(s.x, s.px, s.y, s.py, sR, sR, box(gR.source_grid)...) +
+        Octopus._pic_count_outside_box_drifted(s.x, s.px, s.y, s.py, sR, sR, box(gL.source_grid)...) +
+        Octopus._pic_count_outside_box(f.field.x, f.field.y, box(gL.field_grid)...) +
+        Octopus._pic_count_outside_box(f.field.x, f.field.y, box(gR.field_grid)...)
+    end
+    let f = node_fixture()
+        cache = Dict{Int,Any}()
+        Octopus._pic_build_node_grids!(cache, f.solver, Float64, f.source, 0.0, f.field_all,
+                                       [1:f.half, (f.half + 1):f.nf], f.boundary)
+        gL, gR = cache[2], cache[3]
+        ws = Octopus._pic_cpu_workspace(Float64, f.nx, f.ny)
+        ws.dropped[] = 0
+        Octopus._pic_interaction_node!(f.solver, f.source, f.psrc, f.field, f.pfld, 1.0e-6, ws, gL, gR)
+        @test ws.dropped[] == 0                                      # benign: every mesh covers
+        sL, sR = node_inject!(f, gL, gR)
+        expected = node_expected(f, gL, gR, sL, sR)
+        # The field escape once (outside gR alone); the source escape twice (at
+        # sR it is outside gL's mesh AND gR's, which share the source extent).
+        @test expected == 3
+        ws.dropped[] = 0
+        Octopus._pic_interaction_node!(f.solver, f.source, f.psrc, f.field, f.pfld, 1.0e-6, ws, gL, gR)
+        @test ws.dropped[] == expected                               # was 1: the sR-on-gR count alone
+    end
+
     # 2026-08-05_b audit, U1-5: the CUDA routes had no dropped-charge counter
     # of ANY kind -- `grep -c dropped pic_cuda.jl` found nothing but a comment
     # -- and because a dropped particle changes both backends' fields
@@ -36340,6 +36783,33 @@ end
             Octopus._cuda_pic_interaction_node!(solver, gsource, param, gfield, param,
                 1.0e-6, gcache[1], gcache[2], gws.charges[1], nothing, gws.dropped)
             @test Int(Array(gws.dropped)[1]) == cpu_count
+        end
+
+        # F-9's twin: the same five-event fixture on identical meshes gives the
+        # SAME count through `_cuda_pic_interaction_node!` -- the right-mesh and
+        # phi_Z counts mirrored, not approximated.
+        let f = node_fixture()
+            ccache = Dict{Int,Any}()
+            Octopus._pic_build_node_grids!(ccache, f.solver, Float64, f.source, 0.0, f.field_all,
+                                           [1:f.half, (f.half + 1):f.nf], f.boundary)
+            sL, sR = node_inject!(f, ccache[2], ccache[3])
+            expected = node_expected(f, ccache[2], ccache[3], sL, sR)
+            @test expected == 3
+            CuA = Octopus.CUDA.CuArray
+            dev(c) = (x=CuA(c.x), px=CuA(c.px), y=CuA(c.y), py=CuA(c.py), z=CuA(c.z), pz=CuA(c.pz))
+            g = node_fixture()                       # undisplaced coordinates build the meshes
+            gcache = Dict{Int,Any}()
+            Octopus._cuda_pic_build_node_grids!(gcache, g.solver, Float64, dev(g.source), 0.0,
+                nothing, (1:1, 1:1), g.boundary, true, Any[dev(g.slice1), dev(g.field)])
+            # The same two escapes, placed from the device-built meshes.
+            sLd, sRd = node_inject!(g, gcache[2], gcache[3])
+            @test (sLd, sRd) == (sL, sR)
+            @test node_expected(g, gcache[2], gcache[3], sLd, sRd) == expected
+            gws = Octopus._cuda_pic_workspace(g.solver, Float64)
+            fill!(gws.dropped, Int32(0))
+            Octopus._cuda_pic_interaction_node!(g.solver, dev(g.source), g.psrc, dev(g.field), g.pfld,
+                1.0e-6, gcache[2], gcache[3], gws.charges[1], nothing, gws.dropped)
+            @test Int(Array(gws.dropped)[1]) == expected              # was 1, like the CPU twin
         end
 
         # End to end through the public collide!: on a config where the CPU
@@ -36825,6 +37295,22 @@ end
     if CUDA_TESTS_ACTIVE
         CuA = Octopus.CUDA.CuArray
         # Unit level, including the masked (dead-particle) path: the stats
+        # 2026-10-18 audit F-21 (U8-5): the CUDA dispatch was the third hand
+        # copy of the accepted slicing methods; it reads the one table now, so
+        # every alias slices on the device exactly as its canonical method.
+        let zc = collect(range(-0.7, 1.3; length=600)) .^ 3
+            grep = Phase6DRep((CuA(a) for a in (zeros(600), zeros(600), zeros(600), zeros(600), zc, zeros(600)))...)
+            for (canonical, aliases) in pairs(Octopus._LONGITUDINAL_SLICING_METHODS)
+                positions = canonical === :specified ? [-0.6, 0.0, 0.6] : Float64[]
+                ref = Octopus._cuda_longitudinal_slices(grep, LongitudinalSlicing(nslices=4, method=canonical, positions=positions))
+                for alias in aliases
+                    dev = Octopus._cuda_longitudinal_slices(grep, LongitudinalSlicing(nslices=4, method=alias, positions=positions))
+                    @test dev.boundary == ref.boundary && dev.center == ref.center &&
+                          dev.weight == ref.weight && dev.live == ref.live
+                    @test all(Array(dev.indices[k]) == Array(ref.indices[k]) for k in 1:4)
+                end
+            end
+        end
         # NamedTuples must agree field for field, bitwise.
         let n = 30_000
             set_global_rng!(seed=29, method=:philox)

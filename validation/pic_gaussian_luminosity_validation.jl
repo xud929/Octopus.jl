@@ -137,7 +137,7 @@ for n_particles in n_particles_values, case in cases
         start=get(case, :same_particles, false) ? 1 : n_particles + 101,
     )
     exact = analytic_gaussian_overlap(case)
-    for method in (:CIC, :TSC), ngrid in grids, padding in paddings
+    for method in Octopus._PIC_DEPOSIT_METHODS, ngrid in grids, padding in paddings
         value = deposited_overlap(method, (ngrid, ngrid), padding, x1, y1, x2, y2)
         if padding == 0.1
             solver = PICPoissonSolver(
@@ -175,7 +175,7 @@ else
     maximum_interface_relative_error <= 1e-12 ||
         error("production luminosity path does not match the validation quadrature")
 end
-for method in (:CIC, :TSC)
+for method in Octopus._PIC_DEPOSIT_METHODS
     selected = filter(row -> row.method == method && row.grid == maximum(grids) &&
                              row.padding_cells == first(paddings) &&
                              row.n_particles == maximum(n_particles_values), rows)
