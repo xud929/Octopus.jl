@@ -8341,7 +8341,7 @@ end
     @test rcpt.values.elements[1].beam == 1
     @test length(rcpt.values.elements[1].slots) == 1
     slot_w = rcpt.values.elements[1].slots[1]
-    @test propertynames(slot_w) == (:slot, :kind, :rng_id, :digest, :name, :length)
+    @test propertynames(slot_w) == (:slot, :kind, :rng_id, :digest, :name, :length, :sigma, :octaves)
     @test slot_w.slot == "phase_noise[1]" && slot_w.kind === :white && slot_w.rng_id == 7
     @test rcpt.values.first_turn == 3 && rcpt.values.turns == 2
     table = TurnTable(collect(0.01:0.01:0.10); name="amp")
@@ -12482,6 +12482,62 @@ end
     foreach(x -> rm(x; force=true), (p6, p7))
 end
 
+@testset "A turn-modulation provenance entry carries the rule's sigma and octaves" begin
+    # Fix batch 3 (2026-10-21), unit G: comprehensive audit F-66 (U15-1). The
+    # slot entry recorded `slot, kind, rng_id, digest, name, length`: a table
+    # is identified by its digest and name, but a live rule's free parameters
+    # -- `sigma` (white and pink) and `octaves` (pink) -- were not read, so two
+    # runs differing in a rule's rms were byte-identical in their receipts and
+    # in `/turn_modulation` (probe3: white sigma 1e-5 vs 2e-5 "equal = true",
+    # pink 8 vs 16 octaves "equal = true"). The entry, the artifact's slot
+    # attributes and the reader carry both now (0.0 and 0 where the kind has
+    # none: a table's scale lives in its digest), and a file written before
+    # the attributes existed reads back with those defaults.
+    id = Octopus._unheld_rng_id(next_rng_id!() + 3_000_000)
+    mk(rule) = compile_runtime(ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase_noise=(rule,)))
+    slots(rule) = Octopus._turn_modulation_slots(mk(rule).rule)
+    e1, e2 = slots(WhiteNoise(1.0e-5; rng_id=id)), slots(WhiteNoise(2.0e-5; rng_id=id))
+    @test propertynames(e1[1]) == (:slot, :kind, :rng_id, :digest, :name, :length, :sigma, :octaves)
+    @test e1 != e2 && e1[1].sigma == 1.0e-5 && e2[1].sigma == 2.0e-5           # was e1 == e2
+    @test e1[1].octaves == 0 && e1[1].kind === :white && e1[1].rng_id == id
+    e3, e4 = slots(PinkNoise(1.0e-5; rng_id=id, octaves=8)), slots(PinkNoise(1.0e-5; rng_id=id, octaves=16))
+    @test e3 != e4 && e3[1].octaves == 8 && e4[1].octaves == 16 && e3[1].sigma == 1.0e-5   # was e3 == e4
+    table = TurnTable(collect(0.01:0.01:0.10); name="amp")
+    et = slots(table)
+    @test et[1].kind === :table && et[1].sigma == 0.0 && et[1].octaves == 0 && et[1].digest == table.digest
+    @test slots(WhiteNoise(1.0f-5; rng_id=id))[1].sigma === Float64(1.0f-5)     # recorded as Float64 whatever T
+    # the receipt, the artifact's attributes and the reader
+    mktempdir() do dir
+        p = joinpath(dir, "prov.h5")
+        zrep() = Phase6DRep([0.0], [0.0], [0.0], [0.0], [0.0], [0.0])
+        cav = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase_noise=(PinkNoise(3.0e-5; rng_id=id, octaves=12),))
+        audit = with_execution_audit() do
+            execute!(TrackingTask((DriftSpec(L=0.5), cav); artifact=RunArtifact(p)), zrep(); turns=2)
+        end
+        rc = only(r for r in execution_receipts(audit) if r.consumer === :turn_modulation).values
+        s = rc.elements[1].slots[1]
+        @test s.kind === :pink && s.sigma == 3.0e-5 && s.octaves == 12
+        prov = turn_modulation_provenance(p)
+        ps = prov[1].elements[1].slots[1]
+        @test ps.sigma == 3.0e-5 && ps.octaves == 12                               # was absent
+        @test propertynames(ps) == (:slot, :kind, :rng_id, :digest, :name, :length, :sigma, :octaves, :nominal, :series)
+        HDF5 = Octopus.HDF5
+        HDF5.h5open(p, "r") do f
+            a = HDF5.attributes(f["turn_modulation/1/1/phase_noise[1]"])
+            @test read(a["sigma"]) == 3.0e-5 && read(a["octaves"]) == 12
+        end
+        # a file from before the attributes existed: deleted here, read with
+        # the defaults, no refusal (the nominals' posture)
+        HDF5.h5open(p, "r+") do f
+            g = f["turn_modulation/1/1/phase_noise[1]"]
+            HDF5.delete_attribute(g, "sigma")
+            HDF5.delete_attribute(g, "octaves")
+        end
+        old = turn_modulation_provenance(p)[1].elements[1].slots[1]
+        @test old.sigma == 0.0 && old.octaves == 0 && old.kind === :pink
+    end
+end
+
 @testset "Turn modulation: white and pink spectra" begin
     # 2026-10-12, turn-by-turn modulation stage 2, test 9 of
     # docs/design/turn_modulation.md section 8: the reduced-size twin of
@@ -12674,7 +12730,7 @@ end
     @test length(slots) == 1
     @test slots[1].slot == "phase_noise[1]" && slots[1].kind === :pink && slots[1].rng_id == 7
     @test slots[1].digest == 0 && slots[1].name == "" && slots[1].length == 0
-    @test propertynames(slots[1]) == (:slot, :kind, :rng_id, :digest, :name, :length)
+    @test propertynames(slots[1]) == (:slot, :kind, :rng_id, :digest, :name, :length, :sigma, :octaves)
 
     # (h) strength_noise accepts a pink rule: one realised relative factor d
     # (slot N + 1 = 2, the formula with rng_id 9) scales both planes of its
@@ -13009,7 +13065,7 @@ end
     @test rcpt.values.elements[1].beam == 1
     @test length(rcpt.values.elements[1].slots) == 1
     slot_w = rcpt.values.elements[1].slots[1]
-    @test propertynames(slot_w) == (:slot, :kind, :rng_id, :digest, :name, :length)
+    @test propertynames(slot_w) == (:slot, :kind, :rng_id, :digest, :name, :length, :sigma, :octaves)
     @test slot_w.slot == "phase_noise" && slot_w.kind === :white && slot_w.rng_id == 21
     @test slot_w.digest == 0 && slot_w.name == "" && slot_w.length == 0
     @test rcpt.values.first_turn == 3 && rcpt.values.turns == 2
@@ -19153,16 +19209,18 @@ end
     end
     # The torn tail is truncated SILENTLY by design (RunArtifact.jl: rows past
     # the cursor are a torn tail, the docstring says so, and the truncation
-    # emits nothing); the ONE warning this reopen does emit is the
-    # second-live-observer warning ("a second live observer is initializing an
-    # output path that another live observer is writing ..."), because `t2`'s
-    # observer above still holds the path. Pinned on that content, so a new
-    # warning or error log on this path -- or the known one going away -- is
-    # a change this test sees rather than a capture nobody reads (2026-10-18
-    # audit F-214/U33-4, `logs_t2b` was dead; measured 2026-10-20: exactly
-    # one warning, the one named).
+    # emits nothing), and the reopen by a NEW task object of a path whose
+    # previous writer (`t2`'s artifact) has finished and closed is the
+    # sequential continuation the path registry stays silent for since fix
+    # batch 3 (2026-10-21, unit G, F-85: it warned here as "a second live
+    # observer ..." because `t2`'s artifact OBJECT was still alive, not still
+    # writing; measured 2026-10-20: exactly one warning, that one). So this
+    # reopen emits NOTHING at Warn or above, pinned on the capture so a new
+    # warning or error log on this path is a change this test sees rather
+    # than a capture nobody reads (2026-10-18 audit F-214/U33-4, `logs_t2b`
+    # was dead).
     @testset let torn_tail_logs = [string(l.level, ": ", l.message) for l in logs_t2b if l.level >= Logging.Warn]
-        @test length(torn_tail_logs) == 1 && occursin("second live observer", torn_tail_logs[1])
+        @test isempty(torn_tail_logs)      # was 1: "a second live observer is initializing ..."
     end
     # (4b) The weak-strong side of the channel (step 2a): per-strong-beam
     # datasets carrying the positive rows only (this fixture's thin strong
@@ -19646,25 +19704,33 @@ end
 
 # Fixtures for the row-cursor testset below (fix batch 2026-10-19, unit T:
 # comprehensive audit F-73, F-84, F-74, F-59, F-63). A coordinate array whose
-# `collect` throws while armed: `_moment_observer_row` collects the six
-# coordinate arrays before anything else, so arming it between a turn's
-# tracking and the MomentObserver's fire puts an exception INSIDE the row
-# computation through the public task loop, with no method of the package
-# redefined. The tracking kernels index the arrays and never collect them;
-# the testset checks that the arm took its path (the particle was tracked
-# through the arming turn before the observer threw).
+# element READ throws once while armed: the fused `_moment_observer_row`
+# (fix batch 3, 2026-10-21, unit G, F-78) reads the six coordinate arrays in
+# place -- no `collect`, which is where this fixture used to inject -- so
+# arming it between a turn's tracking and the MomentObserver's fire puts an
+# exception INSIDE the row computation through the public task loop, with no
+# method of the package redefined. The read disarms itself as it throws, so
+# the crash path (the loss summary, the best-effort finalize) indexes the
+# arrays freely afterwards. The tracking kernels index the arrays with the
+# arm down; the testset checks that the arm took its path (the particle was
+# tracked through the arming turn before the observer threw).
 struct _FixTFailingVec <: AbstractVector{Float64}
     data::Vector{Float64}
     armed::Base.RefValue{Bool}
 end
 Base.size(v::_FixTFailingVec) = size(v.data)
 Base.IndexStyle(::Type{_FixTFailingVec}) = IndexLinear()
-Base.@propagate_inbounds Base.getindex(v::_FixTFailingVec, i::Int) = v.data[i]
+Base.@propagate_inbounds function Base.getindex(v::_FixTFailingVec, i::Int)
+    if v.armed[]
+        v.armed[] = false
+        throw(_FixTInjectedRowFailure())
+    end
+    return v.data[i]
+end
 Base.@propagate_inbounds Base.setindex!(v::_FixTFailingVec, x, i::Int) = (v.data[i] = x; v)
 struct _FixTInjectedRowFailure <: Exception end
 Base.showerror(io::IO, ::_FixTInjectedRowFailure) =
     print(io, "injected failure inside the moment row computation")
-Base.collect(v::_FixTFailingVec) = (v.armed[] && throw(_FixTInjectedRowFailure()); copy(v.data))
 # Arms the failure at one turn from the hook slot BEFORE the MomentObserver's
 # (hooks run in order after the turn's tracking); `turn = -1` disarms a retry.
 mutable struct _FixTArmAtTurn <: Octopus.AbstractBeamObserver
@@ -20224,11 +20290,18 @@ end
         @test isempty(tss.artifact.turn_modulation_recorders)
         fresh = StrongStrongTask((ip, crab(11, white(11))), (ip, crab(12, white(12)));
                                  artifact=RunArtifact(p_dss; record_turn_modulation=true))
-        # The refused task's probes stay registered as live observers of the
-        # path (the observer registry, not the artifact), so the fresh task's
-        # initialisation warns about them; the warning is the registry's and
-        # is asserted here so the suite log carries no unexplained line.
-        @test_logs (:warn, r"second live observer") match_mode = :any execute!(fresh, b1, b2; turns=2)
+        # The refused task's artifact stays registered in the path registry
+        # (by object identity) but holds no open file, so the fresh task's
+        # initialisation is SILENT since fix batch 3 (2026-10-21, unit G,
+        # F-85; before, it warned "a second live observer ...", asserted here
+        # so the suite log carried no unexplained line): the registry now
+        # warns only for an earlier artifact still holding its file OPEN.
+        lg_fresh, _ = Test.collect_test_logs() do
+            execute!(fresh, b1, b2; turns=2)
+        end
+        @test count(l -> l.level >= Logging.Warn &&
+                         (occursin("second live observer", string(l.message)) ||
+                          occursin("still holds open", string(l.message))), lg_fresh) == 0   # was 1
         @test read(TaskOutput(p_dss), :execution).turns == [2]
         wt = TrackingTask((crab(13, white(13)), ScheduledObserver(MomentObserver(; name="m", orders=1)),
                            ScheduledObserver(MomentObserver(; name="m", orders=1)));
@@ -21227,7 +21300,8 @@ end
     attr_names(obj) = sort!([String(k) for k in keys(Octopus.HDF5.attributes(obj))])
     group_names(g) = sort!([String(k) for k in keys(g)])
     bitwise(a, b) = size(a) == size(b) && all(a .=== b)
-    provenance_attrs = ["digest", "index", "kind", "length", "name", "rng_id"]
+    # `sigma` and `octaves` joined the slot group 2026-10-21 (fix batch 3, unit G, F-66)
+    provenance_attrs = ["digest", "index", "kind", "length", "name", "octaves", "rng_id", "sigma"]
     crab_nominals = ["nominal_phase", "nominal_strengthX", "nominal_strengthY"]
 
     # (a) OFF by default: no `series` dataset, the readers' `series` is
@@ -21360,7 +21434,7 @@ end
     # (g) The receipt is identical with the switch on and off, in the shape
     # the kernel-boundary testset pins (D9: the receipts do not change).
     @test rcpt_on == rcpt_off
-    @test propertynames(rcpt_on.elements[1].slots[1]) == (:slot, :kind, :rng_id, :digest, :name, :length)
+    @test propertynames(rcpt_on.elements[1].slots[1]) == (:slot, :kind, :rng_id, :digest, :name, :length, :sigma, :octaves)
 
     # (e) INVALID refused by name (an ArgumentError naming the keyword and the
     # value, as `capacity` is refused); an unknown keyword stays a
@@ -22354,12 +22428,12 @@ end
         rc = one(rsA, :turn_modulation)
         @test propertynames(rc) == (:elements, :first_turn, :turns)
         @test propertynames(rc.elements[1]) == (:element, :beam, :slots)
-        @test propertynames(rc.elements[1].slots[1]) == (:slot, :kind, :rng_id, :digest, :name, :length)
+        @test propertynames(rc.elements[1].slots[1]) == (:slot, :kind, :rng_id, :digest, :name, :length, :sigma, :octaves)
         @test rc.first_turn == 0 && rc.turns == 4 && rc.elements[1].beam == 1
         provA = turn_modulation_provenance(pA)
         @test propertynames(provA[1]) == (:execution, :elements, :state)
         @test propertynames(provA[1].elements[1]) == (:element, :beam, :first_turn, :turns, :slots)
-        @test propertynames(provA[1].elements[1].slots[1]) == (:slot, :kind, :rng_id, :digest, :name, :length, :nominal, :series)
+        @test propertynames(provA[1].elements[1].slots[1]) == (:slot, :kind, :rng_id, :digest, :name, :length, :sigma, :octaves, :nominal, :series)
         @test [e.execution for e in provA] == [1, 2]
         # the walk's docstring documents the receipt entry WITH `beam`
         @test occursin("beam    = 1", string(@doc Octopus._turn_modulation_provenance!))
@@ -26929,34 +27003,60 @@ end # _lane_gate("Contract coverage guards: declared kinds, solver tree, broken 
     @test maximum(abs, J' * S6 * J - S6) < 1.0e-10
 end
 
-@testset "A second live writer on one path warns at initialization" begin
-    # 2026-08-05_b audit, U7-10. Two live writers on one path end
-    # self-consistent and WRONG: the second's initialization truncates the
-    # first's rows, and the survivor resyncs onto the OTHER writer's rows.
-    # The process-wide path registry (weak identity) warns at the second
-    # live writer's initialization; a SINGLE writer continuing across
-    # execute! calls -- the documented pattern -- stays silent, which is why
-    # the registry is per-process and keyed on identity rather than
-    # per-task. Re-homed on the run artifact when the standalone observer
-    # writers retired (2026-08-18): the artifact is the registry's one
-    # remaining writer, registered by ARTIFACT identity.
+@testset "The path registry warns for a writer still open, not for a finished writer's path continued" begin
+    # 2026-08-05_b audit, U7-10: two live standalone observers writing one
+    # path ended self-consistent and wrong, so a process-wide registry (weak
+    # identity) warned at the second's initialization. Re-homed on the run
+    # artifact when the standalone writers retired (2026-08-18). Since the
+    # sidecar lock (2026-10-16) a second writer on an OPEN path is refused
+    # before the registry sees it, so the warning had exactly one way left to
+    # fire -- a NEW artifact object continuing or rewriting a path whose
+    # previous writer had finished and closed, the legitimate sequential case
+    # -- with wording about observers that interleave (comprehensive audit
+    # 2026-10-18, F-85; fix batch 3, unit G). The registry asks now whether
+    # the earlier artifact still holds its file OPEN (a lock removed by hand
+    # is the one way two open writers can meet) and says so in artifact
+    # terms; a finished writer's path is silent.
     mkp() = Phase6DRep([1e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
     dline = (DriftSpec(L=1.0),)
-    second_writer_warns(lg) = count(
-        l -> occursin("second live observer", string(l.message)), lg)
+    registry_warnings(lg) = count(l -> l.level >= Logging.Warn && occursin("still holds open", string(l.message)), lg)
+    old_wording(lg) = count(l -> occursin("second live observer", string(l.message)), lg)
     p = tempname() * ".h5"
     t1 = TrackingTask(dline; artifact=RunArtifact(p; append=true))
     lg, _ = Test.collect_test_logs() do
         execute!(t1, mkp(); turns=3)
         execute!(t1, mkp(); turns=4, start_turn=3)
     end
-    @test second_writer_warns(lg) == 0        # documented continuing pattern
-    t2 = TrackingTask(dline; artifact=RunArtifact(p; append=true))
+    @test registry_warnings(lg) == 0 && old_wording(lg) == 0        # the same task continuing: documented, silent
+    t2 = TrackingTask(dline; artifact=RunArtifact(p; append=true))   # a new object; t1 finished, closed, still alive
     lg2, _ = Test.collect_test_logs() do
         execute!(t2, mkp(); turns=2, start_turn=7)
     end
-    @test second_writer_warns(lg2) == 1       # the U7-10 interleave, now loud
+    @test t1.artifact.file === nothing
+    @test registry_warnings(lg2) == 0 && old_wording(lg2) == 0       # was 1: "a second live observer is initializing ..."
+    @test read(TaskOutput(p), :execution).start_turn == [0, 3, 7]
+    # the one reachable collision: an earlier artifact whose writer still
+    # holds the file open, asked of the registry directly (end to end the lock
+    # refuses it first, by design)
+    p3 = tempname() * ".h5"
+    open_art = RunArtifact(p3)
+    Octopus.prepare_run_artifact!(open_art, String[], 0, 1)
+    try
+        @test open_art.file !== nothing
+        lg3, _ = Test.collect_test_logs() do
+            Octopus._register_observer_path!(RunArtifact(p3; append=true), p3)
+        end
+        @test registry_warnings(lg3) == 1
+        @test occursin("run artifact", string(lg3[1].message)) && !occursin("observer", string(lg3[1].message))
+    finally
+        Octopus.finalize_run_artifact!(open_art)
+    end
+    lg4, _ = Test.collect_test_logs() do
+        Octopus._register_observer_path!(RunArtifact(p3; append=true), p3)   # the writer closed: silent
+    end
+    @test registry_warnings(lg4) == 0
     rm(p; force=true)
+    rm(p3; force=true)
 end
 
 @testset "The moment reader detects format by content, not filename" begin
@@ -27214,6 +27314,216 @@ end
 
     @test_throws ArgumentError BPMObserver("bad"; x_noise=-1.0)
     @test_throws ArgumentError BPMObserver("bad"; y_noise=-1.0)
+end
+
+@testset "A Float32 beam's BPM centroid accumulates in Float64, as the moment observer does" begin
+    # Fix batch 3 (2026-10-21), unit G: comprehensive audit F-88. `_mean(v)`
+    # is `sum(v)/length(v)` in the array's element type, so a Float32 beam's
+    # BPM centroid was a Float32 (2.64e-11 m from the Float64-accumulated
+    # moment, 1.2e8 Float64 ulps, probe p5) while the moment observer
+    # promotes every term -- one centroid, two accumulation precisions. The
+    # BPM accumulates in Float64 on both its paths now; Float64 readings do
+    # not move (`sum(Float64, v) === sum(v)` on Float64 data: the same
+    # pairwise reduction, measured on 100,003 terms).
+    rng = MersenneTwister(88)
+    n = 100_000
+    mk(T) = T.(1.0e-3 .+ 1.0e-3 .* randn(rng, n))
+    ctx = TrackingContext(turn=0)
+    r64 = Phase6DRep((mk(Float64) for _ in 1:6)...)
+    @test Octopus._bpm_centroid(r64) === (Octopus._mean(r64.x), Octopus._mean(r64.y))   # Float64 unmoved, bitwise
+    r32 = Phase6DRep((mk(Float32) for _ in 1:6)...)
+    xb, yb = Octopus._bpm_centroid(r32)
+    @test xb isa Float64 && yb isa Float64                                              # was Float32
+    row = Octopus._moment_observer_row(ctx, r32, (Moment(x=1), Moment(y=1)))
+    # the two accumulations now differ only by pairwise-vs-serial roundoff,
+    # of order sqrt(n) eps = 316 eps at n = 1e5 (measured 17 ulp on Float64
+    # data, p5); 4096 ulp is thirteen such sigmas and 3e4 times under the
+    # Float32 accumulation's 1.2e8
+    @test abs(xb - row[2]) <= 4096 * eps(row[2]) && abs(yb - row[3]) <= 4096 * eps(row[3])   # was 1.2e8 ulp
+    @test xb == sum(Float64, r32.x) / n
+    # the masked path: Float64 accumulation over the survivors, exactly the serial sum
+    for i in (5, 500, 99_999), a in coordinate_arrays(r32)
+        a[i] = NaN32
+    end
+    xm, ym = allow_lost_particles(() -> Octopus._bpm_centroid(r32); enabled=true)
+    live = [Octopus.is_live(r32, i) for i in 1:n]
+    serial(v) = (s = 0.0; for i in 1:n; live[i] && (s += v[i]); end; s / count(live))
+    @test xm isa Float64 && xm == serial(r32.x) && ym == serial(r32.y)
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        h = Phase6DRep((mk(Float32) for _ in 1:6)...)
+        g = Phase6DRep((Octopus.CUDA.CuArray(a) for a in coordinate_arrays(h))...)
+        gx, gy = Octopus._bpm_centroid(g)
+        @test gx isa Float64 && gy isa Float64                                          # was Float32
+        @test abs(gx - sum(Float64, h.x) / n) <= 4096 * eps(gx) && abs(gy - sum(Float64, h.y) / n) <= 4096 * eps(gy)
+    else
+        @test_skip "CUDA device not available: the device-side Float64 accumulation is not exercised"
+    end
+end
+
+@testset "One observer placed twice in a line is refused by name in artifact mode and still read twice in memory mode" begin
+    # Fix batch 3 (2026-10-21), unit G: comprehensive audit F-89. One
+    # BPMObserver placed twice -- the "read twice in one turn" pattern its
+    # occurrence counter exists for, which works in memory mode -- was refused
+    # in artifact mode as `duplicate probe name`: a message about a NAME two
+    # objects share, when the user placed one object twice (and one `s`
+    # attribute could not have represented two positions). The prepare walks
+    # count placements by object identity now, and an observer that binds one
+    # artifact group (MomentObserver, CoordinateSnapshotObserver, a BPM with
+    # artifact=true) is refused by its cause before any bind; a memory-mode
+    # BPM may be placed as often as the lattice has pickups for it.
+    rep1() = Phase6DRep([1.0e-4, 3.0e-4], [0.0, 0.0], [2.0e-4, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0])
+    @test Octopus._observer_binds_one_group(MomentObserver(name="m"))
+    @test Octopus._observer_binds_one_group(CoordinateSnapshotObserver(name="s"))
+    @test Octopus._observer_binds_one_group(BPMObserver("b"; artifact=true))
+    @test !Octopus._observer_binds_one_group(BPMObserver("b"))
+    @test !Octopus._observer_binds_one_group(_FixGNoopObserver())
+    # memory mode, twice: two readings per turn with distinct noise (the T9 pattern)
+    let b = BPMObserver("twice"; x_noise=1.0e-6)
+        execute!(TrackingTask((DriftSpec(L=0.5), ScheduledObserver(b), DriftSpec(L=0.5), ScheduledObserver(b))), rep1(); turns=2)
+        tu, x, _ = readings(b)
+        @test tu == [0, 0, 1, 1] && x[1] != x[2] && x[3] != x[4]
+    end
+    mktempdir() do dir
+        msg(f) = try
+            f()
+            "did not throw"
+        catch e
+            e isa ArgumentError ? sprint(showerror, e) : rethrow()
+        end
+        # artifact mode, the same object twice in the line: refused by its cause
+        b = BPMObserver("twice"; x_noise=1.0e-6, artifact=true)
+        t = TrackingTask((DriftSpec(L=0.5), ScheduledObserver(b), DriftSpec(L=0.5), ScheduledObserver(b));
+                         artifact=RunArtifact(joinpath(dir, "twice.h5")))
+        m1 = msg(() -> execute!(t, rep1(); turns=2))
+        @test occursin("BPMObserver", m1) && occursin("twice", m1) && occursin("placed 2 times", m1)   # was "duplicate probe name"
+        @test !occursin("duplicate probe name", m1)
+        @test t.artifact.file === nothing                                   # the refusal closed the artifact
+        # the same MomentObserver object twice among the task hooks
+        m = MomentObserver(name="m"; orders=1)
+        t2 = TrackingTask((DriftSpec(L=1.0),); hooks=(ScheduledObserver(m), ScheduledObserver(m)),
+                          artifact=RunArtifact(joinpath(dir, "hooks.h5")))
+        m2 = msg(() -> execute!(t2, rep1(); turns=2))
+        @test occursin("MomentObserver", m2) && occursin("placed 2 times", m2)
+        # two DISTINCT objects sharing a name are still the artifact's refusal
+        t3 = TrackingTask((DriftSpec(L=1.0),);
+                          hooks=(ScheduledObserver(MomentObserver(name="m"; orders=1)),
+                                 ScheduledObserver(MomentObserver(name="m"; orders=1))),
+                          artifact=RunArtifact(joinpath(dir, "distinct.h5")))
+        @test occursin("duplicate probe name", msg(() -> execute!(t3, rep1(); turns=2)))
+        # one object, one placement: records at its arc position as before
+        b1 = BPMObserver("once"; artifact=true)
+        t4 = TrackingTask((DriftSpec(L=0.5), ScheduledObserver(b1), DriftSpec(L=0.5)); artifact=RunArtifact(joinpath(dir, "once.h5")))
+        execute!(t4, rep1(); turns=2)
+        out = read(TaskOutput(joinpath(dir, "once.h5")), :bpm; name="once")
+        @test out.turn == [0, 1] && out.s == 0.5
+    end
+end
+
+@testset "The BPM device model is on record: the :bpm_reading receipt and the /bpm attributes" begin
+    # Fix batch 3 (2026-10-21), unit G: comprehensive audit F-90. The nine
+    # device-model options declare the consumer `:bpm_reading`, under which
+    # no receipt was ever recorded, and `/bpm/<name>` carried `name`, `s` and
+    # the cursor only: a run with `x_offset = 1e-4` and one with `x_offset =
+    # 0` were indistinguishable from their receipts and from the file.
+    # `bpm_reading` records a `:bpm_reading` receipt per reading now, carrying
+    # every option the schema names under that consumer with the value it
+    # applied, and the bind stamps the model on the group as attributes the
+    # public reader returns under `attrs`. The pairing below is DERIVED from
+    # the schema, so an option added without its receipt field or attribute
+    # fails here by name.
+    rep1() = Phase6DRep([1.0e-4, 3.0e-4], [0.0, 0.0], [2.0e-4, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0])
+    schema = observer_option_schema(BPMObserver)
+    model_keys = [k for (k, m) in pairs(schema) if m.consumer === :bpm_reading]
+    @test :x_offset in model_keys && :rng_id in model_keys && !(:artifact in model_keys)
+    rid = Octopus._unheld_rng_id(next_rng_id!() + 4_000_000)
+    kw = (x_offset=1.0e-4, y_offset=-2.0e-4, tilt=0.01, x_gain=0.02, y_gain=-0.03,
+          x_readout=5.0e-6, y_readout=-7.0e-6, x_noise=1.0e-6, y_noise=2.0e-6)
+    mktempdir() do dir
+        p = joinpath(dir, "model.h5")
+        bpm = BPMObserver("ipbpm"; kw..., rng_id=rid, artifact=true)
+        for (k, m) in pairs(schema)
+            k === :name && continue
+            @test getproperty(bpm, k) != m.default            # the carries-every-option rule
+        end
+        audit = with_execution_audit() do
+            execute!(TrackingTask((DriftSpec(L=0.5), ScheduledObserver(bpm), DriftSpec(L=0.5),
+                                   ScheduledObserver(MomentObserver(name="m"; orders=1)));
+                                  artifact=RunArtifact(p)), rep1(); turns=3)
+        end
+        rs = [r for r in execution_receipts(audit) if r.consumer === :bpm_reading]
+        @test length(rs) == 3                                               # was 0: no site recorded the consumer
+        for k in model_keys, r in rs
+            @testset let option = k, turn = r.values.turn
+                @test haskey(r.values, k)
+                if k === :name
+                    @test String(r.values.name) == "ipbpm"
+                else
+                    @test r.values[k] == getproperty(bpm, k)
+                end
+            end
+        end
+        @test [r.values.turn for r in rs] == [0, 1, 2]
+        @test all(r.values.noise_drawn === true && r.values.occurrence == 0 for r in rs)
+        # the file: the model as attributes beside `name` and `s` ...
+        HDF5 = Octopus.HDF5
+        attrs = HDF5.h5open(p, "r") do f
+            a = HDF5.attributes(f["bpm/ipbpm"])
+            Dict(String(k) => read(a[k]) for k in keys(a))
+        end
+        for k in model_keys
+            k === :name && continue
+            @testset let attribute = k
+                @test haskey(attrs, String(k)) && attrs[String(k)] == getproperty(bpm, k)   # was absent
+            end
+        end
+        @test attrs["name"] == "ipbpm" && attrs["s"] == 0.5
+        # ... read back by the public reader under `attrs`, empty for a group
+        # that stamps none
+        out = read(TaskOutput(p), :bpm; name="ipbpm")
+        @test out.s == 0.5 && out.turn == [0, 1, 2]
+        @test haskey(out, :attrs) && out.attrs.x_offset == 1.0e-4 && out.attrs.rng_id == rid
+        @test Set(keys(out.attrs)) == Set(k for k in model_keys if k !== :name)
+        @test read(TaskOutput(p), :moments; name="m").attrs == (;)
+        # a noiseless BPM draws nothing and its receipt says so
+        quiet = BPMObserver("quiet"; x_offset=1.0e-4)
+        audit2 = with_execution_audit() do
+            observe!(quiet, TrackingContext(turn=4), rep1())
+        end
+        r2 = only(r for r in execution_receipts(audit2) if r.consumer === :bpm_reading)
+        @test r2.values.noise_drawn === false && r2.values.occurrence === nothing && r2.values.x_noise == 0.0
+        @test r2.values.x_offset == 1.0e-4 && r2.values.turn == 4
+    end
+    @test validate_configuration_metadata()
+end
+
+@testset "BPM memory arrays and the /bpm group agree under append=true and diverge by design under append=false" begin
+    # Fix batch 3 (2026-10-21), unit G: comprehensive audit F-86. The BPM
+    # docstring said "the memory arrays and the artifact cannot disagree" --
+    # true under `append=true`, where the bind truncates the group to the
+    # same boundary the memory discard keeps, and false under the default
+    # `append=false`, which recreates the FILE per execute!: after two
+    # execute!(turns=3) the group holds turns 3:5 and memory 0:5 (probe p1,
+    # block D). The text states the condition now; this pins both behaviours
+    # and the text.
+    rep1() = Phase6DRep([1.0e-4], [0.0], [2.0e-4], [0.0], [0.0], [0.0])
+    mktempdir() do dir
+        for (append, want_file) in ((true, 0:5), (false, 3:5))
+            b = BPMObserver("b"; artifact=true)
+            p = joinpath(dir, "append_$(append).h5")
+            t = TrackingTask((DriftSpec(L=1.0),); hooks=(ScheduledObserver(b),),
+                             artifact=RunArtifact(p; append=append, capacity=3))
+            r = rep1()
+            execute!(t, r; turns=3)
+            execute!(t, r; turns=3)
+            @testset let append = append
+                @test readings(b)[1] == collect(0:5)
+                @test Int.(read(TaskOutput(p), :bpm; name="b").turn) == collect(want_file)
+            end
+        end
+    end
+    doc = string(Base.Docs.doc(Base.Docs.Binding(Octopus, :BPMObserver)))
+    @test occursin("append=true", doc) && occursin("append=false", doc)     # was: an unconditional "cannot disagree"
+    @test !occursin("cannot disagree", doc)
 end
 
 @testset "PTC consistency" begin
@@ -28948,6 +29258,224 @@ end
         @test rowg == Octopus._moment_observer_row(ctx, togpu(rc), bg.moments, bg)
     else
         @test_skip "CUDA device not available"
+    end
+end
+
+# Fixtures for the fused-row and snapshot testsets below (fix batch 3,
+# 2026-10-21, unit G: comprehensive audit F-78, F-79, F-87). A coordinate
+# array that COUNTS its element reads, so the fold's structure -- each
+# coordinate read once per pass, no copy -- is asserted rather than inferred
+# from a timing on a loaded box; and an observer that does nothing, the
+# baseline a per-fire cost is measured against.
+struct _FixGCountingVec <: AbstractVector{Float64}
+    data::Vector{Float64}
+    reads::Base.RefValue{Int}
+end
+Base.size(v::_FixGCountingVec) = size(v.data)
+Base.IndexStyle(::Type{_FixGCountingVec}) = IndexLinear()
+Base.@propagate_inbounds Base.getindex(v::_FixGCountingVec, i::Int) = (v.reads[] += 1; v.data[i])
+struct _FixGNoopObserver <: Octopus.AbstractBeamObserver end
+Octopus.observe!(::_FixGNoopObserver, ::Octopus.TrackingContext, rep) = nothing
+
+@testset "The CPU moment row is one fused fold: no beam copy, bitwise the serial fold it replaces" begin
+    # Fix batch 3 (2026-10-21), unit G: comprehensive audit 2026-10-18 F-78
+    # (todo row 14, measured: 27.6 to 38 ms and 4.80 MB per row at N = 1e5
+    # for the default 27 moments -- six `collect` copies, then 27 serial
+    # passes each calling the generic `^` per factor). The fused row reads
+    # each particle's six coordinates once per pass -- pass 1 the six sums,
+    # pass 2 every order >= 2 row in chunks of `_CPU_FUSED_MOMENT_CHUNK` -- in
+    # the SAME left-to-right particle order per accumulator as the
+    # `_masked_global_sum` fold it replaces, so every recorded moment is
+    # bitwise what it was. The oracle below spells that fold out (the
+    # arithmetic of `_compute_moment` at da40d39: `t *= (a[i] - mean)^p` per
+    # factor with the generic `^`, `s += t` over the live particles). Every
+    # pin marked "was" was red on da40d39 with the value it names.
+    function reference_row(ctx, rep, moments; masked=false)
+        arrays = coordinate_arrays(rep)
+        n = length(arrays[1])
+        flags = masked ? [Octopus.is_live(rep, i) for i in 1:n] : nothing
+        live(i) = flags === nothing || flags[i]
+        nlive = count(live, 1:n)
+        row = Vector{Float64}(undef, length(moments) + 1)
+        row[1] = Float64(ctx.turn)
+        if nlive == 0
+            fill!(view(row, 2:length(row)), NaN)
+            return row
+        end
+        means = ntuple(6) do d
+            s = 0.0
+            for k in 1:n
+                live(k) && (s += arrays[d][k])
+            end
+            Float64(s / nlive)
+        end
+        for (j, m) in enumerate(moments)
+            pw = m.powers
+            if sum(pw) == 1
+                row[j + 1] = means[findfirst(!=(0), pw)]
+                continue
+            end
+            s = 0.0
+            for i in 1:n
+                live(i) || continue
+                t = 1.0
+                for d in 1:6
+                    pw[d] == 0 && continue
+                    t *= (arrays[d][i] - means[d])^pw[d]
+                end
+                s += t
+            end
+            row[j + 1] = s / nlive
+        end
+        return row
+    end
+    rng = MersenneTwister(78)
+    n = 5_000
+    mk(T, s) = T.(s .* randn(rng, n))
+    beam(T) = Phase6DRep(mk(T, 1.0e-4), mk(T, 1.0e-5), mk(T, 1.0e-4), mk(T, 1.0e-5), mk(T, 1.0e-3), mk(T, 1.0e-4))
+    ctx = TrackingContext(turn=11)
+    extra = (Moment(x=4), Moment(pz=5), Moment(x=2, y=2), Moment(x=1, px=1, y=1, py=1), Moment(z=6), Moment(px=3, z=1))
+    selections = (("orders=1:2", Octopus._selected_moments(orders=1:2)),
+                  ("orders=1:3", Octopus._selected_moments(orders=1:3)),
+                  ("p >= 4 rows", Octopus._selected_moments(orders=(), extra=extra)),
+                  ("orders=1", Octopus._selected_moments(orders=1)))
+    # anti-vacuity: the 1:3 selection spans three chunks (77 order >= 2 rows)
+    @test count(m -> sum(m.powers) >= 2, selections[2][2]) > 2 * Octopus._CPU_FUSED_MOMENT_CHUNK
+    # (a) bitwise against the oracle: both element types, every selection;
+    # unmasked, masked with dead particles, poisoned unmasked (a NaN row with
+    # the turn intact), all dead
+    for T in (Float64, Float32), (label, moms) in selections
+        r = beam(T)
+        @testset let eltype_ = T, selection = label
+            @test Octopus._moment_observer_row(ctx, r, moms) == reference_row(ctx, r, moms)
+            for i in (3, 77, 1234, 4999), a in coordinate_arrays(r)
+                a[i] = T(NaN)
+            end
+            masked = allow_lost_particles(() -> Octopus._moment_observer_row(ctx, r, moms); enabled=true)
+            @test masked == reference_row(ctx, r, moms; masked=true)
+            @test all(isfinite, masked) && masked[1] == 11.0
+            poisoned = Octopus._moment_observer_row(ctx, r, moms)
+            @test isequal(poisoned, reference_row(ctx, r, moms))
+            @test poisoned[1] == 11.0 && all(isnan, poisoned[2:end])
+        end
+    end
+    let dead = Phase6DRep((fill(NaN, 8) for _ in 1:6)...)
+        row = allow_lost_particles(() -> Octopus._moment_observer_row(ctx, dead, selections[1][2]); enabled=true)
+        @test row[1] == 11.0 && all(isnan, row[2:end])
+    end
+    # (b) the small-power identities the fused term rests on, against the
+    # generic `^` of this Julia (1.12's `pow_body` is compensated from p = 4
+    # on and matches neither association, so the fallback IS `^`): a release
+    # that changes `pow_body` fails here by name, not in a moment's last bit
+    xs = vcat([randn(rng) * 10.0^k for k in -8:8 for _ in 1:200],
+              [0.0, -0.0, 1.0, -1.0, Inf, -Inf, floatmin(Float64), nextfloat(0.0)])
+    for p in 1:6
+        @testset let power = p
+            @test all(x -> Octopus._moment_pow(x, p) === x^p, xs)
+        end
+    end
+    @test isnan(Octopus._moment_pow(NaN, 2))
+    # (c) no copy of the beam: the row's allocation does not grow with N (the
+    # six copies were 6 x 8 x N = 4.80 MB at N = 1e5; the fused row allocates
+    # the row vector and its plan -- bound 64 KiB, under a seventy-fifth of
+    # one copy). Masked, the live flags add N bytes and nothing else.
+    big = Phase6DRep((randn(rng, 100_000) .* 1.0e-4 for _ in 1:6)...)
+    mom27 = selections[1][2]
+    Octopus._moment_observer_row(ctx, big, mom27)
+    @test (@allocated Octopus._moment_observer_row(ctx, big, mom27)) < 65_536            # was 4.80 MB
+    allow_lost_particles(; enabled=true) do
+        Octopus._moment_observer_row(ctx, big, mom27)
+        @test (@allocated Octopus._moment_observer_row(ctx, big, mom27)) < 100_000 + 65_536   # was 4.90 MB
+    end
+    # (d) the fold's structure, measured with a counting array rather than a
+    # clock: each coordinate is read exactly once per pass -- pass 1 plus one
+    # pass per chunk of order >= 2 rows -- and once more for the live mask
+    for (label, moms) in selections
+        nchunks = cld(count(m -> sum(m.powers) >= 2, moms), Octopus._CPU_FUSED_MOMENT_CHUNK)
+        reads = Ref(0)
+        counting = Phase6DRep((_FixGCountingVec(randn(rng, 1_000) .* 1.0e-4, reads) for _ in 1:6)...)
+        Octopus._moment_observer_row(ctx, counting, moms)
+        @testset let selection = label, passes = 1 + nchunks
+            @test reads[] == 6 * 1_000 * (1 + nchunks)        # was 6 x 1_000: the copies, then 27 passes over them
+            reads[] = 0
+            allow_lost_particles(() -> Octopus._moment_observer_row(ctx, counting, moms); enabled=true)
+            @test reads[] == 6 * 1_000 * (2 + nchunks)
+        end
+    end
+    # (e) F-87: `planned_records` is gone (written at prepare, read nowhere
+    # since the preallocated table retired 2026-08-18) and with it the
+    # refusal of a PredicateSchedule that justified itself by that table: the
+    # artifact dataset is extensible, so a predicate schedule records the
+    # turns it selects at one rank (a divided run refuses every
+    # predicate-scheduled observer in Tasks.jl, where that rule lives). The
+    # unprepared refusal names the preparation, not a schedule.
+    @test !hasfield(MomentObserver, :planned_records)
+    mktempdir() do dir
+        p = joinpath(dir, "predicate.h5")
+        m = MomentObserver(name="even"; orders=1)
+        t = TrackingTask((DriftSpec(L=1.0),);
+                         hooks=(ScheduledObserver(m, PredicateSchedule(c -> iseven(c.turn))),),
+                         artifact=RunArtifact(p))
+        execute!(t, beam(Float64); turns=7)          # was ArgumentError "requires a predictable schedule"
+        @test read(MomentOutput(p; name="even"), :turn) == [0, 2, 4, 6]
+    end
+    err = try
+        observe!(MomentObserver(name="x"), ctx, beam(Float64))
+        "did not throw"
+    catch e
+        sprint(showerror, e)
+    end
+    @test occursin("must be prepared", err) && !occursin("predictable", err)
+end
+
+@testset "The coordinate snapshot copies npart particles, not the beam" begin
+    # Fix batch 3 (2026-10-21), unit G: comprehensive audit F-79. `observe!`
+    # built each column as `Array(col)[1:nlocal]` -- the WHOLE array copied (a
+    # full device-to-host transfer on CUDA: 122.9 MB and 29.4 ms per fire at
+    # N = 2.56e6 for npart = 16) and then sliced -- so the `npart` knob the
+    # docstring offers for controlling snapshot volume controlled nothing of
+    # the cost. The block is built from `view(col, 1:nlocal)` now: nlocal
+    # elements moved, on either backend.
+    rng = MersenneTwister(79)
+    n = 200_000
+    r = Phase6DRep((randn(rng, n) .* 1.0e-4 for _ in 1:6)...)
+    # (a) the block builder: the leading particles bit for bit, and an
+    # allocation of the block's own size (8 x npart Float64 plus the six
+    # view copies), not the beam's
+    block = Octopus._snapshot_block(r, 0, 16, 7)
+    @test size(block) == (16, 8) && block[:, 1] == fill(7.0, 16) && block[:, 2] == 1.0:16.0
+    @test all(block[:, 2 + j] == coordinate_arrays(r)[j][1:16] for j in 1:6)
+    @test (@allocated Octopus._snapshot_block(r, 0, 16, 7)) < 16 * 8 * 8 * 4 + 4096      # was 6 x 8 x N = 9.6 MB
+    # a shard offset: particle ids are global, the rows this rank's part of 1:npart
+    shard = Octopus._snapshot_block(r, 100, 3, 2)
+    @test shard[:, 2] == [101.0, 102.0, 103.0] && shard[:, 3] == r.x[1:3]
+    @test size(Octopus._snapshot_block(r, 0, 0, 2)) == (0, 8)
+    # (b) through the task loop: the fire's own allocation -- the 16-row block
+    # and the artifact push -- against a no-op observer's turn, bounded at an
+    # eighth of the six copies it used to make (6 x 8 x N / 8 = 1.2 MB at
+    # N = 2e5; the fixed fire measured well under that, unit G's report)
+    mktempdir() do dir
+        alloc_turn(task, rep) = (execute!(task, rep; turns=2); (@allocated execute!(task, rep; turns=10)) / 10)
+        base = alloc_turn(TrackingTask((DriftSpec(L=1.0),); hooks=(ScheduledObserver(_FixGNoopObserver()),),
+                                       artifact=RunArtifact(joinpath(dir, "noop.h5"))), r)
+        with = alloc_turn(TrackingTask((DriftSpec(L=1.0),);
+                                       hooks=(ScheduledObserver(CoordinateSnapshotObserver(name="s"; npart=16)),),
+                                       artifact=RunArtifact(joinpath(dir, "snap.h5"))), r)
+        @testset let per_fire_bytes = with - base
+            @test per_fire_bytes < 6 * n * 8 ÷ 8                 # was about 9.6 MB plus the push
+        end
+        rows = read(TaskOutput(joinpath(dir, "snap.h5")), :snapshot; name="s")
+        @test length(rows.turn) == 10 * 16 && rows.particle_id[1:16] == 1.0:16.0
+    end
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        # `r` has been tracked by the task loop above: compare against a
+        # fresh host block of the same state, not the pre-loop `block`
+        g = Phase6DRep((Octopus.CUDA.CuArray(a) for a in coordinate_arrays(r))...)
+        @test Octopus._snapshot_block(g, 0, 16, 7) == Octopus._snapshot_block(r, 0, 16, 7)   # the same particles, through device views
+        Octopus._snapshot_block(g, 0, 16, 7)
+        @test (@allocated Octopus._snapshot_block(g, 0, 16, 7)) < 1_048_576   # was 6 x 8 x N = 9.6 MB of host copies
+    else
+        @test_skip "CUDA device not available: the snapshot's device-to-host view copy is not exercised"
     end
 end
 

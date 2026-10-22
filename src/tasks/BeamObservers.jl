@@ -187,23 +187,35 @@ function run_observers!(observers, ctx::TrackingContext, rep)
     return nothing
 end
 
-# Process-wide registry of output paths with a live writing observer
-# (2026-08-05_b audit, U7-10). Two live observers writing one path end
-# self-consistent and WRONG: the second's initializer truncates the first's
-# rows, and the surviving writer then resyncs onto the OTHER observer's rows
-# and appends after them — measured turn column [0, 1, 4, 5] from an
-# interleaved 4-turn and 2-turn pair, with the file reporting 4 valid rows
-# and no warning anywhere. Path sharing by a SINGLE observer continued
-# across tasks is documented and handled; a SECOND live observer on the same
-# path is almost certainly a mistake, so its initialization warns. A warning
-# rather than an error, and per-process rather than per-task, deliberately:
-# the interleave crosses task boundaries (each execute! prepares and
-# finalizes cleanly, so no task-scoped check can see it), and the registry
-# keys on weak object identity, which can flag the collision but cannot
-# prove intent. A collected observer's entry goes stale with it, so an
-# abandoned path can be reused without noise.
+# Process-wide registry of output paths with a live WRITER (2026-08-05_b
+# audit, U7-10; re-homed on the run artifact 2026-08-18; narrowed 2026-10-21,
+# comprehensive audit F-85). Two live standalone observers writing one path
+# ended self-consistent and WRONG: the second's initializer truncated the
+# first's rows and the survivor resynced onto the OTHER writer's rows --
+# measured turn column [0, 1, 4, 5] from an interleaved 4-turn and 2-turn
+# pair, with the file reporting 4 valid rows and no warning anywhere. Today
+# the artifact's sidecar lock (`_ra_take_lock!`, taken BEFORE this registry
+# is written) refuses a second writer on an open path by name, so the only
+# collision this registry can still see is a path whose earlier artifact
+# holds its file OPEN while a new one initializes -- the lock removed by hand
+# -- and that is the one case it warns about. A second artifact OBJECT
+# continuing or rewriting a path whose writer has finished and closed is the
+# documented sequential case (a new task continuing a file, a refused task's
+# path reused) and is silent: the registry asks the earlier object whether it
+# is still writing (`_path_writer_is_live`), not merely whether it is still
+# alive, which is what it asked until F-85 ("a second live observer ..." on
+# every legitimate continuation, p1 block E). A warning rather than an error
+# and per-process rather than per-task, as before: the registry keys on weak
+# object identity, which can flag the collision but cannot prove intent, and
+# a collected artifact's entry goes stale with it.
 const _OBSERVER_PATH_REGISTRY = Dict{String,WeakRef}()
 const _OBSERVER_PATH_REGISTRY_LOCK = ReentrantLock()
+
+# Whether a registered writer still holds its output open. A run artifact
+# writes between `prepare_run_artifact!` and `finalize_run_artifact!`, while
+# its file handle is set; an object the registry cannot ask counts as live.
+_path_writer_is_live(art::RunArtifact) = art.file !== nothing
+_path_writer_is_live(::Any) = true
 
 function _register_observer_path!(observer, path::AbstractString)
     key = abspath(String(path))
@@ -211,15 +223,14 @@ function _register_observer_path!(observer, path::AbstractString)
         prior = get(_OBSERVER_PATH_REGISTRY, key, nothing)
         if prior !== nothing
             live = prior.value
-            if live !== nothing && live !== observer
-                @warn "a second live observer is initializing an output path " *
-                      "that another live observer is writing: a replacing " *
-                      "initialization truncates the first observer's rows, an " *
-                      "appending one continues them, and later flushes from both " *
-                      "will interleave into a self-consistent but wrong file. " *
-                      "Give each observer its own path (U7-10; wording scoped " *
-                      "2026-10-16, S5-5)." path = key first_observer =
-                      typeof(live) second_observer = typeof(observer)
+            if live !== nothing && live !== observer && _path_writer_is_live(live)
+                @warn "a run artifact is initializing an output path that another run " *
+                      "artifact in this process still holds open: the sidecar lock that " *
+                      "refuses a second writer must have been removed by hand, and two " *
+                      "open writers on one path interleave their rows into a " *
+                      "self-consistent but wrong file. Finalize the first writer, or " *
+                      "give each run its own path (U7-10; F-85, 2026-10-21)." path = key first_writer =
+                      typeof(live) second_writer = typeof(observer)
             end
         end
         _OBSERVER_PATH_REGISTRY[key] = WeakRef(observer)
@@ -267,9 +278,56 @@ before the turn loop; `first_turn` is the absolute turn the coming window
 starts at, which lets an observer discard readings from a replayed window.
 """
 function prepare_observers!(observers, runtime_elems; turns=nothing, first_turn=0)
+    _refuse_repeated_observers(Any[_as_scheduled_observer(raw).observer for raw in _hook_tuple(observers)])
     for raw in _hook_tuple(observers)
         item = _as_scheduled_observer(raw)
         prepare_observer!(item.observer, runtime_elems, item.schedule, turns, first_turn)
+    end
+    return nothing
+end
+
+"""
+    _observer_binds_one_group(observer) -> Bool
+
+Whether the observer records into ONE artifact group (`/kind/<name>`, one arc
+position), so that placing the same object twice in a line or listing it
+twice among a task's hooks would send two readings per turn into one group
+under one `s`: true for `MomentObserver` and `CoordinateSnapshotObserver`
+(artifact views by construction) and for a `BPMObserver` with
+`artifact=true` (its method is in BPMObserver.jl); false by default -- a
+memory-mode BPM reads as often as it is placed, the "read twice in one turn"
+pattern its occurrence counter exists for. Consulted by both prepare walks
+(`prepare_observers!`, `prepare_line_observers!`) through
+`_refuse_repeated_observers`, which refuses such an observer placed more than
+once BY ITS CAUSE, before any bind: until 2026-10-21 the second placement
+reached the artifact bind and was refused as a "duplicate probe name", a
+message about a NAME two objects share when one object had been placed twice
+(comprehensive audit 2026-10-18, F-89). Two DISTINCT objects sharing a name
+are still the artifact's refusal.
+"""
+_observer_binds_one_group(::AbstractBeamObserver) = false
+# (the MomentObserver and CoordinateSnapshotObserver methods follow their types below)
+
+_observer_display_name(obs) =
+    hasfield(typeof(obs), :name) ? String(getfield(obs, :name)) : string(nameof(typeof(obs)))
+
+# `observers` are the RAW observer objects of one prepare walk (task hooks, or
+# one line's placements), counted by object identity.
+function _refuse_repeated_observers(observers)
+    counts = IdDict{Any,Int}()
+    order = Any[]
+    for obs in observers
+        haskey(counts, obs) || push!(order, obs)
+        counts[obs] = get(counts, obs, 0) + 1
+    end
+    for obs in order
+        counts[obs] > 1 && _observer_binds_one_group(obs) && throw(ArgumentError(
+            "$(nameof(typeof(obs)))(name=$(repr(_observer_display_name(obs)))) is placed " *
+            "$(counts[obs]) times in this task (in the line or among its hooks) and records " *
+            "one artifact group with one arc position, so two readings per turn would land in " *
+            "one group under one `s`: give each placement its own observer object (a distinct " *
+            "name), or, for a BPM, read in memory mode (artifact=false), which may be placed as " *
+            "often as the lattice has pickups"))
     end
     return nothing
 end
@@ -291,6 +349,12 @@ element, about 190 kB per call on a 40-element line of eight types
 (2026-10-16 neighbour audit, U9-4).
 """
 function prepare_line_observers!(entries::Tuple; turns=nothing, first_turn=0)
+    placed = Any[]
+    _foreach_unrolled(entries) do entry
+        entry isa LineObserverEntry && push!(placed, entry.observer.observer)
+        nothing
+    end
+    _refuse_repeated_observers(placed)
     _foreach_unrolled(entries) do entry
         entry isa LineObserverEntry && prepare_line_observer!(entry.observer, turns, first_turn)
         nothing
@@ -638,7 +702,6 @@ mutable struct MomentObserver <: AbstractBeamObserver
     buffer::Matrix{Float64}
     buffer_length::Int
     record_count::Int
-    planned_records::Int
     initialized::Bool
     reduction_scratch::Any
     # The probe is a named VIEW into the owning task's RunArtifact --
@@ -675,8 +738,11 @@ Requires the task to carry `artifact=...`; refused loudly at prepare
 otherwise.
 
 `MomentObserver` is a scheduled observer: put it in a task line or task hooks
-through `ScheduledObserver`, with a predictable schedule (`AlwaysSchedule`,
-`EveryNSteps`, or `AtTurns`). It writes one row per scheduled observation.
+through `ScheduledObserver`, on any schedule -- `AlwaysSchedule`,
+`EveryNSteps`, `AtTurns`, or a `PredicateSchedule` (accepted at one rank
+since 2026-10-21; a run divided across ranks refuses every
+predicate-scheduled observer, Tasks.jl). It writes one row per observation;
+the artifact dataset is extensible, so nothing is sized from the schedule.
 
 Moment selection is:
 
@@ -719,7 +785,7 @@ function MomentObserver(; name::AbstractString, orders=1:2, extra=(), exclude=()
     cols = _moment_column_names(moments)
     # The row buffer is sized from the artifact's capacity at prepare.
     return MomentObserver(moments, cols, 0, Matrix{Float64}(undef, 0, length(cols)),
-                          0, 0, 0, false, nothing, String(name), nothing, nothing)
+                          0, 0, false, nothing, String(name), nothing, nothing)
 end
 
 mutable struct CoordinateSnapshotObserver <: AbstractBeamObserver
@@ -768,6 +834,11 @@ function CoordinateSnapshotObserver(; name::AbstractString, npart=nothing)
     count === nothing || count >= 0 || throw(ArgumentError("npart must be nonnegative or nothing"))
     return CoordinateSnapshotObserver(count, String(name), nothing, nothing)
 end
+
+# Both artifact views record one group each (`_observer_binds_one_group`,
+# documented with its fallback above, F-89).
+_observer_binds_one_group(::MomentObserver) = true
+_observer_binds_one_group(::CoordinateSnapshotObserver) = true
 
 """
     observer_option_schema(observer_or_type)
@@ -847,7 +918,8 @@ function observe!(observer::MomentObserver, ctx::TrackingContext, rep)
     # claiming an observation (comprehensive audit 2026-10-18, F-84). `name`
     # joined the receipt in the 2026-10-16 fix batch (S4-3): the option names
     # this receipt as its consumer, and it carried no field for it.
-    observer.initialized || throw(ArgumentError("MomentObserver must be prepared by a predictable schedule before tracking"))
+    observer.initialized || throw(ArgumentError(
+        "MomentObserver(name=$(repr(observer.name))) must be prepared (artifact-bound) before tracking"))
     _record_execution!(:observer_output, _observer_backend(),
         (observer=:MomentObserver, name=Symbol(observer.name), turn=ctx.turn,
          capacity=observer.buffer_capacity, moments=length(observer.moments)))
@@ -911,17 +983,37 @@ function observe!(observer::CoordinateSnapshotObserver, ctx::TrackingContext, re
         (observer=:CoordinateSnapshotObserver, name=Symbol(observer.name), turn=ctx.turn,
          npart=observer.npart, captured=npart))
     nlocal = clamp(npart - offset, 0, length(rep))
-    rows = Matrix{Float64}(undef, nlocal, 8)
-    rows[:, 1] .= Float64(ctx.turn)
-    rows[:, 2] .= Float64.(offset .+ (1:nlocal))
-    for (j, col) in enumerate((rep.x, rep.px, rep.y, rep.py, rep.z, rep.pz))
-        rows[:, 2 + j] = Float64.(Array(col)[1:nlocal])
-    end
+    rows = _snapshot_block(rep, offset, nlocal, ctx.turn)
     # Every rank gathers -- it is a collective -- and rank 0, which holds the
     # file, is the one whose push writes anything.
     _ra_push_probe_rows!(observer.artifact_ref, observer.artifact_key,
                          _mp_gather_rows(rows))
     return nothing
+end
+
+"""
+    _snapshot_block(rep, offset, nlocal, turn) -> Matrix{Float64}
+
+The `[turn, particle_id, x, px, y, py, z, pz]` rows of this rank's part of a
+snapshot: the leading `nlocal` local particles, ids `offset + 1 : offset +
+nlocal` (global under a divided run), each coordinate moved through
+`view(col, 1:nlocal)` -- `nlocal` elements copied, on the host or device to
+host. Until 2026-10-21 each column was `Array(col)[1:nlocal]`: the WHOLE array
+materialised (a full device-to-host transfer on CUDA) and then sliced, so a
+16-particle snapshot cost 29.4 ms and 122.9 MB per fire at N = 2.56e6 on CUDA
+and 50 ms and 48 MB at N = 1e6 on the CPU, against 0.05 ms for six 16-element
+views -- the `npart` knob the docstring offers for controlling snapshot volume
+controlled the rows written and nothing of the cost (comprehensive audit
+2026-10-18, F-79; the BPM's six-array host copy of U7-5 living on here).
+"""
+function _snapshot_block(rep, offset::Int, nlocal::Int, turn)
+    rows = Matrix{Float64}(undef, nlocal, 8)
+    rows[:, 1] .= Float64(turn)
+    rows[:, 2] .= Float64.(offset .+ (1:nlocal))
+    for (j, col) in enumerate(coordinate_arrays(rep))
+        rows[:, 2 + j] .= Float64.(Array(view(col, 1:nlocal)))
+    end
+    return rows
 end
 
 function prepare_observer!(observer::MomentObserver, runtime_elems, schedule, turns,
@@ -959,12 +1051,12 @@ function finalize_observer!(observer::MomentObserver)
     return nothing
 end
 
+# `schedule` and `turns` are the prepare chain's arguments and decide nothing
+# here since 2026-10-21 (F-87): the row buffer is sized from the artifact's
+# capacity and the dataset is extensible, so no plan of the schedule's turns
+# is needed -- see the note above `_scheduled_turns`.
 function _prepare_moment_observer!(observer::MomentObserver, schedule, turns,
                                   first_turn::Integer=0)
-    planned_turns = _scheduled_turns(schedule, turns, first_turn)
-    planned_turns === nothing && throw(ArgumentError(
-        "MomentObserver requires a predictable schedule: use AlwaysSchedule, EveryNSteps, or AtTurns with known task turns."
-    ))
     observer.buffer_length = 0
     art = active_run_artifact()
     art === nothing && throw(ArgumentError(
@@ -979,28 +1071,37 @@ function _prepare_moment_observer!(observer::MomentObserver, schedule, turns,
     observer.buffer_capacity = art.capacity
     observer.buffer = Matrix{Float64}(undef, art.capacity,
                                       length(observer.column_names))
-    observer.planned_records = length(planned_turns)
     observer.record_count = 0
     observer.initialized = true
     return nothing
 end
 
-# The planner must filter against the ABSOLUTE turn window `execute!` will run,
-# `first_turn : first_turn + turns - 1`, because `should_run` is handed
-# `ctx.turn = first_turn + offset` (Tasks.jl). Filtering against `0:turns-1`
-# instead -- which is what these did -- makes the plan disagree with the
-# predicate whenever `first_turn != 0`:
+# `_scheduled_turns` enumerates the turns a predictable schedule fires on
+# inside the ABSOLUTE window `execute!` will run, `first_turn : first_turn +
+# turns - 1`, because `should_run` is handed `ctx.turn = first_turn + offset`
+# (Tasks.jl); its consumer is `_warn_unfireable_schedules` (Tasks.jl), which
+# warns when a hook's schedule selects no turn of the window, and `nothing`
+# means "not enumerable" (a predicate), about which that warning says nothing.
+# Filtering against `0:turns-1` instead -- which is what these did -- made the
+# plan disagree with the predicate whenever `first_turn != 0`:
 #
 #   _scheduled_turns(AtTurns([100,101]), 3)  ->  Int64[]
 #   while execute!(turns=3, start_turn=100) fires the observer twice
-#     -> MomentObserver over-runs its preallocated table and throws
 #
 #   _scheduled_turns(EveryNSteps(start=0,stop=6,step=2), 3)  ->  [0,2]
 #   on a SECOND execute!(turns=3), which runs turns 3,4,5 and fires once at 4
-#     -> plan says 2 records, one is written, no error, silently wrong header
 #
 # `first_turn != 0` is not exotic: it is every second `execute!` on the same
-# task, which Tasks.jl documents as a supported way to split a run.
+# task, which Tasks.jl documents as a supported way to split a run. The
+# MomentObserver's own consumer of the plan -- the preallocated HDF5 table it
+# sized from `planned_records` -- retired on 2026-08-18 with the standalone
+# writer (the artifact dataset is extensible), and until 2026-10-21 the
+# observer still refused a PredicateSchedule as "requires a predictable
+# schedule" on that table's behalf and wrote a `planned_records` that nothing
+# read (comprehensive audit 2026-10-18, F-87). A predicate schedule is
+# accepted now at one rank, as for every other probe; a divided run refuses
+# every predicate-scheduled observer in `_reject_unsharded_tracking_features`
+# (Tasks.jl), where that rule lives.
 function _scheduled_turns(::AlwaysSchedule, turns, first_turn::Integer=0)
     turns === nothing && return nothing
     return collect(Int(first_turn):(Int(first_turn) + Int(turns) - 1))
@@ -1070,27 +1171,210 @@ end
 _moment_denominator(::Nothing, n::Integer) = Int(n)
 _moment_denominator(flags::Vector{Bool}, n::Integer) = count(flags)
 
+# Elementwise tuple add as a separate function, shared by the CPU sweep and
+# the CUDA kernel: `map` on tuples of 32+ elements takes Base's generic
+# `Any32` path, which allocates and is invalid GPU IR -- exactly at the chunk
+# width. A closure over function ARGUMENTS is box-free (they are never
+# reassigned), unlike one over a reassigned accumulator local.
+@inline _moment_tuple_add(a::NTuple{N,Float64}, b::NTuple{N,Float64}) where {N} =
+    ntuple(i -> @inbounds(a[i] + b[i]), Val(N))
+
+"""
+    _moment_pow(x::Float64, p::Int) -> Float64
+
+`x^p` for a moment's power, bit for bit, without the generic `^` on every
+factor of every particle: `x`, `x*x` and `x*x*x` for p = 1, 2, 3 -- exactly
+what Julia 1.12's `^(::Float64, ::Integer)` returns for those powers
+(`pow_body` returns `x*x*x` for 3 by name; its square-and-multiply loop for 2
+reduces to `x*x` with a zero compensation term; p = 1 is `x` through its
+`muladd(x, 1.0, 0.0)` finish, the signed zero included -- measured identical
+on 68,009 samples across 17 decades, unit G probe `pow_identity.jl`,
+2026-10-21) -- and `^` itself from p = 4 on, where `pow_body` is a
+compensated product that neither `(x*x)*(x*x)` nor repeated multiplication
+reproduces (34,071 and 23,639 of the 68,009 samples differ). The suite pins
+the three identities against `^` on every run, so a Julia release that
+changes `pow_body` fails by name rather than moving a recorded moment.
+"""
+@inline function _moment_pow(x::Float64, p::Int)
+    p == 1 && return x
+    p == 2 && return x * x
+    p == 3 && return x * x * x
+    return x^p
+end
+
+# Accumulators bound one fused CPU sweep as registers bound one fused CUDA
+# pass (`_CUDA_FUSED_MOMENT_CHUNK`): a selection with more order >= 2 rows runs
+# the same sweep in chunks of this width -- ceil(nm/32) sweeps instead of one
+# serial pass per moment. The default orders=1:2 set has 21 rows (one sweep);
+# orders=1:3 has 77 (three).
+const _CPU_FUSED_MOMENT_CHUNK = 32
+
+# Pass 1's power rows: the six identity rows, whose terms are the coordinates
+# themselves (`1.0 * (x - 0.0) === x`, signed zero included), so the sweep's
+# accumulators are the six coordinate sums.
+const _CPU_MOMENT_PASS1_VAL = Val(((1, 0, 0, 0, 0, 0), (0, 1, 0, 0, 0, 0), (0, 0, 1, 0, 0, 0),
+                                   (0, 0, 0, 1, 0, 0), (0, 0, 0, 0, 1, 0), (0, 0, 0, 0, 0, 1)))
+
+"""
+The CPU moment row's plan for one selection: the indices of its order >= 2
+rows into `moments` and those rows' powers as `Val` type parameters, in chunks
+of `_CPU_FUSED_MOMENT_CHUNK` (the CUDA workspace's shape; cached on the
+observer's `reduction_scratch` when the row has an observer, built per call
+otherwise). Its own type, so a CPU plan and a CUDA workspace left in that
+field by the other backend never mistake each other.
+"""
+struct _CPUMomentPlan
+    moments::Tuple
+    reduce_idx::Vector{Int}
+    chunks::Vector{Tuple{Int,Int,Any}}     # (offset into reduce_idx, count, Val(powers))
+end
+
+function _cpu_moment_plan(moments::Tuple, observer)
+    cached = observer === nothing ? nothing : observer.reduction_scratch
+    cached isa _CPUMomentPlan && cached.moments === moments && return cached
+    reduce_idx = [j for (j, m) in enumerate(moments) if sum(m.powers) >= 2]
+    chunks = Tuple{Int,Int,Any}[]
+    off = 0
+    while off < length(reduce_idx)
+        c = min(_CPU_FUSED_MOMENT_CHUNK, length(reduce_idx) - off)
+        # `let`-bound copy: capturing the reassigned loop variable would box
+        # it (the suite's Core.Box tripwire; the CUDA workspace's precedent).
+        val = let base = off
+            Val(ntuple(m -> moments[reduce_idx[base + m]].powers, c))
+        end
+        push!(chunks, (off, c, val))
+        off += c
+    end
+    plan = _CPUMomentPlan(moments, reduce_idx, chunks)
+    observer === nothing || (observer.reduction_scratch = plan)
+    return plan
+end
+
+"""
+    _cpu_fused_moment_sweep(arrays, flags, n, Val(POWERS), means) -> NTuple{NM,Float64}
+
+One serial sweep over the local particles accumulating, for every power row
+of `POWERS` (a compile-time tuple of six-tuples, the CUDA kernel's
+convention), the sum over the live particles of the product over the
+coordinates of `(coordinate - mean)^power`: each coordinate read ONCE per
+particle, the six differences formed once and shared by every row. Every
+accumulator sees the same terms in the same left-to-right particle order as
+the serial `_masked_global_sum` fold this replaces, each term formed as that
+fold formed it (`1.0 * factor_1 * factor_2 ...` over the coordinates with a
+nonzero power, in coordinate order, `_moment_pow` for the factor), so the
+result is bitwise the per-moment fold's. Pass 1 of the row calls it with the
+six identity rows and `means = 0` (a term is then the coordinate itself);
+pass 2 with the order >= 2 rows and the means. Dead particles are skipped
+through `flags` -- `nothing` when the mask is off, when a non-finite
+coordinate stays LOUD and poisons the row, as before.
+"""
+function _cpu_fused_moment_sweep(arrays, flags, n::Int, powers::Val{POWERS},
+                                 means::NTuple{6,Float64}) where {POWERS}
+    x, px, y, py, z, pz = arrays
+    accs = ntuple(_ -> 0.0, Val(length(POWERS)))
+    @inbounds for i in 1:n
+        _moment_live(flags, i) || continue
+        diffs = (Float64(x[i]) - means[1], Float64(px[i]) - means[2], Float64(y[i]) - means[3],
+                 Float64(py[i]) - means[4], Float64(z[i]) - means[5], Float64(pz[i]) - means[6])
+        accs = _moment_tuple_add(accs, _fused_moment_terms(diffs, powers))
+    end
+    return accs
+end
+
+"""
+    _fused_moment_terms(diffs::NTuple{6,Float64}, Val(POWERS)) -> NTuple{NM,Float64}
+
+One particle's term for every power row of `POWERS`, as STRAIGHT-LINE code
+generated from the rows: row `(2, 0, 0, 0, 0, 0)` becomes
+`1.0 * _moment_pow(diffs[1], 2)`, row `(1, 1, 0, 0, 0, 0)` becomes
+`(1.0 * _moment_pow(diffs[1], 1)) * _moment_pow(diffs[2], 1)` -- the factors
+of the nonzero powers in coordinate order, left-associated from `1.0`,
+exactly the `t = 1.0; t *= (a[i] - mean)^p` fold of the row this replaces,
+with every index and power a literal so `_moment_pow` folds to its multiply.
+A `@generated` function rather than an `ntuple` closure over the type
+parameter: measured on the fused row's first cut (unit G, 2026-10-21), the
+closure's inner loops over the six coordinates ran at RUNTIME on the host --
+250 ns per particle for 27 moments, 25.0 ms per row at N = 1e5 against 40.6
+before -- where the CUDA kernel's identical source unrolls on the device.
+"""
+@generated function _fused_moment_terms(diffs::NTuple{6,Float64}, ::Val{POWERS}) where {POWERS}
+    terms = Expr[]
+    for row in POWERS
+        ex = :(1.0)
+        for d in 1:6
+            p = row[d]
+            p == 0 && continue
+            ex = :($ex * _moment_pow(diffs[$d], $p))
+        end
+        push!(terms, ex)
+    end
+    return Expr(:tuple, terms...)
+end
+
+# The sweep's partials summed across the ranks in rank order, elementwise
+# (`_mp_allsum!`), as the tuple; at one rank the partials ARE the totals and
+# no arithmetic happens that the undivided run did not do. Under a divided run
+# one all-sum per sweep replaces one per quantity: elementwise, so each
+# quantity's total is the bits the per-quantity all-sum produced.
+function _cpu_moment_global_sums(arrays, flags, n::Int, val, means::NTuple{6,Float64})
+    accs = _cpu_fused_moment_sweep(arrays, flags, n, val, means)
+    _mp_nranks() == 1 && return accs
+    partial = collect(accs)
+    _mp_allsum!(partial)
+    return ntuple(i -> partial[i], length(accs))
+end
+
+"""
+    _moment_observer_row(ctx, rep, moments, observer=nothing) -> Vector{Float64}
+
+One row of a `MomentObserver`: the absolute turn, then every selected moment
+over the live particles -- the CPU method (the CUDA twin below dispatches on a
+device representation). Two fused serial sweeps over the beam, as the CUDA
+twin makes two fused passes: pass 1 the six coordinate sums (the live count
+comes from the mask), pass 2 every order >= 2 row in chunks of
+`_CPU_FUSED_MOMENT_CHUNK` (`_cpu_fused_moment_sweep`); first-order moments are
+the means. The arrays are read in place -- a `Vector`, a view, any
+`AbstractVector` -- so the row allocates nothing proportional to the beam.
+Until 2026-10-21 the row copied all six arrays (`map(collect, ...)`, 4.80 MB
+per row at N = 1e5) and made one serial `_masked_global_sum` pass per moment
+with the generic `^` on every factor: 27.6 to 40 ms per row for the default
+27 moments, 69 to 75 % of a harness-like CPU turn at four threads
+(comprehensive audit 2026-10-18, F-78; todo row 14). The fused row keeps "a
+lost particle is excluded from every reduction, exactly" (one live mask from
+all six coordinates, shared by both passes) and is BITWISE the fold it
+replaces -- the same accumulation order per quantity, the same term
+arithmetic (`_moment_pow`); the suite's oracle testset pins that on both
+element types, masked and unmasked, and the `/moments` fixtures written
+before and after were byte-identical (unit G's report).
+"""
 function _moment_observer_row(ctx::TrackingContext, rep, moments::Tuple, observer=nothing)
     row = Vector{Float64}(undef, length(moments) + 1)
     row[1] = Float64(ctx.turn)
     isempty(moments) && return row
-    arrays = map(collect, coordinate_arrays(rep))
+    arrays = coordinate_arrays(rep)
     flags = _moment_live_flags(arrays)
     local_n = length(arrays[1])
-    islive = k -> _moment_live(flags, k)
-    nlive = _masked_global_count(islive, local_n)
+    nlive = flags === nothing ? _mp_global_count(local_n) :
+                                _masked_global_count(k -> @inbounds(flags[k]), local_n)
     # An all-dead beam has no moments to report. `NaN` is the honest value, and
     # the turn column stays intact so the record still says *when* that happened.
     if nlive == 0
         fill!(view(row, 2:length(row)), NaN)
         return row
     end
-    means = ntuple(6) do i
-        a = arrays[i]
-        Float64(_masked_global_sum(k -> @inbounds(a[k]), islive, local_n) / nlive)
+    sums = _cpu_moment_global_sums(arrays, flags, local_n, _CPU_MOMENT_PASS1_VAL, ntuple(_ -> 0.0, 6))
+    means = ntuple(d -> sums[d] / nlive, 6)
+    plan = _cpu_moment_plan(moments, observer)
+    for (off, c, val) in plan.chunks
+        accs = _cpu_moment_global_sums(arrays, flags, local_n, val, means)
+        for slot in 1:c
+            row[plan.reduce_idx[off + slot] + 1] = accs[slot] / nlive
+        end
     end
     for (j, moment) in enumerate(moments)
-        row[j + 1] = _compute_moment(arrays, means, moment, flags, nlive)
+        order = sum(moment.powers)
+        order >= 2 && continue
+        row[j + 1] = order == 1 ? means[findfirst(!=(0), moment.powers)] : 1.0
     end
     return row
 end
@@ -1133,14 +1417,8 @@ if _HAS_CUDA
         # precomputed flags array; with the mask off every particle
         # contributes and a non-finite coordinate stays LOUD (NaN row), as on
         # the CPU path.
-        # Elementwise tuple add as a separate function: `map` on tuples of 32+
-        # elements takes Base's generic `Any32` path, which allocates and is
-        # invalid GPU IR — exactly at the chunk width. A closure over function
-        # ARGUMENTS is box-free (they are never reassigned), unlike one over
-        # the kernel's reassigned accumulator local.
-        @inline _moment_tuple_add(a::NTuple{N,Float64}, b::NTuple{N,Float64}) where {N} =
-            ntuple(i -> @inbounds(a[i] + b[i]), Val(N))
-
+        # `_moment_tuple_add` (the shared section above) is the elementwise
+        # tuple add both the kernel and the CPU sweep use.
         function _cuda_fused_moment_kernel!(partials, x, px, y, py, z, pz,
                                             ::Val{POWERS}, means, use_mask::Bool,
                                             n::Int) where {POWERS}
@@ -1294,24 +1572,6 @@ if _HAS_CUDA
             return row
         end
     end
-end
-
-function _compute_moment(arrays, means, moment::Moment, flags=nothing, nlive=length(arrays[1]))
-    powers = moment.powers
-    order = sum(powers)
-    order == 1 && return means[findfirst(!=(0), powers)]
-    n = length(arrays[1])
-    islive = i -> _moment_live(flags, i)
-    term = i -> begin
-        t = 1.0
-        @inbounds for d in 1:6
-            p = powers[d]
-            p == 0 && continue
-            t *= (arrays[d][i] - means[d]) ^ p
-        end
-        t
-    end
-    return _masked_global_sum(term, islive, n) / nlive
 end
 
 """

@@ -73,6 +73,7 @@ struct PendingProbeBind
     colnames::Vector{String}
     first_turn::Int64
     s::Union{Nothing,Float64}
+    attrs::Union{Nothing,NamedTuple}     # the probe's own attributes (the BPM's device model)
 end
 
 """
@@ -131,7 +132,10 @@ The artifact carries every product of the run:
   rule's `_rule_kind` label, one of `_turn_rule_kinds()`: `white`, `pink`,
   `table`; `spectral` labels the spec-level `SpectralNoise`, which resolves
   to a table at compile and so never reaches a file), `rng_id`, `digest`,
-  `name`, `length` and the
+  `name`, `length`, `sigma` (a white, pink or spectral rule's rms in the
+  slot's unit, 0.0 for a table), `octaves` (the pink rule's, 0 otherwise;
+  both since 2026-10-21, F-66, read with those defaults from earlier files)
+  and the
   slot's nominal parameters as `nominal_<name>` attributes (`nominal_phase`,
   `nominal_strengthX`, `nominal_strengthY` on a crab cavity slot, the
   harmonic's three; `nominal_phase`, `nominal_strength` on an RF cavity
@@ -180,8 +184,10 @@ for Octopus writers: HDF5 itself does not honour it, and readers never take
 it — [`TaskOutput`](@ref), [`turn_modulation_provenance`](@ref) and
 `MomentOutput` read while a writer holds the file, see its last flushed
 state, and say so once per writer with an `@info` naming the lock's line.
-The in-process registry of live writers (the "second live observer"
-warning) stays beside it.
+The in-process registry of live writers stays beside it, warning only when
+an earlier artifact in this process still holds the path OPEN (the lock
+removed by hand; F-85, 2026-10-21): a finished writer's path continued by a
+new object is the documented sequential case and is silent.
 
 **Crash recovery** is the per-group cursor PAIR, written AFTER its batch of
 rows and flushed with it: `rows_valid`, the number of leading rows the writer
@@ -1079,7 +1085,8 @@ end
 # modulated element in line order (`/turn_modulation/<slot>/<k>`, attrs
 # `element`, `beam`, `slot_count`); one subgroup per ACTIVE slot below it named
 # by the slot label (`.../<k>/phase_noise[1]`, attrs `index`, `kind`, `rng_id`,
-# `digest`, `name`, `length`, and the slot's nominal parameters as
+# `digest`, `name`, `length`, `sigma`, `octaves` (the last two since
+# 2026-10-21, F-66), and the slot's nominal parameters as
 # `nominal_<name>`; HDF5 link names admit the brackets). Written at
 # prepare from the provenance entries the task computes (`_turn_modulation_entries`;
 # it records them as its `:turn_modulation` receipt after this prepare), so
@@ -1315,6 +1322,8 @@ function _ra_write_turn_modulation!(file, path::String, slot::Int, entries, colu
             _ra_set_attr!(sg, "digest", UInt64(s.digest))
             _ra_set_attr!(sg, "name", String(s.name))
             _ra_set_attr!(sg, "length", Int64(s.length))
+            _ra_set_attr!(sg, "sigma", Float64(s.sigma))
+            _ra_set_attr!(sg, "octaves", Int64(s.octaves))
             for (name, value) in pairs(col.nominal[i])
                 _ra_set_attr!(sg, _RA_TM_NOMINAL_PREFIX * String(name), Float64(value))
             end
@@ -1863,6 +1872,10 @@ function _active_probe_s(observer)
     return get(m, observer, nothing)
 end
 
+# The attribute names the probe protocol owns on a probe group: stamped by the
+# commit, kept out of a read's `attrs`, refused in a probe's own `attrs`.
+const _RA_PROBE_RESERVED_ATTRS = (:name, :s, :rows_valid, :rows_valid_through_turn)
+
 """
 Bind one probe to the open artifact: validate it -- a name, one of the table's
 named kinds, unique within this `execute!`, and, when its group exists, a
@@ -1871,13 +1884,22 @@ which creates or continues the group and applies the crash-truncation and
 replay rules (`commit_run_artifact!`, `_ra_commit_probe!`). Nothing is written
 here (2026-10-19 fix batch, F-58: binding truncated one group at a time, so a
 later probe's refusal left the earlier probes cut back to `first_turn - 1`). A
-bind after the commit is refused by name. Returns the group key the probe
-pushes rows through.
+bind after the commit is refused by name. `attrs`, a NamedTuple of the probe's
+own scalar attributes (the BPM's device model, F-90), is stamped at the commit
+beside `name` and `s` and returned by the readers under `attrs`; a name the
+protocol owns (`_RA_PROBE_RESERVED_ATTRS`) is refused. Returns the group key
+the probe pushes rows through.
 """
 function _ra_bind_probe!(art::RunArtifact, kind::String, name::String,
                          colnames::Vector{String}, first_turn::Int;
-                         s::Union{Nothing,Real}=nothing)
+                         s::Union{Nothing,Real}=nothing,
+                         attrs::Union{Nothing,NamedTuple}=nothing)
     isempty(name) && throw(ArgumentError("a probe bound to the artifact needs a name"))
+    attrs === nothing || isdisjoint(keys(attrs), _RA_PROBE_RESERVED_ATTRS) || throw(ArgumentError(
+        "the probe /$(kind)/$(name) declares attributes " *
+        join(string.(k for k in keys(attrs) if k in _RA_PROBE_RESERVED_ATTRS), ", ") *
+        " that the artifact's probe protocol owns (" *
+        join(string.(_RA_PROBE_RESERVED_ATTRS), ", ") * ")"))
     # A probe binds under one of the table's named kinds and nothing else, so
     # the groups a run writes are the groups the readers know (S4-8).
     Symbol(kind) in _RA_NAMED_KINDS || throw(ArgumentError(
@@ -1906,7 +1928,7 @@ function _ra_bind_probe!(art::RunArtifact, kind::String, name::String,
     push!(art.probe_names, key)
     push!(art.pending_probes,
           PendingProbeBind(key, kind, name, copy(colnames), Int64(first_turn),
-                           s === nothing ? nothing : Float64(s)))
+                           s === nothing ? nothing : Float64(s), attrs))
     return key
 end
 
@@ -1938,6 +1960,13 @@ function _ra_commit_probe!(f, pending::PendingProbeBind)
         _ra_set_attr!(g, "rows_valid_through_turn", Int64(typemin(Int32)))
     end
     pending.s === nothing || _ra_set_attr!(g, "s", pending.s)
+    # The probe's own attributes (the BPM's device model), rewritten on
+    # continue like `s`: idempotent for the same model, corrective if it moved.
+    if pending.attrs !== nothing
+        for (k, v) in pairs(pending.attrs)
+            _ra_set_attr!(g, String(k), v)
+        end
+    end
     return nothing
 end
 
@@ -2147,8 +2176,13 @@ function _ra_probe_columns(g)
     data = n == 0 ? zeros(Float64, 0, size(d, 2)) : d[1:n, :]
     # `s` is the probe's arc position (the design's attrs: name, s), nothing
     # for task-hook probes and files from before the attribute existed --
-    # the read_losses mixed scalars-and-columns precedent.
-    (; :s => _ra_get_attr(g, "s", nothing),
+    # the read_losses mixed scalars-and-columns precedent; `attrs` the
+    # probe's own attributes beyond the protocol's (the BPM's device model,
+    # F-90), an empty NamedTuple where the group stamps none.
+    a = HDF5.attributes(g)
+    extra = sort!([String(k) for k in keys(a) if !(Symbol(String(k)) in _RA_PROBE_RESERVED_ATTRS)])
+    attrs = (; (Symbol(k) => read(a[k]) for k in extra)...)
+    (; :s => _ra_get_attr(g, "s", nothing), :attrs => attrs,
        (Symbol(nm) => vec(data[:, i]) for (i, nm) in pairs(names))...)
 end
 
@@ -2410,6 +2444,10 @@ function _ra_turn_modulation(f; data::Bool=true)
                                  digest=UInt64(_ra_tm_attr(sg, "digest", where_s)),
                                  name=String(_ra_tm_attr(sg, "name", where_s)),
                                  length=Int(_ra_tm_attr(sg, "length", where_s)),
+                                 # with defaults: a file from before 2026-10-21
+                                 # carries neither (F-66), the nominals' posture
+                                 sigma=Float64(_ra_get_attr(sg, "sigma", 0.0)),
+                                 octaves=Int(_ra_get_attr(sg, "octaves", 0)),
                                  nominal=_ra_tm_nominal(sg))))
             end
             sort!(entries; by=first)
@@ -2460,18 +2498,22 @@ whose line had a modulated element, in `/execution` ledger order,
                                                 # the run did not record
                    slots   = [(slot = "phase_noise[1]", kind = :white,
                                rng_id = 0x0000000000000007, digest = 0x0000000000000000,
-                               name = "", length = 0,
+                               name = "", length = 0, sigma = 1.0e-5, octaves = 0,
                                nominal = (phase = 0.0, strengthX = 0.002, strengthY = 0.0),
                                series = [dphi_1, dphi_2, ...]),   # or nothing
                               (slot = "strength_noise[1]", kind = :table,
                                rng_id = 0x0000000000000000, digest = <FNV-1a 64 of the
                                table's bytes>, name = "amp", length = 10,
+                               sigma = 0.0, octaves = 0,
                                nominal = (phase = 0.0, strengthX = 0.002, strengthY = 0.0),
                                series = [d_1, d_2, ...])])],      # or nothing
      state     = nothing)                       # reserved (D10), written by nothing
 
-so a table's identity (`digest`, `name`, `length`) and a stream rule's
-`rng_id` travel with the file (`kind` is the rule's `_rule_kind` label, one
+so a table's identity (`digest`, `name`, `length`), a stream rule's `rng_id`
+and its free parameters -- `sigma`, the rms in the slot's unit (white and
+pink), and the pink rule's `octaves`; 0.0 and 0 for the kinds without them,
+and the defaults a file written before 2026-10-21 reads back with (F-66) --
+travel with the file (`kind` is the rule's `_rule_kind` label, one
 of `_turn_rule_kinds()`, derived from the rule catalogue: `:white`, `:pink`,
 `:table`, and `:spectral` for the spec-level `SpectralNoise`, which resolves
 to a table at compile and so never reaches a file; a kind outside that
@@ -2552,7 +2594,10 @@ name="IP6", orders=1)` is the keyword twin of
 selection as a matrix.
 
 Probe groups carry the scalar `s` — the probe's arc position in its line —
-beside the columns (`nothing` for task-hook probes and pre-attribute files).
+beside the columns (`nothing` for task-hook probes and pre-attribute files),
+and `attrs`, the group's own attributes beyond the protocol's (the BPM's
+device model, `x_offset` to `y_noise` and `rng_id`; F-90, 2026-10-21), an
+empty NamedTuple where none are stamped.
 
 `:losses` returns the per-loss rows as column vectors (pre-kill coordinates),
 the per-aperture names/counts/arc positions, and the reconciliation summary

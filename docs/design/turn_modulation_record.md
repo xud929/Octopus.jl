@@ -71,7 +71,9 @@ through the public surface, and for the cost to stay nil.
   capacity=64)`, one HDF5 file per task, one group per producer, rows
   batched `capacity` at a time, `/turn_modulation/<slot>/<k>/<label>` groups
   with the attributes `element_count`; `element`, `beam`, `slot_count`;
-  `index`, `kind`, `rng_id`, `digest`, `name`, `length`, written per
+  `index`, `kind`, `rng_id`, `digest`, `name`, `length`, and since 2026-10-21
+  `sigma` and `octaves` (the live rules' free parameters, 0.0 and 0 for the
+  kinds without them; comprehensive audit F-66), written per
   execution slot and never deleted. Readers:
   `turn_modulation_provenance(path)` and `read(out, :turn_modulation)`.
 - The audit: `with_execution_audit(f)` binds a scoped value while `f` runs;
