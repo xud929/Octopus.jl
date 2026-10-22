@@ -14196,6 +14196,34 @@ end
 end
 
 
+@testset "The untyped ChromaticityKickSpec promotes its named parameters over the Float64 floor (F-94)" begin
+    # The three linear-map constructors promote through `_linear_map_eltype`;
+    # this one hard-coded `Float64`, so a complex chromaticity died with
+    # `InexactError: Float64(1.0 + 0.1im)` while the kind's construction help
+    # promised the floor promotion (2026-10-18 audit, U19-4).
+    s = ChromaticityKickSpec(xi=(1.0 + 0.1im, 1.0), beta=(1.0, 1.0))
+    @test Octopus.numeric_type(s) == ComplexF64
+    @test compile_runtime(s) isa ChromaticityKick{Symplectic6DMap,ComplexF64}
+    # A BigFloat beta widens too, and through a tuple-valued parameter.
+    @test Octopus.numeric_type(ChromaticityKickSpec(xi=(1.0, 1.0), beta=(big(1.0), 1.0))) == BigFloat
+    # The untyped form stores no type (the floor form re-derives at compile);
+    # integers and Float32 land on Float64; only the typed form narrows.
+    @test !hasparam(s, :numeric_type)
+    @test Octopus.numeric_type(ChromaticityKickSpec(xi=(1, 1), beta=(1, 1))) == Float64
+    @test Octopus.numeric_type(ChromaticityKickSpec(xi=(1.0f0, 1.0f0), beta=(1.0f0, 1.0f0))) == Float64
+    @test Octopus.numeric_type(ChromaticityKickSpec{Float32}(xi=(1, 1), beta=(1, 1))) == Float32
+    @test Octopus.numeric_type(ChromaticityKickSpec(xi=(1, 1), beta=(1, 1), numeric_type=Float32)) == Float32
+    # The promoted element tracks: the complex-step derivative of px with
+    # respect to xi_x at the origin of pz is zero (mu = 2 pi xi pz vanishes),
+    # and the real part is the Float64 map.
+    u = (1.1e-3, -2.0e-4, 0.7e-3, 1.3e-4, -1.5e-3, 4.0e-4)
+    ref = collect(compile_runtime(ChromaticityKickSpec(xi=(1.0, 1.0), beta=(1.0, 1.0)))(u...))
+    cs = collect(compile_runtime(ChromaticityKickSpec(xi=(1.0 + 1.0e-30im, 1.0), beta=(1.0, 1.0)))(u...))
+    @test real.(cs) == ref
+    @test all(isfinite, imag.(cs))
+end
+
+
 
 @testset "Thin elements, markers and RBEND" begin
     u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)

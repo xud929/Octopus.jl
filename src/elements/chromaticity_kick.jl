@@ -13,9 +13,25 @@ longitudinal coordinate `z` by the chromatic transverse actions.
 `beta` and `alpha` may use the shared three-plane optics interface; this
 element uses only their horizontal and vertical components. Legacy
 two-component tuples remain accepted.
+
+Without the explicit `{T}`, the element type is the promotion of the named
+parameters (`xi`, `beta`, `alpha`, `zeta`, `eta`, `R`) over a `Float64` floor,
+as the three linear maps promote through `_linear_map_eltype`: a `Dual` or
+`Complex` chromaticity differentiates without the caller spelling the type.
+Integers, rationals and `Float32` land on `Float64`; narrowing stays behind the
+explicit `{T}` form or `numeric_type=T`. Extra keyword arguments are descriptive
+metadata and take no part in the promotion. Until the 2026-10-18 comprehensive
+audit this constructor hard-coded `Float64`, so `ChromaticityKickSpec(xi=(1.0 +
+0.1im, 1.0), beta=(1.0, 1.0))` died with `InexactError: Float64(1.0 + 0.1im)`
+while the kind's construction help promised the floor promotion (F-94).
 """
-ChromaticityKickSpec(; numeric_type=nothing, kwargs...) =
-    _floor_form(ChromaticityKickSpec{something(numeric_type, Float64)}(; kwargs...), numeric_type)
+function ChromaticityKickSpec(; xi, beta, alpha=(0, 0, 0), zeta=(0, 0, 0, 0),
+                              eta=(0, 0, 0, 0), R=(0, 0, 0, 0), numeric_type=nothing,
+                              kwargs...)
+    T = something(numeric_type, _linear_map_eltype(xi, beta, alpha, zeta, eta, R))
+    return _floor_form(ChromaticityKickSpec{T}(; xi=xi, beta=beta, alpha=alpha, zeta=zeta,
+                                                eta=eta, R=R, kwargs...), numeric_type)
+end
 function (::Type{ChromaticityKickSpec{T}})(;
                                           xi,
                                           beta,
