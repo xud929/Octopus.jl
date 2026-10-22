@@ -29018,6 +29018,14 @@ end
     end
 end
 
+# A no-op observer for the repeated-placement refusal below and the fused-row
+# baseline later in the file (unit G, fix batch 3). Defined HERE, before its first
+# use: the suite runs top to bottom, and the definition sat 2,000 lines below this
+# testset until the batch's second gate attempt errored on it (2026-10-22); every
+# stage-runner preamble had supplied it, which is why no cut block saw the gap.
+struct _FixGNoopObserver <: Octopus.AbstractBeamObserver end
+Octopus.observe!(::_FixGNoopObserver, ::Octopus.TrackingContext, rep) = nothing
+
 @testset "One observer placed twice in a line is refused by name in artifact mode and still read twice in memory mode" begin
     # Fix batch 3 (2026-10-21), unit G: comprehensive audit F-89. One
     # BPMObserver placed twice -- the "read twice in one turn" pattern its
@@ -31087,8 +31095,6 @@ end
 Base.size(v::_FixGCountingVec) = size(v.data)
 Base.IndexStyle(::Type{_FixGCountingVec}) = IndexLinear()
 Base.@propagate_inbounds Base.getindex(v::_FixGCountingVec, i::Int) = (v.reads[] += 1; v.data[i])
-struct _FixGNoopObserver <: Octopus.AbstractBeamObserver end
-Octopus.observe!(::_FixGNoopObserver, ::Octopus.TrackingContext, rep) = nothing
 
 @testset "The CPU moment row is one fused fold: no beam copy, bitwise the serial fold it replaces" begin
     # Fix batch 3 (2026-10-21), unit G: comprehensive audit 2026-10-18 F-78
