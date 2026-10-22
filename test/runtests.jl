@@ -14276,6 +14276,49 @@ end
 end
 
 
+@testset "The thin kinds refuse a key their shared runtime reads but they do not declare (F-92)" begin
+    # Seven kinds share `ThinMultipole(spec)`, which reads knl, ksl, hkick and
+    # vkick for all of them while each declares its own subset, so an undeclared
+    # key was warned about as "NOT being tracked" and then tracked:
+    # `HKickerSpec(hkick=0.0, knl=(0.0, 0.1))` kicked px by -1e-4 at x = 1e-3
+    # (2026-10-18 audit, U19-2). The kinds are derived from the registry (every
+    # kind whose runtime is ThinMultipole), the read keys from the constructor's
+    # own list, and every read key must be declared by at least one of them.
+    thin_kinds = sort!([k for (k, m) in Octopus.ELEMENT_META_BY_KIND if m.runtime_type === ThinMultipole])
+    @test length(thin_kinds) == 7
+    read_keys = Octopus._THIN_RUNTIME_KEYS
+    declared(k) = Octopus.parameter_schema(ElementSpec{k})
+    @test Set(key for k in thin_kinds for key in read_keys if haskey(declared(k), key)) == Set(read_keys)
+    u = (1.0e-3, 0.0, 0.0, 0.0, 0.0, 0.0)
+    refused = 0
+    for k in thin_kinds, key in read_keys
+        haskey(declared(k), key) && continue
+        value = key in (:knl, :ksl) ? (0.0, 0.1) : 1.0e-3
+        raw = @test_logs (:warn, r"unknown parameter") match_mode=:any ElementSpec{k}(; key => value)
+        err = try
+            compile_runtime(raw)
+            nothing
+        catch e
+            e
+        end
+        @testset let kind = k, parameter = key
+            @test err isa ArgumentError
+            @test err isa ArgumentError && occursin(String(key), err.msg) && occursin(String(k), err.msg)
+        end
+        refused += 1
+    end
+    # 16 today: hkick and vkick on the four multipole kinds (8), knl and ksl on
+    # the three kickers (6), the kicker each lacks (2); a schema change moves it.
+    @test refused == 16
+    @test refused == sum(count(key -> !haskey(declared(k), key), read_keys) for k in thin_kinds)
+    # The declared keys keep tracking exactly as before, friendly and raw alike.
+    @test collect(compile_runtime(HKickerSpec(hkick=1.0e-3))(u...))[2] == 1.0e-3
+    @test collect(compile_runtime(ElementSpec{:hkicker}(; hkick=1.0e-3))(u...))[2] == 1.0e-3
+    @test collect(compile_runtime(ThinQuadrupoleSpec(knl=(0.0, 0.1)))(u...))[2] == -1.0e-4
+    @test collect(compile_runtime(KickerSpec(hkick=1.0e-4, vkick=-5.0e-5))(u...))[[2, 4]] == [1.0e-4, -5.0e-5]
+end
+
+
 
 @testset "Thin elements, markers and RBEND" begin
     u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
