@@ -145,7 +145,20 @@ accurate one:
 - `:exact`: `ExactHamiltonianDrift`, the full square root.
 
 All three are exact flows of their own Hamiltonian, so all three are symplectic
-and telescope exactly across slices. **The choice is a floor on accuracy that no
+and telescope exactly across slices. The kick between the two drifts is a thin
+kick in the COLLISION POINT's own coordinates: its `S` is `(z* - zo)/2` with
+`z*` the longitudinal coordinate after the forward drift, for every model. The
+Hirata drift leaves `z` alone, so there `S` is the interaction-point value; the
+chromatic and exact drifts move `z` (`z* = z + 2 S Phi` for the chromatic one),
+and the exact drift solves its collision condition for `z*` outright. Until
+2026-10-21 the chromatic composite handed the kick the interaction-point `S`
+instead -- a potential depending on the collision-point momenta through `Phi`,
+whose momentum updates are then not the gradient of a function of positions:
+non-symplectic at first order in `Phi`, a dual-Jacobian residual
+`max |J' S J - S|` of 4.5e-9 at `kbb = 1e-5` (1.4e-3 for a five-slice beam)
+against the 1e-13 floor of the other two models, scaling linearly with `kbb`
+(2026-10-18 audit, F-119; the suite's finite-difference check at 5e-7 could not
+see it). **The choice is a floor on accuracy that no
 slice count removes.** Measured at EIC parameters with converged slicing
 (`validation/gaussian_slicing_convergence.jl`), as a contribution to Furman's
 `Q`:
@@ -183,14 +196,16 @@ function (::Type{ThinStrongBeamSpec{T}})(; kbb,
     covariance4 = transverse_covariance(T;
         beta=beta, alpha=alpha, sigma=sigma,
         covariance=covariance, coupling=coupling)
+    angle3 = _strong_inert_longitudinal(_strong_tuple(angle, 3, T), "angle", 3)
+    curvature3 = _strong_inert_longitudinal(_strong_tuple(curvature, 3, T), "curvature", 3)
     return ElementSpec{:thin_strong_beam}(_stamp_numeric_type!(
         _spec_params(;
             kbb=T(kbb),
             klum=T(klum),
             covariance=covariance4,
             center=_strong_tuple(center, 3, T),
-            angle=_strong_tuple(angle, 3, T),
-            curvature=_strong_tuple(curvature, 3, T),
+            angle=angle3,
+            curvature=curvature3,
             virtual_drift=_virtual_drift(virtual_drift),
             tracking_method=tracking_method,
             kwargs...,
@@ -261,8 +276,11 @@ function ThinStrongBeam(spec::ElementSpec{:thin_strong_beam},
                         method::AbstractTrackingMethod=tracking_method(spec))
     covariance4 = param(spec, :covariance)
     center = param(spec, :center)
-    angle = param(spec, :angle)
-    curvature = param(spec, :curvature)
+    # The flexible form `ElementSpec{:thin_strong_beam}(...)` stores what it is
+    # given, so the inert-component refusal of the friendly constructor runs
+    # here too (one helper, both routes; F-124).
+    angle = _strong_inert_longitudinal(param(spec, :angle), "angle", 3)
+    curvature = _strong_inert_longitudinal(param(spec, :curvature), "curvature", 3)
     # `numeric_type(spec)`, the one rule of every kind: the stored type of a
     # `ThinStrongBeamSpec{T}`, else the Float64-floor promotion of the stored
     # parameters.
@@ -392,6 +410,13 @@ function (::Type{GaussianStrongBeamSpec{T}})(; thin,
                                             hvoffset=nothing,
                                             tracking_method=WeakStrongBeamBeamMap(),
                                             kwargs...) where {T}
+    # Refused by name at construction, before anything is stored: an
+    # `hvoffset` Dict with a missing, misspelled or String key (F-122) and a
+    # non-zero sixth `mean` component, the strong beam's own pz, which no kick
+    # reads (F-124). The stored forms stay the user's (the Dict, the 6-tuple);
+    # the compile runs the same two checks on a flexible-form spec.
+    _validated_hvoffset(hvoffset)
+    mean6 = mean === nothing ? nothing : _strong_inert_longitudinal(_strong_tuple(mean, 6, T), "mean", 6)
     return ElementSpec{:gaussian_strong_beam}(_stamp_numeric_type!(
         _spec_params(;
             thin=thin,
@@ -405,7 +430,7 @@ function (::Type{GaussianStrongBeamSpec{T}})(; thin,
             slice_voffset=slice_voffset === nothing ? nothing : _strong_tuple(slice_voffset, Int(ns), T),
             slice_pxoffset=slice_pxoffset === nothing ? nothing : _strong_tuple(slice_pxoffset, Int(ns), T),
             slice_pyoffset=slice_pyoffset === nothing ? nothing : _strong_tuple(slice_pyoffset, Int(ns), T),
-            mean=mean === nothing ? nothing : _strong_tuple(mean, 6, T),
+            mean=mean6,
             covariance=covariance === nothing ? nothing : _validated_covariance(covariance, 6, T),
             hvoffset=hvoffset,
             tracking_method=tracking_method,
@@ -480,7 +505,7 @@ function GaussianStrongBeam(spec::ElementSpec{:gaussian_strong_beam},
         mean6 = getparam(spec, :mean, nothing)
         mean6 = mean6 === nothing ?
             (thin.xo, thin.pxo, thin.yo, thin.pyo, thin.zo, thin.pzo) :
-            _strong_tuple(mean6, 6, T0)
+            _strong_inert_longitudinal(_strong_tuple(mean6, 6, T0), "mean", 6)
         conditional4, crab_slope = _conditional_transverse_gaussian(covariance6, T0)
         thin = _thin_with_distribution(thin, conditional4, mean6)
     end
@@ -511,18 +536,16 @@ function GaussianStrongBeam(spec::ElementSpec{:gaussian_strong_beam},
         voff_tuple = ntuple(i -> voff_tuple[i] + crab_slope[3] * centers_tuple[i], length(centers_tuple))
         pyoff_tuple = ntuple(i -> pyoff_tuple[i] + crab_slope[4] * centers_tuple[i], length(centers_tuple))
     end
-    hvoffset = getparam(spec, :hvoffset, nothing)
+    # Read by name through `_validated_hvoffset` (F-122): every key checked,
+    # `coef` and `frequency` required, the waveform in the element's type (F-123).
+    hvoffset = _validated_hvoffset(getparam(spec, :hvoffset, nothing))
     if hvoffset !== nothing
-        dim = Symbol(get(hvoffset, :dim, :x))
-        offsets = _crab_offsets(centers_tuple, T0(get(hvoffset, :coef, 0.0)),
-                                T0(get(hvoffset, :frequency, -1.0)),
-                                get(hvoffset, :harmonics, Dict(1 => 1.0)))
-        if dim == :x
+        offsets = _crab_offsets(centers_tuple, T0(hvoffset.coef), T0(hvoffset.frequency),
+                                hvoffset.harmonics)
+        if hvoffset.dim == :x
             hoff_tuple = ntuple(i -> hoff_tuple[i] + offsets[i], length(offsets))
-        elseif dim == :y
-            voff_tuple = ntuple(i -> voff_tuple[i] + offsets[i], length(offsets))
         else
-            throw(ArgumentError("hvoffset dim must be :x or :y"))
+            voff_tuple = ntuple(i -> voff_tuple[i] + offsets[i], length(offsets))
         end
     end
     centers = collect(centers_tuple)
@@ -610,6 +633,9 @@ end
     track_particle(elem.method, elem, x, px, y, py, z, pz)
 
 function _thin_strong_beam_track(elem::_ThinStrongKickSource, x, px, y, py, z, pz)
+    # A kernel-side guard only: `_strong_transverse_moments` refuses a zero
+    # position variance by name at compile (F-125), so no spec reaches this
+    # return; it stays for the device twin's shape and a hand-built runtime.
     (elem.moments.a0 == 0 || elem.moments.d0 == 0) && return x, px, y, py, z, pz, zero(x)
     x, px, y, py, z, pz, S = _thin_strong_forward_virtual_drift(elem, x, px, y, py, z, pz)
     x, px, y, py, z, pz, lum = _cp_kick(elem, S, x, px, y, py, z, pz)
@@ -724,7 +750,16 @@ end
     y += S * py / (1 + pz)
     z += 2 * S * phi
     pz += (1 + pz) * phi
-    return x, px, y, py, z, pz, S
+    # The kick's S is the COLLISION POINT's own `(z* - zo)/2`, read off the
+    # drifted `z` exactly as the reverse drift reads it, not the interaction
+    # point's `S` this flow started from (the two differ by the factor
+    # `1 + phi`). With the IP value the kick's potential depended on the
+    # collision-point momenta through `phi(px, py, pz)` and the composite was
+    # not symplectic at first order in `phi` (dual-Jacobian residual 4.5e-9 at
+    # kbb = 1e-5 against the 1e-13 floor of `:hirata` and `:exact`, scaling
+    # with kbb; 2026-10-18 audit, F-119). The exact drift below has always
+    # solved for its collision-point `z` and handed THAT `S` on.
+    return x, px, y, py, z, pz, W(z - zo) / 2
 end
 
 @inline function _reverse_virtual_drift(
@@ -742,7 +777,14 @@ end
         ::ExactHamiltonianDrift, x, px, y, py, z, pz, zo, ::Type{W}) where {W}
     half = W(0.5)
     ps = sqrt((1 + pz) * (1 + pz) - px * px - py * py)
-    H = 1 + pz - ps
+    # `H_ex = (1 + pz) - ps` written through the identity
+    # `px^2 + py^2 = ((1 + pz) - ps)((1 + pz) + ps)` (theory note 7.2): the
+    # difference of two O(1) quantities lost 4e-5 of its relative precision at
+    # EIC-like momenta, and the device's fused radicand turned that last-bit
+    # difference of `ps` into ~900 ulps of pz's scale across backends against
+    # a declared class of 8 (2026-10-18 audit, F-120). The reverse drift's
+    # `H0` has always been the small-quantity form.
+    H = (px * px + py * py) / ((1 + pz) + ps)
     rr = half * H / ps
     z2 = (z + rr * zo) / (1 + rr)
     S = W(z2 - zo) / 2
@@ -1345,7 +1387,9 @@ function transverse_covariance(::Type{T}; beta=nothing,
         beta === nothing || throw(ArgumentError("beta/sigma and covariance are alternative strong-beam descriptions"))
         sigma === nothing || throw(ArgumentError("beta/sigma and covariance are alternative strong-beam descriptions"))
         coupling === nothing || throw(ArgumentError("apply coupling before supplying an explicit covariance"))
-        return _validated_covariance(covariance, 4, T)
+        # Refused at construction, not only at compile (F-125): the friendly
+        # constructor is where a zero variance arrives.
+        return _strong_position_block_positive(_validated_covariance(covariance, 4, T))
     end
     if coupling !== nothing
         matrix = _xy_coupling_matrix(coupling, T)
@@ -1377,6 +1421,13 @@ parameter means what the analysis reports. Xsuite's `dx, dpx, dy, dpy` and
 MAD-X's `deltap` dispersion are the slope `eta / h`, not `eta`: convert them
 by (D8), `h = 1 / (1 + zeta' S_4 slope)`, `eta = h slope`, before passing them
 here. `zeta` is the same in both conventions.
+
+The builder is generic in the type `T` its inputs promote to: a ForwardDiff
+dual in a dispersion gives a dual covariance (the PSD check runs `eigvals` on
+the `Symmetric` dual matrix, which ForwardDiff provides). From 2026-10-18 to
+2026-10-21 `_dispersion_graph` converted both dispersions to `Vector{Float64}`
+and a parameter derivative through this builder was refused with
+`MethodError: Float64(::Dual)` (2026-10-18 audit, F-121).
 """
 function gaussian_strong_beam_covariance(transverse, longitudinal;
         crab_dispersion=(0, 0, 0, 0), momentum_dispersion=(0, 0, 0, 0))
@@ -1406,11 +1457,23 @@ function _validated_covariance(covariance, n::Int, ::Type{T}) where {T}
     maximum(abs, cov - transpose(cov)) <= symmetry_tolerance ||
         throw(ArgumentError("covariance must be symmetric"))
     cov = (cov + transpose(cov)) / 2
-    psd_tolerance = T(100) * eps(T) * max(scale, eps(T))
+    psd_tolerance = _covariance_rounding_floor(scale, T)
     minimum(eigvals(Symmetric(cov))) >= -psd_tolerance ||
         throw(ArgumentError("covariance must be positive semidefinite"))
     return cov
 end
+
+"""
+    _covariance_rounding_floor(scale, T) -> T
+
+`100 eps(T) max(scale, eps(T))` with `scale = maximum(abs, cov)`: the rounding
+floor below which an eigenvalue or a variance of a covariance is
+indistinguishable from zero at the covariance's scale. The PSD tolerance of
+`_validated_covariance` and the positivity floor of
+`_strong_position_block_positive`, written once.
+"""
+_covariance_rounding_floor(scale, ::Type{T}) where {T} =
+    T(100) * eps(T) * max(scale, eps(T))
 
 function _xy_coupling_matrix(coupling, ::Type{T}) where {T}
     if coupling isa AbstractMatrix
@@ -1436,8 +1499,44 @@ function _xy_coupling_matrix(coupling, ::Type{T}) where {T}
     return matrix
 end
 
+"""
+    _strong_position_block_positive(cov4) -> cov4
+
+The kick needs a two-dimensional Gaussian density at the IP: positive position
+variances and, with coupling, a positive-definite position block.
+`_validated_covariance` admits a zero eigenvalue (PSD), so an all-zero or
+x-degenerate covariance compiled to an element whose kernels took the
+`a0 == 0 || d0 == 0` early return for every particle -- no kick, zero
+luminosity, silently (2026-10-18 audit, F-125). Refused by name, as the
+beta/sigma route refuses a non-positive size: at construction through
+`transverse_covariance` (the friendly constructor's explicit-covariance route)
+and at compile through `_strong_transverse_moments` (the flexible form and the
+6 x 6 route's conditional moments). `real` for the complex-step convention of
+this file's other crossovers.
+"""
+function _strong_position_block_positive(cov::AbstractMatrix{T}) where {T}
+    a0, b0, d0 = cov[1, 1], cov[1, 3], cov[3, 3]
+    # "Positive" means above the covariance's own rounding floor, the PSD
+    # tolerance of `_validated_covariance` (one helper, not a copy): a
+    # conditional variance of a 6 x 6 covariance whose x is an exact multiple
+    # of z comes out as a rounding residue of either sign (1.7e-24 against a
+    # 1e-8 variance, measured), and a strict `> 0` would admit it and compile a
+    # 1e-12 m beam. The coupled block's test is its correlation: `1 - rho^2`
+    # above the same relative floor.
+    floor = _covariance_rounding_floor(maximum(abs, cov), T)
+    (real(a0) > floor && real(d0) > floor) || throw(ArgumentError(
+        "strong-beam transverse position variances must be positive (above the covariance's " *
+        "rounding floor $(floor)): cov[1,1] = $(a0) (x), cov[3,3] = $(d0) (y). A zero variance " *
+        "used to compile silently to an element that kicked nothing and recorded zero luminosity"))
+    real(a0 * d0 - b0 * b0) > real(T(100) * eps(T) * a0 * d0) || throw(ArgumentError(
+        "strong-beam transverse position block must be positive definite: " *
+        "cov[1,1] cov[3,3] - cov[1,3]^2 = $(a0 * d0 - b0 * b0) against a floor of 100 eps of " *
+        "cov[1,1] cov[3,3]; a perfectly correlated x-y position has no two-dimensional Gaussian density"))
+    return cov
+end
+
 function _strong_transverse_moments(covariance4, ::Type{T}) where {T}
-    cov = _validated_covariance(covariance4, 4, T)
+    cov = _strong_position_block_positive(_validated_covariance(covariance4, 4, T))
     coupled = !(iszero(cov[1, 3]) && iszero(cov[1, 4]) &&
                 iszero(cov[2, 3]) && iszero(cov[2, 4]))
     return StrongTransverseMoments{T,coupled}(
@@ -1723,13 +1822,97 @@ function _equal_width_slices(::Type{T}, ns::Int, sigz::T, width::T) where {T}
     return Tuple(centers), Tuple(weights)
 end
 
-function _crab_offsets(centers, coef, freq, harmonics)
+"""
+    _strong_inert_longitudinal(values, name, index) -> values
+
+The third component of `angle` (`pzo`) and of `curvature` (`ppzo`), and the
+sixth of a Gaussian `mean` (its `pz`), are carried by the runtime for the shape
+of the tuples and read by no kick: the rigid Gaussian strong beam's field has no
+dependence on its own longitudinal momentum offset or on that offset's slope
+along `s`. A non-zero value used to be accepted and ignored -- tracking and
+luminosity bit-identical to zero -- the silent class the Invariants forbid
+(2026-10-18 audit, F-124); it is refused by name instead, from the friendly
+constructors and from the compile of a flexible-form spec alike. `iszero` is
+value-and-partials on a dual, so a perturbation of the inert slot is refused
+too (there is nothing for it to differentiate).
+"""
+function _strong_inert_longitudinal(values, name::AbstractString, index::Int)
+    v = values[index]
+    iszero(v) || throw(ArgumentError(
+        "$(name)[$(index)] = $(v) is not read by the weak-strong kick: the rigid Gaussian " *
+        "strong beam's field does not depend on its own longitudinal momentum offset" *
+        (index == 6 ? "" : " or its slope along s") * ", so a non-zero value would be " *
+        "accepted and ignored. Set it to 0 (the component is carried for the tuple's shape only)"))
+    return values
+end
+
+const _HVOFFSET_KEYS = (:dim, :coef, :frequency, :harmonics)
+const _HVOFFSET_REQUIRED_KEYS = (:coef, :frequency)
+
+"""
+    _validated_hvoffset(hvoffset) -> NamedTuple or nothing
+
+The `hvoffset` option of `GaussianStrongBeamSpec` read by name: `nothing`, or an
+`AbstractDict` whose keys are the Symbols `_HVOFFSET_KEYS` with `coef` [m] and
+`frequency` [Hz, positive] required, `dim` (`:x` or `:y`, default `:x`) and
+`harmonics` (`Dict(harmonic::Integer => relative amplitude::Real)`, default
+`Dict(1 => 1.0)`) optional. Anything else is refused by name: until 2026-10-21
+every key was read with `get(hvoffset, key, default)`, so a misspelled or
+missing key, String keys, or a non-positive frequency produced exactly the
+element built without `hvoffset` (`frequency` defaulted to `-1` and the
+waveform to zeros), and a tuple died with a `MethodError` from `get`
+(2026-10-18 audit, F-122). Called by the friendly constructor and by the
+compile, so the flexible form is checked at the same gate.
+"""
+function _validated_hvoffset(hvoffset)
+    hvoffset === nothing && return nothing
+    hvoffset isa AbstractDict || throw(ArgumentError(
+        "hvoffset must be a Dict with the Symbol keys $(_HVOFFSET_KEYS) " *
+        "($(_HVOFFSET_REQUIRED_KEYS) required), got a $(typeof(hvoffset))"))
+    unknown = [k for k in keys(hvoffset) if !(k isa Symbol && k in _HVOFFSET_KEYS)]
+    isempty(unknown) || throw(ArgumentError(
+        "hvoffset has the unknown key(s) $(join(repr.(unknown), ", ")); the keys are the Symbols " *
+        "$(_HVOFFSET_KEYS) (coef [m] and frequency [Hz] required; dim defaults to :x, harmonics to " *
+        "Dict(1 => 1.0)). An unknown or misspelled key used to be ignored and the waveform silently dropped"))
+    absent = [k for k in _HVOFFSET_REQUIRED_KEYS if !haskey(hvoffset, k)]
+    isempty(absent) || throw(ArgumentError(
+        "hvoffset is missing $(join(repr.(absent), ", ")): coef [m] and frequency [Hz] are both required " *
+        "(a missing frequency used to default to -1 and produce zero offsets, identical to no hvoffset)"))
+    dim = Symbol(get(hvoffset, :dim, :x))
+    dim in (:x, :y) || throw(ArgumentError("hvoffset dim must be :x or :y, got $(repr(dim))"))
+    coef = hvoffset[:coef]
+    (coef isa Real && isfinite(coef)) || throw(ArgumentError(
+        "hvoffset coef must be a finite Real [m], got $(repr(coef))"))
+    frequency = hvoffset[:frequency]
+    (frequency isa Real && isfinite(frequency) && frequency > 0) || throw(ArgumentError(
+        "hvoffset frequency must be a positive finite Real [Hz], got $(repr(frequency)) " *
+        "(a non-positive frequency used to produce zero offsets silently)"))
+    harmonics = get(hvoffset, :harmonics, Dict(1 => 1.0))
+    harmonics isa AbstractDict || throw(ArgumentError(
+        "hvoffset harmonics must be a Dict of harmonic number => relative amplitude, got a $(typeof(harmonics))"))
+    for (h, rel) in pairs(harmonics)
+        (h isa Integer && h >= 1 && rel isa Real && isfinite(rel)) || throw(ArgumentError(
+            "hvoffset harmonics entries must be `harmonic::Integer >= 1 => relative amplitude::Real`, " *
+            "got $(repr(h)) => $(repr(rel))"))
+    end
+    return (dim=dim, coef=coef, frequency=frequency, harmonics=harmonics)
+end
+
+# In the element's type `T` throughout (`coef` and `freq` arrive as `T0(...)`
+# from the compile): the constants `TWOPI`, `CLIGHT` and the harmonics'
+# relative amplitudes used to enter as Float64 and promoted a Float32
+# Gaussian's offsets to Float64, so the struct constructor was asked to hold a
+# Float32 `thin` in a Float64 element and died with a `convert` MethodError
+# (2026-10-18 audit, F-123). Float64 arithmetic is unchanged operation for
+# operation. The `freq <= 0` return is unreachable from `_validated_hvoffset`
+# and kept for a direct caller.
+function _crab_offsets(centers, coef::T, freq::T, harmonics) where {T<:Real}
     freq <= 0 && return ntuple(_ -> zero(coef), length(centers))
-    kcc = TWOPI * freq / CLIGHT
+    kcc = T(TWOPI) * freq / T(CLIGHT)
     return ntuple(length(centers)) do i
-        t = -centers[i]
+        t = -T(centers[i])
         for (h, rel) in pairs(harmonics)
-            t += rel * sin(h * kcc * centers[i]) / (h * kcc)
+            t += T(rel) * sin(h * kcc * T(centers[i])) / (h * kcc)
         end
         -coef * t
     end
@@ -1761,11 +1944,11 @@ end
         beta=ParamMeta(meaning="strong-beam beta functions for the uncoupled convenience constructor"),
         alpha=ParamMeta(default=(0, 0), meaning="strong-beam alpha functions"),
         sigma=ParamMeta(meaning="strong-beam transverse sizes for the uncoupled convenience constructor"),
-        covariance=ParamMeta(meaning="4 x 4 covariance in (x, px, y, py) order"),
+        covariance=ParamMeta(meaning="4 x 4 covariance in (x, px, y, py) order; the position variances cov[1,1], cov[3,3] and, coupled, the position block's determinant must be positive -- a zero variance is refused by name, not compiled to a beam that kicks nothing"),
         coupling=ParamMeta(meaning="optional XYCouplingSpec, XYCoupling, or symplectic 4 x 4 matrix"),
-        center=ParamMeta(default=(0, 0, 0), meaning="strong-beam closed orbit center"),
-        angle=ParamMeta(default=(0, 0, 0), meaning="strong-beam closed orbit angle"),
-        curvature=ParamMeta(default=(0, 0, 0), meaning="strong-beam closed orbit curvature"),
+        center=ParamMeta(default=(0, 0, 0), meaning="strong-beam closed orbit center (x, y, z)"),
+        angle=ParamMeta(default=(0, 0, 0), meaning="strong-beam closed orbit angle (px, py, pz); the third component must be 0: the rigid Gaussian's field does not depend on its own energy offset, so a non-zero value is refused by name rather than accepted and ignored"),
+        curvature=ParamMeta(default=(0, 0, 0), meaning="strong-beam closed orbit curvature (d px/ds, d py/ds, d pz/ds); the third component must be 0 (not read by the kick; refused by name rather than accepted and ignored)"),
         virtual_drift=ParamMeta(default=:hirata, meaning="virtual-drift Hamiltonian: :hirata (default, paraxial, the canonical published synchro-beam map; no path lengthening), :chromatic, or :exact. A model choice, not a numerical knob: it sets an accuracy floor no slice count removes (measured 2.9e-4 / 3.9e-5 in Furman Q at EIC parameters). See docs/theory/gaussian_longitudinal_slicing.md Section 7.1"),
         tracking_method=ParamMeta(default=WeakStrongBeamBeamMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
@@ -1794,16 +1977,16 @@ end
         slice_pxoffset=ParamMeta(meaning="explicit horizontal-angle slice offsets"),
         slice_pyoffset=ParamMeta(meaning="explicit vertical-angle slice offsets"),
         sigz=ParamMeta(meaning="strong-beam longitudinal rms size; required unless explicit slice_center and slice_weight are supplied"),
-        mean=ParamMeta(meaning="optional 6D Gaussian mean in (x, px, y, py, z, pz) order"),
+        mean=ParamMeta(meaning="optional 6D Gaussian mean in (x, px, y, py, z, pz) order; the sixth component must be 0 (the strong beam's own energy offset is not read by the kick; refused by name rather than accepted and ignored)"),
         covariance=ParamMeta(meaning="optional 6 x 6 Gaussian covariance; slices use conditional transverse moments"),
         slice_method=ParamMeta(default=:sqrt_density, meaning="longitudinal slicing rule: :sqrt_density (default, Furman #4), :equal_area (#2), :equal_area_centroid (#3), :min_cdf_area (#5), :equal_spacing_density (#1), :gauss_hermite, or :equal_width; see docs/theory/gaussian_longitudinal_slicing.md"),
         slice_width=ParamMeta(meaning="slice width for :equal_width; unused by every other slice_method"),
-        hvoffset=ParamMeta(meaning="optional Dict with dim, coef, frequency, harmonics"),
+        hvoffset=ParamMeta(meaning="optional crab-waveform slice offsets: a Dict with the Symbol keys dim (:x default, or :y), coef [m] (required), frequency [Hz, positive] (required), harmonics (Dict harmonic => relative amplitude, default Dict(1 => 1.0)); an unknown, misspelled or missing key is refused by name"),
         tracking_method=ParamMeta(default=WeakStrongBeamBeamMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = GaussianStrongBeamSpec(thin=ThinStrongBeamSpec(kbb=1e-4, beta=(1.0, 1.0), sigma=(1e-3, 1e-3)), ns=3, sigz=0.01)
-    construction_help = "Friendly constructor: GaussianStrongBeamSpec{T}(; thin, ns, sigz=nothing, mean=nothing, covariance=nothing, slice_method=:sqrt_density, slice_width=nothing, slice_center=nothing, slice_weight=nothing, slice_hoffset=nothing, slice_voffset=nothing, slice_pxoffset=nothing, slice_pyoffset=nothing, hvoffset=nothing, tracking_method=WeakStrongBeamBeamMap(), kwargs...). A 6 x 6 covariance is conditioned on each longitudinal slice. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form GaussianStrongBeamSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "Friendly constructor: GaussianStrongBeamSpec{T}(; thin, ns, sigz=nothing, mean=nothing, covariance=nothing, slice_method=:sqrt_density, slice_width=nothing, slice_center=nothing, slice_weight=nothing, slice_hoffset=nothing, slice_voffset=nothing, slice_pxoffset=nothing, slice_pyoffset=nothing, hvoffset=nothing, tracking_method=WeakStrongBeamBeamMap(), kwargs...). A 6 x 6 covariance is conditioned on each longitudinal slice. hvoffset: a Dict with the Symbol keys dim (:x or :y), coef [m], frequency [Hz] and harmonics; coef and frequency are required and an unknown key is refused by name. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form GaussianStrongBeamSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 default_method(::Type{ElementSpec{:thin_strong_beam}}) = WeakStrongBeamBeamMap()

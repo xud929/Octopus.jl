@@ -3550,6 +3550,18 @@ end
 # the map -- which is the strongest true statement available here, and strictly
 # more than an exemption would say. Returns `nothing` for the ordinary case.
 function _perturb_coupled_overrides(kind::Symbol, key::Symbol, probe)
+    # The thin strong beam's `angle` and `curvature` are 3-tuples whose third
+    # component (the strong beam's own pz offset, resp. its slope along s) is
+    # read by no kick and refused by name when non-zero (2026-10-18 audit,
+    # F-124; fix batch 3). The generic tuple move perturbs every component, so
+    # the two parameters would be counted REJECTED instead of checked. The
+    # legal move perturbs the two transverse components and keeps the third at
+    # zero: what is proved is that the transverse angle (curvature) reaches
+    # the map, which is the whole of what the parameter carries.
+    if kind === :thin_strong_beam && (key === :angle || key === :curvature)
+        current = get(probe, key, (0.0, 0.0, 0.0))
+        return [Dict{Symbol,Any}(key => (Float64(current[1]) + 0.17, Float64(current[2]) + 0.34, 0.0))]
+    end
     (kind in (:thin_rf_cavity, :thin_accelerating_cavity) &&
      (key === :beta0 || key === :gamma0)) || return nothing
     g0 = Float64(get(probe, :gamma0, 100.0))
