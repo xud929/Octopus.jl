@@ -857,8 +857,8 @@ prefix views (`list_knobs`, `knob_report(; prefix)`). It was a bare
 `HSR.power_supply.*` and `HSR.powerful.*`, while the registry's structural
 walkers (`_is_namespace_prefix_locked`, `_check_namespace_collision_locked`)
 already matched on the dot (2026-10-18 audit, F-182). The wiring view
-`knob_report(elements; prefix)` in `src/elements/beam_line.jl` filters with
-its own `startswith` and should call this.
+`knob_report(elements; prefix)` in `src/elements/beam_line.jl` filters
+through this predicate too (fix batch 3, 2026-10-21).
 """
 function _knob_under_prefix(path, prefix::AbstractString)
     s = string(path)

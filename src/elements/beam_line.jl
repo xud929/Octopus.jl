@@ -948,7 +948,12 @@ function knob_report(elements::Union{Tuple,AbstractVector,ElementSpec{:line}};
     sites = NamedTuple{(:site, :param, :expr),Tuple{String,String,Any}}[]
     _knob_binding_sites!(sites, elements, Ref(0))
     if !isempty(prefix)
-        filter!(s -> any(d -> startswith(String(d), prefix),
+        # A NAMESPACE prefix, through the one predicate `list_knobs` and the
+        # registry's `knob_report(; prefix)` use (`_knob_under_prefix`): "HSR"
+        # selects HSR.* and HSR itself, not HSRx.y. This filter was its own
+        # `startswith` until fix batch 3 (2026-10-21; unit M wrote the
+        # predicate, unit K found the twin, the integrator joined them).
+        filter!(s -> any(d -> _knob_under_prefix(d, prefix),
                          _site_knobs(s.expr)), sites)
     end
     if isempty(sites)

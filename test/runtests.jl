@@ -15901,6 +15901,17 @@ end
     @test occursin("No knob-driven parameters", String(take!(buf)))
     knob_report(line; prefix="krw_report.nosuch", io=buf)
     @test occursin("No knob-driven parameters under", String(take!(buf)))
+    # The prefix is a NAMESPACE, not a string prefix: the wiring view filters
+    # through the one predicate `_knob_under_prefix` that `list_knobs` and the
+    # registry's `knob_report(; prefix)` use (fix batch 3, 2026-10-21: unit M
+    # introduced the predicate, unit K found the wiring view's own `startswith`;
+    # the integrator joined them). "krw_report.tri" selects nothing although it
+    # is a string prefix of "krw_report.trim"; "krw_report" selects both sites.
+    knob_report(line; prefix="krw_report.tri", io=buf)
+    @test occursin("No knob-driven parameters under", String(take!(buf)))
+    knob_report(line; prefix="krw_report", io=buf)
+    both = String(take!(buf))
+    @test occursin("kn[2] = 0.5 * krw_report.bus", both) && occursin("QUADRUPOLE[2]", both)
 end
 
 @testset "CUDA surveyed cavity matches CPU within its derived rounding class" begin
