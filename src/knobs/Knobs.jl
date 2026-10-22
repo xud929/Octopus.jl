@@ -474,8 +474,17 @@ function _knob_define!(path::Symbol, T::Union{Nothing,Type}, rhs, rhs_thunk)
             return _install_independent_locked!(path, Tdecl, rhs_thunk())
         end
         node = _lower_knob(rhs)
-        node isa KnobConst &&
-            return _install_independent_locked!(path, Tdecl, node.value)
+        # A right-hand side that reads no knob is a VALUE, however it is
+        # spelled: `2pi`, `2 * 3`, `sqrt(16.0)` used to install a DEPENDENT
+        # knob with no inputs (only a literal or a negated literal folded to a
+        # KnobConst), which set_knob! and the namespace assignment then refused
+        # with "set its independent inputs instead" -- and there were none
+        # (2026-10-18 audit, F-182). Evaluated here, under the lock and before
+        # anything is installed, so a domain error leaves the registry untouched.
+        if isempty(_knob_direct_dependencies(node))
+            return _install_independent_locked!(path, Tdecl,
+                                                _eval_knob_node(node, Set{Symbol}()))
+        end
         return _install_dependent_locked!(path, Tdecl, node)
     end
 end
@@ -515,7 +524,8 @@ names, not modules. Forms:
   [`KnobNamespace`](@ref)) does the same without a macro;
 - `= expression`: a *dependent* knob whose value is the stored expression over
   other knobs, evaluated on demand and cached. `@knob a = b` makes `a` an
-  alias of `b`.
+  alias of `b`. An expression that reads no knob (`2pi`, `1 / 3`) is a value,
+  and the knob is independent.
 
 `::T` declares the knob's value type; the default is `Float64`. Assigned
 values are converted to the declared type (a lossy assignment such as `1.5`
@@ -529,6 +539,14 @@ whitelisted operators are accepted, and dependency cycles are rejected — all
 errors happen here, not at tracking time. Declaring a dotted knob also binds
 its root namespace (e.g. `HSR`) as a [`KnobNamespace`](@ref) constant in the
 calling module, enabling plain-assignment access. Returns a [`KnobRef`](@ref).
+
+That root constant is created at run time, so a function that declares a root
+and then reads it through the constant in the same body accesses a binding
+newer than its own world age: Julia 1.12 warns of it and a future release
+will error. Inside one function use `knobs.path.to.name`, `knob_value` or
+`set_knob!`, which need no run-time constant, or declare the root at top level
+first (every top-level statement is a new world, which is why the examples
+below are silent).
 
 ```julia
 @knob HSR.B_rho = 81.1
@@ -627,11 +645,14 @@ end
 """
     knob_value(path)
     knob_value(expression)
+    knob_value(number)
 
 Evaluate a knob or a knob expression, memoizing dependent-knob values until an
 upstream assignment invalidates them. The result has the knob's declared type
 (`Float64` unless annotated); expression evaluation is numeric. An independent
-knob with no value raises an `ArgumentError` naming the knob.
+knob with no value raises an `ArgumentError` naming the knob. A plain number
+is returned unchanged, with no conversion, so a parameter that is either a
+number or an expression can go through the one call.
 """
 function knob_value(path_like::Union{Symbol,AbstractString,KnobRef})
     path = _knob_path(path_like)
@@ -643,7 +664,11 @@ end
 knob_value(node::AbstractKnobExpression) = lock(_KNOB_LOCK) do
     _eval_knob_node(node, Set{Symbol}())
 end
-knob_value(x::Real) = Float64(x)
+# A plain number passes through UNCHANGED. This was `Float64(x)`, the very
+# cast `_eval_knob_node` below refuses: a BigFloat or a dual number arriving
+# here lost its precision or its derivative silently, against the docstring's
+# "the knob's declared type" (2026-10-18 audit, F-182).
+knob_value(x::Real) = x
 
 function _knob_value_locked(path::Symbol, active::Set{Symbol})
     entry = get(_KNOB_TABLE, path, nothing)
@@ -745,7 +770,12 @@ function Base.propertynames(ns::KnobNamespace, ::Bool=false)
         for p in keys(_KNOB_TABLE)
             s = string(p)
             startswith(s, prestr) || continue
-            push!(names, Symbol(first(split(s[length(prestr)+1:end], '.'))))
+            # `chopprefix`, not a slice from `length(prestr) + 1`: that is a
+            # character count used as a byte index, so a root holding one
+            # two-byte character reported Symbol("") as its child and a root
+            # whose character count lands inside a multi-byte character threw
+            # a StringIndexError (2026-10-18 audit, F-182).
+            push!(names, Symbol(first(split(chopprefix(s, prestr), '.'))))
         end
     end
     return Tuple(sort!(collect(names); by=string))
@@ -805,14 +835,34 @@ knob_to_expr(n::KnobCall) = Expr(:call, n.op, map(knob_to_expr, n.args)...)
     list_knobs(prefix="")
 
 Sorted paths of all registered knobs, optionally filtered by a namespace
-prefix such as `"HSR.power_supply"`.
+prefix such as `"HSR.power_supply"`: the knobs under that namespace, or the
+knob whose whole path it is. A namespace, not a string prefix: `"HSR"` does
+not select `HSRx.y` (the predicate is [`_knob_under_prefix`](@ref)).
 """
 function list_knobs(prefix::AbstractString="")
     lock(_KNOB_LOCK) do
         paths = collect(keys(_KNOB_TABLE))
-        isempty(prefix) || filter!(p -> startswith(string(p), prefix), paths)
+        isempty(prefix) || filter!(p -> _knob_under_prefix(p, prefix), paths)
         return sort!(paths; by=string)
     end
+end
+
+"""
+    _knob_under_prefix(path, prefix) -> Bool
+
+Whether knob `path` lies under the namespace `prefix`: its path is `prefix`
+itself, or begins with `prefix` followed by a dot. The one predicate behind the
+prefix views (`list_knobs`, `knob_report(; prefix)`). It was a bare
+`startswith`, so `"HSR"` also selected `HSRx.y` and `"HSR.power"` selected both
+`HSR.power_supply.*` and `HSR.powerful.*`, while the registry's structural
+walkers (`_is_namespace_prefix_locked`, `_check_namespace_collision_locked`)
+already matched on the dot (2026-10-18 audit, F-182). The wiring view
+`knob_report(elements; prefix)` in `src/elements/beam_line.jl` filters with
+its own `startswith` and should call this.
+"""
+function _knob_under_prefix(path, prefix::AbstractString)
+    s = string(path)
+    return s == prefix || startswith(s, prefix * ".")
 end
 
 """
@@ -943,7 +993,13 @@ _knob_prec(op::Symbol) =
 _knob_expr_string(n::KnobRef, prec::Int=0) = string(n.path)
 function _knob_expr_string(n::KnobConst, prec::Int=0)
     s = repr(n.value)
-    return n.value < 0 && prec > 0 ? "($s)" : s
+    # `signbit`, not `< 0`: a negative-zero base of `^` printed "-0.0 ^ 2.0",
+    # which Julia reads as -(0.0 ^ 2.0) -- `^` being the one operator a
+    # leading minus binds looser than -- so the documented round trip
+    # knob_expression(string(e)) == e flipped the value's sign (2026-10-18
+    # audit, F-182). At the top level the literal prints bare and reads back
+    # as the literal.
+    return signbit(n.value) && prec > 0 ? "($s)" : s
 end
 function _knob_expr_string(n::KnobCall, prec::Int=0)
     if n.op in (:+, :-, :*, :/, :^) && length(n.args) >= 2
@@ -1062,6 +1118,14 @@ is built and runtime objects never carry knobs. Emits a `:knob_resolution`
 execution-audit receipt naming the resolved parameters and their values.
 """
 function resolve_knobs(spec::ElementSpec{Kind}) where {Kind}
+    # The epoch FIRST, before any value is read: every knob_value below takes
+    # and releases the lock on its own, so a set_knob! interleaved between the
+    # evaluations and an epoch read placed after them stamped the receipt with
+    # an epoch newer than the values it carried (2026-10-18 audit, F-184).
+    # Read before, the receipt's epoch is one its values are at least as new
+    # as -- the discipline of the recompile gates, which read the epoch before
+    # they compile and so catch an interleaved mutation at the next execute!.
+    epoch = knob_epoch()
     _has_knob_parameters(spec) || return spec
     resolved = Dict{Symbol,Any}()
     receipts = Pair{Symbol,Any}[]
@@ -1071,7 +1135,7 @@ function resolve_knobs(spec::ElementSpec{Kind}) where {Kind}
         _param_has_knob(value) && push!(receipts, key => r)
     end
     _record_execution!(:knob_resolution, nothing,
-                       (element=Kind, epoch=knob_epoch(),
+                       (element=Kind, epoch=epoch,
                         resolved=Tuple(sort!(receipts; by=first))))
     return ElementSpec{Kind}(resolved)
 end

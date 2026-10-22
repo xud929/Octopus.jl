@@ -42,10 +42,14 @@ introspection degrades gracefully instead of silently.
 and assigned values are converted to the declared type (a lossy assignment
 such as `1.5` into an `Int` knob is an error, never a truncation).
 `@knob path = 1000.0` declares-and-assigns. `@knob path = expression` declares
-a *dependent* knob; `@knob a = b` is an alias. Dependent knobs require a
-`Real` declared type (expressions evaluate numerically); non-`Real` knobs
-(`Symbol`, `Bool`, ...) hold plain values and can drive non-numeric element
-parameters through a bare knob reference. Every knob referenced by an
+a *dependent* knob; `@knob a = b` is an alias. A right-hand side that reads
+no knob at all (`2pi`, `1 / 3`, `sqrt(2)`) is a *value*: the knob is
+independent and holds the evaluated number, so `set_knob!` and the namespace
+assignment drive it like any other (it used to be installed as a dependent
+knob with no inputs, which nothing could assign; 2026-10-18 audit, F-182).
+Dependent knobs require a `Real` declared type (expressions evaluate
+numerically); non-`Real` knobs (`Symbol`, `Bool`, ...) hold plain values and
+can drive non-numeric element parameters through a bare knob reference. Every knob referenced by an
 expression must already be declared — declaration-before-use is what catches
 typos at definition time. Redefinition is allowed and rewires the dependency
 graph; cycles are rejected. Names that knob expressions read as literal
@@ -56,7 +60,11 @@ expression language would silently disagree about one name.
 **Namespaces are names, not modules.** `HSR.power_supply.arc_quad` is
 flattened to the single key `Symbol("HSR.power_supply.arc_quad")` in a flat
 registry; `list_knobs("HSR.power_supply")` and `knob_report(prefix="HSR")`
-give the hierarchical views.
+give the hierarchical views. A prefix is a namespace, not a string: it
+selects the knobs under it (and a knob whose whole path it is), so
+`list_knobs("HSR")` never lists `HSRx.y`, and `list_knobs("HSR.power")` is
+empty when the namespaces are `HSR.power_supply` and `HSR.powerful`
+(2026-10-18 audit, F-182).
 
 **Assignment.** Declaring a dotted knob binds its root namespace (`HSR`, `ip`,
 ...) as a `KnobNamespace` constant in the calling module, so afterwards plain
@@ -71,7 +79,17 @@ ip.half_crossing_angle = 15.0e-3    # assign
 The exported `knobs` constant is the root namespace covering every knob, which
 is also the assignment path for *undotted* knobs (`@knob x` then
 `knobs.x = 1.0`) — a bare global name cannot intercept `x = 1.0`, which in
-Julia simply rebinds the variable. The macro form `@knob x = 1.0` and the
+Julia simply rebinds the variable.
+
+The root constant (`ip`, `HSR`) is created at run time by the first dotted
+`@knob` naming it, in the calling module. A function that declares a root and
+then reads it through that constant *in the same body* was compiled before
+the binding existed: Julia 1.12 warns of an access to a binding in a world
+prior to its definition world, and a future release will make it an error
+(2026-10-18 audit, F-184). Inside one function, use the forms that need no
+run-time constant — `knobs.ip.half_crossing_angle`, `knob_value`, `set_knob!`
+— or declare the root at top level first (every top-level statement is a new
+world, which is why the examples above are silent). The macro form `@knob x = 1.0` and the
 programmatic form `set_knob!(:x, 1.0)` (accepting `Symbol`, `String`, or
 `KnobRef`) do the same thing; all of them convert to the declared type,
 invalidate dependents, and bump the epoch.
@@ -96,8 +114,9 @@ and are resolved at exactly one place: `compile_runtime` calls
 every knob expression (scalars and tuples of scalars) with values. Runtime
 tracking objects therefore never carry knobs — they stay compact, isbits, and
 GPU-compatible, and the kernels are untouched. Each resolution emits a
-`:knob_resolution` execution-audit receipt naming the element kind, epoch, and
-resolved values.
+`:knob_resolution` execution-audit receipt naming the element kind, the epoch
+(read before the values, so the receipt never pairs an epoch with values
+older than it) and the resolved values.
 
 **Binding an existing element.** Element parameters are properties of the
 spec, so an element defined first can be bound to a knob afterwards:
@@ -178,7 +197,9 @@ parse and has neither.
 
 `@knob_expr` returns a first-class expression object — it is not tied to
 `ElementSpec`. Store it anywhere and evaluate it with `knob_value` when the
-number is needed; the expression stays *live* against the registry:
+number is needed; the expression stays *live* against the registry
+(`knob_value` of a plain number returns it unchanged, so a parameter that is
+either a number or an expression can go through the one call):
 
 ```julia
 ip.half_crossing_angle                       # read a knob via its namespace
@@ -230,10 +251,20 @@ applies the chain rule over the whitelist with constant folding, and — with
 registered expressions. `knob_derivative(@knob_expr(HSR.k1),
 @knob_expr(HSR.power_supply.arc_quad))` is therefore the total sensitivity
 `∂k₁/∂I`, the response-matrix primitive (tune knobs, orthogonal knob
-construction). Results are valid but only lightly simplified; feed them to the
-Symbolics adapter for aggressive simplification. Non-smooth operators (`sign`,
-`min`, `max`, two-argument `log`/`atan`) refuse differentiation rather than
-return a wrong branch.
+construction). The differentiation variable is looked up like every other
+knob argument: an undeclared or mistyped path is refused by name (it used to
+yield the constant `0.0`, a silent column of zeros in a response matrix;
+2026-10-18 audit, F-181), and under `through_registry=true` a *dependent*
+knob is refused with directions, because the total derivative with respect to
+a quantity other knobs define is not defined — ask for the partial with
+`through_registry=false`, which treats every reference as a free symbol. A
+tree that names a knob since forgotten is refused by the registry-consulting
+form exactly as `knob_value` refuses it. The variable may be given as a
+`Symbol("m.k1")`, a `String`, or `@knob_expr(m.k1)`; a bare `:m.k1` is not a
+Symbol but `getproperty(:m, :k1)`. Results are valid but only lightly
+simplified; feed them to the Symbolics adapter for aggressive simplification.
+Non-smooth operators (`sign`, `min`, `max`, two-argument `log`/`atan`) refuse
+differentiation rather than return a wrong branch.
 
 **Symbolics.jl adapter, optional.** `knob_symbolic(expr)` builds a Symbolics
 expression with one variable per knob path; `knob_from_symbolic` converts back
@@ -246,7 +277,12 @@ activates only when the session loads it — run `using Symbolics` (after
 `import Pkg; Pkg.add("Symbolics")` if needed). In script mode
 (`include("src/Octopus.jl")`, the developer form), the extension loader never
 runs, so the adapter instead activates during the include when Symbolics is
-importable from the active project. `knob_symbolics_available()` is the public
+importable from the load path — the active project and the environments
+stacked after it, such as the default `@v#.#` — and a Symbolics that is
+importable but fails to load (a broken precompile, a version conflict) leaves
+the adapter inactive *with a warning naming the error*, not with the silent
+"install Symbolics" the old bare `catch` gave (2026-10-18 audit, F-184).
+`knob_symbolics_available()` is the public
 query; when the adapter is inactive, only `knob_symbolic`/`knob_from_symbolic`
 error (with instructions) and everything else — including `knob_derivative` —
 works. The universal bridge `knob_to_expr`/`knob_expression` (expression tree ↔

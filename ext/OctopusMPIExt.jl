@@ -224,13 +224,21 @@ Octopus._mp_allmin_impl!(A::AbstractArray, comm::MPI.Comm) =
 Octopus._mp_allmax_impl!(A::AbstractArray, comm::MPI.Comm) =
     _mp_timed(() -> _mp_minmax_through_buffer!(A, max, comm), :allmax)
 
+# Clocked like every other collective, under the kind the core's receipt
+# carries: these three and the row gather below called MPI bare, so
+# `_mp_collective_times` had no :bcast, :bcast_scalar, :barrier or
+# :gather_rows row -- the barrier's time being pure load imbalance, the one
+# number the table exists to show -- and an absent row reads as zero cost
+# (2026-10-18 audit, F-183). The suite derives the kind/impl pairs from the
+# core wrappers and requires every impl here to wrap `_mp_timed`.
 Octopus._mp_bcast_impl!(A::AbstractArray, root::Int, comm::MPI.Comm) =
-    (MPI.Bcast!(A, root, comm); A)
+    _mp_timed(() -> (MPI.Bcast!(A, root, comm); A), :bcast)
 
 Octopus._mp_bcast_scalar_impl(value, root::Int, comm::MPI.Comm) =
-    MPI.bcast(value, root, comm)
+    _mp_timed(() -> MPI.bcast(value, root, comm), :bcast_scalar)
 
-Octopus._mp_barrier_impl(comm::MPI.Comm) = (MPI.Barrier(comm); nothing)
+Octopus._mp_barrier_impl(comm::MPI.Comm) =
+    _mp_timed(() -> (MPI.Barrier(comm); nothing), :barrier)
 
 """
 Gather rows onto rank 0 in rank order.
@@ -238,8 +246,12 @@ Gather rows onto rank 0 in rank order.
 Column by column, because the rows are stored column-major and a per-column
 `Gatherv!` needs no transposition on either side. The counts are all-reduced
 first so every rank knows the layout and only rank 0 allocates the result.
+Clocked as `:gather_rows` (F-183, see the broadcast above).
 """
-function Octopus._mp_gather_rows_impl(rows::AbstractMatrix, comm::MPI.Comm)
+Octopus._mp_gather_rows_impl(rows::AbstractMatrix, comm::MPI.Comm) =
+    _mp_timed(() -> _mp_gather_rows_timed(rows, comm), :gather_rows)
+
+function _mp_gather_rows_timed(rows::AbstractMatrix, comm::MPI.Comm)
     nranks = Int(MPI.Comm_size(comm))
     nranks == 1 && return rows
     rank = Int(MPI.Comm_rank(comm))

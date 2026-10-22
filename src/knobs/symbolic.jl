@@ -22,7 +22,7 @@ Two tiers, both consequences of the expression tree being closed:
 
    History, kept because the failure was subtle (audit part 6, R3): the gate
    used to be a bare `import Symbolics` in a `try` here, which resolves
-   against the *active project* in script mode (`include("src/Octopus.jl")`)
+   against the *load path* in script mode (`include("src/Octopus.jl")`)
    and against Octopus's *declared dependencies* in package mode
    (`using Octopus`) — so the adapter worked for developers, who load the
    script form `AGENTS.md` prescribes, and was permanently dead for users and
@@ -52,8 +52,11 @@ of raising their directed error — the public query for graceful degradation
 mode (`using Octopus`) the adapter activates when the session loads Symbolics
 (`using Symbolics`) through the `OctopusSymbolicsExt` weak-dependency
 extension; in script mode (`include("src/Octopus.jl")`) it activates during the
-include when Symbolics is importable from the active project. Everything else
-in the knob system, including [`knob_derivative`](@ref), never needs Symbolics.
+include when Symbolics is importable from the load path (the active project and
+the environments stacked after it); a Symbolics that is importable but fails to
+load leaves the adapter inactive with a warning naming the error. Everything
+else in the knob system, including [`knob_derivative`](@ref), never needs
+Symbolics.
 """
 knob_symbolics_available() = _symbolics_adapter_active()
 function _symbolic_adapter()
@@ -64,7 +67,8 @@ function _symbolic_adapter()
         "it as a weak dependency, so the OctopusSymbolicsExt extension then " *
         "activates automatically. In script mode " *
         "(`include(\"src/Octopus.jl\")`) the adapter instead activates during " *
-        "the include when Symbolics is importable from the active project. " *
+        "the include when Symbolics is importable from the load path (a " *
+        "warning at the include names a Symbolics that failed to load). " *
         "The knob system itself, including knob_derivative, has no such " *
         "dependency and is unaffected."))
     return impl
@@ -133,8 +137,11 @@ _kcall(op::Symbol, args...) = KnobCall(op, AbstractKnobExpression[args...])
     knob_derivative(knob_path, path; through_registry=true)
 
 Symbolic derivative of a knob expression (or of a dependent knob's defining
-expression) with respect to the independent knob `path`, returned as a knob
-expression with constants folded. Evaluate it with `knob_value`.
+expression) with respect to the knob `path`, returned as a knob expression
+with constants folded. Evaluate it with `knob_value`. `path` (and a
+`knob_path` first argument) may be a `Symbol("m.k1")`, a `String`, or a
+`KnobRef` such as `@knob_expr(m.k1)`; a bare `:m.k1` is not a `Symbol` but
+`getproperty(:m, :k1)`.
 
 With `through_registry=true` (default) the chain rule follows *dependent* knobs
 through their registered expressions, so the result is the total sensitivity —
@@ -143,22 +150,53 @@ the response-matrix entry `∂(parameter)/∂(knob)`:
 ```julia
 @knob m.brho = 81.1
 @knob m.xfer = 0.05
+@knob m.current = 1000.0
 @knob m.k1 = m.current * m.xfer / m.brho
-dk1_dI = knob_derivative(:m.k1, :m.current)   # -> m.xfer / m.brho
+dk1_dI = knob_derivative("m.k1", "m.current")   # -> (m.xfer * m.brho) / m.brho ^ 2.0, i.e. m.xfer / m.brho
 ```
 
+The differentiation variable is looked up like every other knob argument: an
+undeclared or mistyped `path` raises an `ArgumentError` naming it (it used to
+yield the constant `0.0`, a silent column of zeros in a response matrix), and
+with `through_registry=true` a *dependent* `path` is refused with directions,
+because the total derivative with respect to a quantity other knobs define is
+not defined (which of its inputs moves?); so is a tree naming a knob since
+forgotten, exactly as `knob_value` refuses it.
+
 With `through_registry=false`, every `KnobRef` other than `path` is treated as
-an independent symbol (the partial derivative). Non-smooth operators (`abs` at
+an independent symbol (the partial derivative), `path` itself may be a
+dependent knob, and no reference is looked up. Non-smooth operators (`abs` at
 0 aside, `sign`, `min`, `max`) and the two-argument `log`/`atan` raise an
 error rather than returning a wrong branch.
 """
 function knob_derivative(x, path_like; through_registry::Bool=true)
     path = _knob_path(path_like)
-    node = x isa AbstractKnobExpression ? x : lock(_KNOB_LOCK) do
-        entry = get(_KNOB_TABLE, _knob_path(x), nothing)
-        entry === nothing && throw(ArgumentError("unknown knob $(_knob_path(x))"))
-        entry.expression === nothing && return KnobRef(_knob_path(x))
-        entry.expression
+    node = lock(_KNOB_LOCK) do
+        # The variable is validated against the registry FIRST (2026-10-18
+        # audit, F-181): before, only `x` was, and a typo in `path` matched no
+        # leaf and chained through nothing, so every derivative came out 0.0
+        # where set_knob!, knob_value, knob_dependents and @knob_expr refuse
+        # the same typo by name.
+        entry = get(_KNOB_TABLE, path, nothing)
+        entry === nothing && throw(ArgumentError(
+            "unknown knob $(path) as the differentiation variable; declare it " *
+            "with @knob $(path) (set_knob!, knob_value and @knob_expr refuse " *
+            "the same name)"))
+        if through_registry && entry.expression !== nothing
+            inputs = join(sort!(collect(_knob_direct_dependencies(entry.expression));
+                                by=string), ", ")
+            throw(ArgumentError(
+                "knob $(path) is defined by the expression " *
+                "$(_knob_expr_string(entry.expression)); the total derivative " *
+                "(through_registry=true) is taken with respect to an independent " *
+                "knob: differentiate with respect to its inputs ($(inputs)), or " *
+                "pass through_registry=false for the partial derivative that " *
+                "treats $(path) as a free symbol"))
+        end
+        x isa AbstractKnobExpression && return x
+        xentry = get(_KNOB_TABLE, _knob_path(x), nothing)
+        xentry === nothing && throw(ArgumentError("unknown knob $(_knob_path(x))"))
+        xentry.expression === nothing ? KnobRef(_knob_path(x)) : xentry.expression
     end
     return _kderiv(node, path, through_registry, Set{Symbol}())
 end
@@ -168,10 +206,18 @@ _kderiv(::KnobConst, ::Symbol, ::Bool, ::Set{Symbol}) = _kconst(0.0)
 function _kderiv(n::KnobRef, path::Symbol, through::Bool, active::Set{Symbol})
     n.path === path && return _kconst(1.0)
     through || return _kconst(0.0)
-    expr = lock(_KNOB_LOCK) do
+    found, expr = lock(_KNOB_LOCK) do
         entry = get(_KNOB_TABLE, n.path, nothing)
-        entry === nothing ? nothing : entry.expression
+        entry === nothing ? (false, nothing) : (true, entry.expression)
     end
+    # The registry is being consulted, so a name it does not hold is an error,
+    # as it is for knob_value of the same tree -- not an independent symbol: a
+    # tree built before _forget_knob!/reset_knobs! used to differentiate
+    # without complaint (2026-10-18 audit, F-181).
+    found || throw(ArgumentError(
+        "unknown knob $(n.path) referenced by the expression being " *
+        "differentiated; declare it with @knob $(n.path), or pass " *
+        "through_registry=false to treat every reference as a free symbol"))
     expr === nothing && return _kconst(0.0)
     n.path in active && throw(ArgumentError("knob dependency cycle at $(n.path)"))
     push!(active, n.path)
@@ -322,14 +368,37 @@ function _activate_symbolics_adapter!(S::Module)
     return nothing
 end
 
+"""
+    _script_mode_weakdep_gate(name, attempt) -> Bool
+
+Run `attempt()` -- the `import` of the weak dependency `name` -- and say
+whether it succeeded. An `ArgumentError` is the import's own not-available
+verdict (package mode: Octopus declares no such strong dependency; script
+mode: nothing in the load path provides it) and closes the gate quietly. Any
+other error means the package is importable and FAILED TO LOAD (a broken
+precompile, a version conflict): that is reported with a warning naming the
+package and the error, and the gate still closes, so an include never dies on
+an optional package and never hides its failure either. The gate used to be a
+bare `catch`, which turned every failure into "install Symbolics" (2026-10-18
+audit, F-184).
+"""
+function _script_mode_weakdep_gate(name::Symbol, attempt)
+    try
+        attempt()
+        return true
+    catch err
+        err isa ArgumentError && return false
+        @warn "the optional package $(name) is importable but failed to load; " *
+              "its Octopus adapter stays inactive" exception=(err, catch_backtrace())
+        return false
+    end
+end
+
 # Script mode: a module built by `include("src/Octopus.jl")` never triggers
 # the package-extension loader, so activate the adapter here when Symbolics is
-# importable from the active project. In package mode this `import` throws
-# (Symbolics is a weak, not strong, dependency) and the extension takes over.
-const _HAS_SYMBOLICS_SCRIPT_MODE = try
-    @eval import Symbolics
-    true
-catch
-    false
-end
+# importable from the load path (the active project and the environments
+# stacked after it). In package mode this `import` throws (Symbolics is a
+# weak, not strong, dependency) and the extension takes over.
+const _HAS_SYMBOLICS_SCRIPT_MODE =
+    _script_mode_weakdep_gate(:Symbolics, () -> @eval import Symbolics)
 _HAS_SYMBOLICS_SCRIPT_MODE && _activate_symbolics_adapter!(Symbolics)
