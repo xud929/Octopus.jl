@@ -57,9 +57,13 @@ struct RefTilted{E,T<:Number} <: AbstractTrackOp
     s::T
 end
 
-# Its subject's beam element type, as for `MisalignedElement`: the wrap is
-# built in that type (`_wrap_numeric_type`, src/elements/misalignment.jl).
-_required_beam_eltype(elem::RefTilted) = _required_beam_eltype(elem.inner)
+# Its subject's beam element type, widened to the roll's own `T` when a dual
+# `ref_tilt` widened the wrap, as for `MisalignedElement` (`_wrap_numeric_type`,
+# src/elements/misalignment.jl; F-126).
+function _required_beam_eltype(elem::RefTilted{E,T}) where {E,T}
+    inner = _required_beam_eltype(elem.inner)
+    return inner === nothing ? nothing : promote_type(inner, T)
+end
 
 # Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl):
 # the roll writes the four transverse coordinates around the enclosed element.

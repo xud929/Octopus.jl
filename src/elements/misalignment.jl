@@ -241,11 +241,19 @@ struct MisalignedElement{E,T<:Number} <: AbstractTrackOp
     qout::NTuple{9,T}; oout::NTuple{3,T}
 end
 
-# The beam element type a wrapper requires is its subject's (`_required_beam_eltype`,
-# src/track/Track.jl): the wrap is built in that type (`_wrap_numeric_type`),
-# so its own `T` agrees, and the task's walk (`_check_beam_eltype`) descends to
-# name the subject.
-_required_beam_eltype(elem::MisalignedElement) = _required_beam_eltype(elem.inner)
+# The beam element type a wrapper requires (`_required_beam_eltype`,
+# src/track/Track.jl): its subject's, in which the wrap is built
+# (`_wrap_numeric_type`), widened to the wrap's own `T` when the spec's
+# parameters widened it -- a dual alignment error around Float64 members
+# (F-126) -- since the frame change then produces that type and the task's
+# walk (`_check_beam_eltype`) must refuse a narrower beam by name. For a wrap
+# built in its subject's type the two coincide; a subject without a type (a
+# composite whose members disagree) stays `nothing`, so the walk descends and
+# names the odd member out.
+function _required_beam_eltype(elem::MisalignedElement{E,T}) where {E,T}
+    inner = _required_beam_eltype(elem.inner)
+    return inner === nothing ? nothing : promote_type(inner, T)
+end
 
 """Whether a 3x3 row-major frame matrix is exactly the identity."""
 _is_identity3(Q::NTuple{9,T}) where {T} =
@@ -277,8 +285,22 @@ fix I), the members' common type for a misaligned line, so a girder of Float32
 magnets gets Float32 frame changes -- and only around a line whose members
 disagree or hold no element the spec's own promotion. One precision rule, the
 wrappers included (owner decision 2026-10-16, fix H).
+
+The spec's own promotion is a `Float64` FLOOR, and a floor yields to the
+members' declared precision; any other type the spec's parameters promote to
+-- a dual seeded on the line's `x_offset`, a complex or BigFloat alignment
+error -- widens the wrap instead, as it widens a single element's. Until the
+2026-10-18 audit the members' type won outright, so `BeamLine(...;
+x_offset=Dual)` threw `MethodError: Float64(::Dual)` here where the same
+quadrupole misaligned directly differentiated (AD = central FD = 0.68; F-126).
 """
-_wrap_numeric_type(spec, inner) = something(_required_beam_eltype(inner), numeric_type(spec))
+function _wrap_numeric_type(spec, inner)
+    member = _required_beam_eltype(inner)
+    own = numeric_type(spec)
+    member === nothing && return own
+    own === Float64 && return member
+    return promote_type(member, own)
+end
 
 @inline function track_particle(method::AbstractTrackingMethod, elem::MisalignedElement,
                                 x, px, y, py, z, pz)

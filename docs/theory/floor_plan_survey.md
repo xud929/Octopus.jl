@@ -58,6 +58,21 @@ TFS):
 *about* the design frame (the survey IS the design frame), matching MAD-X,
 whose `EALIGN` leaves `SURVEY` untouched. `ref_tilt` is design and does.
 
+**Every row rolls by `ref_tilt`, the patch row included.** The implementation
+conjugates each element's `(d, R)` by `R_S(t)` (`_floor_roll` in
+`src/elements/floor_plan.jl`), the same conjugation `_ref_tilt_wrap` applies
+to the tracking map, so the bend row above is one instance of a rule every
+kind obeys; a kept-whole sub-line's `ref_tilt`, read from its MERGED placement
+parameters, conjugates its whole sub-walk, and the top-level line's own
+`ref_tilt` rolls the plan when the line itself is surveyed. *Implementation
+note (2026-10-21, comprehensive-audit F-127, F-128, F-129, F-232):* until then
+the survey dropped a patch's roll, a placement-level sub-line roll and the
+top-level line's roll while tracking applied all three (exit positions 0.288 m
+apart at 0.4 rad; a rolled patch 0.2995 m from its vertical twin after a 3 m
+drift). The regression tests pin the rolled patch against its plain vertical
+twin (`angle_y = 0.1, ref_tilt = π/2` ≡ `angle_x = −0.1`, one map to 6e-18) and
+the nested spellings against the flat one.
+
 **The patch caveat inverts here.** The arc survey documents that a patch's
 `dz` does not advance `s`; the floor plan is the opposite — patches are
 *pure geometry* and contribute exactly their frame maps. The two surveys

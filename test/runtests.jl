@@ -24105,6 +24105,388 @@ end
                              DriftSpec(L=1.0)))
 end
 
+@testset "Floor plan: ref_tilt from the merged placement, on a patch and on the top-level line (fix batch 3, F-127, F-128, F-129, F-232)" begin
+    # 2026-10-18 comprehensive audit. Tracking applies a design roll from the
+    # MERGED placement parameters through `_ref_tilt_wrap` for every kind the
+    # compile reaches -- a kept-whole sub-line placed with a `ref_tilt`
+    # override, a patch, the top-level line itself -- while the floor-plan
+    # walkers read the sub-line's SPEC, ignored a patch's roll, and
+    # `survey(line)` bypassed the line branch of the walk. Measured before
+    # the fix (probe_findings_RED.log, unit K): exit positions 0.288 m apart
+    # for a 0.4 rad roll (F-127, F-128), a rolled patch surveyed in the
+    # unrolled plane (0.2995 m after a 3 m drift, F-129), and the girder
+    # faces built from those frames moved a misaligned parent's tracking by
+    # 2.3e-5 (F-128), 1.5e-2 (F-232) and 1.0e-4 (F-129) against the same
+    # lattice spelled on the spec, whose members track bit-identically.
+    u = (1.0e-3, 2.0e-4, 5.0e-4, 1.0e-4, 1.0e-2, 3.0e-3)
+    bend() = SBendSpec(L=1.0, h=0.3, b0=0.3)
+    # (1) The top-level line's own ref_tilt: survey(line) is the tuple form's
+    # walk, and agrees with the flat spelling, whose tracking the nested
+    # spelling matches (pinned in "Nested lines have length ...").
+    rolled = BeamLine("ROLLED", bend(), DriftSpec(L=2.0); ref_tilt=0.4)
+    flat = (SBendSpec(L=1.0, h=0.3, b0=0.3, ref_tilt=0.4), DriftSpec(L=2.0))
+    fl, ft, ff = survey(rolled)[end], survey((rolled,))[end], survey(flat)[end]
+    @test length(survey(rolled)) == 2
+    @test fl.position == ft.position && fl.w == ft.w
+    @test maximum(abs, collect(fl.position .- ff.position)) < 1.0e-15
+    @test fl.position[2] < -0.28              # the roll shows: the bend leaves the X-Z plane
+    # (2) A kept-whole sub-line's ref_tilt given as a PLACEMENT override:
+    # tracking honours it (the merged compile); the survey and the girder
+    # frames read the same merged value.
+    outA = BeamLine("OUT", BeamLine("CELL", bend(); ref_tilt=0.0), DriftSpec(L=2.0))
+    outA[1].ref_tilt = 0.4
+    outB = BeamLine("OUT", BeamLine("CELL", bend(); ref_tilt=0.4), DriftSpec(L=2.0))
+    @test collect(compile_runtime(outA[1])(u...)) == collect(compile_runtime(outB[1])(u...))
+    sA, sB = survey(outA)[end], survey(outB)[end]
+    @test maximum(abs, collect(sA.position .- sB.position)) < 1.0e-15
+    @test maximum(abs, collect(sA.w .- sB.w)) < 1.0e-15
+    @test sA.position[2] < -0.28
+    gA = BeamLine("G", BeamLine("CELL", bend(); ref_tilt=0.0), DriftSpec(L=1.0); x_offset=1.0e-3)
+    gA[1].ref_tilt = 0.4
+    gB = BeamLine("G", BeamLine("CELL", bend(); ref_tilt=0.4), DriftSpec(L=1.0); x_offset=1.0e-3)
+    @test maximum(abs, collect(compile_runtime(gA)(u...)) .- collect(compile_runtime(gB)(u...))) < 5.0e-14
+    # U49's shape: a misaligned parent with four degrees of freedom and a
+    # misaligned, rolled sub-line placement inside it.
+    mk(sub) = BeamLine("par", DriftSpec(L=1.0), sub, DriftSpec(L=3.0);
+                       x_offset=1.0e-3, y_offset=-8.0e-4, x_pitch=1.0e-3, tilt=0.02)
+    par_roll = mk(BeamLine("sub", SBendSpec(L=2.0, angle=0.5, nst=4); x_offset=2.0e-4, ref_tilt=0.4))
+    par_over = mk(BeamLine("sub", SBendSpec(L=2.0, angle=0.5, nst=4); x_offset=2.0e-4))
+    line_entries(par_over)[2].ref_tilt = 0.4
+    @test maximum(abs, collect(compile_runtime(par_over)(u...)) .- collect(compile_runtime(par_roll)(u...))) < 5.0e-14
+    # (3) A patch's ref_tilt: the rolled horizontal patch and the plain
+    # vertical patch are one map (6e-18 apart), so their floor steps are one
+    # geometry -- deflecting DOWN, as the vertical-bend convention MAD-X
+    # pins -- and a girder holding either tracks alike.
+    p_roll, p_vert = PatchSpec(angle_y=0.1, ref_tilt=pi / 2), PatchSpec(angle_x=-0.1)
+    @test maximum(abs, collect(compile_runtime(p_roll)(u...)) .- collect(compile_runtime(p_vert)(u...))) < 1.0e-15
+    sR, sV = survey((p_roll, DriftSpec(L=3.0)))[end], survey((p_vert, DriftSpec(L=3.0)))[end]
+    @test maximum(abs, collect(sR.position .- sV.position)) < 1.0e-15
+    @test maximum(abs, collect(sR.w .- sV.w)) < 1.0e-15
+    @test sR.position[2] < -0.29 && abs(sR.position[1]) < 1.0e-15
+    gR = BeamLine("GR", p_roll, DriftSpec(L=1.0); x_offset=1.0e-3)
+    gV = BeamLine("GV", p_vert, DriftSpec(L=1.0); x_offset=1.0e-3)
+    @test maximum(abs, collect(compile_runtime(gR)(u...)) .- collect(compile_runtime(gV)(u...))) < 5.0e-14
+    # (4) The girder walk and the survey export stay one geometry through
+    # both new roll sites (the nested-lines testset's pin (3), extended): a
+    # rolled patch and a sub-line rolled by its placement, closed by a drift
+    # so the last row carries the closed frame.
+    gf = BeamLine("GF", p_roll, DriftSpec(L=0.4), BeamLine("CELL", bend(); ref_tilt=0.0), DriftSpec(L=0.2))
+    gf[3].ref_tilt = 0.3
+    fr = survey(gf)[end]
+    _, _, We, Ve = Octopus._girder_design_frames(gf, 0.0)
+    @test maximum(abs, collect(Ve .- fr.position)) < 1.0e-15
+    @test maximum(abs, collect(We .- fr.w)) < 1.0e-15
+    @test fr.position[2] < -0.1                # both rolls act
+end
+
+@testset "Floor plan: the patch convention normalises once and the arc sagitta is cancellation-free (fix batch 3, F-133, F-134)" begin
+    # F-133: `Patch(spec)` normalised a String convention with `Symbol(...)`
+    # while `_floor_step` tested `=== :madx`, so `convention="madx"` tracked
+    # in the :madx order and surveyed in the :bmad order (5.9e-2 apart in the
+    # rotation matrix at 0.2 and 0.3 rad), and a misspelt String was accepted
+    # by the survey silently. One normaliser (`_patch_madx`) now serves both
+    # consumers, refusing by name what it does not know.
+    s = PatchSpec(angle_x=0.2, angle_y=0.3, convention="madx")
+    @test Octopus.Patch(s).madx
+    d, R = Octopus._floor_step(s)
+    @test R == Octopus._fp_transpose(Octopus._patch_rotation(Float64, 0.2, 0.3, 0.0, true))
+    # The geometric step and the tracking map are ONE transformation read two
+    # ways (floor-plan note, section 4 item 2): a particle launched on the
+    # new reference tracks to transverse zeros -- for the String spelling too.
+    pop = compile_runtime(s)
+    out = pop(d[1] - d[3] * R[3] / R[9], R[3], d[2] - d[3] * R[6] / R[9], R[6], 0.0, 0.0)
+    @test maximum(abs, out[1:4]) < 1.0e-14
+    @test_throws ArgumentError Octopus._floor_step(PatchSpec(angle_x=0.1, convention="bogus"))
+    @test_throws ArgumentError compile_runtime(PatchSpec(angle_x=0.1, convention="bogus"))
+    @test_throws ArgumentError survey((PatchSpec(angle_x=0.1, convention=:sideways),))
+    # F-134: `_floor_arc_step` formed the sagitta as rho (cos a - 1), which
+    # loses every digit as a -> 0 (relative error 1.0 at h L = 1e-10, 8e-4
+    # at 1e-7, 8e-8 at 1e-5; absolute error below 4e-15 m), where
+    # `_survey_frame` and the drift route the same quantity through
+    # `_curv_vers`; the docstring's "a single arc reproduces `_survey_frame`
+    # identically" therefore held only above the small-angle regime. Both
+    # route through the cancellation-free helpers now, so the identity holds
+    # by construction and is pinned bitwise at every regime.
+    for (h, ell) in ((1.0e-4, 1.0e-6), (1.0e-3, 1.0e-4), (1.0e-2, 1.0e-3), (0.3, 1.0))
+        dd, RR = Octopus._floor_arc_step(SBendSpec(L=ell, h=h, b0=h), ell)
+        A, o = Octopus._survey_frame(Float64, h, ell)
+        @testset let h = h, ell = ell
+            @test dd == o
+            @test RR == A
+            @test dd[1] < 0.0                  # a positive bend displaces toward -x at every size
+        end
+    end
+end
+
+@testset "Line placements refuse structural overrides at assignment, and the keyword form copies its placements (fix batch 3, F-131, F-132, F-138)" begin
+    u = (1.0e-3, 2.0e-4, 5.0e-4, 1.0e-4, 1.0e-2, 3.0e-3)
+    inner = BeamLine("IN", QuadrupoleSpec(L=0.4, k1=1.7); y_offset=0.0)     # own state: kept whole
+    outer = BeamLine("OUT", inner, DriftSpec(L=1.0))
+    base = collect(compile_runtime(outer[1])(u...))
+    # F-131: an `L` override on a line placement was stored at assignment and
+    # refused only by the next arc-length walk (s_positions, total_length,
+    # compile_runtime), against the docstring's "the placement refuses it
+    # too". Refused where it is written, with the walker's own message; the
+    # walker keeps its refusal for a hand-built entry.
+    @test_throws ArgumentError outer[1].L = 5.0
+    @test isempty(getfield(outer[1], :overrides))
+    @test s_positions(outer) == [0.0, 0.4]
+    hand = Octopus.LineEntry(inner, [("IN", 1)], Set{Symbol}(), Dict{Symbol,Any}(:L => 5.0))
+    @test_throws ArgumentError Octopus._placement_length(hand)
+    # F-138: an `entries` override was stored and COMPILED by the placement
+    # (a 7 m drift tracked in place of the 0.4 m quadrupole, x = 2.396e-3
+    # against 9.39e-4) while total_length, s_positions and survey read the
+    # spec (0.4 m). `entries` and `name` are a line's STRUCTURE
+    # (`_line_has_own_state`), fixed with its provenance paths when it was
+    # built; a different line is a different line.
+    @test_throws ArgumentError outer[1].entries = line_entries(BeamLine("IN2", DriftSpec(L=7.0)))
+    @test_throws ArgumentError outer[1].name = "RENAMED"
+    @test isempty(getfield(outer[1], :overrides))
+    @test collect(compile_runtime(outer[1])(u...)) == base
+    @test Octopus.total_length(outer) == 1.4
+    # Physics overrides on the line placement and on element placements keep
+    # working: the refusal is for the three structural keys only.
+    outer[1].x_offset = 1.0e-4
+    @test compile_runtime(outer[1]) isa MisalignedElement
+    outer[2].L = 2.0
+    @test s_positions(outer) == [0.0, 0.4] && Octopus.total_length(outer) == 2.4
+    # F-132: `BeamLine(; entries=arc[1:2])` stored the given LineEntry
+    # objects, so an override written on the slice wrote the source line (one
+    # overrides Dict), against the design note's "error parameters must not
+    # share" -- the U15-3 defect of `reverse`, on the other constructor. The
+    # placements are copied; their provenance paths stay (a slice says where
+    # it came from, pinned in the BeamLine testset) and the spec is shared.
+    arc = BeamLine("ARC", QuadrupoleSpec(L=0.4, k1=1.7), DriftSpec(L=1.0), QuadrupoleSpec(L=0.4, k1=-1.7))
+    head = BeamLine(; name="HEAD", entries=arc[1:2])
+    @test head[1] !== arc[1]
+    @test getfield(head[1], :overrides) !== getfield(arc[1], :overrides)
+    @test getfield(head[1], :path) !== getfield(arc[1], :path)
+    @test getfield(head[1], :spec) === getfield(arc[1], :spec)
+    head[1].x_offset = 1.0e-3
+    @test getparam(head[1], :x_offset) == 1.0e-3
+    @test getparam(arc[1], :x_offset, nothing) === nothing
+    @test [entry_path(e) for e in head] == ["ARC/QUADRUPOLE", "ARC/DRIFT"]
+    @test line_entries(head) isa Vector{Octopus.LineEntry}
+end
+
+@testset "A dual alignment parameter on a line differentiates like the element's (fix batch 3, F-126)" begin
+    # `_wrap_numeric_type` took the members' common type over the line spec's
+    # own promotion, so `BeamLine(...; x_offset=Dual)` threw
+    # `MethodError: Float64(::Dual)` in `_misalignment_wrap` (and the same
+    # `T(...)` in `_ref_tilt_wrap`), while a single element differentiates
+    # (AD = central FD = 0.68 for x_offset, the audit's probe2). The Float64
+    # FLOOR now yields to the members' declared precision -- a Float32 girder
+    # keeps Float32 frame changes -- and any other spec type (a dual, a
+    # complex, a BigFloat) widens the wrap.
+    u = (1.0e-3, 2.0e-4, 5.0e-4, 1.0e-4, 1.0e-2, 3.0e-3)
+    q() = QuadrupoleSpec(L=0.4, k1=1.7)
+    g(t) = compile_runtime(BeamLine("G", q(); x_offset=t))(u...)[2]
+    e(t) = compile_runtime(QuadrupoleSpec(L=0.4, k1=1.7, x_offset=t))(u...)[2]
+    @test compile_runtime(BeamLine("G", q(); x_offset=ForwardDiff.Dual(0.0, 1.0))) isa
+          MisalignedElement{<:Octopus.CompositeLine,<:ForwardDiff.Dual}
+    dg, de = ForwardDiff.derivative(g, 0.0), ForwardDiff.derivative(e, 0.0)
+    # The girder of one quadrupole equals the quadrupole misaligned directly
+    # to 5e-14 (nested-lines testset) and AD differentiates that same
+    # algebra, so the two derivatives agree to roundoff; central FD at
+    # h = 1e-6 is the independent check, good to h^2 f''' ~ 1e-12 and the
+    # cancellation of two O(1e-3) values at eps, ~1e-10.
+    @test abs(dg - de) < 1.0e-12
+    @test abs(dg - (g(1.0e-6) - g(-1.0e-6)) / 2.0e-6) < 1.0e-8
+    @test abs(de) > 0.5                         # k1 L = 0.68, not a collapsed zero
+    # ref_tilt on a line goes through the same type rule.
+    b() = SBendSpec(L=1.0, h=0.3, b0=0.3)
+    gr(t) = compile_runtime(BeamLine("R", b(); ref_tilt=t))(u...)[4]
+    er(t) = compile_runtime(SBendSpec(L=1.0, h=0.3, b0=0.3, ref_tilt=t))(u...)[4]
+    @test compile_runtime(BeamLine("R", b(); ref_tilt=ForwardDiff.Dual(0.0, 1.0))) isa
+          RefTilted{<:Octopus.CompositeLine,<:ForwardDiff.Dual}
+    @test abs(ForwardDiff.derivative(gr, 0.0) - ForwardDiff.derivative(er, 0.0)) < 1.0e-12
+    @test ForwardDiff.derivative(er, 0.0) != 0
+    # The precision rule is unchanged: a girder of Float32 members wraps in
+    # Float32 (the Float64 floor of a Float64 offset yields to the declared
+    # precision, as the precision-policy testset pins) and a Float64 girder
+    # stays Float64.
+    @test compile_runtime(BeamLine("G32", DriftSpec{Float32}(L=0.5), QuadrupoleSpec{Float32}(L=0.4, k1=1.7, nst=2);
+                                   x_offset=1.0e-4)) isa MisalignedElement{<:Octopus.CompositeLine,Float32}
+    @test compile_runtime(BeamLine("G64", q(); x_offset=1.0e-4)) isa MisalignedElement{<:Octopus.CompositeLine,Float64}
+end
+
+@testset "knob_report sees a line's own knob parameters and a placement's knob override (fix batch 3, F-130)" begin
+    # A girder whose own x_offset is a knob expression, or whose placement
+    # carries a knob override, compiles knob-dependent (`_has_knob_parameters`
+    # true; the wrap reads the resolved value) while the wiring report said
+    # "No knob-driven parameters": `_knob_binding_sites!` descended a line
+    # placement without visiting the line's own merged parameters. The two
+    # walkers over one container agree now, and the agreement is asserted
+    # for every container shape the report accepts.
+    @knob kfix3.gx::Float64 = 1.0e-3
+    @knob kfix3.k::Float64 = 1.7
+    report(c) = (buf = IOBuffer(); knob_report(c; io=buf); String(take!(buf)))
+    agree(c) = Octopus._has_knob_parameters(c) == !occursin("No knob-driven parameters", report(c))
+    cryo = BeamLine("CRYO", QuadrupoleSpec(L=0.4, k1=1.7); x_offset=@knob_expr(kfix3.gx))
+    outer = BeamLine("OUTER", cryo, DriftSpec(L=1.0))
+    @test occursin("OUTER/CRYO :: x_offset = kfix3.gx  (= 0.001)", report(outer))
+    @test agree(outer) && agree(cryo) && agree((outer,)) && agree([cryo])
+    # the override form: a knob written on the kept-whole placement itself
+    outer2 = BeamLine("OUTER2", BeamLine("CRYO2", QuadrupoleSpec(L=0.4, k1=1.7); y_offset=0.0), DriftSpec(L=1.0))
+    outer2[1].x_offset = @knob_expr(kfix3.gx)
+    @test occursin("OUTER2/CRYO2 :: x_offset = kfix3.gx", report(outer2))
+    @test agree(outer2)
+    # a bare line spec: its own parameters report under its name
+    @test occursin("CRYO :: x_offset = kfix3.gx", report(cryo))
+    # members inside the girder still report, each once, at their own
+    # provenance path: a kept-whole sub-line never dissolved into its parent,
+    # so its members' paths stay rooted at the sub-line (`entry_path`), while
+    # the placement itself sits at the parent's path.
+    cryo3 = BeamLine("CRYO3", ElementSpec{:quadrupole}(; L=0.4, kn=(0.0, @knob_expr(kfix3.k)));
+                     x_offset=@knob_expr(kfix3.gx))
+    out3 = report(BeamLine("O3", cryo3, DriftSpec(L=1.0)))
+    @test occursin("O3/CRYO3 :: x_offset = kfix3.gx", out3)
+    @test occursin("CRYO3/QUADRUPOLE :: kn[2] = kfix3.k", out3)
+    @test occursin("Knob-driven parameters (2 site(s)", out3)
+    # the prefix filter sees the line-level site too (a full knob path, which
+    # a string prefix and a namespace predicate select alike)
+    buf = IOBuffer()
+    knob_report(BeamLine("O3", cryo3, DriftSpec(L=1.0)); prefix="kfix3.gx", io=buf)
+    filtered = String(take!(buf))
+    @test occursin("O3/CRYO3 :: x_offset", filtered) && !occursin("kn[2]", filtered)
+    # knob-free containers stay loud about it, and agree
+    @test agree(BeamLine("PLAIN", DriftSpec(L=1.0))) && agree((DriftSpec(L=1.0),))
+end
+
+@testset "find_entries by friendly type, the design note's mutation recipe, and the in-line hook refusal (fix batch 3, F-240)" begin
+    # (a) `find_entries(line, QuadrupoleSpec)` -- the design note's own
+    # example -- returned Int[] silently: `ElementSpec{:quadrupole}` is not a
+    # subtype of the friendly type, an abstract type the registry keys the
+    # kind's metadata by. A Type selector now matches the registered kind of
+    # a friendly constructor (aliases such as RBendSpec included) as well as
+    # the stored spec's own type; derived from the registry for EVERY kind.
+    qf = QuadrupoleSpec(L=0.4, k1=1.7)
+    dr = DriftSpec(L=1.0)
+    cell = BeamLine("CELL", qf, dr, qf)
+    @test find_entries(cell, QuadrupoleSpec) == [1, 3]
+    @test find_entries(cell, QuadrupoleSpec) == find_entries(cell, ElementSpec{:quadrupole})
+    @test find_entries(cell, DriftSpec) == [2]
+    friendly = [(F, m.spec_type) for (F, m) in Octopus.ELEMENT_META_BY_FRIENDLY_TYPE if m.kind !== :line]
+    @test length(friendly) >= 25
+    all_line = BeamLine("ALL", unique(example_spec(S) for (_, S) in friendly)...)
+    for (F, S) in friendly
+        @testset let friendly_type = F
+            @test find_entries(all_line, F) == find_entries(all_line, S)
+            @test !isempty(find_entries(all_line, F))
+        end
+    end
+    # a hook type and an abstract supertype still match by `isa`
+    hooked = BeamLine("H", qf, ScheduledObserver(BPMObserver("b")), dr)
+    @test find_entries(hooked, ScheduledObserver) == [2]
+    @test find_entries(hooked, Octopus.AbstractElementSpec) == [1, 3]
+    # (b) The design note's "a later `qf.params[:k1] = 1.9`" recipe neither
+    # bumped `_SPEC_EPOCH` (a raw Dict write) nor was read (`k1` is folded
+    # into `kn` at construction), so a reader following it tracked a stale
+    # compile. The note now gives the property form, which does both; pinned
+    # so the note and the code cannot drift apart again.
+    e0 = Octopus._spec_epoch()
+    qf.kn = (0.0, 1.9)
+    @test Octopus._spec_epoch() == e0 + 1
+    @test getparam(qf, :kn) == (0.0, 1.9)
+    @test_throws ArgumentError qf.k1 = 1.9            # the folded name is refused, not stored
+    e1 = Octopus._spec_epoch()
+    cell[3].kn = (0.0, 1.8)                            # the note's "one magnet is different" row
+    @test Octopus._spec_epoch() == e1 + 1
+    @test getparam(cell[3], :kn) == (0.0, 1.8) && getparam(cell[1], :kn) == (0.0, 1.9)
+    # (c) An in-line hook inside a line that compiles WHOLE -- an own-state
+    # line, or a structural one placed inside a tuple or vector, which
+    # `_element_tuple` keeps whole -- died with a raw `MethodError: no method
+    # matching compile_runtime(::ScheduledObserver)` at the first execute!.
+    # The line compile refuses it by name and says where a hook is honoured:
+    # the task's bare `elements` argument, where the line dissolves (F-81 is
+    # the task walkers' row; this is the compile seam's own refusal).
+    hookline = BeamLine("CRYO", qf, ScheduledObserver(BPMObserver("b")), dr; x_offset=1.0e-4)
+    err = try
+        compile_runtime(hookline)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    @test occursin("ScheduledObserver", sprint(showerror, err)) && occursin("CRYO", sprint(showerror, err))
+    mkrep() = Phase6DRep(zeros(2), zeros(2), zeros(2), zeros(2), zeros(2), zeros(2))
+    structural() = BeamLine("CELL", qf, ScheduledObserver(BPMObserver("b")), dr)
+    @test_throws ArgumentError execute!(TrackingTask((structural(),)), mkrep(); turns=1)
+    r = mkrep()
+    execute!(TrackingTask(structural()), r; turns=1)   # bare: the line dissolves, the hook runs
+    @test all(isfinite, r.x)
+end
+
+@testset "Patch: the exact inverse restores the transverse state, and z shifts by the two reference paths (fix batch 3, F-135)" begin
+    # The PatchSpec docstring claimed "composing a patch with its exact
+    # inverse is the identity". It is, in (x, px, y, py, pz); in z the
+    # composite shifts every particle by one constant, because each patch
+    # measures z against ITS OWN entrance reference particle (Bmad's
+    # convention, `_patch_map`): the first against the old frame's reference,
+    # which reaches the new face after a path R1 = s1/W33 (s1 the new origin's
+    # s-coordinate), the second against the new frame's reference, whose path
+    # back to the old face is R2 = -dz/W33. The constant is
+    # R1 + R2 = (W31 dx + W32 dy + (W33 - 1) dz)/W33, zero for a pure roll, a
+    # pure translation, or a rotation with no offset. Measured -1.033905e-3
+    # for the fixture below (audit U18-11), equal to the derivation.
+    dx, dy, dz, ax, ay, as = 0.03, -0.02, 0.4, 0.02, 0.017, 0.05
+    W = Octopus._patch_rotation(Float64, ax, ay, as, false)
+    # the :madx order with negated angles IS the transpose
+    @test maximum(abs, collect(Octopus._fp_transpose(W) .- Octopus._patch_rotation(Float64, -ax, -ay, -as, true))) < 1.0e-16
+    dp = .-Octopus._patch_apply(W, dx, dy, dz)        # the old origin seen from the new frame
+    fwd = compile_runtime(PatchSpec(dx=dx, dy=dy, dz=dz, angle_x=ax, angle_y=ay, angle_s=as))
+    inv = compile_runtime(PatchSpec(dx=dp[1], dy=dp[2], dz=dp[3], angle_x=-ax, angle_y=-ay, angle_s=-as,
+                                    convention=:madx))
+    c = (W[7] * dx + W[8] * dy + (W[9] - 1) * dz) / W[9]
+    @test abs(c) > 1.0e-3                              # a visible constant, not roundoff
+    for u in ((0.0, 0.0, 0.0, 0.0, 0.0, 0.0), (1.0e-3, 2.0e-4, 5.0e-4, 1.0e-4, 1.0e-2, 3.0e-3),
+              (-2.0e-3, 1.0e-4, 3.0e-4, -2.0e-4, -5.0e-3, -1.0e-3))
+        v = collect(inv(fwd(u...)...))
+        @test maximum(abs, (v .- collect(u))[[1, 2, 3, 4, 6]]) < 1.0e-16
+        @test abs((v[5] - u[5]) - c) < 1.0e-15
+    end
+    # the documented remedy: carry the constant in the inverse's t_offset
+    inv_t = compile_runtime(PatchSpec(dx=dp[1], dy=dp[2], dz=dp[3], angle_x=-ax, angle_y=-ay, angle_s=-as,
+                                      convention=:madx, t_offset=-c))
+    u = (1.0e-3, 2.0e-4, 5.0e-4, 1.0e-4, 1.0e-2, 3.0e-3)
+    @test maximum(abs, collect(inv_t(fwd(u...)...) .- u)) < 1.0e-15
+    # The docstring now says so (the audit's F-135 claim was the unqualified
+    # sentence; this pins the qualified one).
+    @test occursin("transverse coordinates and momenta", string(@doc(PatchSpec)))
+end
+
+@testset "Floor-plan documentation and dead code (fix batch 3, F-136, F-137)" begin
+    # F-136: the floor-plan file opened with a "Draft ... installed only after
+    # the audit commit lands" header; the `survey` docstring called the
+    # descent of kept-whole sub-lines "the opposite choice from the arc
+    # walker" after the task's arc walker (`_collect_spec_s!`, 2026-10-18)
+    # began descending them too; the aperture theory note still claimed
+    # byte-identical CPU/CUDA loss logs the `LossRecord` docstring retracted;
+    # the `:line` help no longer says the assembly survey is STRAIGHT (closed
+    # by F-171's batch, pinned here). F-137: `_floor_children` and
+    # `_patch_reference_length` had no caller.
+    src = joinpath(pkgdir(Octopus), "src", "elements")
+    @test !startswith(first(readlines(joinpath(src, "floor_plan.jl"))), "# Draft")
+    @test !occursin("opposite choice from the arc walker", string(@doc(Octopus.survey)))
+    @test occursin("arc walker", string(@doc(Octopus.survey)))     # the relation is still stated
+    note = read(joinpath(pkgdir(Octopus), "docs", "theory", "aperture_and_particle_loss.md"), String)
+    @test !occursin("logs are byte-identical", note)
+    @test occursin("ulp", note)                                    # the retraction's measurement is there
+    @test !occursin("STRAIGHT", sprint(io -> element_help(io, :line)))
+    @test !isdefined(Octopus, :_floor_children)
+    @test !isdefined(Octopus, :_patch_reference_length)
+    # the one-reference rule: no source file names either retired symbol
+    hits = String[]
+    for (root, _, files) in walkdir(joinpath(pkgdir(Octopus), "src")), f in files
+        endswith(f, ".jl") || continue
+        for (i, l) in enumerate(eachline(joinpath(root, f)))
+            (occursin("_floor_children", l) || occursin("_patch_reference_length", l)) &&
+                push!(hits, "$(f):$(i)")
+        end
+    end
+    @test isempty(hits)
+end
+
 @testset "Unknown spec keys warn, placement keys bind, set_param! bumps the epoch" begin
     # 2026-08-05 audit open-queue U3-10/U13-1/U13-2. Every friendly
     # constructor documents open keyword storage, so unknown keys stay LEGAL
@@ -30348,7 +30730,9 @@ end
     # rotation the reference length and the reference particle's actual path
     # coincide, so all of them round-tripped at <= 6.7e-18.
     #
-    # `_patch_reference_length` returned the new origin's displacement PROJECTED
+    # The patch's reference-length helper (retired as dead code in the
+    # 2026-10-18 audit's fix batch 3, F-137; its history is in the `_patch_map`
+    # docstring) returned the new origin's displacement PROJECTED
     # onto the new s axis, while the on-axis particle drifts the UNPROJECTED
     # distance to reach the face. A patch carrying both a dz and a
     # transverse-axis rotation therefore moved z by exactly dz*(cos(theta) - 1):
