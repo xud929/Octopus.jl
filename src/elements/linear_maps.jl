@@ -9,6 +9,24 @@ function _spec_params(; kwargs...)
     return Dict{Symbol,Any}(Symbol(k) => v for (k, v) in pairs(kwargs))
 end
 
+"""
+    _CANONICAL_DISPERSION_NOTE
+
+The ONE statement of the dispersion convention, spliced into the `meaning` of
+every `zeta`/`eta` parameter of every kind (the crab and momentum dispersion
+maps, the chromaticity kick, the radiation element, the linear 6D map); the
+suite derives that set from the registry by name and requires the statement on
+each. A dispersion parameter means the CANONICAL pair of
+`docs/theory/twiss_dispersion.md` (D6)-(D8), as `TwissDispersionAnalysis`
+reports it (owner decision 2026-10-18): composing the maps as the elements do
+(coupling, then eta, then zeta) on the dispersive subspace gives
+`r = zeta z + eta pz` and `pz_out = h pz` with `h = 1 - zeta' S4 eta`, i.e.
+(D6) exactly. Stated where the parameter is declared rather than once on the
+strong-beam builder, because a convention stated once is not stated at every
+consumer (2026-10-18 audit, F-99; the lesson of the same day).
+"""
+const _CANONICAL_DISPERSION_NOTE = "Convention: the CANONICAL dispersion of docs/theory/twiss_dispersion.md (D6)-(D8), as TwissDispersionAnalysis reports it; the map realises (D6) exactly, r = zeta z + eta pz with pz scaled by h = 1 - zeta' S4 eta. Xsuite's dx, dpx, dy, dpy and MAD-X's deltap dispersion are the slope eta/h: equal to the canonical eta when no crab dispersion acts beside it (h = 1), otherwise to be converted by (D8), eta = h slope, before being passed here; zeta is the same in both conventions"
+
 # The named parameters in `numeric_type(spec)`, the one rule of every kind: the
 # stored type of a `Spec{T}` form, else the Float64-floor promotion of the
 # stored parameters (until 2026-10-16 the stored values' own float types).
@@ -119,10 +137,10 @@ CrabDispersion{T}(zeta1, zeta2, zeta3, zeta4) where {T<:Number} =
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        zeta1=ParamMeta(default=0, meaning="x-z crab dispersion coefficient"),
-        zeta2=ParamMeta(default=0, meaning="px-z crab dispersion coefficient"),
-        zeta3=ParamMeta(default=0, meaning="y-z crab dispersion coefficient"),
-        zeta4=ParamMeta(default=0, meaning="py-z crab dispersion coefficient"),
+        zeta1=ParamMeta(default=0, meaning="x-z crab dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
+        zeta2=ParamMeta(default=0, meaning="px-z crab dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
+        zeta3=ParamMeta(default=0, meaning="y-z crab dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
+        zeta4=ParamMeta(default=0, meaning="py-z crab dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
@@ -221,10 +239,10 @@ MomentumDispersion{T}(eta1, eta2, eta3, eta4) where {T<:Number} =
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        eta1=ParamMeta(default=0, meaning="x-pz momentum dispersion coefficient"),
-        eta2=ParamMeta(default=0, meaning="px-pz momentum dispersion coefficient"),
-        eta3=ParamMeta(default=0, meaning="y-pz momentum dispersion coefficient"),
-        eta4=ParamMeta(default=0, meaning="py-pz momentum dispersion coefficient"),
+        eta1=ParamMeta(default=0, meaning="x-pz momentum dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
+        eta2=ParamMeta(default=0, meaning="px-pz momentum dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
+        eta3=ParamMeta(default=0, meaning="y-pz momentum dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
+        eta4=ParamMeta(default=0, meaning="py-pz momentum dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
@@ -360,7 +378,12 @@ end
         r2=ParamMeta(default=0, meaning="coupling coefficient r2"),
         r3=ParamMeta(default=0, meaning="coupling coefficient r3"),
         r4=ParamMeta(default=0, meaning="coupling coefficient r4"),
-        mode=ParamMeta(default=XY_MODEA, alternatives=(XY_MODEA, XY_MODEB), meaning="coupling convention"),
+        # Every value of the enum, derived from it: the kernel, `_inverse` and
+        # the rounding class all carry an XY_UNDEF branch, so the schema that
+        # declared two values was narrower than what the runtime accepted and
+        # the effectiveness sweep never visited the third (2026-10-18 audit, F-97).
+        mode=ParamMeta(default=XY_MODEA, alternatives=Tuple(instances(XYCouplingMode)),
+                       meaning="coupling convention: XY_MODEA (the default) and XY_MODEB select which coupling branch the map applies, with the roles of the (x, px) and (y, py) blocks exchanged between them; XY_UNDEF switches the coupling off, the identity map"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )

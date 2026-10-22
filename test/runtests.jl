@@ -14224,6 +14224,58 @@ end
 end
 
 
+@testset "Dispersion parameters state the canonical convention, the coupling mode declares every value the runtime accepts, the cavity's L meta names the slip's owner (F-97, F-98, F-99)" begin
+    u = (1.1e-3, -2.0e-4, 0.7e-3, 1.3e-4, -1.5e-3, 4.0e-4)
+    # F-97: `xy_coupling` declared alternatives (XY_MODEA, XY_MODEB) while the
+    # kernel, `_inverse` and the rounding class all carry an XY_UNDEF branch
+    # (the identity), so the accepted enumeration was wider than the declared
+    # one and the effectiveness sweep never visited the third value.
+    mode_meta = Octopus.parameter_schema(ElementSpec{:xy_coupling})[:mode]
+    @test Set(mode_meta.alternatives) == Set(instances(XYCouplingMode))
+    @test mode_meta.default in mode_meta.alternatives
+    @test occursin("identity", mode_meta.meaning)
+    @test collect(compile_runtime(XYCouplingSpec(r1=0.01, mode=XY_UNDEF))(u...)) == collect(u)
+    @test collect(compile_runtime(XYCouplingSpec(r1=0.01, mode=XY_MODEA))(u...)) != collect(u)
+    # F-99: every zeta/eta parameter of every registered kind is the canonical
+    # pair of docs/theory/twiss_dispersion.md (D6)-(D8), as the analysis reports
+    # it, and says so where it is declared -- the 2026-10-18 lesson "one
+    # quantity, one convention", restated at every consumer. The set of
+    # parameters is DERIVED from the registry by name, so a new dispersion
+    # parameter cannot join without the statement.
+    dispersion_keys = Tuple{Symbol,Symbol}[]
+    for (k, meta) in Octopus.ELEMENT_META_BY_KIND, (key, pm) in pairs(meta.parameters)
+        name = String(key)
+        (startswith(name, "zeta") || startswith(name, "eta")) || continue
+        push!(dispersion_keys, (k, key))
+        @testset let kind = k, parameter = key
+            @test occursin("canonical", pm.meaning)
+            @test occursin("(D8)", pm.meaning)
+        end
+    end
+    @test length(dispersion_keys) >= 16   # 4 + 4 + 2 + 2 + 4 (crab, momentum, chromaticity, radiation, linear6d)
+    for k in (:crab_dispersion, :momentum_dispersion, :chromaticity_kick, :lumped_radiation, :linear6d)
+        @test any(pair -> pair[1] == k, dispersion_keys)
+    end
+    # The maps realise (D6) with the canonical pair: composing the crab and
+    # momentum maps as the chromaticity kick and the radiation element do
+    # (coupling, eta, zeta) gives r = zeta z + eta pz and pz_out = h pz with
+    # h = 1 - zeta' S4 eta; the parameter is the canonical eta, not the slope.
+    zeta = (0.1, 0.02, -0.03, 0.01); eta = (0.4, 0.05, 0.02, -0.01)
+    cz = compile_runtime(CrabDispersionSpec(zeta1=zeta[1], zeta2=zeta[2], zeta3=zeta[3], zeta4=zeta[4]))
+    me = compile_runtime(MomentumDispersionSpec(eta1=eta[1], eta2=eta[2], eta3=eta[3], eta4=eta[4]))
+    S4 = [0.0 1.0 0.0 0.0; -1.0 0.0 0.0 0.0; 0.0 0.0 0.0 1.0; 0.0 0.0 -1.0 0.0]
+    h = 1 - collect(zeta)' * S4 * collect(eta)
+    out = collect(cz(me(0.0, 0.0, 0.0, 0.0, 0.0, 1.0e-3)...))
+    @test out[1:4] ≈ collect(eta) .* 1.0e-3 .+ collect(zeta) .* out[5] rtol=1e-12
+    @test out[6] ≈ h * 1.0e-3 rtol=1e-12
+    # F-98: the thin RF cavity's `L` meta no longer claims "no velocity-slip
+    # term": a task-compiled cavity has carried the slip since the F16 closure.
+    Lmeta = Octopus.parameter_schema(ElementSpec{:thin_rf_cavity})[:L]
+    @test !occursin("no velocity-slip term", Lmeta.meaning)
+    @test occursin("velocity slip", Lmeta.meaning) && occursin("ds_turn", Lmeta.meaning)
+end
+
+
 
 @testset "Thin elements, markers and RBEND" begin
     u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
