@@ -308,10 +308,15 @@ function _linear6d_matrix_from_optics(spec::ElementSpec{:linear6d})
     partner(key, fallback) = hasparam(spec, key) ? param(spec, key) : fallback
     beta1 = param(spec, :beta1)
     dmu = param(spec, :dmu)
-    alpha1 = _declared_param(spec, :alpha1)
-    zeta1 = _declared_param(spec, :zeta1)
-    eta1 = _declared_param(spec, :eta1)
-    R1 = _declared_param(spec, :R1)
+    # The entrance parameters default to zeros IN THE OPTICS FORM, the exit
+    # ones to their partners; neither is a schema default, because the kind's
+    # other form (a stored matrix) has no such parameter at all and the
+    # validator passes every declared default beside the example, which the
+    # two-forms refusal would reject. The schema states both rules in words.
+    alpha1 = partner(:alpha1, (0, 0, 0))
+    zeta1 = partner(:zeta1, (0, 0, 0, 0))
+    eta1 = partner(:eta1, (0, 0, 0, 0))
+    R1 = partner(:R1, (0, 0, 0, 0))
     beta2 = partner(:beta2, beta1)
     alpha2 = partner(:alpha2, alpha1)
     zeta2 = partner(:zeta2, zeta1)
@@ -415,12 +420,12 @@ end
         matrix=ParamMeta(meaning="explicit canonical-symplectic 6x6 transfer matrix, or length-36 row-major collection"),
         beta1=ParamMeta(meaning="initial beta functions for optics construction"),
         beta2=ParamMeta(meaning="final beta functions for optics construction; defaults to beta1"),
-        alpha1=ParamMeta(default=(0, 0, 0), meaning="initial alpha functions"),
+        alpha1=ParamMeta(meaning="initial alpha functions for optics construction; defaults to (0, 0, 0) in the optics form (no schema default: the matrix form has no such parameter, and matrix beside any optics keyword is refused)"),
         alpha2=ParamMeta(meaning="final alpha functions for optics construction; defaults to alpha1 (the constructor and the raw form alike, so no literal default is declared)"),
         dmu=ParamMeta(meaning="phase advances in radians"),
-        zeta1=ParamMeta(default=(0, 0, 0, 0), meaning="initial crab dispersion coefficients. " * _CANONICAL_DISPERSION_NOTE),
-        eta1=ParamMeta(default=(0, 0, 0, 0), meaning="initial momentum dispersion coefficients. " * _CANONICAL_DISPERSION_NOTE),
-        R1=ParamMeta(default=(0, 0, 0, 0), meaning="initial x-y coupling coefficients"),
+        zeta1=ParamMeta(meaning="initial crab dispersion coefficients; defaults to zeros in the optics form (see alpha1). " * _CANONICAL_DISPERSION_NOTE),
+        eta1=ParamMeta(meaning="initial momentum dispersion coefficients; defaults to zeros in the optics form (see alpha1). " * _CANONICAL_DISPERSION_NOTE),
+        R1=ParamMeta(meaning="initial x-y coupling coefficients; defaults to zeros in the optics form (see alpha1)"),
         zeta2=ParamMeta(meaning="final crab dispersion coefficients; defaults to zeta1. " * _CANONICAL_DISPERSION_NOTE),
         eta2=ParamMeta(meaning="final momentum dispersion coefficients; defaults to eta1. " * _CANONICAL_DISPERSION_NOTE),
         R2=ParamMeta(meaning="final x-y coupling coefficients; defaults to R1"),
