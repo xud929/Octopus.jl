@@ -296,8 +296,11 @@ under one `s`: true for `MomentObserver` and `CoordinateSnapshotObserver`
 (artifact views by construction) and for a `BPMObserver` with
 `artifact=true` (its method is in BPMObserver.jl); false by default -- a
 memory-mode BPM reads as often as it is placed, the "read twice in one turn"
-pattern its occurrence counter exists for. Consulted by both prepare walks
-(`prepare_observers!`, `prepare_line_observers!`) through
+pattern its occurrence counter exists for. Consulted by the task-level prepare walk
+(`prepare_observers!`) and, for a line's placements, by the line compile
+(`_refuse_repeated_line_observers` from `_runtime_entries`, once per
+compilation; the per-execute! walk `prepare_line_observers!` stays
+allocation-free under the 2026-10-16 cost pin) through
 `_refuse_repeated_observers`, which refuses such an observer placed more than
 once BY ITS CAUSE, before any bind: until 2026-10-21 the second placement
 reached the artifact bind and was refused as a "duplicate probe name", a
@@ -332,6 +335,26 @@ function _refuse_repeated_observers(observers)
     return nothing
 end
 
+"""
+    _refuse_repeated_line_observers(entries::Tuple) -> nothing
+
+The line placements' half of the repeated-observer refusal (F-89), run ONCE
+per compilation by `_runtime_entries` over the compiled line's resolved hook
+entries (`_line_hook_entries`), before any artifact bind and before the
+per-execute! walks, which stay allocation-free (the 2026-10-16 cost pin on
+the once-per-execute! walks: fix batch 3's first gate attempt measured 352
+bytes against 256 with this count inside `prepare_line_observers!`,
+2026-10-22). The task-level hooks are counted by `prepare_observers!`.
+"""
+function _refuse_repeated_line_observers(entries::Tuple)
+    placed = Any[]
+    for entry in _line_hook_entries(entries)
+        entry isa LineObserverEntry && push!(placed, entry.observer.observer)
+    end
+    _refuse_repeated_observers(placed)
+    return nothing
+end
+
 prepare_observer!(observer::AbstractBeamObserver, runtime_elems) = nothing
 prepare_observer!(observer::AbstractBeamObserver, runtime_elems, schedule, turns) =
     prepare_observer!(observer, runtime_elems)
@@ -349,12 +372,12 @@ element, about 190 kB per call on a 40-element line of eight types
 (2026-10-16 neighbour audit, U9-4).
 """
 function prepare_line_observers!(entries::Tuple; turns=nothing, first_turn=0)
-    placed = Any[]
-    _foreach_unrolled(entries) do entry
-        entry isa LineObserverEntry && push!(placed, entry.observer.observer)
-        nothing
-    end
-    _refuse_repeated_observers(placed)
+    # No allocation here: this is a once-per-execute! walk under the
+    # 2026-10-16 cost pin (<= 256 bytes); the repeated-placement count over the
+    # line runs once per compilation in `_runtime_entries`
+    # (`_refuse_repeated_line_observers`), where the hook entries are resolved
+    # anyway. Fix batch 3's first gate attempt measured 352 bytes with the
+    # count inside this walk (2026-10-22).
     _foreach_unrolled(entries) do entry
         entry isa LineObserverEntry && prepare_line_observer!(entry.observer, turns, first_turn)
         nothing

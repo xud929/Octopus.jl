@@ -1900,6 +1900,11 @@ function _runtime_entries(task::TrackingTask, rep=nothing)
     # through (`_bind_line_entries`; the strong-strong compile ran none of
     # them until the 2026-10-19 fix batch, unit R).
     entries, _ = _bind_line_entries(entries, task.elements, record)
+    # Once per compilation, before any bind: one observer object placed twice
+    # in the line is refused by its cause (F-89; the count moved here from the
+    # per-execute! prepare walk, which the 2026-10-16 cost pin keeps
+    # allocation-free).
+    _refuse_repeated_line_observers(entries)
     task.runtime_entries_cache[] =
         (entries, _has_knob_parameters(task.elements), kepoch, sepoch, record)
     empty!(task.plan_cache)
