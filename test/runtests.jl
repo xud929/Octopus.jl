@@ -8859,12 +8859,20 @@ end
         (0.00039998350064043646, 0.0001366652434746287,
          -0.00019998712104450967, -0.00017861990108964464,
          0.0012, 0.00020002747141457556),
-        (0.0003999835039413922, 0.00013666524273487976,
-         -0.00019998712362249104, -0.00017861989917526642,
-         0.0012000000040669253, 0.00020002747050984119),
+        # The :chromatic and :exact rows were re-pinned on 2026-10-21 (fix
+        # batch 3 of the 2026-10-18 audit, unit I): the chromatic kick now sees
+        # the collision point's own S, S(1 + phi) instead of the IP value
+        # (F-119; px, y, py, pz moved by 1 to 4 ulps at this kbb = 1e-7), and
+        # the exact drift forms H_ex without cancellation (F-120; z and pz moved
+        # by one ulp). Both maps' arithmetic is IEEE operations and `sqrt`, so
+        # the pins are as portable as they were; measured on the same CPU
+        # (probes/I/baseline_fixed.log of the batch).
+        (0.0003999835039413922, 0.00013666524273485447,
+         -0.00019998712362249106, -0.0001786198991751646,
+         0.0012000000040669253, 0.000200027470509841),
         (0.0003999835039409804, 0.00013666524273488455,
          -0.0001999871236220233, -0.00017861989917524238,
-         0.0012000000040669253, 0.00020002747050991326),
+         0.0012000000040669255, 0.00020002747050993912),
     )
     q = (4.0e-4, 1.0e-4, -2.0e-4, -1.5e-4, 1.2e-3, 2.0e-4)
     for (selector, drift_type, reference) in zip(selectors, types, expected)
@@ -9321,6 +9329,268 @@ end
         # Flat under refinement: the violation is structural, not truncation.
         @test isapprox(coarse, fine; rtol=0.05)
     end
+end
+
+@testset "The chromatic composite kicks at the collision point's own S and is symplectic to the dual-Jacobian floor (F-119)" begin
+    # 2026-10-18 audit F-119 (fix batch 3, unit I). `_thin_strong_beam_track` hands the kick
+    # the S the forward drift returns. The chromatic flow moves z (`z* = z + 2 S phi`) and the
+    # drift returned the INTERACTION-POINT S, so the kick's potential depended on the
+    # collision-point momenta through phi(px, py, pz): its momentum updates were not the
+    # gradient of a function of positions and the composite D^-1 B D was not symplectic at
+    # first order in phi. Hirata leaves z alone and the exact drift solves for its
+    # collision-point z, which is why only `:chromatic` failed. The finite-difference check
+    # above ("Virtual drifts: the named three are symplectic ...", step 3e-7, tolerance 5e-7)
+    # sits at its truncation floor of 7.9e-8 and could not see a 4.5e-12 residual at its
+    # kbb = 1e-8; dual-number Jacobians are exact and can.
+    #
+    # (a) The mechanism: the S the forward chromatic drift returns IS the collision point's
+    #     own (z* - zo)/2, read off the drifted z (one subtraction and one halving: within an
+    #     ulp of S). Unfixed it was the interaction-point S, 1.25e-10 and 8.1e-9 relative away
+    #     on these two points (probe red_baseline.jl of the unit).
+    zo = 3.0e-4
+    for u in ((0.8e-4, 1.0e-5, 0.4e-4, -2.0e-5, 3.0e-3, 1.0e-4),
+              (4.0e-4, 1.0e-4, -2.0e-4, -1.5e-4, 1.2e-3, 2.0e-4))
+        x, px, y, py, z, pz, S = Octopus._forward_virtual_drift(ChromaticDrift(), u..., zo)
+        @test abs(S - (z - zo) / 2) <= eps(abs(S))
+        # and the collision point did move: the two S differ by the factor 1 + phi
+        @test abs(S - (u[5] - zo) / 2) > 1.0e-14
+    end
+    # (b) The property: max |J' S J - S| of the dual Jacobian of the one-element map on the
+    #     audit's probe-H fixture (an elliptic 110 x 12 um beam with alpha, centre, angle and
+    #     curvature) at kbb = 1e-5 -- a kick of 0.07 rad, far beyond physical, chosen so the
+    #     first-order defect is large. Measured unfixed: chromatic 4.54e-9 (thin) and 1.43e-3
+    #     (five slices); fixed: 2.1e-13 and 1.7e-13, the floor `:hirata` and `:exact` sit at
+    #     (1.5e-13 / 4.3e-13 thin, 2.0e-13 / 1.7e-13 sliced). The tolerance 1e-11 is ~50x the
+    #     fixed floor, 450x below the thin defect and 1e8 below the sliced one; every model is
+    #     held to it, so the two controls are checked by the same number.
+    S6 = zeros(6, 6)
+    for (q, p) in ((1, 2), (3, 4), (5, 6))
+        S6[q, p] = 1.0
+        S6[p, q] = -1.0
+    end
+    u0 = [0.8e-4, 1.0e-5, 0.4e-4, -2.0e-5, 3.0e-3, 1.0e-4]
+    residual(el) = (J = ForwardDiff.jacobian(u -> collect(el(u...)), u0); maximum(abs, J' * S6 * J - S6))
+    thin_of(drift) = ThinStrongBeamSpec{Float64}(;
+        kbb=1.0e-5, beta=(0.8, 0.07), alpha=(0.3, -0.2), sigma=(110.0e-6, 12.0e-6),
+        center=(2.0e-6, -1.0e-6, 0.0), angle=(3.0e-4, -2.0e-4, 0.0),
+        curvature=(2.0e-3, -1.0e-3, 0.0), virtual_drift=drift)
+    for drift in (:hirata, :chromatic, :exact)
+        thin = compile_runtime(thin_of(drift))
+        sliced = compile_runtime(GaussianStrongBeamSpec{Float64}(thin=thin_of(drift), ns=5, sigz=7.0e-3))
+        @testset let model = drift, thin_residual = residual(thin), sliced_residual = residual(sliced)
+            @test thin_residual < 1.0e-11
+            @test sliced_residual < 1.0e-11
+        end
+    end
+end
+
+@testset "The exact drift's forward form is cancellation-free: its BigFloat reference and its round trip within the round class (F-120)" begin
+    # 2026-10-18 audit F-120 (fix batch 3, unit I). The forward exact drift formed
+    # `H = 1 + pz - ps`, the difference of two O(1) quantities, 4e-5 of relative precision lost
+    # at these momenta, where the reverse drift has always used the small-quantity closed
+    # form. On one backend that is ~1e-16 absolute in H; `pz -= H/2` carries it as ~900 ulps
+    # of pz's SCALE (5e-4 here), and across backends the device's fused radicand turned it
+    # into 1024 to 4096 ulps against declared classes of 8 (round thin), 64 (round sliced)
+    # and 2048 (elliptic). The identity px^2 + py^2 = (1 + pz - ps)(1 + pz + ps) gives the
+    # cancellation-free form the kernel uses now (theory note
+    # beam_beam_longitudinal_kick.md, 7.2).
+    #
+    # Measured on the 400-particle contract fixture in ulps of each coordinate's scale (the
+    # measure of `_cross_backend_agreement`): unfixed pz 891.5 against its 256-bit reference
+    # and 891.5 in the forward-reverse round trip, every other coordinate <= 1.0; fixed pz
+    # 0.5 and 0.0. Tolerances: 4 ulps against the reference (the few roundings of
+    # a cancellation-free form; 200x below the defect) and the round thin beam's declared
+    # class bound of 8 for the round trip (`_cross_backend_rounding`, the bound the `:exact`
+    # option is measured against in the cross-backend table).
+    base = Octopus._contract_default_initial_rep(400, Float64)
+    drift = ExactHamiltonianDrift()
+    zo = 0.0
+    reference(u...) = setprecision(BigFloat, 256) do
+        x, px, y, py, z, pz, zob = map(big, (u..., zo))
+        ps = sqrt((1 + pz) * (1 + pz) - px * px - py * py)
+        H = 1 + pz - ps                      # harmless at 256 bits: the reference, not the kernel
+        rr = H / (2ps)
+        z2 = (z + rr * zob) / (1 + rr)
+        S = (z2 - zob) / 2
+        (x + px / ps * S, px, y + py / ps * S, py, z - H / ps * S, pz - H / 2)
+    end
+    err = zeros(6); scale = zeros(6); trip = zeros(6); trip_scale = zeros(6)
+    for i in 1:length(base.x)
+        u = (base.x[i], base.px[i], base.y[i], base.py[i], base.z[i], base.pz[i])
+        f = Octopus._forward_virtual_drift(drift, u..., zo)
+        r = reference(u...)
+        b = Octopus._reverse_virtual_drift(drift, f[1:6]..., zo)
+        for k in 1:6
+            err[k] = max(err[k], abs(Float64(big(f[k]) - r[k])))
+            scale[k] = max(scale[k], abs(f[k]))
+            trip[k] = max(trip[k], abs(b[k] - u[k]))
+            trip_scale[k] = max(trip_scale[k], abs(u[k]), abs(b[k]))
+        end
+    end
+    @testset let reference_ulps = err ./ eps.(scale), round_trip_ulps = trip ./ eps.(trip_scale)
+        @test all(<=(4.0), reference_ulps)
+        @test all(<=(8.0), round_trip_ulps)
+    end
+    # The reverse form is exact, not approximate (the note's closed-form inverse), so the round
+    # trip measures the forward form's rounding alone; and the mechanism, named: on this
+    # fixture `1 + pz - ps` and `(px^2 + py^2)/(1 + pz + ps)` differ by up to 4.0e-5 relative.
+    worst = 0.0
+    for i in 1:length(base.x)
+        px, py, pz = base.px[i], base.py[i], base.pz[i]
+        ps = sqrt((1 + pz)^2 - px^2 - py^2)
+        q = px^2 + py^2
+        worst = max(worst, abs((1 + pz - ps) - q / (1 + pz + ps)) / (q / (1 + pz + ps)))
+    end
+    @test 1.0e-6 < worst < 1.0e-3
+end
+
+@testset "A ForwardDiff dual passes through gaussian_strong_beam_covariance and the dispersion graph (F-121)" begin
+    # 2026-10-18 audit F-121 (fix batch 3, unit I): a regression of the 2026-10-18 batch, whose
+    # canonical-dispersion builder converted zeta and eta to Vector{Float64} inside
+    # `_dispersion_graph`, so `gaussian_strong_beam_covariance`, generic in T by its own
+    # promotion rule, died with `MethodError: Float64(::Dual)` under a parameter derivative.
+    # The graph is generic now; `_validated_covariance`'s PSD check runs ForwardDiff's
+    # `eigvals` of a Symmetric dual matrix.
+    transverse = transverse_covariance(; beta=(1.0, 1.0), sigma=(1.0e-4, 1.0e-4))
+    longitudinal = [1.0e-4 3.0e-6; 3.0e-6 1.0e-6]
+    # (a) the pure case, h = 1 exactly: cov[1, 6] = eta1 sigma_pz^2, derivative sigma_pz^2
+    f_pure(eta1) = gaussian_strong_beam_covariance(transverse, longitudinal;
+                                                   momentum_dispersion=(eta1, 0.0, 0.0, 0.0))[1, 6]
+    @test ForwardDiff.derivative(f_pure, 0.01) ≈ longitudinal[2, 2] rtol=1.0e-12
+    # (b) a conjugate pair, h = 1 - zeta' S_4 eta != 1 and depending on eta1 itself
+    #     (dh/d eta1 = zeta2): cov[1, 6] = zeta1 sigma_zpz + (eta1 / h) sigma_pz^2, so
+    #     d cov[1, 6] / d eta1 = sigma_pz^2 (1/h - eta1 zeta2 / h^2); the dual derivative against
+    #     that closed form, and against a central difference at step 1e-6.
+    zeta = (0.12, -0.03, 0.04, 0.02)
+    f_conj(eta1) = gaussian_strong_beam_covariance(transverse, longitudinal; crab_dispersion=zeta,
+                                                   momentum_dispersion=(eta1, 0.1, -0.2, 0.3))[1, 6]
+    eta1 = 0.5
+    h = 1 - (zeta[1] * 0.1 - zeta[2] * eta1 + zeta[3] * 0.3 - zeta[4] * (-0.2))
+    analytic = longitudinal[2, 2] * (1 / h - eta1 * zeta[2] / h^2)
+    dual = ForwardDiff.derivative(f_conj, eta1)
+    central = (f_conj(eta1 + 1.0e-6) - f_conj(eta1 - 1.0e-6)) / 2.0e-6
+    @test dual ≈ analytic rtol=1.0e-10
+    @test dual ≈ central rtol=1.0e-6
+    # (c) the graph itself takes a dual, and Float64 inputs still give a Matrix{Float64}
+    #     (the `g.h === 1.0` pins of the canonical-dispersion testset below stand).
+    D = ForwardDiff.Dual(0.12, 1.0)
+    g = Octopus._dispersion_graph([D, 0.0, 0.0, 0.0], [0.5, 0.1, -0.2, 0.3])
+    @test eltype(g.graph) <: ForwardDiff.Dual && ForwardDiff.value(g.graph[1, 1]) == 0.12
+    @test ForwardDiff.partials(g.h, 1) == -0.1            # dh / d zeta1 = -eta2
+    @test Octopus._dispersion_graph(zeros(4), [0.5, 0.0, 0.0, 0.0]).graph isa Matrix{Float64}
+end
+
+@testset "hvoffset keys are validated by name and the Float32 Gaussian with hvoffset compiles in Float32 (F-122, F-123)" begin
+    # 2026-10-18 audit F-122, F-123 (fix batch 3, unit I). Every key of the hvoffset Dict was
+    # read with `get(hvoffset, key, default)`: a misspelled or missing key, String keys or a
+    # non-positive frequency produced exactly the element built WITHOUT hvoffset (frequency
+    # defaulted to -1, the waveform to zeros), and a tuple died with a MethodError from `get`.
+    # And the waveform's Float64 constants promoted a Float32 Gaussian's offsets to Float64,
+    # so its struct constructor died with a `convert` MethodError.
+    thin() = ThinStrongBeamSpec(kbb=1.0e-8, beta=(1.0, 1.0), sigma=(1.0e-4, 1.0e-4))
+    refused(hv, needle) = begin
+        err = try
+            GaussianStrongBeamSpec(thin=thin(), ns=3, sigz=0.01, hvoffset=hv)
+            nothing
+        catch e
+            e
+        end
+        err isa ArgumentError && occursin(needle, sprint(showerror, err))
+    end
+    @test refused(Dict(:dim => :x, :coef => 1.0), "missing :frequency")
+    @test refused(Dict(:dim => :x, :coef => 1.0, :freq => 1.0e9), "unknown key(s) :freq")
+    @test refused(Dict("dim" => "y", "coef" => 1.0, "frequency" => 1.0e9), "unknown key(s)")
+    @test refused((1.0e-6, -2.0e-6), "must be a Dict")
+    @test refused(Dict(:dim => :x, :coef => 1.0, :frequency => -1.0), "frequency must be a positive")
+    @test refused(Dict(:dim => :z, :coef => 1.0, :frequency => 1.0e9), "dim must be :x or :y")
+    @test refused(Dict(:coef => 1.0, :frequency => 1.0e9, :harmonics => Dict(0 => 1.0)), "harmonics entries")
+    # The flexible form is checked at compile by the same helper.
+    raw = ElementSpec{:gaussian_strong_beam}(Dict{Symbol,Any}(
+        :thin => thin(), :ns => 3, :sigz => 0.01, :hvoffset => Dict(:coef => 1.0)))
+    @test_throws ArgumentError compile_runtime(raw)
+    # The complete Dict builds the waveform `_crab_offsets` builds, on x or on y as asked.
+    good = compile_runtime(GaussianStrongBeamSpec(thin=thin(), ns=3, sigz=0.01,
+                                                  hvoffset=Dict(:dim => :y, :coef => 1.0, :frequency => 1.0e9)))
+    @test good.slice_voffset == collect(Octopus._crab_offsets(Tuple(good.slice_center), 1.0, 1.0e9, Dict(1 => 1.0)))
+    @test all(iszero, good.slice_hoffset) && any(!iszero, good.slice_voffset)
+    # F-123: a Float32 element with Float32 offsets, the Float64 waveform rounded. The waveform
+    # `-coef (sin(k z)/k - z)` is the difference of two quantities of z's size (1e-2) some two
+    # decades apart, so Float32 keeps about 5 of its 7 digits: the tolerance is that cancellation
+    # ratio, measured in the test, times 8 eps(Float32).
+    hv = Dict(:dim => :x, :coef => 1.0, :frequency => 1.0e9)
+    e32 = compile_runtime(GaussianStrongBeamSpec{Float32}(
+        thin=ThinStrongBeamSpec{Float32}(kbb=1f-8, beta=(1f0, 1f0), sigma=(1f-4, 1f-4)),
+        ns=3, sigz=0.01f0, hvoffset=hv))
+    e64 = compile_runtime(GaussianStrongBeamSpec(thin=thin(), ns=3, sigz=0.01, hvoffset=hv))
+    @test eltype(e32.slice_hoffset) === Float32 && typeof(e32.thin.kbb) === Float32
+    nonzero = filter(!iszero, e64.slice_hoffset)
+    ratio = maximum(abs, e64.slice_center) / minimum(abs, nonzero)
+    @test e32.slice_hoffset ≈ Float32.(e64.slice_hoffset) rtol=8 * ratio * eps(Float32)
+end
+
+@testset "The strong beam's inert longitudinal components and a degenerate transverse covariance are refused by name (F-124, F-125)" begin
+    # 2026-10-18 audit F-124, F-125 (fix batch 3, unit I). angle[3] (pzo), curvature[3] (ppzo)
+    # and mean[6] were accepted, stored, threaded through every kernel argument list and read
+    # by nothing: 0.05 and 7.0 tracked bit-identically to 0, luminosity included. And an
+    # explicit covariance with a zero position variance passed the PSD check and compiled to
+    # an element whose kernels took their early return for every particle -- no kick,
+    # luminosity 0.0, silently.
+    refused(f, needle) = begin
+        err = try
+            f()
+            nothing
+        catch e
+            e
+        end
+        err isa ArgumentError && occursin(needle, sprint(showerror, err))
+    end
+    thin() = ThinStrongBeamSpec(kbb=1.0e-8, beta=(1.0, 1.0), sigma=(1.0e-4, 1.0e-4))
+    @test refused(() -> ThinStrongBeamSpec(kbb=1.0e-8, beta=(1.0, 1.0), sigma=(1.0e-4, 1.0e-4), angle=(1.0e-4, 0.0, 5.0e-2)),
+                  "angle[3] = 0.05 is not read")
+    @test refused(() -> ThinStrongBeamSpec(kbb=1.0e-8, beta=(1.0, 1.0), sigma=(1.0e-4, 1.0e-4), curvature=(0.0, 0.0, 7.0)),
+                  "curvature[3] = 7.0 is not read")
+    cov6 = gaussian_strong_beam_covariance(transverse_covariance(; beta=(1.0, 1.0), sigma=(1.0e-4, 1.0e-4)),
+                                           [1.0e-4 0.0; 0.0 1.0e-6])
+    @test refused(() -> GaussianStrongBeamSpec(thin=thin(), ns=3, covariance=cov6, mean=(0.0, 0.0, 0.0, 0.0, 0.0, 3.0e-2)),
+                  "mean[6] = 0.03 is not read")
+    # Zero stays accepted on every route, and the flexible forms are checked at compile.
+    @test ThinStrongBeamSpec(kbb=1.0e-8, beta=(1.0, 1.0), sigma=(1.0e-4, 1.0e-4),
+                             angle=(1.0e-4, -2.0e-4, 0.0), curvature=(1.0e-3, -2.0e-3, 0.0)) isa ElementSpec
+    @test GaussianStrongBeamSpec(thin=thin(), ns=3, covariance=cov6, mean=(1.0e-6, 0.0, 0.0, 0.0, 0.0, 0.0)) isa ElementSpec
+    raw_thin = ElementSpec{:thin_strong_beam}(merge(getfield(thin(), :params), Dict{Symbol,Any}(:angle => (0.0, 0.0, 1.0e-3))))
+    @test refused(() -> compile_runtime(raw_thin), "angle[3] = 0.001 is not read")
+    raw_gaussian = ElementSpec{:gaussian_strong_beam}(Dict{Symbol,Any}(
+        :thin => thin(), :ns => 3, :covariance => cov6, :mean => (0.0, 0.0, 0.0, 0.0, 0.0, 2.0e-3)))
+    @test refused(() -> compile_runtime(raw_gaussian), "mean[6] = 0.002 is not read")
+    # The effectiveness contract's joint move keeps the two tuples CHECKED rather than
+    # rejected: the transverse components moved, the inert one at zero (the suite's ratchet
+    # 549 / 34 / 23 in "Element parameter effectiveness" is what this protects).
+    for key in (:angle, :curvature)
+        moves = Octopus._perturb_coupled_overrides(:thin_strong_beam, key, Dict{Symbol,Any}(key => (0.0, 0.0, 0.0)))
+        @test moves !== nothing && length(moves) == 1
+        move = moves[1][key]
+        @test move[3] == 0.0 && move[1] != 0.0 && move[2] != 0.0
+        @test ThinStrongBeamSpec(kbb=1.0e-8, beta=(1.0, 1.0), sigma=(1.0e-4, 1.0e-4); key => move) isa ElementSpec
+    end
+    @test Octopus._perturb_coupled_overrides(:gaussian_strong_beam, :mean, Dict{Symbol,Any}()) === nothing
+    # F-125: the position variances and, coupled, the position block's determinant.
+    @test refused(() -> ThinStrongBeamSpec(kbb=1.0e-4, covariance=zeros(4, 4)), "position variances must be positive")
+    @test refused(() -> ThinStrongBeamSpec(kbb=1.0e-4, covariance=Matrix(Diagonal([0.0, 1.0e-8, 1.0e-8, 1.0e-8]))), "cov[1,1] = 0.0")
+    @test refused(() -> ThinStrongBeamSpec(kbb=1.0e-4, covariance=[1.0e-8 0.0 1.0e-8 0.0; 0.0 1.0e-8 0.0 0.0;
+                                                                    1.0e-8 0.0 1.0e-8 0.0; 0.0 0.0 0.0 1.0e-8]),
+                  "positive definite")
+    # Zero MOMENTUM variances stay legal (the static-covariance fixture of "Weak-strong coupled
+    # covariance and longitudinal limits"), and the 6 x 6 route is checked through its
+    # conditional moments: x = 0.01 z exactly leaves a conditional x variance that is a rounding
+    # residue (1.7e-24 measured against a 1e-8 variance), below the covariance's floor of
+    # 100 eps max|cov| = 2.2e-22 that "positive" means here.
+    @test ThinStrongBeamSpec(kbb=0.2, covariance=Matrix(Diagonal([1.4, 0.0, 0.8, 0.0]))) isa ElementSpec
+    degenerate6 = zeros(6, 6)
+    degenerate6[1, 1] = 1.0e-8; degenerate6[2, 2] = 1.0e-8; degenerate6[3, 3] = 1.0e-8; degenerate6[4, 4] = 1.0e-8
+    degenerate6[5, 5] = 1.0e-4; degenerate6[6, 6] = 1.0e-6
+    degenerate6[1, 5] = degenerate6[5, 1] = 1.0e-6
+    @test refused(() -> compile_runtime(GaussianStrongBeamSpec(thin=thin(), ns=3, covariance=degenerate6)),
+                  "position variances must be positive")
 end
 
 @testset "Conditional 6D Gaussian strong-beam slicing" begin
@@ -14310,6 +14580,9 @@ end
                                                  phase_noise=(WhiteNoise(2.0e-3; rng_id=Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)), nothing))),
         ("radiation exciting", LumpedRadSpec(damping_turns=(1000.0, 1000.0, 500.0), sigma=(1.0e-4, 8.0e-5, 1.0e-2))),
         ("strong beam chromatic", ThinStrongBeamSpec(kbb=1.0e-4, beta=(1.0, 1.0), sigma=(1.0e-3, 1.0e-3), virtual_drift=ChromaticDrift())),
+        # The :exact option measured by the gate for the first time (2026-10-18 audit F-120; fix batch 3, unit I): the
+        # forward drift's `1 + pz - ps` read pz 1024 ulps at 1 turn and 2048 at 3 against this round class of 8.
+        ("strong beam exact", ThinStrongBeamSpec(kbb=1.0e-4, beta=(1.0, 1.0), sigma=(1.0e-3, 1.0e-3), virtual_drift=ExactHamiltonianDrift())),
         ("strong beam elliptic", ThinStrongBeamSpec(kbb=1.0e-8, klum=1.0, beta=(0.82, 0.075), alpha=(0.01, -0.02), sigma=(110.0e-6, 12.0e-6))),
         ("chromaticity kick with zeta", ChromaticityKickSpec(xi=(1.2, -0.8), beta=(0.82, 0.075), alpha=(0.01, -0.02), zeta=(0.002, -0.001, 0.0, 0.0),
                                                              eta=(0.001, 0.0, -0.001, 0.0), R=(0.001, -0.0005, 0.0003, 0.0007))),

@@ -275,9 +275,12 @@ end
 `h = 1 - zeta' S_4 eta`: the (3,3) entry of (D3), the reciprocal of the
 canonical area `1 + D[:, 1]' S_4 D[:, 2]` of the graph (D8). The one place the
 formula is written; `_dispersion_transformation` and `_dispersion_graph` read it.
+Generic in the inputs' element type (a ForwardDiff dual passes through); for
+Float64 inputs the arithmetic is the one it had with the `Vector{Float64}`
+conversion it carried until 2026-10-21 (F-121).
 """
 _longitudinal_factor(zeta::AbstractVector{<:Real}, eta::AbstractVector{<:Real}) =
-    1 - dot(zeta, _symplectic_form(4) * Vector{Float64}(eta))
+    1 - dot(zeta, _symplectic_form(4) * eta)
 
 """
     _dispersion_graph(zeta, eta) -> (graph, h)
@@ -292,7 +295,13 @@ reports and converts through this function, so the analysis and its consumers
 share one convention and one source for the conversion (owner decision
 2026-10-18, `docs/experiences.md`). `h = 0` is the isotropic graph of the
 note's 8.2, where no canonical normalization exists and the slope does not,
-and is refused by name; non-finite inputs are refused.
+and is refused by name; non-finite inputs are refused. Generic in the inputs'
+element type: the graph of Float64 inputs is a `Matrix{Float64}` as before,
+that of a ForwardDiff dual a dual matrix. From 2026-10-18 to 2026-10-21 both
+inputs were converted to `Vector{Float64}` here, so a parameter derivative
+through `gaussian_strong_beam_covariance` failed with `MethodError:
+Float64(::Dual)` (2026-10-18 audit, F-121, a regression of the batch that
+introduced this function).
 """
 function _dispersion_graph(zeta::AbstractVector{<:Real}, eta::AbstractVector{<:Real})
     (length(zeta) == 4 && length(eta) == 4) || throw(ArgumentError(
@@ -303,7 +312,7 @@ function _dispersion_graph(zeta::AbstractVector{<:Real}, eta::AbstractVector{<:R
     iszero(h) && throw(ArgumentError(
         "the canonical dispersions have zeta' S_4 eta = 1, so h = 0: the longitudinal graph is " *
         "isotropic and the physical slope eta / h does not exist (theory note twiss_dispersion.md, 8.2)"))
-    return (graph=hcat(Vector{Float64}(zeta), Vector{Float64}(eta) ./ h), h=h)
+    return (graph=hcat(collect(zeta), collect(eta) ./ h), h=h)
 end
 
 """

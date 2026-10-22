@@ -23,8 +23,16 @@ compare only between runs of the same Julia build on the same machine:
 this is a refactor guard, not a cross-platform reference. Written for
 multi-process step 1 (2026-09-04, docs/history/weak_strong_allocation_2026_09_04.md),
 where nine configurations were bit-identical across the slice-carrier
-change; the `hvoffset` configuration throws a `MethodError` on both trees
-(a plain tuple is not accepted; recorded there as out of scope).
+change. Fix batch 3 of the 2026-10-18 audit (unit I, 2026-10-21) MOVED five
+lines on purpose and this script with them: `:chromatic` kicks at the
+collision point's own `S` (F-119) and the exact drift forms `H_ex` without
+cancellation (F-120), so every chromatic and exact line changed; the two
+"angled" configurations now carry `angle[3] = curvature[3] = 0`, which the
+constructor refuses when non-zero (F-124: the components were accepted and
+inert); and the `hvoffset` configuration, which used to pass a plain tuple
+and throw a `MethodError` on both trees, passes the Dict the option takes
+(F-122) and is a real line for the first time. The before/after digests are
+in that batch's record under `docs/history/`.
 =#
 const ROOT = get(ENV, "OCT_ROOT", normpath(joinpath(@__DIR__, "..")))
 include(joinpath(ROOT, "src", "Octopus.jl"))
@@ -59,16 +67,16 @@ cov6 = let sx = 115.0e-6, spx = 1.4e-4, sy = 13.0e-6, spy = 1.7e-4, sz = 7.0e-3,
     c
 end
 configs = [
-    ("thin hirata angled",            () -> thin(center=(2.0e-6, -1.0e-6, 1.0e-3), angle=(1.0e-4, -2.0e-4, 5.0e-5), curvature=(1.0e-3, -2.0e-3, 4.0e-4))),
+    ("thin hirata angled",            () -> thin(center=(2.0e-6, -1.0e-6, 1.0e-3), angle=(1.0e-4, -2.0e-4, 0.0), curvature=(1.0e-3, -2.0e-3, 0.0))),
     ("thin coupled exact",            () -> thin(coupling=XYCouplingSpec{Float64}(r1=0.01, r2=-0.003, r3=0.002, r4=0.004), virtual_drift=:exact, angle=(1.0e-4, -2.0e-4, 0.0))),
-    ("gsb hirata angled",             () -> GaussianStrongBeamSpec{Float64}(thin=thin(center=(2.0e-6, -1.0e-6, 1.0e-3), angle=(1.0e-4, -2.0e-4, 5.0e-5), curvature=(1.0e-3, -2.0e-3, 4.0e-4)), ns=3, sigz=7.0e-3, slice_method=:equal_area)),
+    ("gsb hirata angled",             () -> GaussianStrongBeamSpec{Float64}(thin=thin(center=(2.0e-6, -1.0e-6, 1.0e-3), angle=(1.0e-4, -2.0e-4, 0.0), curvature=(1.0e-3, -2.0e-3, 0.0)), ns=3, sigz=7.0e-3, slice_method=:equal_area)),
     ("gsb chromatic",                 () -> GaussianStrongBeamSpec{Float64}(thin=thin(virtual_drift=:chromatic), ns=3, sigz=7.0e-3, slice_method=:equal_area)),
     ("gsb exact",                     () -> GaussianStrongBeamSpec{Float64}(thin=thin(virtual_drift=:exact), ns=3, sigz=7.0e-3, slice_method=:gauss_hermite)),
     ("gsb exact coupled",             () -> GaussianStrongBeamSpec{Float64}(thin=thin(coupling=XYCouplingSpec{Float64}(r1=0.01, r2=-0.003, r3=0.002, r4=0.004), virtual_drift=:exact), ns=3, sigz=7.0e-3, slice_method=:sqrt_density)),
     ("gsb 6x6 covariance hirata",     () -> GaussianStrongBeamSpec{Float64}(thin=thin(), ns=3, covariance=cov6, mean=(1.0e-6, 2.0e-6, -1.0e-6, 1.0e-6, 0.0, 0.0))),
     ("gsb unsafe paraxial-frozen",    () -> GaussianStrongBeamSpec{Float64}(thin=thin(virtual_drift=UnsafeVirtualDrift(:paraxial_frozen_longitudinal)), ns=3, sigz=7.0e-3, slice_method=:equal_area)),
     ("gsb unsafe chromatic-frozen",   () -> GaussianStrongBeamSpec{Float64}(thin=thin(virtual_drift=UnsafeVirtualDrift(:chromatic_frozen_energy)), ns=3, sigz=7.0e-3, slice_method=:equal_area)),
-    ("gsb hirata hvoffset",           () -> GaussianStrongBeamSpec{Float64}(thin=thin(), ns=5, sigz=7.0e-3, slice_method=:equal_area, hvoffset=(1.0e-6, -2.0e-6))),
+    ("gsb hirata hvoffset",           () -> GaussianStrongBeamSpec{Float64}(thin=thin(), ns=5, sigz=7.0e-3, slice_method=:equal_area, hvoffset=Dict(:dim => :x, :coef => 1.0e-6, :frequency => 197.0e6))),
 ]
 # `:auto` workers: the digests are thread-count invariant (the suite pins
 # both loop copies across worker counts), so any `--threads` gives the same

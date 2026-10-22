@@ -758,17 +758,31 @@ selected by a plain `virtual_drift` symbol, and neither should be used for
 physical tracking.
 
 The direct collision-point formula in Sections 4-5 used
-$u=-(z-z_*)/2$ and $u_z=-1/2$. When a modified virtual drift changes $z$
-during the IP-to-CP transformation, one must state how the source field is
-selected. The formulas below derive the drift maps and their isolated
-slingshot terms exactly. Combining them with the direct Gaussian term assumes
-the usual frozen-collision-field approximation: the source potential is
-evaluated at the collision location selected before the small drift-generated
-$z$ variation, so its explicit longitudinal derivative remains the one
-derived in Section 4. A model that instead lets the source potential depend
-on the modified final collision coordinate must differentiate that complete
-dependence anew; the interaction is then not represented by the same
-coordinate-only thin kick.
+$u=-(z-z_*)/2$ and $u_z=-1/2$, with $z$ the field particle's longitudinal
+coordinate **at the collision point**. When a virtual drift changes $z$
+during the IP-to-CP transformation, the source field must be selected at that
+collision-point coordinate: the kick's $S$ is $(z^--z_*)/2$ with $z^-$ the
+drifted coordinate, so the kick remains a function of the collision-point
+positions alone and the composite $\mathcal D^{-1}\mathcal B\mathcal D$ is
+symplectic for every model. For the paraxial Hirata drift $z^-=z$ and $S$ is
+the interaction-point value. For the exact-Hamiltonian drift this is the
+collision condition $z_{\mathrm{CP}}=z_*+2S$ of Section 7.2. For the chromatic
+drift $z^-=z+2S\Phi$, so the kick's $S$ is $S(1+\Phi)$. The formulas below
+derive the drift maps and their isolated slingshot terms exactly; combined
+with the direct Gaussian term at the collision-point $S$, the explicit
+longitudinal derivative of the source potential is the one derived in
+Section 4, evaluated there.
+
+Until 2026-10-21 the implementation handed the chromatic kick the
+interaction-point $S$ instead (the "frozen-collision-field approximation" an
+earlier version of this paragraph stated). That makes the potential depend on
+the collision-point momenta through $\Phi(p_x,p_y,p_z)$, so its momentum
+updates are not the gradient of a function of positions and the composite is
+non-symplectic at first order in $\Phi$: a dual-number Jacobian residual
+$\max|J^TSJ-S|$ of $4.5\times10^{-9}$ at $k_{bb}=10^{-5}$
+($1.4\times10^{-3}$ for a five-slice beam) against the $10^{-13}$ floor of
+the other two models, scaling linearly with $k_{bb}$ (comprehensive audit
+2026-10-18, F-119; invisible to a finite-difference check at $5\times10^{-7}$).
 
 Use
 
@@ -930,6 +944,14 @@ $$
     \qquad
     p_s=\sqrt{P^2-p_x^2-p_y^2}.
 $$
+
+Numerically the implementation forms $H_{\mathrm{ex}}$ as $q/(P+p_s)$, the
+identity $q=(P-p_s)(P+p_s)$ used below for the inverse: $P-p_s$ is the
+difference of two $O(1)$ quantities and loses about $4\times10^{-5}$ of its
+relative precision at EIC-like momenta, which the two backends' different
+fusion of the radicand turned into some 900 ulps of $p_z$'s scale between CPU
+and CUDA where the declared class allows 8 (comprehensive audit 2026-10-18,
+F-120; fixed 2026-10-21).
 
 Let initial interaction-point variables carry a subscript $0$. During a
 physical drift over distance $S$,
