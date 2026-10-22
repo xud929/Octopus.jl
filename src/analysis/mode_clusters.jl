@@ -1010,7 +1010,11 @@ components form the union's half, its ordered-Schur basis and Gram, its
 `rho_M1`, its kappa (`1 / lambda_min(|H|)` when definite above the floor,
 else the eigenvector estimate when each pair alone is orientable, else
 `Inf`), the gap and the chord; merge the pair with the LARGEST chord above
-`resolution_chord` first, recompute, repeat until none exceeds it (a chord of
+`resolution_chord` first (equal chords, the cap 2.0 of an infinite kappa or
+of a vanishing gap, by the SMALLER gap, the limit of `2 kappa rho_M1 / g` as
+kappa grows, so two copies of a repeated eigenvalue merge before either
+absorbs a distant isolated pair; a remaining tie keeps the canonical loop
+order; fix batch 3, 2026-10-21, F-195), recompute, repeat until none exceeds it (a chord of
 `Inf` merges at `_DEFAULT_RESOLUTION_CHORD`: it forces the RESOLUTION of the
 clusters, D7e, not their absence). Every evaluated candidate goes into the
 receipt; the returned `chords` are the last round's between the final
@@ -1052,15 +1056,23 @@ function _agglomerate(M::AbstractMatrix{<:Real}, spec, rho::AbstractVector{<:Com
     while true
         n = length(components)
         chords = zeros(n, n)
-        best = (0, 0); bestq = -Inf
+        best = (0, 0); bestq = -Inf; bestg = Inf
         for a in 1:n, b in a+1:n
             r = evaluate(components[a], components[b])
             chords[a, b] = chords[b, a] = r.chord
             do_merge = r.chord > merge_chord
             push!(receipt, (first=copy(components[a]), second=copy(components[b]), gap=r.gap, kappa=r.kappa,
                             kappa_source=r.kappa_source, rho_M1=r.rho_M1, chord=r.chord, merged=false))
-            if do_merge && r.chord > bestq
-                best = (a, b); bestq = r.chord
+            # The LARGEST chord merges first. Equal chords (the cap 2.0 of an infinite kappa, which every union touching
+            # ONE copy of an exactly repeated pair has, or of a vanishing gap) are ordered by the SMALLER gap, the limit
+            # of 2 kappa rho_M1 / g as kappa grows: the two copies of a repeated eigenvalue (gap at roundoff) merge before
+            # either absorbs a distant isolated pair, whose chord against the merged, now orientable, pair is finite. The
+            # loop order decided the tie before and merged a synchrotron pair into a betatron copy whenever its
+            # eigenvalue sorted first, ending in one six-member cluster and an eta set of multiplicity 3 where the
+            # dispersion is unique (2026-10-18 audit, F-195); a remaining tie (mutually degenerate pairs) keeps the loop
+            # order and ends in the same clusters whichever merges first.
+            if do_merge && (r.chord > bestq || (r.chord == bestq && r.gap < bestg))
+                best = (a, b); bestq = r.chord; bestg = r.gap
             end
         end
         best == (0, 0) && break

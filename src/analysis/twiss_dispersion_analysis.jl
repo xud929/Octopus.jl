@@ -25,9 +25,10 @@ and `DETERMINATION_STATUSES` are.
   * `:degraded` -- every check held, but the result carries at least one
     honest limitation in `degradations` (a flagged non-symplectic input, a
     closed-orbit warning, a forced or unresolved or indefinite cluster, a
-    label tie, an uncertified longitudinal selection that could not be
-    cross-checked, iterative routes that converged to another invariant
-    plane, an unavailable primary dispersion for a physical reason).
+    label tie, an uncertified heuristic longitudinal selection (the
+    `:max_signed_z_area` rule is never certified on its own, whatever `h`),
+    iterative routes that converged to another invariant plane, an
+    unavailable primary dispersion for a physical reason).
   * `:failed` -- a numerical check did not hold (`failures` names each one);
     under `strict = true` `analyze` throws [`OpticsAnalysisError`](@ref)
     carrying this result, under `strict = false` it returns it.
@@ -195,10 +196,13 @@ const _STABILITY_ATOL_MULTIPLIER = 64.0
     _CLOSED_ORBIT_ATOL_MULTIPLIER
 
 PROVISIONAL (D1). The default of the `closed_orbit_atol` option when the
-user passes `nothing`: `c * eps * max(1, maximum(abs, point))`, the roundoff
-of evaluating the map once at the expansion `point` recorded in the
-`LinearizationProvenance`; the fixed-point residual `map(point) - point` is
-compared with it in the max norm. A lattice with the origin as its fixed
+user passes `nothing`: `c * eps * max(1, maximum(abs, C * point))`, the
+roundoff of evaluating the map once at the expansion `point` recorded in the
+`LinearizationProvenance`, the point in the SCALED coordinates the residual
+is judged in (`C` the reciprocal scaling; fix batch 3, 2026-10-21, U21-10 c);
+the fixed-point residual `C (map(point) - point)` is compared with it in the
+max norm, and the value applied is recorded in the receipt's `effective_atol`
+and in `diagnostics.closed_orbit`. A lattice with the origin as its fixed
 point gives a residual of exactly zero. Extremes (stage 4b D1, measurement_table_4b.md
 c_closed_orbit, scaled coordinates): linearizations at the origin (the dense
 Linear6DSpec by complex step and by finite differences, the FODO, DBA and
@@ -274,19 +278,20 @@ description(::Type{TwissDispersionAnalysis}) =
     "Twiss, coupling and dispersion analysis of a 4x4 or 6x6 one-turn matrix with certified options."
 
 function _analysis_number(name::Symbol, x)
-    x isa Real || throw(ArgumentError("TwissDispersionAnalysis: $(name) must be a real number, got $(x)"))
+    (x isa Real && !(x isa Bool)) || throw(ArgumentError("TwissDispersionAnalysis: $(name) must be a real number, got $(repr(x))"))
     (isfinite(x) && x >= 0) || throw(ArgumentError("TwissDispersionAnalysis: $(name) must be finite and non-negative, got $(x)"))
     return Float64(x)
 end
 
-function TwissDispersionAnalysis(; scaling=:auto, symplectic_rtol=nothing, nonsymplectic::Symbol=:error,
-                                 closed_orbit::Symbol=:require, closed_orbit_atol=nothing, map_uncertainty=0.0,
+function TwissDispersionAnalysis(; scaling=:auto, symplectic_rtol=nothing, nonsymplectic=:error,
+                                 closed_orbit=:require, closed_orbit_atol=nothing, map_uncertainty=0.0,
                                  resolution_chord=_DEFAULT_RESOLUTION_CHORD, clusters=:auto,
                                  longitudinal_mode=:max_signed_z_area, preferred_form=:auto,
-                                 dispersion_routes=DISPERSION_ROUTES, newton_max_iterations::Integer=50,
+                                 dispersion_routes=DISPERSION_ROUTES, newton_max_iterations=50,
                                  emittances=nothing, strict=true)
-    # every rejected keyword is an ArgumentError naming it (stage 9): a Bool is not an integer choice, a non-Bool
-    # is not a strictness flag, and a keyword type mismatch would otherwise surface as a MethodError or TypeError
+    # every rejected keyword is an ArgumentError naming it (stage 9; fix batch 3, 2026-10-21, F-199): no keyword is
+    # typed, so a wrong type never surfaces as a TypeError or MethodError; a Bool is not an integer choice and never a
+    # number (`_analysis_number`, the emittances), and a non-Bool is not a strictness flag
     strict isa Bool || throw(ArgumentError("TwissDispersionAnalysis: strict must be true or false, got $(strict)"))
     if scaling isa Symbol
         scaling in (:auto, :none) || throw(ArgumentError("TwissDispersionAnalysis: scaling must be :auto, :none or a tuple of positive factors, got :$(scaling)"))
@@ -299,11 +304,11 @@ function TwissDispersionAnalysis(; scaling=:auto, symplectic_rtol=nothing, nonsy
         throw(ArgumentError("TwissDispersionAnalysis: scaling must be :auto, :none or a tuple of positive factors, got $(scaling)"))
     end
     rtol = symplectic_rtol === nothing ? nothing : _analysis_number(:symplectic_rtol, symplectic_rtol)
-    nonsymplectic in (:error, :flag) || throw(ArgumentError("TwissDispersionAnalysis: nonsymplectic must be :error or :flag, got :$(nonsymplectic)"))
-    closed_orbit in (:require, :warn) || throw(ArgumentError("TwissDispersionAnalysis: closed_orbit must be :require or :warn, got :$(closed_orbit)"))
+    (nonsymplectic isa Symbol && nonsymplectic in (:error, :flag)) || throw(ArgumentError("TwissDispersionAnalysis: nonsymplectic must be :error or :flag, got $(repr(nonsymplectic))"))
+    (closed_orbit isa Symbol && closed_orbit in (:require, :warn)) || throw(ArgumentError("TwissDispersionAnalysis: closed_orbit must be :require or :warn, got $(repr(closed_orbit))"))
     co_atol = closed_orbit_atol === nothing ? nothing : _analysis_number(:closed_orbit_atol, closed_orbit_atol)
     unc = _analysis_number(:map_uncertainty, map_uncertainty)
-    resolution_chord isa Real || throw(ArgumentError("TwissDispersionAnalysis: resolution_chord must be a number in (0, 2] or Inf, got $(resolution_chord)"))
+    (resolution_chord isa Real && !(resolution_chord isa Bool)) || throw(ArgumentError("TwissDispersionAnalysis: resolution_chord must be a number in (0, 2] or Inf, got $(repr(resolution_chord))"))
     chord = Float64(resolution_chord)
     ((0 < chord <= 2) || chord == Inf) || throw(ArgumentError("TwissDispersionAnalysis: resolution_chord must lie in (0, 2] or be Inf, got $(chord)"))
     if clusters isa Symbol
@@ -323,7 +328,12 @@ function TwissDispersionAnalysis(; scaling=:auto, symplectic_rtol=nothing, nonsy
         longitudinal_mode >= 1 || throw(ArgumentError("TwissDispersionAnalysis: an explicit longitudinal_mode index must be positive, got $(longitudinal_mode)"))
         lm = Int(longitudinal_mode)
     elseif longitudinal_mode isa Real
-        (isfinite(longitudinal_mode) && 0 < longitudinal_mode < pi) || throw(ArgumentError("TwissDispersionAnalysis: longitudinal_mode as a synchrotron tune must lie in (0, pi) radians per turn, got $(longitudinal_mode)"))
+        # tunes are reported mod 2pi (the oriented eigenvalue's -angle in [0, 2pi)), so the result's own synchrotron tune,
+        # above pi whenever that eigenvalue has Im > 0, must be accepted: mu and 2pi - mu name the same mode (the pair
+        # exp(-+ i mu)); 0 and pi are real eigenvalues, not a synchrotron mode (2026-10-18 audit, F-197)
+        (isfinite(longitudinal_mode) && 0 < longitudinal_mode < 2pi && longitudinal_mode != pi) || throw(ArgumentError(
+            "TwissDispersionAnalysis: longitudinal_mode as a synchrotron tune must lie in (0, 2pi) radians per turn and differ from pi " *
+            "(tunes are reported mod 2pi and mu and 2pi - mu name the same mode; 0 and pi are real eigenvalues), got $(longitudinal_mode)"))
         lm = Float64(longitudinal_mode)
     else
         throw(ArgumentError("TwissDispersionAnalysis: longitudinal_mode must be a rule symbol, an eigenvalue index or a synchrotron tune, got $(longitudinal_mode)"))
@@ -343,11 +353,11 @@ function TwissDispersionAnalysis(; scaling=:auto, symplectic_rtol=nothing, nonsy
     end
     length(unique(dispersion_routes)) == length(dispersion_routes) || throw(ArgumentError("TwissDispersionAnalysis: dispersion_routes repeats a route: $(dispersion_routes)"))
     :eigenplane in dispersion_routes || throw(ArgumentError("TwissDispersionAnalysis: dispersion_routes must include :eigenplane, the primary route, got $(dispersion_routes)"))
-    newton_max_iterations isa Bool && throw(ArgumentError("TwissDispersionAnalysis: newton_max_iterations must be an integer >= 1, got $(newton_max_iterations)"))
+    (newton_max_iterations isa Integer && !(newton_max_iterations isa Bool)) || throw(ArgumentError("TwissDispersionAnalysis: newton_max_iterations must be an integer >= 1, got $(repr(newton_max_iterations))"))
     newton_max_iterations >= 1 || throw(ArgumentError("TwissDispersionAnalysis: newton_max_iterations must be at least 1, got $(newton_max_iterations)"))
     if emittances === nothing
         em = nothing
-    elseif emittances isa Tuple && length(emittances) in (2, 3) && all(e -> e isa Real && isfinite(e) && e >= 0, emittances)
+    elseif emittances isa Tuple && length(emittances) in (2, 3) && all(e -> e isa Real && !(e isa Bool) && isfinite(e) && e >= 0, emittances)
         em = Tuple(Float64.(emittances))
     else
         throw(ArgumentError("TwissDispersionAnalysis: emittances must be nothing or a tuple of 2 or 3 finite non-negative rms emittances, got $(emittances)"))
@@ -386,10 +396,10 @@ const _TWISS_DISPERSION_OPTION_SCHEMA = (
         category=:execution, supported_backends=(CPUThreadsBackend,), dependencies=(:closed_orbit_atol,),
         consumer=:analysis_closed_orbit),
     closed_orbit_atol=ConfigurationOptionMeta(Union{Nothing,Float64}, nothing,
-        "Max-norm tolerance on the recorded fixed-point residual map(point) - point; nothing = the roundoff default _CLOSED_ORBIT_ATOL_MULTIPLIER * eps * max(1, max|point|). Inactive on a bare matrix.";
+        "Max-norm tolerance on the recorded fixed-point residual map(point) - point, judged in scaled coordinates (C r); nothing = the roundoff default _CLOSED_ORBIT_ATOL_MULTIPLIER * eps * max(1, max|C point|). The value applied is recorded in the receipt's effective_atol and in diagnostics.closed_orbit. Inactive on a bare matrix.";
         category=:numerical, supported_backends=(CPUThreadsBackend,), consumer=:analysis_closed_orbit),
     map_uncertainty=ConfigurationOptionMeta(Float64, 0.0,
-        "A declared absolute error of the matrix entries, folded into the perturbation scale rho_M0 that every resolution and acceptance test reads.";
+        "A declared absolute error of the matrix entries IN THE CALLER'S COORDINATES, folded into the perturbation scale rho_M0 of the scaled matrix (which every resolution and acceptance test reads) after multiplication by the scaling's gain max_ij C_ii / C_jj (1 under scaling = :none); the gain and the four arms of rho_M0 are in diagnostics.resolution.";
         category=:numerical, supported_backends=(CPUThreadsBackend,), consumer=:analysis_cluster_resolution),
     resolution_chord=ConfigurationOptionMeta(Float64, _DEFAULT_RESOLUTION_CHORD,
         "The chord q = min(2, 2 kappa rho_M1 / g) above which two candidate mode clusters merge (stage 3). The default is a MEASURED policy (campaign record, stage 3: bracket [2.96e-5, 2.96e-2], geometric mean rounded to a power of ten). Inf forces resolution and marks the clusters forced. Read by every clustering, including the re-clustering of the separated transverse block.";
@@ -399,7 +409,7 @@ const _TWISS_DISPERSION_OPTION_SCHEMA = (
         category=:physics, supported_backends=(CPUThreadsBackend,), dependencies=(:resolution_chord,),
         consumer=:analysis_cluster_resolution),
     longitudinal_mode=ConfigurationOptionMeta(Union{Symbol,Int,Float64}, :max_signed_z_area,
-        "Which mode is the synchrotron mode of a 6x6 map. :max_signed_z_area is stage 4a's heuristic (UNCERTIFIED: by (K12) kappa_sz = h and kappa_1z + kappa_2z = 1 - h, so a betatron mode CAN carry more z-area and the 3x3 array cannot distinguish a row permutation); an Int names a canonical eigenvalue index; a Float64 is the synchrotron tune mu_s in (0, pi), selecting the mode whose eigenvalue pair contains the one nearest exp(-i mu_s) (the chord must be below max(half the chord to the runner-up, _TUNE_CHORD_FLOOR_MULTIPLIER rho_M1), else an ArgumentError). Inactive on 4x4 input and on a coasting map.";
+        "Which mode is the synchrotron mode of a 6x6 map. :max_signed_z_area is stage 4a's heuristic (UNCERTIFIED: by (K12) kappa_sz = h and kappa_1z + kappa_2z = 1 - h, so a betatron mode CAN carry more z-area and the 3x3 array cannot distinguish a row permutation); an Int names a canonical eigenvalue index; a Float64 is the synchrotron tune mu_s in (0, 2pi) other than pi (tunes are reported mod 2pi; mu and 2pi - mu name the same mode), selecting the mode whose eigenvalue pair contains the one nearest exp(-i mu_s) (the chord must be below max(half the chord to the runner-up, _TUNE_CHORD_FLOOR_MULTIPLIER rho_M1), else an ArgumentError). Inactive on 4x4 input and on a coasting map.";
         category=:physics, supported_backends=(CPUThreadsBackend,), consumer=:analysis_labels),
     preferred_form=ConfigurationOptionMeta(Union{Symbol,Int}, :auto,
         "Which Edwards-Teng form the result PRESENTS as preferred (both are always computed): :auto takes the admissible form with the larger area weight (ties to form 1); 1 or 2 name a form. Inactive when the transverse optics are unavailable.";
@@ -548,7 +558,9 @@ const _ANALYSIS_INPUT_T = NamedTuple{(:form, :dimension, :provenance),
 const _DEFECT_T = NamedTuple{(:frobenius, :row_ratio, :row_residual, :row_tolerance), NTuple{4, Float64}}
 const _ROUTE_DIAGNOSTIC_T = NamedTuple{(:route, :status, :normalized_residual, :raw_residual,
                                         :coefficient_condition, :iterations, :converged, :detail),
-                                       Tuple{Symbol, Symbol, Float64, Float64, Float64, Int, Bool, String}}
+                                       Tuple{Symbol, Symbol, Determined{Float64}, Determined{Float64}, Determined{Float64}, Int, Bool, String}}
+const _CLOSED_ORBIT_DIAGNOSTIC_T = NamedTuple{(:residual, :tolerance, :tolerance_source, :action),
+                                              Tuple{Float64, Float64, Symbol, Symbol}}
 const _LONGITUDINAL_SELECTION_T = NamedTuple{(:rule, :certified, :selected, :cluster, :weights, :tie, :tune_chords, :detail),
                                              Tuple{Symbol, Bool, Int, Int, Vector{Float64}, Bool, Union{Nothing,NTuple{2,Float64}}, String}}
 const _EDWARDS_TENG_DIAGNOSTIC_T = NamedTuple{(:requested, :reported, :admissible, :area_weights, :route),
@@ -576,7 +588,10 @@ per bullet of theory Section 11.2, everything in SCALED coordinates:
     acceptance tests of the verdict read exactly the `_VERDICT_RESIDUALS`
     names (the (K14) identity, the separation, the triple consistency and
     the primary route are reported with a tolerance but judged elsewhere).
-  * `resolution`: the clusters' resolution receipt (chord, `rho_M1`, the
+  * `resolution`: the clusters' resolution receipt (chord, `rho_M0` and its
+    four arms `"rho_M0 arm defect"`, `"rho_M0 arm roundoff"`, `"rho_M0 arm
+    user"`, `"rho_M0 arm provenance"` (the two declared arms already
+    multiplied by the `"scaling gain"` row, `_scaling_gain`), `rho_M1`, the
     inter-cluster chords, `forced` flags) as `(name, value)` pairs.
   * `longitudinal_selection`: rule, certified flag, selected eigenvalue
     index and cluster, the signed z-areas (the weights), the tie flag,
@@ -588,13 +603,28 @@ per bullet of theory Section 11.2, everything in SCALED coordinates:
   * `projection`: the two `h` values (`h_report` = (D11) `det U_ls` of the
     primary route, `h_separation` = the (D8) value the separation used),
     their difference, the graph's smallest singular value, the canonical
-    area and the triple consistency.
+    area in the kernel's convention `1 + zeta' S_4 (eta / h)` (the primary
+    route's when it formed a graph, else recomputed from the separation's
+    triple, as on a coasting map where no route runs: 1 there) and the
+    triple consistency.
   * `phase_validity`: the Mais-Ripken phase-validity flags per mode.
-  * `routes`: one row per executed dispersion route: status, normalized and
-    raw invariance residual, coefficient condition, iterations, `converged`
-    (`false` for an iterative route that stopped short of its stop floor,
-    which is `:not_invariant` whatever the (I1) floor says; `true` for the
-    direct routes), detail.
+  * `routes`: one row per EXECUTED dispersion route (`dispersion.executed`,
+    the routes whose kernel ran: none on a coasting map, the polynomial and
+    projector routes alone when the longitudinal candidate is a definite
+    unresolved cluster; a requested route blocked before running is in
+    `result.dispersion.routes` with its reason and has no row here): status,
+    normalized and raw invariance residual and coefficient condition as
+    `Determined{Float64}` (unavailable with the kernel's reason when the route
+    formed no graph or no condition; never a `0.0` standing in), iterations,
+    `converged` (`false` for an iterative route that stopped short of its stop
+    floor, which is `:not_invariant` whatever the (I1) floor says; `true` for
+    the direct routes), detail.
+  * `closed_orbit`: on a linearized input the fixed-point check as applied:
+    the scaled max-norm `residual`, the `tolerance` compared with it,
+    `tolerance_source` (`:option` for an explicit `closed_orbit_atol`,
+    `:default` for `_CLOSED_ORBIT_ATOL_MULTIPLIER * eps * max(1, max|C point|)`)
+    and the `action` (`:accepted`, `:warned`); unavailable `:not_requested` on
+    a bare matrix.
 """
 struct AnalysisDiagnostics
     convention::String
@@ -611,6 +641,7 @@ struct AnalysisDiagnostics
     projection::Determined{_PROJECTION_DIAGNOSTIC_T}
     phase_validity::Determined{NTuple{2,Bool}}
     routes::Vector{_ROUTE_DIAGNOSTIC_T}
+    closed_orbit::Determined{_CLOSED_ORBIT_DIAGNOSTIC_T}
 end
 
 """
@@ -626,8 +657,10 @@ object and its schema are the stable surface). Fields:
     `matrix_scaled = C M C^-1`. Every kernel field below is in SCALED
     coordinates; [`PhysicalOptics`](@ref) holds the back-transformed ones.
   * `symplectic_defect`: stage 1's tuple on the scaled matrix; `rho_M0`: the
-    first perturbation scale (defect, roundoff, declared uncertainty,
-    provenance uncertainty).
+    first perturbation scale, the largest of four arms (defect, roundoff, the
+    declared `map_uncertainty` and the provenance uncertainty, the last two
+    multiplied by the scaling's gain `_scaling_gain` because they are declared
+    in the caller's coordinates; the arms are in `diagnostics.resolution`).
   * `closed_orbit`: the max-norm fixed-point residual read from a
     `LinearizedMap`'s provenance, unavailable `:not_requested` on a bare
     matrix (the reason vocabulary's member for "the input carries no such
@@ -764,12 +797,12 @@ stage 2's (M9) on the unique 4D normalizer, or stage 4a's (K10)
 `G_j` of the transverse frame and the separation's `eta`), then
 `_unscale_covariance`. Throws `UndeterminedQuantityError` with the reason
 when the normalizer is not unique, `ArgumentError` for an emittance tuple of
-the wrong length or with a negative entry.
+the wrong length or with a negative or Bool entry.
 """
 function matched_covariance(result::TwissDispersionResult, emittances)
     d = result.input.dimension
     n = d == 4 ? 2 : 3
-    (emittances isa Tuple && length(emittances) == n && all(e -> e isa Real, emittances)) || throw(ArgumentError(
+    (emittances isa Tuple && length(emittances) == n && all(e -> e isa Real && !(e isa Bool), emittances)) || throw(ArgumentError(
         "matched_covariance: a $(d)x$(d) map takes $(n) rms mode emittances, got $(emittances)"))
     all(e -> isfinite(e) && e >= 0, emittances) || throw(ArgumentError(
         "matched_covariance: rms mode emittances must be finite and non-negative, got $(emittances)"))
@@ -907,20 +940,28 @@ eps * max(1, maximum(abs, C point))`, the point scaled the same way);
 `:require` throws an ArgumentError above it, `:warn` emits ONE warning
 (`@warn ... maxlog=1 _id=:twiss_dispersion_closed_orbit`) and returns the
 degradation string. Receipt `:analysis_closed_orbit (closed_orbit,
-closed_orbit_atol, residual, action)` ONLY on a linearized input; on a bare
-matrix NO receipt is issued and the residual is unavailable
-`:not_requested` (the probe asserts the receipt's absence together with the
-report's `:inactive_dependency`).
+closed_orbit_atol, effective_atol, residual, action)` ONLY on a linearized
+input, `closed_orbit_atol` the option as given and `effective_atol` the
+tolerance the comparison used (the default resolved; fix batch 3,
+2026-10-21, F-198); on a bare matrix NO receipt is issued and the residual is
+unavailable `:not_requested` (the probe asserts the receipt's absence together
+with the report's `:inactive_dependency`). Returns the residual, the
+degradation and the `_CLOSED_ORBIT_DIAGNOSTIC_T` record (residual, tolerance,
+its source `:option` / `:default`, action) for `diagnostics.closed_orbit`.
 """
 function _analysis_closed_orbit(analysis::TwissDispersionAnalysis, input::_ANALYSIS_INPUT_T, rec::ReciprocalScaling)
-    input.form === :linearized || return Determined{Float64}(:not_requested,
-        "a bare matrix carries no closed-orbit information; the closed_orbit options are inactive"), nothing
+    if input.form !== :linearized
+        detail = "a bare matrix carries no closed-orbit information; the closed_orbit options are inactive"
+        return Determined{Float64}(:not_requested, detail), nothing, Determined{_CLOSED_ORBIT_DIAGNOSTIC_T}(:not_requested, detail)
+    end
     prov = input.provenance
     C = _scaling_matrix(rec)
     residual = maximum(abs, C * collect(Float64, prov.fixed_point_residual))
     atol = analysis.closed_orbit_atol
+    tolerance_source = :option
     if atol === nothing
         atol = _CLOSED_ORBIT_ATOL_MULTIPLIER * eps(Float64) * max(1.0, maximum(abs, C * collect(Float64, prov.point)))
+        tolerance_source = :default
     end
     degradation = nothing
     if residual <= atol
@@ -934,10 +975,13 @@ function _analysis_closed_orbit(analysis::TwissDispersionAnalysis, input::_ANALY
         @warn "analyze: the expansion point is not a fixed point of the map (max-norm residual $(residual) above closed_orbit_atol $(atol)); the result is :degraded" maxlog=1 _id=:twiss_dispersion_closed_orbit
         degradation = "closed_orbit = :warn: the fixed-point residual $(residual) exceeds closed_orbit_atol $(atol); the linearization is not about a closed orbit"
     end
+    # the receipt carries the option as given (the matcher convention) AND the tolerance the comparison used: an accepted
+    # check under the default was recomputable from nothing the run recorded (2026-10-18 audit, F-198)
     _record_execution!(:analysis_closed_orbit, CPUThreadsBackend,
                        (closed_orbit=analysis.closed_orbit, closed_orbit_atol=analysis.closed_orbit_atol,
-                        residual=residual, action=action))
-    return Determined(residual), degradation
+                        effective_atol=atol, residual=residual, action=action))
+    return Determined(residual), degradation,
+           Determined(_CLOSED_ORBIT_DIAGNOSTIC_T((residual, atol, tolerance_source, action)))
 end
 
 """
@@ -1083,15 +1127,19 @@ canonical index of the pair, not necessarily the nearest index itself;
 `_dispersion_routes(Ms, clusters; longitudinal, routes=dispersion_routes,
 newton_max_iterations)`; receipts `:analysis_labels (longitudinal_mode,
 rule, certified, selected, weights)`, `:analysis_dispersion_routes
-(dispersion_routes, executed)` and, when `:newton` executed,
-`:analysis_newton (newton_max_iterations, used)`. Then, when the primary
+(dispersion_routes, executed)` with `executed` the kernel's `routes.executed`
+(the routes whose function ran) and, when `:newton` is among them,
+`:analysis_newton (newton_max_iterations, used)`; a Newton route blocked
+before iterating (a non-definite or unresolved longitudinal candidate) read
+no cap, so it issues no receipt and `newton_block` names why (fix batch 3,
+2026-10-21, F-198). Then, when the primary
 triple is unique (including the coasting triple), `_canonical_separation(Ms,
 routes)` and `_transverse_optics_6d(sep; rho_M1, resolution_chord,
 min_trace_gap, stability_atol)`, and the Ohmi factor
 `_ohmi_factorization(Ms, sep.zeta, sep.eta, sep.h, sep.transformation,
-graph)` when `h > 0`. Returns `(dispersion, separation, transverse_bundle,
-projected_optics, ohmi, longitudinal_selection, degradations::Vector{String})`
-where the degradations include: a label tie; an uncertified heuristic
+graph)` when `h > 0`. Returns `(dispersion, separation, transverse,
+projected_optics, ohmi, longitudinal_selection, degradations::Vector{String},
+coasting, newton_executed, newton_block)` where the degradations include: a label tie; an uncertified heuristic
 selection; Newton or fixed-point routes `:not_invariant` with "another
 branch" while the primary is unique; an unavailable primary dispersion for
 a physical reason (`:singular_longitudinal_projection`, an ambiguity set
@@ -1171,14 +1219,19 @@ function _analysis_6d(analysis::TwissDispersionAnalysis, Ms::AbstractMatrix{<:Re
     end
     # On a coasting map the route options are inactive (dossier F6): every
     # route is `:coasting_structure` without reading the selection, no receipt.
-    executed = coasting ? () : Tuple(r.route for r in routes.routes if r.status !== :route_not_selected)
+    # "Executed" is the kernel's word (`routes.executed`: the routes whose function ran), the one source the receipt,
+    # the diagnostics rows and the Newton cap's activity derive from; a selected route blocked before running (a
+    # non-definite or unresolved longitudinal candidate) was counted executed before, so the receipt claimed five
+    # routes and the cap `:resolved` with `used = 0` where nothing read it (2026-10-18 audit, F-196, F-198)
+    executed = Tuple(routes.executed)
     coasting || _record_execution!(:analysis_dispersion_routes, CPUThreadsBackend,
                                    (dispersion_routes=analysis.dispersion_routes, executed=executed))
     newton_executed = :newton in executed
-    if newton_executed
-        nr = routes.routes[findfirst(r -> r.route === :newton, routes.routes)]
-        _record_execution!(:analysis_newton, CPUThreadsBackend, (newton_max_iterations=analysis.newton_max_iterations, used=nr.iterations))
-    end
+    nr = routes.routes[findfirst(r -> r.route === :newton, routes.routes)]
+    newton_block = newton_executed ? "" : coasting ? "coasting map" :
+                   nr.status === :route_not_selected ? "not among dispersion_routes" : "blocked before iterating: :$(nr.status)"
+    newton_executed && _record_execution!(:analysis_newton, CPUThreadsBackend,
+                                          (newton_max_iterations=analysis.newton_max_iterations, used=nr.iterations))
     triple = (routes.zeta, routes.eta, routes.h)
     if all(is_determined, triple)
         sep = _canonical_separation(Ms, routes)
@@ -1209,7 +1262,8 @@ function _analysis_6d(analysis::TwissDispersionAnalysis, Ms::AbstractMatrix{<:Re
         end
     end
     return (dispersion=routes, separation=separation, transverse=transverse, projected_optics=projected, ohmi=ohmi,
-            longitudinal_selection=selection, degradations=degradations, coasting=coasting, newton_executed=newton_executed)
+            longitudinal_selection=selection, degradations=degradations, coasting=coasting, newton_executed=newton_executed,
+            newton_block=newton_block)
 end
 
 """
@@ -1371,8 +1425,8 @@ The diagnostics record from the pieces (see [`AnalysisDiagnostics`](@ref));
 the `residuals` triples carry the tolerances the verdict uses, so a reader
 can recompute every acceptance.
 """
-function _analysis_diagnostics(input::_ANALYSIS_INPUT_T, defect::_DEFECT_T, rule::Symbol, rho_M0::Real,
-                               clusters::ModeClusters, transverse, dispersion, separation, projected_optics,
+function _analysis_diagnostics(input::_ANALYSIS_INPUT_T, defect::_DEFECT_T, rule::Symbol, rho_M0::Real, rho_arms, scaling_gain::Real,
+                               closed_orbit, clusters::ModeClusters, transverse, dispersion, separation, projected_optics,
                                longitudinal_selection, edwards_teng, covariance_residual)
     rho_M1 = clusters.rho_M1
     point = input.provenance === nothing ? ntuple(_ -> 0.0, 6) : input.provenance.point
@@ -1409,7 +1463,12 @@ function _analysis_diagnostics(input::_ANALYSIS_INPUT_T, defect::_DEFECT_T, rule
         # theory (K14): an identity between unit-emittance covariances, reported (not judged: it is emittance-free)
         cr.k14 === nothing || push!(residuals, ("(K14) zz identity", cr.k14, _COVARIANCE_ACCEPTANCE_MULTIPLIER * rho_M1 * cr.kappa * cr.k14_scale))
     end
-    resolution = Tuple{String,Float64}[("resolution_chord", clusters.resolution_chord), ("rho_M0", clusters.rho_M0), ("rho_M1", rho_M1)]
+    # the four arms of rho_M0 and the gain the two declared arms were multiplied by: "a report can say which one won"
+    # (_perturbation_scale), and a reader can see what a declared uncertainty became in scaled coordinates (F-194)
+    resolution = Tuple{String,Float64}[("resolution_chord", clusters.resolution_chord), ("rho_M0", clusters.rho_M0), ("rho_M1", rho_M1),
+                                       ("rho_M0 arm defect", rho_arms.defect), ("rho_M0 arm roundoff", rho_arms.roundoff),
+                                       ("rho_M0 arm user", rho_arms.user), ("rho_M0 arm provenance", rho_arms.provenance),
+                                       ("scaling gain", Float64(scaling_gain))]
     for (i, c) in enumerate(clusters.clusters)
         push!(resolution, ("cluster $(i) forced", c.forced ? 1.0 : 0.0))
         push!(resolution, ("cluster $(i) resolved", c.resolved ? 1.0 : 0.0))
@@ -1425,15 +1484,19 @@ function _analysis_diagnostics(input::_ANALYSIS_INPUT_T, defect::_DEFECT_T, rule
     projection = Determined{_PROJECTION_DIAGNOSTIC_T}(:not_requested, "a 4x4 map has no longitudinal projection")
     if dispersion !== nothing
         for r in dispersion.routes
-            r.status === :route_not_selected && continue
-            res = is_determined(r.invariance_residual) ? determined_value(r.invariance_residual) : (normalized=0.0, raw=0.0)
-            cc = is_determined(r.coefficient_condition) ? determined_value(r.coefficient_condition) : 0.0
-            push!(routes, _ROUTE_DIAGNOSTIC_T((r.route, r.status, res.normalized, res.raw, cc, r.iterations, r.converged, r.detail)))
-            if r.route === dispersion.primary && is_determined(r.invariance_residual) && is_determined(r.graph)
+            # one row per route whose kernel RAN (the kernel's `executed`, the receipt's definition too); a residual or
+            # condition the kernel left unavailable stays unavailable with its reason, never a 0.0 that reads as a
+            # perfect match (2026-10-18 audit, F-196)
+            r.route in dispersion.executed || continue
+            res = r.invariance_residual
+            normalized = is_determined(res) ? Determined(determined_value(res).normalized) : Determined{Float64}(res.reason, res.detail)
+            raw = is_determined(res) ? Determined(determined_value(res).raw) : Determined{Float64}(res.reason, res.detail)
+            push!(routes, _ROUTE_DIAGNOSTIC_T((r.route, r.status, normalized, raw, r.coefficient_condition, r.iterations, r.converged, r.detail)))
+            if r.route === dispersion.primary && is_determined(res) && is_determined(r.graph)
                 D = determined_value(r.graph)
                 # the kernel's floor through the same helper with the same arguments: clusters.matrix is the scaled matrix
                 # the routes ran on (result.matrix_scaled) and r.coefficient_condition the route's reported amplification
-                push!(residuals, ("primary route invariance (I1)", res.normalized,
+                push!(residuals, ("primary route invariance (I1)", determined_value(res).normalized,
                                   _ROUTE_INVARIANCE_MULTIPLIER * eps() * _kappa_route(clusters.matrix, D, r.coefficient_condition)))
             end
         end
@@ -1442,7 +1505,9 @@ function _analysis_diagnostics(input::_ANALYSIS_INPUT_T, defect::_DEFECT_T, rule
             pr = dispersion.routes[findfirst(r -> r.route === dispersion.primary, dispersion.routes)]
             h_report = is_determined(pr.h) ? determined_value(pr.h) : (is_determined(dispersion.h) ? determined_value(dispersion.h) : s.h)
             D = hcat(s.zeta, s.eta ./ s.h)
-            area = is_determined(pr.canonical_area) ? determined_value(pr.canonical_area) : dot(s.zeta, _symplectic_form(4) * (s.eta ./ s.h))
+            # the kernel's convention (D7): canonical_area = 1 + D[:, 1]' S_4 D[:, 2]; the fallback (a coasting map, where no
+            # route forms a graph) omitted the 1 and read 0.0 where the kernel reads 1.0 (2026-10-18 audit, F-196)
+            area = is_determined(pr.canonical_area) ? determined_value(pr.canonical_area) : 1 + dot(s.zeta, _symplectic_form(4) * (s.eta ./ s.h))
             projection = Determined(_PROJECTION_DIAGNOSTIC_T((h_report, s.h, abs(h_report - s.h), minimum(svdvals(D)), area, s.triple_consistency)))
         else
             projection = Determined{_PROJECTION_DIAGNOSTIC_T}(separation.reason, separation.detail)
@@ -1452,7 +1517,7 @@ function _analysis_diagnostics(input::_ANALYSIS_INPUT_T, defect::_DEFECT_T, rule
     phase_validity = is_determined(mr) ? Determined(determined_value(mr).phase_valid) : Determined{NTuple{2,Bool}}(mr.reason, mr.detail)
     return AnalysisDiagnostics("canonical (x, px, y, py[, z, pz]); eigenvalue exp(-i mu), tunes mu in radians per turn; scaled coordinates",
                                point, defect, rule, departure, Float64(rho_M0), rho_M1, residuals, resolution,
-                               longitudinal_selection, edwards_teng, projection, phase_validity, routes)
+                               longitudinal_selection, edwards_teng, projection, phase_validity, routes, closed_orbit)
 end
 
 """
@@ -1508,10 +1573,13 @@ unavailable", recorded in the stage 4b history): on a bunched 6x6 map whose
 primary dispersion is unavailable the requested `dispersion_routes` tuple IS
 read and the routes execute (receipt `:analysis_dispersion_routes`), so the
 option stays `:resolved`; it is inactive only where nothing reads it (4x4
-input, a coasting map).
+input, a coasting map). `newton_max_iterations` is inactive unless the Newton
+route RAN (the kernel's `executed`): a route blocked before iterating read no
+cap, and `newton_block` names the block in the reason (fix batch 3,
+2026-10-21, F-198).
 """
 function _analysis_configuration(analysis::TwissDispersionAnalysis, input::_ANALYSIS_INPUT_T, coasting_holds::Bool,
-                                 transverse_available::Bool, newton_executed::Bool)
+                                 transverse_available::Bool, newton_executed::Bool, newton_block::String="")
     entries = ConfigurationEntry[]
     matrix_input = input.form === :matrix
     four = input.dimension == 4
@@ -1524,7 +1592,7 @@ function _analysis_configuration(analysis::TwissDispersionAnalysis, input::_ANAL
         elseif name in (:longitudinal_mode, :dispersion_routes) && coasting_holds
             "the map has the coasting structure: no synchrotron mode and a single (coasting) dispersion"
         elseif name === :newton_max_iterations && !newton_executed
-            "the :newton route did not execute" * (four ? " (4x4 input)" : "")
+            "the :newton route did not execute" * (four ? " (4x4 input)" : isempty(newton_block) ? "" : " ($(newton_block))")
         elseif name === :preferred_form && !transverse_available
             "the presented Edwards-Teng pair is unavailable"
         elseif name === :emittances && requested === nothing
@@ -1563,10 +1631,16 @@ function _analyze_matrix(analysis::TwissDispersionAnalysis, M::AbstractMatrix{<:
     Mf = Matrix{Float64}(M)
     rec, Ms = _analysis_scaling(analysis, Mf)
     defect, rule, _, deg_symplectic = _analysis_symplectic_check(analysis, Ms, input)
+    # The two declared arms are in the CALLER's coordinates (the schema, the type docstring, the design's input boundary);
+    # the perturbation they stand for in the scaled matrix is C dM C^-1, up to the scaling's gain max_ij C_ii / C_jj larger
+    # (63 on the DBA ring, 1.5e3 at beta = 1000 m; exactly 1 under :none), so they are multiplied by it before the fold
+    # (2026-10-18 audit, F-194); the arms and the gain are reported in diagnostics.resolution
     provenance_uncertainty = input.provenance === nothing ? 0.0 : input.provenance.map_uncertainty
-    rho_M0 = _perturbation_scale(Ms, defect.frobenius; user_uncertainty=analysis.map_uncertainty,
-                                 provenance_uncertainty=provenance_uncertainty).scale
-    closed_orbit, deg_orbit = _analysis_closed_orbit(analysis, input, rec)
+    gain = _scaling_gain(rec)
+    scale = _perturbation_scale(Ms, defect.frobenius; user_uncertainty=analysis.map_uncertainty * gain,
+                                provenance_uncertainty=provenance_uncertainty * gain)
+    rho_M0 = scale.scale
+    closed_orbit, deg_orbit, orbit_record = _analysis_closed_orbit(analysis, input, rec)
     clusters = _analysis_clusters(analysis, Ms, rho_M0)
     degradations = String[]
     deg_symplectic === nothing || push!(degradations, deg_symplectic)
@@ -1581,13 +1655,13 @@ function _analyze_matrix(analysis::TwissDispersionAnalysis, M::AbstractMatrix{<:
         transverse = Determined(_analysis_transverse(analysis, Ms, clusters, rho_M0; rho_M1=clusters.rho_M1))
         dispersion = nothing; separation = nothing; projected = nothing; ohmi = nothing; coasting = nothing
         selection = Determined{_LONGITUDINAL_SELECTION_T}(:not_requested, "a 4x4 map has no longitudinal mode")
-        coasting_holds = false; newton_executed = false
+        coasting_holds = false; newton_executed = false; newton_block = ""
         primary_status = :none
     else
         r6 = _analysis_6d(analysis, Ms, clusters; rho_M1=clusters.rho_M1)
         dispersion = r6.dispersion; separation = r6.separation; transverse = r6.transverse
         projected = r6.projected_optics; ohmi = r6.ohmi; selection = r6.longitudinal_selection
-        coasting = dispersion.coasting; coasting_holds = r6.coasting; newton_executed = r6.newton_executed
+        coasting = dispersion.coasting; coasting_holds = r6.coasting; newton_executed = r6.newton_executed; newton_block = r6.newton_block
         append!(degradations, r6.degradations)
         # `primary` is assigned once: a closure over the branch-reassigned `dispersion` would be a Core.Box.
         primary = dispersion.primary
@@ -1604,12 +1678,12 @@ function _analyze_matrix(analysis::TwissDispersionAnalysis, M::AbstractMatrix{<:
                            sigma_norm=norm(determined_value(covariance)))
     end
     physical = _analysis_back_transform(rec, transverse, dispersion, separation, projected, form, covariance)
-    diagnostics = _analysis_diagnostics(input, defect, rule, rho_M0, clusters, transverse, dispersion, separation,
-                                        projected, selection, edwards_teng, covariance_info)
+    diagnostics = _analysis_diagnostics(input, defect, rule, rho_M0, scale.arms, gain, orbit_record, clusters, transverse, dispersion,
+                                        separation, projected, selection, edwards_teng, covariance_info)
     separation_status = (separation !== nothing && is_determined(separation)) ? determined_value(separation).status : :none
     status, failures = _analysis_verdict(analysis, diagnostics, degradations;
                                          primary_status=primary_status, separation_status=separation_status)
-    configuration = _analysis_configuration(analysis, input, coasting_holds, is_determined(pair), newton_executed)
+    configuration = _analysis_configuration(analysis, input, coasting_holds, is_determined(pair), newton_executed, newton_block)
     result = TwissDispersionResult(analysis, input, rec, Mf, Ms, defect, rho_M0, closed_orbit, coasting, clusters,
                                    transverse, dispersion, separation, projected, ohmi, covariance_6d, covariance,
                                    physical, diagnostics, configuration, status, degradations, failures)
@@ -1628,7 +1702,8 @@ Run the Twiss and dispersion analysis. The three input forms:
     provenance is assumed, the closed-orbit options are inactive and
     `map_uncertainty` is the only declared uncertainty;
   * a [`LinearizedMap`](@ref) from [`one_turn_matrix`](@ref): the
-    provenance's `map_uncertainty` folds into `rho_M0`, a finite-difference
+    provenance's `map_uncertainty` folds into `rho_M0` (times the scaling's
+    gain, as the declared `map_uncertainty` does), a finite-difference
     provenance REQUIRES an explicit `symplectic_rtol`, and the recorded
     fixed-point residual is judged by the `closed_orbit` options;
   * anything `one_turn_matrix` accepts (a callable, a tuple of compiled
@@ -1652,7 +1727,9 @@ function analyze(analysis::TwissDispersionAnalysis, M::AbstractMatrix{<:Real})
 end
 
 function analyze(analysis::TwissDispersionAnalysis, lm::LinearizedMap)
-    return _analyze_matrix(analysis, lm.matrix, _ANALYSIS_INPUT_T((:linearized, 6, lm.provenance)))
+    # the dimension is the matrix's, not a literal: LinearizedMap's constructor guarantees a 6x6 (F-199), and
+    # _analyze_matrix re-checks the size before any kernel runs
+    return _analyze_matrix(analysis, lm.matrix, _ANALYSIS_INPUT_T((:linearized, size(lm.matrix, 1), lm.provenance)))
 end
 
 function analyze(analysis::TwissDispersionAnalysis, map; method::AbstractLinearizationMethod=ComplexStepLinearization(),

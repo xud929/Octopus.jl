@@ -36,11 +36,16 @@ listed in the result's configuration report ([`configuration_report`](@ref)).
   * `nonsymplectic`: `:error` throws on a defect above the tolerance,
     `:flag` continues and marks the result `:degraded`. Never a repair.
   * `closed_orbit`, `closed_orbit_atol`: on a `LinearizedMap` the recorded
-    fixed-point residual is compared with the tolerance (`nothing` = the
-    roundoff default, `_CLOSED_ORBIT_ATOL_MULTIPLIER`); `:require` throws
-    above it, `:warn` warns once and marks the result `:degraded`. Both are
-    inactive on a bare matrix.
-  * `map_uncertainty`: a declared error of the matrix, folded into `rho_M0`.
+    fixed-point residual, in scaled coordinates, is compared with the
+    tolerance (`nothing` = the roundoff default `_CLOSED_ORBIT_ATOL_MULTIPLIER
+    * eps * max(1, max|C point|)`, the point scaled the same way; the value
+    applied is recorded in the receipt's `effective_atol` and in
+    `diagnostics.closed_orbit`); `:require` throws above it, `:warn` warns
+    once and marks the result `:degraded`. Both are inactive on a bare matrix.
+  * `map_uncertainty`: a declared error of the matrix IN THE CALLER'S
+    COORDINATES; it enters `rho_M0` multiplied by the scaling's gain
+    `max_ij C_ii / C_jj` (`_scaling_gain`, 1 under `scaling = :none`), the
+    factor by which the similarity `C dM C^-1` can amplify it.
   * `resolution_chord`: the chord above which two candidate clusters merge
     (stage 3; the default is a MEASURED policy, `_DEFAULT_RESOLUTION_CHORD`);
     `Inf` forces resolution and marks the clusters `forced`.
@@ -52,7 +57,9 @@ listed in the result's configuration report ([`configuration_report`](@ref)).
     chord (stage 2/3 kernels take no partition).
   * `longitudinal_mode`: `:max_signed_z_area` (the uncertified heuristic,
     see `_LONGITUDINAL_RULES`), an `Int` canonical eigenvalue index, or a
-    `Float64` synchrotron tune `mu_s` in `(0, pi)` (radians per turn).
+    `Float64` synchrotron tune `mu_s` in `(0, 2pi)` other than `pi` (radians
+    per turn; tunes are reported mod `2pi`, `mu` and `2pi - mu` name the same
+    mode, so the result's own `tunes[3]` is accepted).
   * `preferred_form`: `:auto` (the admissible Edwards-Teng form with the
     larger area weight, ties to form 1), `1` or `2`. Both forms are always
     computed; this selects the one PRESENTED.
@@ -66,12 +73,15 @@ listed in the result's configuration report ([`configuration_report`](@ref)).
   * `strict`: `true` throws [`OpticsAnalysisError`](@ref) on a `:failed`
     verdict; `false` returns the failed result.
 
-Argument errors at construction: an unknown symbol, a chord outside `(0, 2]`
+Argument errors at construction (every rejected keyword, including one of
+the wrong type: no keyword is typed, so a string where a symbol is expected
+or a Bool anywhere a number is expected is an `ArgumentError` naming the
+option, never a `TypeError`): an unknown symbol, a chord outside `(0, 2]`
 and not `Inf`, an empty or repeated route tuple or an unknown route, a
 partition that is not a vector of non-empty vectors of positive integers, a
-cap below one, a negative or non-finite number, an emittance tuple of a
-length other than two or three or with a negative entry, a tune outside
-`(0, pi)`.
+cap below one or not an integer, a negative or non-finite number, an
+emittance tuple of a length other than two or three or with a negative or
+Bool entry, a tune outside `(0, 2pi)` or equal to `pi`.
 """
 struct TwissDispersionAnalysis <: AbstractAnalysis
     scaling::Union{Symbol,Tuple{Vararg{Float64}}}

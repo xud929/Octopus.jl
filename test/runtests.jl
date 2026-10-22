@@ -3744,6 +3744,67 @@ end
     @test rm.rho_M1 >= rm.rho_M0 && rm.schur_backward_error <= 64 * _MC_EPS * norm(rm.matrix)
     @test rm.tau_real == Octopus._REAL_CLASS_MULTIPLIER * sqrt(max(rm.rho_M0, rm.schur_backward_error) * max(1, opnorm(rm.matrix)))   # one root over the product (stage 9)
 end
+
+@testset "Mode clusters: a capped-chord tie merges the smallest gap first, so an isolated pair is not absorbed by a repeated one (fix batch 3 N, F-195)" begin
+    # Exactly repeated betatron tunes beside an isolated synchrotron pair whose eigenvalue sorts FIRST in canonical
+    # order (tune 0.05 < 0.7). Every candidate union that touches ONE copy of the repeated pair has an infinite kappa
+    # (a lone copy is not orientable alone, dossier D6 "else Inf") and therefore the capped chord 2.0 whatever its gap,
+    # so the order among the tied candidates decided the clusters: the unfixed agglomeration merged the first tie in
+    # loop order, the synchrotron pair with one copy, then the lone copy, and reported one six-member cluster with eta
+    # an ambiguity set of multiplicity 3 (2026-10-18 audit, F-195). Equal chords are now ordered by the smaller gap,
+    # the limit of the chord ordering 2 kappa rho_M1 / g as kappa grows, so the two copies (gap at roundoff) merge
+    # first, the merged pair has a finite frame kappa, and the synchrotron pair stays its own resolved cluster
+    # (theory 13.5 row 1; design return-table row 3: the dispersion is unique).
+    M = _mc_bd(_mc_R(0.7), _mc_R(0.7), _mc_R(0.05))
+    r = _mc_run(M)
+    long = findall(z -> abs(abs(angle(z)) - 0.05) <= 64 * _MC_EPS, r.eigenvalues)
+    @test sort(long) == [1, 6]                                       # the synchrotron pair sorts first in canonical order
+    bet = sort(setdiff(1:6, long))
+    @test length(r.clusters) == 2
+    il = findfirst(c -> sort(c.members) == sort(long), r.clusters)
+    ib = findfirst(c -> sort(c.members) == bet, r.clusters)
+    @test il !== nothing && ib !== nothing
+    if il !== nothing && ib !== nothing
+        cl = r.clusters[il]; cb = r.clusters[ib]
+        @test cl.classification === :definite && cl.resolved && length(cl.half_members) == 1
+        @test cb.classification === :definite && !cb.resolved && cb.reason === :cluster_unresolved && length(cb.half_members) == 2
+    end
+    @test r.degeneracy_status === :degenerate
+    # the receipt: round one holds three candidates at the cap; the merged one is the pair with the smallest gap
+    rec = r.resolution_receipt
+    @test length(rec) == 4
+    if length(rec) == 4
+        round1 = rec[1:3]
+        @test all(e.chord == 2.0 for e in round1) && count(e -> e.merged, round1) == 1
+        w = round1[findfirst(e -> e.merged, round1)]
+        @test sort(vcat(w.first, w.second)) == bet && w.gap == minimum(e.gap for e in round1)
+        @test w.gap <= 64 * _MC_EPS && all(e.gap > 0.5 for e in round1 if !e.merged)   # measured: the copies at roundoff, copy + synchrotron 0.643
+        # round two: the merged betatron pair against the synchrotron pair has a finite frame kappa and a chord far below the default
+        @test !rec[4].merged && rec[4].kappa_source === :frame && isfinite(rec[4].kappa)
+        @test rec[4].chord == Octopus._chord(rec[4].kappa, rec[4].rho_M1, rec[4].gap) && rec[4].chord < Octopus._DEFAULT_RESOLUTION_CHORD
+        @test r.inter_cluster_chords[1, 2] == rec[4].chord
+    end
+    # the same spectrum under a symplectic similarity (coupled, nothing block-diagonal): the same partition
+    H = [0.0 0.3 0.1 0.0 0.0 0.0; 0.3 0.0 0.0 0.2 0.0 0.0; 0.1 0.0 0.0 0.1 0.0 0.0; 0.0 0.2 0.1 0.0 0.0 0.0; 0.0 0.0 0.0 0.0 0.0 0.1; 0.0 0.0 0.0 0.0 0.1 0.0]
+    W = exp(Octopus._symplectic_form(6) * H)
+    rw = _mc_run(W * M * Octopus._symplectic_inverse(W))
+    @test length(rw.clusters) == 2 && Set(sort(c.members) for c in rw.clusters) == Set([sort(long), bet])
+    @test count(c -> c.resolved, rw.clusters) == 1 && all(c -> c.classification === :definite, rw.clusters)
+    # a map whose copies sort first (the stage 4 repeated-betatron spectrum) is unchanged: the copies merged first before too
+    rr = _mc_run(_mc_bd(_mc_R(0.73), _mc_R(1.41), _mc_R(0.73)))
+    @test length(rr.resolution_receipt) == 4 && rr.resolution_receipt[end].first == [1, 2, 5, 6] && rr.resolution_receipt[end].second == [3, 4]
+    # through analyze: eta is unique (and zero: an uncoupled map has no dispersion), zeta, h and the separation exist,
+    # the transverse frame is the unresolved betatron pair's, the heuristic selection degrades the result
+    ra = analyze(TwissDispersionAnalysis(strict=false), M)
+    @test Octopus.is_determined(ra.physical.eta) && Octopus.is_determined(ra.physical.zeta) && Octopus.is_determined(ra.physical.h)
+    @test norm(Octopus.determined_value(ra.physical.eta)) <= 64 * _MC_EPS && abs(Octopus.determined_value(ra.physical.h) - 1.0) <= 64 * _MC_EPS
+    @test ra.status === :degraded && any(s -> occursin("uncertified", s), ra.degradations)
+    # the separation exists, so the transverse BUNDLE is determined; its frame (two equal betatron tunes) is not
+    @test Octopus.is_determined(ra.transverse) && !Octopus.is_determined(Octopus.determined_value(ra.transverse).frame)
+    @test Octopus.determined_value(ra.transverse).frame.reason === :cluster_unresolved
+    @test !Octopus.is_determined(ra.physical.beta) && ra.physical.beta.reason === :cluster_unresolved
+end
+
 # Stage 3 Part B: the dispersion ambiguity set of theory 13.6
 # (src/analysis/degenerate_dispersion.jl). Every tolerance is `c eps kappa`
 # with `c` measured (report_B.md, Part B tables); the injected defects shown
@@ -4826,7 +4887,7 @@ end
                       (Dict(:newton_max_iterations => true), "newton_max_iterations must be an integer"),
                       (Dict(:clusters => [[1, 6], [1, 5], [3, 4]]), "clusters repeats an index"),
                       (Dict(:clusters => [Any[true, 6]]), "vectors of positive integers"),
-                      (Dict(:longitudinal_mode => 4.0), "synchrotron tune must lie in (0, pi)"),
+                      (Dict(:longitudinal_mode => 7.0), "synchrotron tune must lie in (0, 2pi)"),
                       (Dict(:dispersion_routes => (:eigenplane, :nope)), "names an unknown route :nope"),
                       (Dict(:dispersion_routes => [:eigenplane]), "non-empty tuple of route symbols"))
         err = try
@@ -6821,7 +6882,7 @@ end
     # the diagnostics carry both h values and every route's coefficient condition (record items 3, 5)
     proj = _st4b_a_val(rc.diagnostics.projection)
     @test abs(proj.h_report - p.h) <= 64 * eps() * kappa && proj.h_separation == sep.h
-    @test length(rc.diagnostics.routes) == 5 && all(row.coefficient_condition >= 0 for row in rc.diagnostics.routes)
+    @test length(rc.diagnostics.routes) == 5 && all(Octopus.is_determined(row.coefficient_condition) && _st4b_a_val(row.coefficient_condition) >= 0 for row in rc.diagnostics.routes)
 end
 
 @testset "Stage 9 follow-up (the DBA-ring example check): the heuristic's degradation message is unconditional and names the index semantics" begin
@@ -6995,13 +7056,13 @@ end
     bumped = [(n, n == "frame reconstruction (I1)" ? 2t : v, t) for (n, v, t) in d0.residuals]
     dbad = Octopus.AnalysisDiagnostics(d0.convention, d0.reference_point, d0.symplectic_defect, d0.symplectic_rule, d0.unit_circle_departure,
                                        d0.rho_M0, d0.rho_M1, bumped, d0.resolution, d0.longitudinal_selection, d0.edwards_teng,
-                                       d0.projection, d0.phase_validity, d0.routes)
+                                       d0.projection, d0.phase_validity, d0.routes, d0.closed_orbit)
     status, failures = Octopus._analysis_verdict(r0.analysis, dbad, String[])
     @test status === :failed && length(failures) == 1 && occursin("frame reconstruction (I1)", failures[1])
     bumped2 = [(n, n == "frame symplecticity (E7)" ? 2t : v, t) for (n, v, t) in d0.residuals]
     dbad2 = Octopus.AnalysisDiagnostics(d0.convention, d0.reference_point, d0.symplectic_defect, d0.symplectic_rule, d0.unit_circle_departure,
                                         d0.rho_M0, d0.rho_M1, bumped2, d0.resolution, d0.longitudinal_selection, d0.edwards_teng,
-                                        d0.projection, d0.phase_validity, d0.routes)
+                                        d0.projection, d0.phase_validity, d0.routes, d0.closed_orbit)
     @test Octopus._analysis_verdict(r0.analysis, dbad2, String[])[1] === :failed
     @test Octopus._analysis_verdict(r0.analysis, d0, String[]; primary_status=:not_invariant)[1] === :failed
     @test Octopus._analysis_verdict(r0.analysis, d0, String[]; separation_status=:not_invariant)[1] === :failed
@@ -7022,7 +7083,7 @@ end
     @test Octopus._analysis_verdict(r6e.analysis, d6, String[])[1] === :passed
     rebuild(d, res) = Octopus.AnalysisDiagnostics(d.convention, d.reference_point, d.symplectic_defect, d.symplectic_rule, d.unit_circle_departure,
                                                    d.rho_M0, d.rho_M1, res, d.resolution, d.longitudinal_selection, d.edwards_teng,
-                                                   d.projection, d.phase_validity, d.routes)
+                                                   d.projection, d.phase_validity, d.routes, d.closed_orbit)
     for name in Octopus._VERDICT_RESIDUALS
         dj = rebuild(d6, [(n, n == name ? 2t : v, t) for (n, v, t) in d6.residuals])
         st, fl = Octopus._analysis_verdict(r6e.analysis, dj, String[])
@@ -7115,7 +7176,7 @@ end
                   :analysis_covariance => (:emittances,), :analysis_strictness => (:strict, :outcome))
     for r in rs; @test keys(r.values) == fields[r.consumer]; end
     rl = receipts(TwissDispersionAnalysis(strict=false), one_turn_matrix((compile_runtime(Linear6DSpec(matrix=M6)),)))
-    @test keys(only(rl, :analysis_closed_orbit)) == (:closed_orbit, :closed_orbit_atol, :residual, :action)
+    @test keys(only(rl, :analysis_closed_orbit)) == (:closed_orbit, :closed_orbit_atol, :effective_atol, :residual, :action)
 end
 
 @testset "Configuration report: the statuses per option on the four input forms, never :inactive (F6)" begin
@@ -7309,6 +7370,146 @@ end
     @test quoted !== nothing
     @test quoted !== nothing && parse(Float64, quoted.captures[1]) == sel.weights[lb.longitudinal]
     @test abs(sel.weights[lb.longitudinal] - _st4b_a_val(rd.dispersion.h)) <= 64 * eps() * max(1.0, norm(M2))^2   # (K12) kappa_sz = h; measured 0
+end
+
+@testset "Analysis driver (fix batch 3 N): map_uncertainty folds through the scaling gain, the diagnostics list executed routes with Determined residuals, the coasting canonical area, Newton's cap inactive when blocked, the closed-orbit tolerance recorded, the tune domain mod 2pi, the 4x4 LinearizedMap refused (F-194, F-196 to F-199)" begin
+    receipts(analysis, input) = (audit = ExecutionAudit(); with_execution_audit(audit) do; analyze(analysis, input); end; execution_receipts(audit))
+    only_of(rs, consumer) = (v = filter(r -> r.consumer === consumer, rs); @test length(v) == 1; v[1].values)
+    gain_of(rec) = (C = Octopus._scaling_matrix(rec); maximum(C.diag) / minimum(C.diag))
+    row(d, name) = (k = findfirst(x -> x[1] == name, d.resolution); k === nothing ? nothing : d.resolution[k][2])
+    # --- F-194: a declared uncertainty is in the CALLER's coordinates; the scaled matrix's rho_M0 carries it times the
+    # similarity's gain max_ij C_ii / C_jj (the operator norm of dM -> C dM C^-1 in the Frobenius and the 2-norm), which
+    # is exactly 1 under scaling = :none. The toy ring beta = (100, 20, 50) m has gain 145.5 (probe N of fix batch 3).
+    twiss_block(beta, alpha, mu) = (g = (1 + alpha^2) / beta; [cos(mu)+alpha*sin(mu)  beta*sin(mu); -g*sin(mu)  cos(mu)-alpha*sin(mu)])
+    Mt = _st4b_a_bd(twiss_block(100.0, 0.5, 0.7), twiss_block(20.0, -0.3, 1.3), twiss_block(50.0, 0.0, 0.05))
+    u = 1e-9
+    ra = analyze(TwissDispersionAnalysis(map_uncertainty=u, strict=false), Mt)
+    rn = analyze(TwissDispersionAnalysis(map_uncertainty=u, scaling=:none, strict=false), Mt)
+    g = gain_of(ra.scaling)
+    @test g > 100 && Octopus._scaling_gain(ra.scaling) == g && Octopus._scaling_gain(rn.scaling) == 1.0
+    @test ra.rho_M0 == u * g && rn.rho_M0 == u                        # the declared arm wins on this map (the other arms are ~1e-16)
+    @test ra.clusters.rho_M0 == ra.rho_M0 && ra.clusters.rho_M1 >= ra.rho_M0
+    @test only_of(receipts(TwissDispersionAnalysis(map_uncertainty=u, strict=false), Mt), :analysis_cluster_resolution).rho_M0 == u * g
+    @test row(ra.diagnostics, "scaling gain") == g && row(rn.diagnostics, "scaling gain") == 1.0
+    @test row(ra.diagnostics, "rho_M0 arm user") == u * g && row(ra.diagnostics, "rho_M0 arm provenance") == 0.0
+    @test row(ra.diagnostics, "rho_M0 arm defect") >= 0 && row(ra.diagnostics, "rho_M0 arm roundoff") > 0
+    @test ra.rho_M0 == maximum(row(ra.diagnostics, n) for n in ("rho_M0 arm defect", "rho_M0 arm roundoff", "rho_M0 arm user", "rho_M0 arm provenance"))
+    @test maximum(abs, ra.physical.tunes .- rn.physical.tunes) <= 1e-12       # the fold moves tolerances, not the physics
+    # the provenance arm of a finite-difference map folds the same way (the FODO cell's factors give a gain above 2)
+    fodo = _st4b_a_fodo()
+    lfd = one_turn_matrix(fodo; method=FiniteDifferenceLinearization(1e-6))
+    rfd = analyze(TwissDispersionAnalysis(symplectic_rtol=1e-3), lfd)
+    gfd = gain_of(rfd.scaling)
+    @test gfd > 2 && rfd.rho_M0 >= lfd.provenance.map_uncertainty * gfd
+    @test row(rfd.diagnostics, "rho_M0 arm provenance") == lfd.provenance.map_uncertainty * gfd
+    # --- F-196 (U21-3, U21-5) and F-198 (U21-8): ONE definition of "executed" (the kernel's: the routes whose function
+    # ran) for the receipt, the diagnostics rows and the Newton cap; no placeholder numbers; the coasting canonical area
+    # in the kernel's convention 1 + zeta' S4 (eta / h)
+    rc = analyze(TwissDispersionAnalysis(), one_turn_matrix(fodo))
+    @test rc.coasting.holds && isempty(rc.dispersion.executed) && isempty(rc.diagnostics.routes)
+    sep = _st4b_a_val(rc.separation); proj = _st4b_a_val(rc.diagnostics.projection)
+    @test proj.canonical_area == 1 + dot(sep.zeta, _st4b_a_S4 * (sep.eta ./ sep.h)) == 1.0
+    @test isempty(filter(r -> r.consumer in (:analysis_dispersion_routes, :analysis_newton), receipts(TwissDispersionAnalysis(), one_turn_matrix(fodo))))
+    # a definite UNRESOLVED longitudinal candidate (the theory 13.6 family): the eigenplane, Newton and fixed-point
+    # routes are blocked before they run, the polynomial and projector routes run; receipt, rows and the cap agree
+    Md = _st4b_a_blockrot(0.7, 1.3, 0.7)
+    rd = analyze(TwissDispersionAnalysis(strict=false), Md)
+    rsd = receipts(TwissDispersionAnalysis(strict=false), Md)
+    @test rd.dispersion.executed == [:polynomial, :projector]
+    @test only_of(rsd, :analysis_dispersion_routes).executed == (:polynomial, :projector)
+    @test [x.route for x in rd.diagnostics.routes] == [:polynomial, :projector]
+    @test isempty(filter(r -> r.consumer === :analysis_newton, rsd))
+    e = _st4b_a_entry(rd, :newton_max_iterations)
+    @test e.status === :inactive_dependency && occursin("did not execute", e.reason) && occursin("cluster_unresolved", e.reason)
+    @test _st4b_a_entry(rd, :dispersion_routes).status === :resolved
+    @test Set(x.route for x in rd.dispersion.routes if x.status === :cluster_unresolved) == Set([:eigenplane, :newton, :fixed_point])
+    # every row mirrors its kernel route: a residual or condition the kernel left unavailable is unavailable here too
+    mirror(result) = for row in result.diagnostics.routes
+        k = result.dispersion.routes[findfirst(x -> x.route === row.route, result.dispersion.routes)]
+        @test row.status === k.status && row.converged == k.converged && row.iterations == k.iterations
+        @test Octopus.is_determined(row.normalized_residual) == Octopus.is_determined(row.raw_residual) == Octopus.is_determined(k.invariance_residual)
+        @test Octopus.is_determined(row.coefficient_condition) == Octopus.is_determined(k.coefficient_condition)
+        if Octopus.is_determined(k.invariance_residual)
+            @test _st4b_a_val(row.normalized_residual) == _st4b_a_val(k.invariance_residual).normalized && _st4b_a_val(row.raw_residual) == _st4b_a_val(k.invariance_residual).raw
+        else
+            @test row.normalized_residual.reason === k.invariance_residual.reason && row.raw_residual.reason === k.invariance_residual.reason
+        end
+        Octopus.is_determined(k.coefficient_condition) && @test _st4b_a_val(row.coefficient_condition) == _st4b_a_val(k.coefficient_condition)
+    end
+    mirror(rd)
+    @test any(row -> !Octopus.is_determined(row.normalized_residual), rd.diagnostics.routes)     # the placeholder 0.0 is gone
+    # the dense map: every requested route runs, every row carries the kernel's numbers, Newton iterated and its cap is live
+    M6 = _st4b_a_dense6()
+    r6 = analyze(_st4b_a_certified(M6), M6)
+    @test r6.dispersion.executed == collect(Octopus.DISPERSION_ROUTES) && length(r6.diagnostics.routes) == 5
+    mirror(r6)
+    @test all(Octopus.is_determined(row.normalized_residual) for row in r6.diagnostics.routes)
+    @test only_of(receipts(_st4b_a_certified(M6), M6), :analysis_newton).used >= 1
+    @test _st4b_a_entry(r6, :newton_max_iterations).status === :resolved
+    r2 = analyze(TwissDispersionAnalysis(strict=false, dispersion_routes=(:eigenplane, :polynomial)), M6)
+    @test r2.dispersion.executed == [:eigenplane, :polynomial] && _st4b_a_entry(r2, :newton_max_iterations).status === :inactive_dependency
+    @test occursin("not among dispersion_routes", _st4b_a_entry(r2, :newton_max_iterations).reason)
+    # --- F-197 (U21-6): tunes are reported mod 2pi; the synchrotron tune the result reports certifies its own mode
+    beta0, gamma0 = reference_beta_gamma(3.0e9, PMASS_EV)
+    ring = (_st4b_a_dba()..., compile_runtime(ThinRFCavitySpec(400.0e6; strength=0.02, beta0=beta0, gamma0=gamma0)))
+    lmr = one_turn_matrix(ring)
+    r0 = analyze(TwissDispersionAnalysis(strict=false), lmr)
+    rci = analyze(TwissDispersionAnalysis(longitudinal_mode=r0.dispersion.longitudinal), lmr)
+    t3 = rci.physical.tunes[3]
+    @test pi < t3 < 2pi                              # the DBA ring's synchrotron eigenvalue has Im > 0: tune 6.009 = 2pi - 0.274
+    for t in (t3, 2pi - t3)
+        rt = analyze(TwissDispersionAnalysis(longitudinal_mode=t), lmr)
+        sel = _st4b_a_val(rt.diagnostics.longitudinal_selection)
+        @test sel.certified && sel.rule === :explicit && rt.dispersion.longitudinal == rci.dispersion.longitudinal
+        @test rt.physical.tunes == rci.physical.tunes
+    end
+    @test TwissDispersionAnalysis(longitudinal_mode=6.0).longitudinal_mode === 6.0
+    for bad in (0.0, pi, 2pi, -0.5, 7.0, Inf, NaN)
+        @test_throws ArgumentError TwissDispersionAnalysis(longitudinal_mode=bad)
+    end
+    err = try; TwissDispersionAnalysis(longitudinal_mode=7.0); nothing; catch e; e; end
+    @test err isa ArgumentError && occursin("(0, 2pi)", err.msg) && occursin("2pi - mu", err.msg)
+    # --- F-198 (U21-7): the tolerance the closed-orbit check applied is recorded in the receipt and in the diagnostics
+    sx = _st4b_a_fodo_sext()
+    lms = one_turn_matrix(sx; point=(1e-3, 0.0, 0.0, 0.0, 0.0, 0.0))
+    rw = Ref{Any}(nothing); audit = ExecutionAudit()
+    @test_logs (:warn, r"not a fixed point") match_mode=:any with_execution_audit(audit) do
+        rw[] = analyze(TwissDispersionAnalysis(closed_orbit=:warn), lms)
+    end
+    v = only_of(execution_receipts(audit), :analysis_closed_orbit)
+    C = Octopus._scaling_matrix(rw[].scaling)
+    atol_default = Octopus._CLOSED_ORBIT_ATOL_MULTIPLIER * eps() * max(1.0, maximum(abs, C * collect(lms.provenance.point)))
+    @test keys(v) == (:closed_orbit, :closed_orbit_atol, :effective_atol, :residual, :action)
+    @test v.closed_orbit_atol === nothing && v.effective_atol == atol_default && v.action === :warned
+    co = _st4b_a_val(rw[].diagnostics.closed_orbit)
+    @test co.residual == _st4b_a_val(rw[].closed_orbit) == v.residual && co.tolerance == atol_default
+    @test co.tolerance_source === :default && co.action === :warned && co.residual > co.tolerance
+    audit2 = ExecutionAudit()
+    @test_logs (:warn, r"not a fixed point") match_mode=:any with_execution_audit(audit2) do
+        analyze(TwissDispersionAnalysis(closed_orbit=:warn, closed_orbit_atol=1e-12), lms)
+    end
+    v2 = only_of(execution_receipts(audit2), :analysis_closed_orbit)
+    @test v2.closed_orbit_atol == 1e-12 && v2.effective_atol == 1e-12
+    co2 = _st4b_a_val(analyze(TwissDispersionAnalysis(closed_orbit_atol=1.0), lms).diagnostics.closed_orbit)
+    @test co2.tolerance == 1.0 && co2.tolerance_source === :option && co2.action === :accepted && co2.residual <= co2.tolerance
+    lm0 = one_turn_matrix(sx)
+    co0 = _st4b_a_val(analyze(TwissDispersionAnalysis(), lm0).diagnostics.closed_orbit)
+    @test co0.residual == 0.0 && co0.tolerance == Octopus._CLOSED_ORBIT_ATOL_MULTIPLIER * eps() && co0.tolerance_source === :default && co0.action === :accepted
+    rb = analyze(TwissDispersionAnalysis(strict=false), M6)
+    @test !Octopus.is_determined(rb.diagnostics.closed_orbit) && rb.diagnostics.closed_orbit.reason === :not_requested
+    # --- F-199 (U21-9): a LinearizedMap is six-dimensional by its provenance; another size is refused at construction
+    err4 = try; LinearizedMap(_st4b_a_dense4(), lm0.provenance); nothing; catch e; e; end
+    @test err4 isa ArgumentError && occursin("6x6", err4.msg) && occursin("(4, 4)", err4.msg)
+    @test_throws ArgumentError LinearizedMap(zeros(6, 5), lm0.provenance)
+    @test analyze(TwissDispersionAnalysis(), lm0).input.dimension == size(lm0.matrix, 1) == 6
+    # --- F-199 (U21-10 a): every rejected keyword is an ArgumentError naming it, and a Bool is never a number
+    for kw in (Dict(:nonsymplectic => "flag"), Dict(:closed_orbit => 1), Dict(:newton_max_iterations => 2.0),
+               Dict(:emittances => (true, 1.0)), Dict(:emittances => (1.0, 1.0, false)), Dict(:map_uncertainty => true),
+               Dict(:closed_orbit_atol => false), Dict(:symplectic_rtol => true), Dict(:resolution_chord => true))
+        err = try; TwissDispersionAnalysis(; kw...); nothing; catch e; e; end
+        @test err isa ArgumentError && occursin(string(first(keys(kw))), err.msg)
+    end
+    @test_throws ArgumentError matched_covariance(r6, (true, 1.0, 1.0))
 end
 
 @testset "4b-B validator block and AbstractAnalysis tree guard" begin
@@ -27819,17 +28020,23 @@ end
     end
     @test 30 < errs[1.0e-3] / errs[1.0e-4] < 300
 
-    # At the default step 3e-7 roundoff dominates: the z row is a difference
-    # of O(1) path-length intermediates, so each entry carries ~eps/(2h) =
-    # 3.7e-10 of roundoff. Measured Frobenius error 1.0e-9 (2.7 floors) and
-    # symplectic defect 7.3e-10; the bounds leave a factor ~37 and ~50.
-    # The lower bound catches a finite difference that secretly became exact.
+    # At the default step 3e-7 the roundoff floor of a central difference is ~eps/(2h) = 3.7e-10 per entry when an
+    # O(1) intermediate is differenced. Measured 2026-09-11: Frobenius error 1.0e-9 (2.7 floors) and symplectic
+    # defect 7.3e-10; re-measured 2026-10-21 (fix batch 3 unit N): 3.1e-11 (0.08 floors), i.e. truncation-dominated
+    # on this cell, where the map's values at u0 are O(3e-4). The bounds hold either way, a factor ~37 and ~50 on the
+    # first measurement. The lower bound catches a finite difference that secretly became exact.
     h_default = 3.0e-7
     floor = eps(Float64) / (2 * h_default)
     lm_default = one_turn_matrix(cell; method=FiniteDifferenceLinearization(), point=u0)
     @test norm(lm_default.matrix - Jcs) < 100 * floor
     @test norm(lm_default.matrix - Jcs) > floor / 100
     @test _otm_defect(lm_default.matrix) < 100 * floor * norm(lm_default.matrix)
+    # The matrix error against the DECLARED uncertainty step^2 ||J||_F at the default step: measured 65.0 on this cell
+    # (3.09e-11 against 4.75e-13; the same 65 at 1e-5, 3.43e-8 against 5.28e-10, fix batch 3 unit N, 2026-10-21), the
+    # ratio the cell's third derivatives set, so the declared scale sits a fixed factor below the truncation error here.
+    # The bracket is a factor 3 either side. This is the harness behind the FiniteDifferenceLinearization docstring's
+    # numbers (it quoted a 2.1e3 from an unrecorded 2026-09-11 fixture before: 2026-10-18 audit, U21-10 d).
+    @test 20 < norm(lm_default.matrix - Jcs) / lm_default.provenance.map_uncertainty < 200
     # Which is why the design makes a finite-difference input REQUIRE an
     # explicit symplectic tolerance: at the contract's step the matrix is
     # symplectic to ~1e-9, four decades above the complex-step matrix.

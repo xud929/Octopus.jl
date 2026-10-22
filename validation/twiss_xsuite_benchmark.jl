@@ -263,7 +263,7 @@ physical normalizer, beta/alpha/gamma [mode, plane], graph = [zeta, eta/h], zeta
 eta, h, the coasting-route eta (printed only, rule S), the cluster reasons.
 """
 function analyze_map(M::AbstractMatrix; mu_s=nothing)
-    # mu_s (rad/turn, in (0, pi)) certifies the longitudinal selection on a bunched map (the default
+    # mu_s (rad/turn, in (0, 2pi) and not pi; mu and 2pi - mu name the same mode) certifies the longitudinal selection on a bunched map (the default
     # :max_signed_z_area heuristic is UNCERTIFIED and leaves the status :degraded); here it is xtrack's own |mu3|
     an_obj = mu_s === nothing ? ANALYSIS : TwissDispersionAnalysis(strict=false, scaling=:none, longitudinal_mode=Float64(mu_s))
     result = analyze(an_obj, Matrix{Float64}(M))

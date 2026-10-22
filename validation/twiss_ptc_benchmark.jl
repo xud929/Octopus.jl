@@ -379,7 +379,7 @@ end
 """
 Run analyze with strict=false and scaling=:none on a converted 6x6 map and
 read the PHYSICAL objects (never a route field). mu_s (radians per turn,
-in (0, pi)) is passed as longitudinal_mode on bunched maps so the
+in (0, 2pi), not pi; mu and 2pi - mu name the same mode) is passed as longitudinal_mode on bunched maps so the
 longitudinal selection is certified. Returns a NamedTuple; every undetermined
 field is nothing with its reason printed.
 """
@@ -388,7 +388,7 @@ function analyze_converted(M::AbstractMatrix, label::AbstractString; mu_s=nothin
     # the analysis's default row-ratio rule (measured row ratio 2.83 on G6_2.0MV, which would throw); the defect is
     # printed instead. The 5D rows keep the default guard armed (measured row ratios 0.051, 0.100, 0.056 on U1, U2, K2).
     res = try
-        # the constructor validates mu_s (a tune must lie in (0, pi)): inside the try so that a bad header value
+        # the constructor validates mu_s (a tune must lie in (0, 2pi) and differ from pi): inside the try so that a bad header value
         # is a recorded failure of this row, not an abort of the script (stage 9)
         an = mu_s === nothing ? TwissDispersionAnalysis(strict=false, scaling=:none) :
                                 TwissDispersionAnalysis(strict=false, scaling=:none, nonsymplectic=:flag, longitudinal_mode=Float64(mu_s))
