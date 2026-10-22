@@ -14319,6 +14319,66 @@ end
 end
 
 
+@testset "The radiation element warns when nothing it was asked for can run, and refuses an unkeyed excitation draw (F-95, F-96)" begin
+    coords = (1.0e-3, -2.0e-4, 0.7e-3, 1.0e-4, -2.0e-3, 3.0e-4)
+    # F-96: a LumpedRad whose only requested component is unavailable compiled
+    # to the identity with no warning: Diffusion6DMap with the default sigma
+    # (excitation disabled by sigma), Radiation6DMap with is_damping=false and
+    # the default sigma, Damping6DMap with damping switched off (2026-10-18
+    # audit, U19-6 A6). The flag semantics stay -- the element IS the identity,
+    # as "Lumped radiation method and flag semantics" pins -- but it says so.
+    inert = (
+        LumpedRadSpec(damping_turns=(1.0e3, 1.0e3, 1.0e3), tracking_method=Diffusion6DMap(), rng_id=0x4a95),
+        LumpedRadSpec(damping_turns=(1.0e3, 1.0e3, 1.0e3), is_damping=false, rng_id=0x4a96),
+        LumpedRadSpec(damping_turns=(1.0e3, 1.0e3, 1.0e3), is_damping=false, sigma=(1.0e-3, 1.0e-3, 1.0e-3),
+                      tracking_method=Damping6DMap(), rng_id=0x4a97),
+    )
+    for spec in inert
+        op = @test_logs (:warn, r"lumped_radiation compiles to the identity") match_mode=:any compile_runtime(spec)
+        @test !op.is_damping && !op.is_excitation
+        @test op(TrackingContext(), 1, coords...) == coords
+    end
+    # A request that can run is silent, and so is an explicit request for
+    # nothing (both flags false): neither is a surprise.
+    live = LumpedRadSpec(damping_turns=(1.0e3, 1.0e3, 1.0e3), sigma=(1.0e-3, 1.0e-3, 1.0e-3), rng_id=0x4a98)
+    @test_logs min_level=Base.CoreLogging.Warn compile_runtime(live)
+    @test_logs min_level=Base.CoreLogging.Warn compile_runtime(LumpedRadSpec(damping_turns=(1.0e3, 1.0e3, 1.0e3),
+                                                                    is_damping=false, is_excitation=false, rng_id=0x4a99))
+    # F-95: the contextless call with excitation drew `Random.randn()` -- the
+    # task-local stateful RNG, keyed by nothing, Float64 whatever the element,
+    # so the deprecated CPU backend-tag route parted from the CUDA route by the
+    # full excitation amplitude (4.5e-4) where the context routes agree to one
+    # ulp (U19-5). It is refused by name; the context route is keyed and
+    # reproducible; damping alone stays available contextless and deterministic.
+    ex = compile_runtime(live)
+    err = try
+        ex(coords...)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError && occursin("TrackingContext", err.msg) && occursin("lumped_radiation", err.msg)
+    ctx = TrackingContext(turn=3, seed=0x1234, rng_method=:philox)
+    @test ex(ctx, 7, coords...) == ex(ctx, 7, coords...)
+    @test ex(ctx, 7, coords...) != coords
+    diff = compile_runtime(LumpedRadSpec(damping_turns=(1.0e3, 1.0e3, 1.0e3), sigma=(1.0e-3, 1.0e-3, 1.0e-3),
+                                         tracking_method=Diffusion6DMap(), rng_id=0x4a9b))
+    @test_throws ArgumentError diff(coords...)
+    damp = compile_runtime(LumpedRadSpec(damping_turns=(1.0e3, 1.0e3, 1.0e3), rng_id=0x4a9a))
+    @test damp.is_damping && !damp.is_excitation
+    @test damp(coords...) == damp(TrackingContext(), 1, coords...)
+    d32 = compile_runtime(LumpedRadSpec{Float32}(damping_turns=(1.0f3, 1.0f3, 1.0f3), rng_id=0x4a9c))
+    @test all(v -> v isa Float32, d32(Float32.(coords)...))
+    # Nothing in src/elements draws from the stateful RNG any more: the one
+    # unkeyed draw was this element's (the beam builder's seeded draw is not
+    # an element).
+    for f in readdir(joinpath(pkgdir(Octopus), "src", "elements"); join=true)
+        calls = [l for l in eachline(f) if occursin("Random.randn(", l) && !startswith(strip(l), "#")]
+        @test isempty(calls)
+    end
+end
+
+
 
 @testset "Thin elements, markers and RBEND" begin
     u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)

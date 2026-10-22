@@ -173,11 +173,12 @@ function LumpedRad(spec::ElementSpec{:lumped_radiation},
         3,
     )
     excitation = _radiation_excitation(excitation_scale, beta_t, alpha_t, sigma_t)
+    req_damping = Bool(_declared_param(spec, :is_damping))
+    req_excitation = Bool(_declared_param(spec, :is_excitation))
     is_damping, is_excitation = _lumped_rad_effective_components(
-        method,
-        Bool(_declared_param(spec, :is_damping)),
-        Bool(_declared_param(spec, :is_excitation)) && excitation_available,
-    )
+        method, req_damping, req_excitation && excitation_available)
+    _warn_inert_lumped_rad(method, req_damping, req_excitation, excitation_available,
+                           is_damping, is_excitation)
     # 0 is the request for a fresh stream, which only the friendly constructor
     # resolves (at construction, so a recompile after a knob change keeps the
     # stream); a spec still carrying 0 here drew on stream 0 silently, the
@@ -235,6 +236,38 @@ function _validate_lumped_rad_parameters(
     return enabled
 end
 
+"""
+    _warn_inert_lumped_rad(method, req_damping, req_excitation, excitation_available,
+                           is_damping, is_excitation)
+
+A `lumped_radiation` element asked for at least one component and compiling
+with neither warns once per (method, flags, sigma state), naming why each
+request was dropped: the method permits one component or both, and a negative
+`sigma` disables excitation, so `Diffusion6DMap()` with the default sigma, or
+`Radiation6DMap()` with `is_damping = false` and the default sigma, compiled to
+the identity in silence until the 2026-10-18 comprehensive audit (F-96). The
+flag semantics are unchanged -- the element IS the identity, as the suite pins
+-- and an explicit request for nothing (both flags false) is no surprise and
+stays silent.
+"""
+function _warn_inert_lumped_rad(method::AbstractTrackingMethod, req_damping::Bool,
+                                req_excitation::Bool, excitation_available::Bool,
+                                is_damping::Bool, is_excitation::Bool)
+    (req_damping || req_excitation) || return nothing
+    (is_damping || is_excitation) && return nothing
+    mname = nameof(typeof(method))
+    reasons = String[]
+    req_damping && push!(reasons, "damping is requested but $(mname) does not permit it")
+    req_excitation && push!(reasons, excitation_available ?
+        "excitation is requested but $(mname) does not permit it" :
+        "excitation is requested but sigma is negative, which disables it")
+    @warn "lumped_radiation compiles to the identity: neither damping nor excitation applies " *
+          "($(join(reasons, "; "))). Use Radiation6DMap() for both components, give sigma >= 0 " *
+          "in all three planes for excitation, or set is_damping=false and is_excitation=false " *
+          "to ask for the identity explicitly." method = mname is_damping = req_damping is_excitation = req_excitation sigma_enables_excitation = excitation_available maxlog = 1 _id = Symbol(:lumped_rad_inert_, mname, :_, req_damping, :_, req_excitation, :_, excitation_available)
+    return nothing
+end
+
 function _lumped_rad_effective_components(
         method::AbstractTrackingMethod, is_damping::Bool, is_excitation::Bool)
     method isa Radiation6DMap && return is_damping, is_excitation
@@ -246,13 +279,25 @@ function _lumped_rad_effective_components(
     ))
 end
 
+# The contextless kernels: damping alone is deterministic and runs; excitation
+# needs the counter RNG's keys (seed, turn, particle index), which only the
+# `(ctx, particle_id, ...)` call below carries, so it is refused by name with a
+# static message. Until the 2026-10-18 comprehensive audit these two methods
+# drew six `Random.randn()` -- the task-local stateful RNG, keyed by nothing and
+# Float64 whatever the element -- so the deprecated CPU backend-tag route and a
+# direct `fusedTrack` were not seed-reproducible and parted from the CUDA route
+# (which has drawn through the counter RNG since U14-7) by the full excitation
+# amplitude, max |dx| = 4.5e-4 against 5.4e-20 between the two context routes
+# (F-95, U19-5). Every tracking entry point carries a context (`TrackingTask`,
+# the keyword `track!`, the CUDA backend-tag route); the CPU backend-tag route
+# without one now reaches this refusal instead of an unkeyed draw.
+const _LUMPED_RAD_CONTEXTLESS_MSG = "lumped_radiation: stochastic excitation draws from the counter RNG, which needs the TrackingContext (seed, turn, particle index) that only context-aware tracking carries; the contextless call drew from the task-local stateful RNG, unkeyed and unreproducible, until the 2026-10-18 audit (F-95). Track through a TrackingTask, the keyword track!(rep, elems, turns; context=...), or call elem(ctx, particle_id, x, px, y, py, z, pz)"
+
 @inline function track_particle(::Radiation6DMap, elem::LumpedRad, x, px, y, py, z, pz)
     elem.is_excitation || return _track_lumped_rad_particle(elem, x, px, y, py, z, pz,
                                                             false, false, false,
                                                             false, false, false)
-    return _track_lumped_rad_particle(elem, x, px, y, py, z, pz,
-                                      Random.randn(), Random.randn(), Random.randn(),
-                                      Random.randn(), Random.randn(), Random.randn())
+    throw(ArgumentError(_LUMPED_RAD_CONTEXTLESS_MSG))
 end
 
 @inline function track_particle(::Damping6DMap, elem::LumpedRad, x, px, y, py, z, pz)
@@ -263,10 +308,7 @@ end
 
 @inline function track_particle(::Diffusion6DMap, elem::LumpedRad, x, px, y, py, z, pz)
     elem.is_excitation || return x, px, y, py, z, pz
-    return _track_lumped_rad_particle(elem, x, px, y, py, z, pz,
-                                      Random.randn(), Random.randn(), Random.randn(),
-                                      Random.randn(), Random.randn(), Random.randn(),
-                                      false, true)
+    throw(ArgumentError(_LUMPED_RAD_CONTEXTLESS_MSG))
 end
 
 @inline function _track_lumped_rad_particle(elem::LumpedRad, x, px, y, py, z, pz,
