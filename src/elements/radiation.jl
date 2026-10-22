@@ -138,13 +138,17 @@ end
 
 function LumpedRad(spec::ElementSpec{:lumped_radiation},
                    method::AbstractTrackingMethod=tracking_method(spec))
-    turns = param(spec, :damping_turns)
-    beta = param(spec, :beta)
-    alpha = param(spec, :alpha)
-    sigma = param(spec, :sigma)
-    zeta = param(spec, :zeta)
-    eta = param(spec, :eta)
-    R = param(spec, :R)
+    # Declared defaults read from the schema (`_declared_param`), the required
+    # `damping_turns` refused by name when absent: a raw
+    # `ElementSpec{:lumped_radiation}(; damping_turns, rng_id)` died on `beta`
+    # with a KeyError until the 2026-10-18 audit (F-93).
+    turns = _declared_param(spec, :damping_turns)
+    beta = _declared_param(spec, :beta)
+    alpha = _declared_param(spec, :alpha)
+    sigma = _declared_param(spec, :sigma)
+    zeta = _declared_param(spec, :zeta)
+    eta = _declared_param(spec, :eta)
+    R = _declared_param(spec, :R)
     # `numeric_type(spec)`, the one rule of every kind: the stored type of a
     # `LumpedRadSpec{T}`, else the Float64-floor promotion of the stored
     # parameters.
@@ -171,8 +175,8 @@ function LumpedRad(spec::ElementSpec{:lumped_radiation},
     excitation = _radiation_excitation(excitation_scale, beta_t, alpha_t, sigma_t)
     is_damping, is_excitation = _lumped_rad_effective_components(
         method,
-        Bool(getparam(spec, :is_damping, true)),
-        Bool(getparam(spec, :is_excitation, true)) && excitation_available,
+        Bool(_declared_param(spec, :is_damping)),
+        Bool(_declared_param(spec, :is_excitation)) && excitation_available,
     )
     # 0 is the request for a fresh stream, which only the friendly constructor
     # resolves (at construction, so a recompile after a knob change keeps the
@@ -180,7 +184,7 @@ function LumpedRad(spec::ElementSpec{:lumped_radiation},
     # stream `BPMObserver(rng_id = 0)` also occupied (2026-10-16 neighbour
     # audit S1-2). Refused whatever the method: every lumped_radiation spec
     # carries its stream, excitation or not.
-    stream_id = UInt64(getparam(spec, :rng_id, 0))
+    stream_id = UInt64(_declared_param(spec, :rng_id))
     stream_id > 0 || throw(ArgumentError(
         "lumped_radiation: rng_id = 0 is the request for a fresh stream of the counter " *
         "RNG, which LumpedRadSpec assigns once, at construction (so that a knob change " *

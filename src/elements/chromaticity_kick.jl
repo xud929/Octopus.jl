@@ -74,9 +74,12 @@ end
 
 function ChromaticityKick(spec::ElementSpec{:chromaticity_kick},
                           method::AbstractTrackingMethod=tracking_method(spec))
-    xi = param(spec, :xi)
-    beta = param(spec, :beta)
-    alpha = param(spec, :alpha)
+    # Declared defaults read from the schema (`_declared_param`), the required
+    # pair refused by name when absent: a raw `ElementSpec{:chromaticity_kick}(;
+    # xi, beta)` died on `alpha` with a KeyError until the 2026-10-18 audit (F-93).
+    xi = _declared_param(spec, :xi)
+    beta = _declared_param(spec, :beta)
+    alpha = _declared_param(spec, :alpha)
     # `numeric_type(spec)`, the one rule of every kind: the stored type of a
     # `ChromaticityKickSpec{T}`, else the Float64-floor promotion of the stored
     # parameters, so integer tuples through the flexible spec form promote to
@@ -92,9 +95,9 @@ function ChromaticityKick(spec::ElementSpec{:chromaticity_kick},
         alfx, alfy,
         (one(T) + alfx * alfx) / betx,
         (one(T) + alfy * alfy) / bety,
-        CrabDispersion(Symplectic6DMap(), _quad_tuple(param(spec, :zeta), T)...),
-        MomentumDispersion(Symplectic6DMap(), _quad_tuple(param(spec, :eta), T)...),
-        XYCoupling(_quad_tuple(param(spec, :R), T)..., XY_MODEA),
+        CrabDispersion(Symplectic6DMap(), _quad_tuple(_declared_param(spec, :zeta), T)...),
+        MomentumDispersion(Symplectic6DMap(), _quad_tuple(_declared_param(spec, :eta), T)...),
+        XYCoupling(_quad_tuple(_declared_param(spec, :R), T)..., XY_MODEA),
     )
 end
 

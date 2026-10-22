@@ -822,6 +822,36 @@ _promote_param_type(T::Type, v) = T
 hasparam(spec::ElementSpec, key::Symbol) = haskey(spec.params, key)
 
 """
+    _declared_param(spec::ElementSpec, key::Symbol)
+
+The stored value of `key`, else the default the kind's registered schema
+declares for it: a runtime constructor reads a declared default from the ONE
+place it is declared instead of restating it beside a `getparam` fallback. A
+key that is absent and has no declared default (a required key, or one whose
+default is `nothing`) is refused by name -- the kind, the key, the remedy --
+never with a raw `KeyError`.
+
+Until the 2026-10-18 comprehensive audit (F-93) the runtime constructors of
+`crab_dispersion`, `momentum_dispersion`, `xy_coupling`, `chromaticity_kick`
+and `lumped_radiation` read their defaulted keys with a bare `spec.params[key]`
+(or, after the F-55 fix, refused EVERY absent key by name, the defaulted ones
+included), so the documented flexible form `ElementSpec{:crab_dispersion}(;
+zeta1=0.1)` failed while its schema declared `zeta2 = 0`.
+"""
+function _declared_param(spec::ElementSpec, key::Symbol)
+    params = getfield(spec, :params)
+    haskey(params, key) && return params[key]
+    meta = get(ELEMENT_META_BY_KIND, kind(spec), nothing)
+    pmeta = meta === nothing ? nothing : get(meta.parameters, key, nothing)
+    pmeta isa ParamMeta && !pmeta.required && pmeta.default !== nothing && return pmeta.default
+    throw(ArgumentError(
+        "ElementSpec{:$(kind(spec))} is missing the parameter $(key) its runtime constructor " *
+        "reads, and its schema declares no default for it; the flexible form requires every " *
+        "required parameter the friendly constructor would supply (see " *
+        "construction_help(ElementSpec{:$(kind(spec))}))"))
+end
+
+"""
     description(T::Type{<:AbstractOctopusObject})
     description(x::AbstractOctopusObject)
 

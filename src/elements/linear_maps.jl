@@ -12,20 +12,17 @@ end
 # The named parameters in `numeric_type(spec)`, the one rule of every kind: the
 # stored type of a `Spec{T}` form, else the Float64-floor promotion of the
 # stored parameters (until 2026-10-16 the stored values' own float types).
+# Each key is read through `_declared_param` (src/knowledge/Knowledge.jl): an
+# absent key takes the default its schema declares -- every coefficient of the
+# three linear maps declares 0 -- and a key with no declared default is refused
+# by name. The flexible form `ElementSpec{:crab_dispersion}(; zeta1=...)` died
+# here with a raw `KeyError: key :zeta2 not found` (2026-10-18 audit, F-55),
+# then was refused by name for the three defaulted coefficients it had every
+# right to omit (F-93); the knob contract's unset-knob probe relies on the knob
+# guard firing before this lookup either way.
 function _float_params(spec::ElementSpec, keys::Symbol...)
     T = numeric_type(spec)
-    # A missing parameter is refused by name: the flexible form
-    # `ElementSpec{:crab_dispersion}(; zeta1=...)` stores what it is given, and
-    # the runtime constructor reading `zeta2` died with a raw `KeyError: key
-    # :zeta2 not found` naming neither the element nor the remedy (2026-10-18
-    # audit, F-55; the knob contract's unset-knob probe relied on the knob guard
-    # firing before this lookup).
-    absent = [k for k in keys if !hasparam(spec, k)]
-    isempty(absent) || throw(ArgumentError(
-        "ElementSpec{:$(kind(spec))} is missing the parameter(s) $(join(string.(absent), ", ")) its " *
-        "runtime constructor reads; the flexible form requires every parameter the friendly " *
-        "constructor would supply (see construction_help(ElementSpec{:$(kind(spec))}))"))
-    return map(k -> T(param(spec, k)), keys)
+    return map(k -> T(_declared_param(spec, k)), keys)
 end
 
 # Element type for a friendly linear-map constructor called WITHOUT its `{T}`.
@@ -390,7 +387,7 @@ XYCoupling(r1::Number, r2::Number, r3::Number, r4::Number) =
 XYCoupling(r1::Number, r2::Number, r3::Number, r4::Number, mode::XYCouplingMode) =
     XYCoupling(Symplectic6DMap(), r1, r2, r3, r4, mode)
 XYCoupling(spec::ElementSpec{:xy_coupling}, method::AbstractTrackingMethod=tracking_method(spec)) =
-    XYCoupling(method, _float_params(spec, :r1, :r2, :r3, :r4)..., getparam(spec, :mode, XY_MODEA))
+    XYCoupling(method, _float_params(spec, :r1, :r2, :r3, :r4)..., _declared_param(spec, :mode))
 
 @inline function track_particle(::Symplectic6DMap, elem::XYCoupling, x0, px0, y0, py0, z0, pz0)
     if elem.mode == XY_UNDEF

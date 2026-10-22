@@ -14142,6 +14142,60 @@ end
     end
 end
 
+# ---------------------------------------------------------------------------
+# Fix batch 3, unit H (2026-10-21): element kinds' silent reads and conventions
+# (comprehensive audit 2026-10-18, F-92..F-99, F-160..F-167). Each testset of
+# this region was shown red on the unfixed tree and green on the fixed one;
+# the record is result/fix_batch3_2026_10_20/units/H_report.md.
+# ---------------------------------------------------------------------------
+
+@testset "A raw spec with only its required keys compiles with the schema's declared defaults (F-93)" begin
+    # The five runtime constructors the 2026-10-18 audit found reading declared
+    # defaults through a bare `spec.params[key]` (U19-3): the documented flexible
+    # form `ElementSpec{:crab_dispersion}(; zeta1=0.1)` died with `KeyError: key
+    # :zeta2 not found` while the schema declared zeta2 = 0. Each raw spec built
+    # from its required keys alone must compile to the map the friendly form
+    # compiles to, and to the map the raw spec compiles to with every declared
+    # default spelled out -- the defaults DERIVED from the schema, never retyped
+    # (the placement table's keys are left out: they are the wraps', not the
+    # constructor's).
+    u = (1.1e-3, -2.0e-4, 0.7e-3, 1.3e-4, -1.5e-3, 4.0e-4)
+    cases = (
+        (:crab_dispersion, (zeta1=0.1,), CrabDispersionSpec(zeta1=0.1)),
+        (:momentum_dispersion, (eta2=0.2,), MomentumDispersionSpec(eta2=0.2)),
+        (:xy_coupling, (r1=0.01,), XYCouplingSpec(r1=0.01)),
+        (:chromaticity_kick, (xi=(1.0, 1.0), beta=(1.0, 1.0)),
+         ChromaticityKickSpec(xi=(1.0, 1.0), beta=(1.0, 1.0))),
+        (:lumped_radiation, (damping_turns=(1.0e3, 1.0e3, 1.0e3), rng_id=0x4a93),
+         LumpedRadSpec(damping_turns=(1.0e3, 1.0e3, 1.0e3), rng_id=0x4a94)),
+    )
+    for (k, required, friendly) in cases
+        schema = Octopus.parameter_schema(ElementSpec{k})
+        defaults = Dict(key => pm.default for (key, pm) in pairs(schema)
+                        if !pm.required && pm.default !== nothing &&
+                           !(key in keys(required)) && !(key in keys(Octopus._PLACEMENT_PARAMS)))
+        @test !isempty(defaults)
+        raw = ElementSpec{k}(; required...)
+        spelled = ElementSpec{k}(; required..., defaults...)
+        @testset let kind = k
+            out = collect(compile_runtime(raw)(u...))        # KeyError before the fix
+            @test out == collect(compile_runtime(spelled)(u...))
+            @test out == collect(compile_runtime(friendly)(u...))
+        end
+    end
+    # A REQUIRED key absent from the raw form is refused by name -- the kind,
+    # the key -- not with a raw KeyError.
+    err = try
+        compile_runtime(ElementSpec{:chromaticity_kick}(; xi=(1.0, 1.0)))
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    @test err isa ArgumentError && occursin("beta", err.msg) && occursin("chromaticity_kick", err.msg)
+end
+
+
 
 @testset "Thin elements, markers and RBEND" begin
     u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
