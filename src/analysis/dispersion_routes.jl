@@ -472,7 +472,15 @@ differences of zeta, eta and h; empty when fewer than two routes are unique);
 reported; when it holds the routes are NOT run, every route carries
 `:coasting_structure`, and the coasting branch supplies the report's
 `zeta = 0`, `h = 1`, `eta` from (D24) and the (D7) graph `[0, eta]` when
-`eta` is unique; `graph` is unavailable with `eta`'s reason otherwise).
+`eta` is unique; `graph` is unavailable with `eta`'s reason otherwise);
+`executed` (the routes whose kernel function RAN, in `DISPERSION_ROUTES`
+order: none on a coasting map or when the longitudinal candidate is not a
+definite cluster, the polynomial and projector routes alone for a definite
+unresolved candidate, every requested route on the normal path; a route that
+was requested but blocked before running is in `routes` with the blocking
+reason and NOT here. The analysis derives its receipt's `executed`, its
+diagnostics rows and the Newton cap's activity from this field, so the three
+cannot disagree; fix batch 3, 2026-10-21, F-196 and F-198).
 """
 struct DispersionRoutes
     matrix::Matrix{Float64}
@@ -491,6 +499,7 @@ struct DispersionRoutes
     h::Determined{Float64}
     agreement::Vector{_AGREEMENT_T}
     coasting::CoastingStructure
+    executed::Vector{Symbol}
 end
 
 # ---------------------------------------------------------------------------
@@ -1323,7 +1332,9 @@ the projector route's three traces are the resolved modes' own `Re(rho +
 mode, an unresolved one its common trace repeated by its half
 multiplicity; fix batch 2026-10-19, F-176), and the requested routes run
 with `rho_M1 = clusters.rho_M1`; a route not requested is present with
-`:route_not_selected`. When the longitudinal
+`:route_not_selected`, and the report's `executed` names the routes whose
+kernel ran (recorded at the call, never inferred from a status; fix batch 3,
+2026-10-21). When the longitudinal
 candidate lies in a definite UNRESOLVED cluster (m >= 2), no route runs on
 a mode: `eta` is the ambiguity set of stage 3's `_dispersion_ambiguity_set`
 with `:cluster_unresolved`, the polynomial and projector routes are formed
@@ -1385,7 +1396,7 @@ function _dispersion_routes(M::AbstractMatrix{<:Real}, clusters::ModeClusters; l
         return DispersionRoutes(Mf, Determined{ModeLabels6D}(:coasting_structure, d_coast), 0, 0,
                                 Determined{Float64}(:coasting_structure, d_coast), resolved_tunes, cubic, cubic_residual, rv, :eigenplane,
                                 graph_c, Determined(zeros(4)), coasting.eta, Determined(1.0),
-                                _AGREEMENT_T[], coasting)
+                                _AGREEMENT_T[], coasting, Symbol[])
     end
     cand = _longitudinal_candidate(clusters, longitudinal)
     c_long = clusters.clusters[cand.cluster]
@@ -1467,20 +1478,23 @@ function _dispersion_routes(M::AbstractMatrix{<:Real}, clusters::ModeClusters; l
         return DispersionRoutes(Mf, labels, cand.index, cand.cluster, Determined(_cluster_trace(c_long)), tunes, cubic, cubic_residual,
                                 make_unavailable(reason, d_block), :eigenplane, Determined{Matrix{Float64}}(reason, d_block),
                                 Determined{Vector{Float64}}(reason, d_block), Determined{Vector{Float64}}(reason, d_block), Determined{Float64}(reason, d_block),
-                                _AGREEMENT_T[], coasting)
+                                _AGREEMENT_T[], coasting, Symbol[])
     end
     tau_s = taus[findfirst(==(cand.cluster), tau_positions)]
     if cand.mode === nothing
         # Definite UNRESOLVED longitudinal cluster (theory 13.5-13.6, design rows 2 and 4): eta is the ambiguity set;
         # the two algebraic routes run with the common trace and land in :singular_coefficient by (N16).
         d_unres = "the longitudinal candidate cluster $(c_long.members) is definite but unresolved (multiplicity $(length(c_long.half_members))): the dispersion is an ambiguity set, not a vector"
-        rv = DispersionRoute[]
+        # `executed` is recorded where a route's kernel is called, never inferred from a status afterwards
+        rv = DispersionRoute[]; executed = Symbol[]
         for r in DISPERSION_ROUTES
             if !(r in routes)
                 push!(rv, _unavailable_route(r, :route_not_selected, "route :$(r) not requested"))
             elseif r === :polynomial
+                push!(executed, r)
                 push!(rv, _polynomial_route(Mf, tau_s; rho_M1=rho_M1))
             elseif r === :projector
+                push!(executed, r)
                 push!(rv, run_projector(is_determined(c_long.projector) ? determined_value(c_long.projector) : nothing))
             else
                 push!(rv, _unavailable_route(r, :cluster_unresolved, d_unres))
@@ -1490,7 +1504,7 @@ function _dispersion_routes(M::AbstractMatrix{<:Real}, clusters::ModeClusters; l
         return DispersionRoutes(Mf, labels, 0, cand.cluster, Determined(tau_s), tunes, cubic, cubic_residual, rv, :eigenplane,
                                 Determined{Matrix{Float64}}(:cluster_unresolved, d_unres), Determined{Vector{Float64}}(:cluster_unresolved, d_unres),
                                 Determined{Vector{Float64}}(set, :cluster_unresolved, d_unres), Determined{Float64}(:cluster_unresolved, d_unres),
-                                _route_agreement(rv), coasting)
+                                _route_agreement(rv), coasting, executed)
     end
     # The normal path (design row 1 and row 3): a resolved longitudinal mode; the requested routes run.
     u_s = cand.mode.vector
@@ -1500,11 +1514,14 @@ function _dispersion_routes(M::AbstractMatrix{<:Real}, clusters::ModeClusters; l
     # is the selected mode's own (N5) projector -Im(u u') S (fix batch 2026-10-19, F-176).
     reference = length(c_long.half_members) == 1 ? (is_determined(c_long.projector) ? determined_value(c_long.projector) : nothing) :
                 Matrix{Float64}(-imag(u_s * u_s') * _symplectic_form(6))
-    rv = DispersionRoute[]
+    rv = DispersionRoute[]; executed = Symbol[]
     for r in DISPERSION_ROUTES
         if !(r in routes)
             push!(rv, _unavailable_route(r, :route_not_selected, "route :$(r) not requested"))
-        elseif r === :eigenplane
+            continue
+        end
+        push!(executed, r)      # every requested route's kernel runs on this path
+        if r === :eigenplane
             push!(rv, _eigenplane_route(Mf, u_s, tau_s; rho_M1=rho_M1))
         elseif r === :polynomial
             push!(rv, _polynomial_route(Mf, tau_s; rho_M1=rho_M1))
@@ -1518,5 +1535,5 @@ function _dispersion_routes(M::AbstractMatrix{<:Real}, clusters::ModeClusters; l
     end
     primary = rv[findfirst(r -> r.route === :eigenplane, rv)]
     return DispersionRoutes(Mf, labels, cand.index, cand.cluster, Determined(tau_s), tunes, cubic, cubic_residual, rv, :eigenplane,
-                            primary.graph, primary.zeta, primary.eta, primary.h, _route_agreement(rv), coasting)
+                            primary.graph, primary.zeta, primary.eta, primary.h, _route_agreement(rv), coasting, executed)
 end

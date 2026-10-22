@@ -53,14 +53,23 @@ Central finite difference: column `j` is `(map(q + h e_j) - map(q - h e_j)) / 2h
 with `h = step * max(|q_j|, 1)`. Truncation error of order `step^2`; the
 provenance declares a map uncertainty of `step^2 * ||J||_F`, the
 truncation-order SCALE the design assigns (design note, "Input boundary" item
-3), not a bound on the matrix error: a central difference also carries
-roundoff of order `eps / (2h) * ||J||`, which dominates at the default step
-(measured 2026-09-11 on the FODO cell: the matrix error is 2.1e3 times the
-declared value at step 3e-7 and 0.84 times it at 1e-5). That is why an
-analysis fed a finite-difference matrix must be told an explicit symplectic
-tolerance (design note, "Types and availability"); whether the declared
-formula gains a roundoff arm is a design-note decision left to the
-measurement stage. The default `step` is the `SymplecticityContract` default,
+3), not a bound on the matrix error: the truncation constant is the map's
+third derivatives, not `||J||`, and a central difference also carries
+roundoff of order `eps |f| / (2h)` in the map's values `f`. Measured against
+the complex-step matrix (the suite's testset "one_turn_matrix: finite
+difference is order step^2 and declares it" is the harness, 2026-10-21): on
+the FODO + octupole cell at a displaced point the matrix error is 65 times
+the declared value at the default step 3e-7 and at 1e-5 alike
+(truncation-dominated, the cell's third derivatives), on the DBA ring at the
+origin 2.1 times at both steps; an earlier "2.1e3 at 3e-7 and 0.84 at 1e-5"
+quoted from an unrecorded 2026-09-11 fixture is retired (2026-10-18 audit,
+U21-10 d). That is why an analysis fed a finite-difference matrix must be
+told an explicit symplectic tolerance (design note, "Types and
+availability"): the declared scale is not the error, and the analysis folds
+it into `rho_M0` as one arm only (times the scaling's gain, see
+`_scaling_gain`); whether the declared formula gains a roundoff arm is a
+design-note decision left to the measurement stage. The default `step` is
+the `SymplecticityContract` default,
 read from that contract rather than copied, so the two cannot drift apart.
 `step` must be positive and finite.
 """
@@ -138,13 +147,24 @@ end
 The output of [`one_turn_matrix`](@ref): the `6x6` Jacobian in `matrix` and
 its [`LinearizationProvenance`](@ref) in `provenance`. Iterates as the pair
 `(matrix, provenance)`, so `M, prov = one_turn_matrix(cell)` destructures it;
-`Matrix(lm)` copies the matrix. A later stage's `analyze` accepts it as an
-input form. Runtime representation: the fields may change; the accessors and
-the destructuring are the surface.
+`Matrix(lm)` copies the matrix. `analyze` accepts it as an input form. The
+provenance records a six-dimensional expansion point and fixed-point
+residual, so the constructor refuses any matrix that is not a finite `6x6`
+with an `ArgumentError` (a hand-built 4x4 `LinearizedMap` reached `analyze`
+and died in a `DimensionMismatch` before: 2026-10-18 audit, F-199; a 4x4
+matrix is analysed bare). Runtime representation: the fields may change; the
+accessors and the destructuring are the surface.
 """
 struct LinearizedMap
     matrix::Matrix{Float64}
     provenance::LinearizationProvenance
+    function LinearizedMap(matrix::AbstractMatrix{<:Real}, provenance::LinearizationProvenance)
+        size(matrix) == (6, 6) || throw(ArgumentError(
+            "LinearizedMap: the provenance records a six-dimensional expansion point and fixed-point residual, so the " *
+            "matrix must be 6x6, got $(size(matrix)); analyze a 4x4 matrix as a bare matrix"))
+        all(isfinite, matrix) || throw(ArgumentError("LinearizedMap: the matrix has non-finite entries"))
+        return new(Matrix{Float64}(matrix), provenance)
+    end
 end
 
 Base.Matrix(lm::LinearizedMap) = copy(lm.matrix)

@@ -237,6 +237,25 @@ function _scale_map(rec::ReciprocalScaling, M::AbstractMatrix{<:Real})
     return _scaling_matrix(rec) * Matrix{Float64}(M) * _scaling_inverse(rec)
 end
 
+"""
+    _scaling_gain(rec::ReciprocalScaling) -> Float64
+
+The largest factor by which the similarity `E -> C E C^-1` of a scaling
+record can amplify a perturbation of the map: `max_ij C_ii / C_jj =
+maximum(C_ii) / minimum(C_jj)`, the operator norm of that similarity on the
+Frobenius norm and on the 2-norm alike (`||C E C^-1||_F^2 = sum_ij (C_ii /
+C_jj)^2 E_ij^2`, and `||C||_2 ||C^-1||_2 = cond(C)` for a diagonal `C`). An
+uncertainty declared in the caller's coordinates (`map_uncertainty`, a
+finite-difference provenance's `step^2 ||J||_F`) bounds a perturbation of
+the SCALED matrix only after this factor, which the analysis applies before
+folding either into `rho_M0` (63 on the DBA ring, 1.5e3 at beta = 1000 m;
+measured by the 2026-10-18 audit, F-194). Exactly `1.0` for `:none`.
+"""
+function _scaling_gain(rec::ReciprocalScaling)
+    c = _scaling_matrix(rec).diag
+    return maximum(c) / minimum(c)
+end
+
 # Back-transformation table of the design note ("Input boundary" item 5),
 # scaled quantity in, physical quantity out. `C_r` is the transverse 4x4
 # block of C, `C_l = diag(a_3, 1/a_3)` the longitudinal 2x2 block. Residuals
@@ -426,7 +445,11 @@ The first perturbation scale of the design ("Pipeline" step 2),
 provenance_uncertainty)`, where `defect` is the Frobenius member of
 [`_symplectic_defect`](@ref) of the same (scaled) matrix and `d` its
 dimension. Every arm is a non-negative finite number or an `ArgumentError`.
-Returns the scale and the four arms, so a report can say which one won.
+The two declared arms are in the coordinates of `M`: a caller that analyses
+a SCALED matrix `C M C^-1` multiplies an uncertainty declared in the
+caller's coordinates by [`_scaling_gain`](@ref) before passing it (the
+analysis driver does; fix batch 3, 2026-10-21, F-194). Returns the scale and
+the four arms, so a report can say which one won.
 """
 function _perturbation_scale(M::AbstractMatrix{<:Real}, defect::Real;
                              user_uncertainty::Real=0.0, provenance_uncertainty::Real=0.0)

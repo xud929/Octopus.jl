@@ -539,7 +539,7 @@ function _identity_contract_diagnostics(contract::TwissDispersionIdentityContrac
                  expect=(r, err) -> isres(r, err) && begin
                      poly = findfirst(x -> x.route === :polynomial, r.diagnostics.routes)
                      poly !== nothing && r.diagnostics.routes[poly].status === :none &&
-                         r.diagnostics.routes[poly].coefficient_condition > 1e3 && r.status === :degraded
+                         determined_value(r.diagnostics.routes[poly].coefficient_condition) > 1e3 && r.status === :degraded
                  end))
     push!(rows, (name="D13 identity map (the marker's map)", input=Matrix(1.0I, 6, 6), analysis=a6(),
                  expect=(r, err) -> isres(r, err) && fr(r) === :singular_coefficient && r.status !== :failed && isempty(r.physical.tunes)))
