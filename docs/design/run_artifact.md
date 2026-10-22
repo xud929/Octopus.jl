@@ -319,8 +319,12 @@ appended; a non-root rank, which opens no file, carries `nothing` for
 `continued` and `execution`. Each task kind records its own output receipt
 beside it, also after the prepare, so a prepare refusal leaves neither:
 `:tracking_output` (new; `artifact`, `channels` -- the luminosity channel
-labels the artifact opened with -- and `loss_report`) and
-`:strong_strong_output` (moved after the prepare; `artifact`, `channels`).
+labels the artifact opened with -- and `loss_report`; since the 2026-10-21
+fix batch recorded after EVERY refusal that can stop the run before its first
+turn -- the observers' prepare, the fused-route refusal -- beside the two
+per-run receipts, where a duplicate probe name had left it claiming a run,
+F-80) and `:strong_strong_output` (moved after the prepare; `artifact`,
+`channels`).
 `tracking_task_option_schema()` gained `artifact` and `loss_report`, both
 naming `:tracking_output`, and `configuration_report(::TrackingTask)` an
 `output` entry pair; the `:artifact` entry of BOTH task reports is built by

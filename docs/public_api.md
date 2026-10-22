@@ -212,7 +212,10 @@ built: the switch on and a modulated element in the line) and `execution`
 (the ledger row); the task records its own output receipt beside it --
 `:tracking_output` (`artifact`, `channels`, `loss_report`) or
 `:strong_strong_output` (`artifact`, `channels`) -- after the artifact is
-prepared, so a refused prepare leaves none. `tracking_task_option_schema()`
+prepared, so a refused prepare leaves none; the `TrackingTask` records its
+receipt after every refusal that can stop the run before its first turn (the
+observers' prepare, the fused-route refusal), beside its two per-run
+receipts. `tracking_task_option_schema()`
 describes `artifact` and `loss_report`; `configuration_report(task, rep)`
 carries an `output` entry pair whose artifact entry is `:unresolved` while
 `append` or `record_turn_modulation` is requested (both are decided at

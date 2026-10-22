@@ -127,12 +127,36 @@ end
 function ThinMultipole(spec::ElementSpec,
                        method::AbstractTrackingMethod=tracking_method(spec))
     T = numeric_type(spec)
-    knraw = collect(T, getparam(spec, :knl, ()))
-    ksraw = collect(T, getparam(spec, :ksl, ()))
+    knl_stored, ksl_stored = _thin_strengths(spec)
+    knraw = collect(T, knl_stored)
+    ksraw = collect(T, ksl_stored)
     knl, ksl = _strength_tuples(T, knraw, ksraw)
     return ThinMultipole{typeof(method),T,length(knl)}(
         method, knl, ksl,
         T(getparam(spec, :hkick, zero(T))), T(getparam(spec, :vkick, zero(T))))
+end
+
+"""
+    _thin_strengths(spec::ElementSpec) -> (knl, ksl)
+
+The integrated strengths a thin spec compiles with: its kind's declared named
+strengths (`k0l`..`k5sl`, read from the ONE registry the friendly constructors
+and the beam-line override guard read, `_FOLDED_NAMED_STRENGTHS`) folded into
+the stored `knl`/`ksl` by the same `_fold_named_strengths`. The friendly
+constructors fold at construction and store no named key, so this folds
+nothing for them and returns `knl`/`ksl` as stored; a RAW
+`ElementSpec{:thin_quadrupole}(; k1l=0.1)` -- a declared key, so the
+unknown-key warning stays quiet -- compiled to `knl = ()` and tracked as the
+identity until the 2026-10-18 comprehensive audit (F-106; measured px = 0.0
+at x = 1e-3 against -1e-4 folded). Both spellings of one strength set is
+refused by name, raw as friendly. A kind outside the registry (the kickers)
+reads `knl`/`ksl` as stored.
+"""
+function _thin_strengths(spec::ElementSpec)
+    k = kind(spec)
+    folded = _fold_named_strengths(get(_FOLDED_NAMED_STRENGTHS, k, ()), getfield(spec, :params);
+                                   nkey=:knl, skey=:ksl, kind=k)
+    return get(folded, :knl, ()), get(folded, :ksl, ())
 end
 
 # Named integrated strengths, folded into knl/ksl the same way the thick magnets

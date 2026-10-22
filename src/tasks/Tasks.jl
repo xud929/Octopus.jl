@@ -273,9 +273,10 @@ runtime consumer. `artifact` and `loss_report` were accepted as public
 keywords with no schema entry, no `configuration_report` entry and no receipt
 until the 2026-10-16 fix batch (neighbour audit S4-10, the concrete instance
 of the unchecked-converse family): both name the `:tracking_output` receipt,
-recorded once per `execute!` after the artifact is prepared (or in its place
-without one) with the artifact path, the luminosity channels it opened and
-`loss_report`; the artifact's own options are carried by the
+recorded once per `execute!` after every refusal that can stop the run before
+its first turn -- the artifact's prepare, the observers' prepare, the
+fused-route refusal (or in its place without an artifact) -- with the
+artifact path, the luminosity channels it opened and `loss_report`; the artifact's own options are carried by the
 `:run_artifact_output` receipt the prepare records (`?run_artifact_option_schema`).
 """
 tracking_task_option_schema() = (
@@ -825,7 +826,18 @@ function _collect_spec_s!(out, entry::LineEntry, s, Kv::Val{K}) where {K}
         _placement_length(entry)
         return _collect_spec_s!(out, _effective_spec(entry), s, Kv)
     end
-    spec isa AbstractElementSpec && spec isa ElementSpec &&
+    # An in-line hook placed through a line (`BeamLine("R", d1,
+    # ScheduledObserver(...), d2)` flattens to a `LineEntry` whose spec is the
+    # hook) is the hook itself to this walk, as it is to the compile walk
+    # (`_append_runtime_line!` routes a non-spec placement to the hook path):
+    # forwarded, so the probe arm (src/tasks/BeamObservers.jl) collects its
+    # arc position and it advances nothing. Until the 2026-10-18 comprehensive
+    # audit (F-75) the placement fell through to the length advance below, the
+    # probe arm never saw a hook placed through `BeamLine`, and every probe
+    # view of a `BeamLine`-built lattice was written without its `s` (probe
+    # map size 0 against 1 for the flat tuple of the same line).
+    spec isa AbstractElementSpec || return _collect_spec_s!(out, spec, s, Kv)
+    spec isa ElementSpec &&
         _kind_matches(kind(spec), K) &&
         push!(out, (s[], _placement_length(entry), entry))
     # `_placement_length`, not a raw `:L` read (U11-1).
@@ -855,11 +867,76 @@ end
 
 _element_tuple(element::AbstractElementSpec) = (element,)
 # A line hands the task its placements. One carrying state of its own -- a
-# misaligned cryostat -- stays whole, because the wrap has to enclose it.
-_element_tuple(line::ElementSpec{:line}) =
-    _line_has_own_state(line) ? (line,) : Tuple(line_entries(line))
+# misaligned cryostat -- stays whole, because the wrap has to enclose it; a
+# hook inside it is refused by name here, at construction (F-81).
+function _element_tuple(line::ElementSpec{:line})
+    _line_has_own_state(line) || return Tuple(line_entries(line))
+    _refuse_hooks_in_whole_line(line)
+    return (line,)
+end
 _element_tuple(elements::Tuple) = elements
 _element_tuple(elements::AbstractVector) = Tuple(elements)
+
+"""
+    _refuse_hooks_in_whole_line(line::ElementSpec{:line})
+
+Refuse, by name, an in-line hook inside a line that compiles WHOLE. A line
+placed bare as a task's `elements` dissolves into its placements
+(`_element_tuple`), where the compile walk's hook path
+(`_line_entry_or_nothing`, src/tasks/BeamObservers.jl) picks up a
+`ScheduledObserver` or `ScheduledAction` child and gives it a segment of its
+own to run in. A line carrying state of its own (a misaligned cryostat, kept
+whole so the wrap encloses it), or any line placed inside a tuple, a vector or
+another line, compiles through `compile_runtime(::ElementSpec{:line})` to ONE
+`CompositeLine`: no segment boundary inside it for a hook to run at, and no
+`compile_runtime` method for a hook, so the first `execute!` died with a raw
+`MethodError: no method matching compile_runtime(::ScheduledObserver{...})`
+that named neither the limitation nor the remedy (2026-10-18 comprehensive
+audit, F-81 and F-240; the design's "no in-line hooks inside a composite
+assembly", docs/theory/beam_line_composition.md). Called where a line
+compiles whole -- `_append_runtime_line!`, for a bare line spec and for a
+placement whose spec is a line, on both task kinds' compile -- and by
+`_element_tuple` for the bare own-state line, which is therefore refused at
+construction. Descends nested lines. What counts as a hook is the compile
+walk's own test, so the two cannot disagree.
+"""
+function _refuse_hooks_in_whole_line(line::ElementSpec{:line})
+    hooks = String[]
+    _collect_whole_line_hooks!(hooks, line)
+    isempty(hooks) && return nothing
+    own = [k for k in keys(getfield(line, :params)) if k !== :name && k !== :entries]
+    why = isempty(own) ? "it is placed inside a tuple, a vector or another line" :
+          "it carries parameters of its own ($(join(sort!(string.(own)), ", ")))"
+    throw(ArgumentError(
+        "the line $(repr(line_name(line))) compiles whole -- $(why) -- and holds " *
+        "$(length(hooks)) in-line hook(s): $(join(hooks, "; ")). A line that compiles to one " *
+        "CompositeLine has no segment boundary for a hook to run at; an in-line hook runs " *
+        "between the placements of a line that dissolves into the task's elements. Pass the " *
+        "line bare as the task's elements with no parameters of its own, place the hook beside " *
+        "the line in the task tuple or among the task's hooks, or split the line around it."))
+end
+
+function _collect_whole_line_hooks!(out, line::ElementSpec{:line})
+    for entry in line_entries(line)
+        spec = getfield(entry, :spec)
+        if spec isa ElementSpec{:line}
+            _collect_whole_line_hooks!(out, spec)
+        elseif !(spec isa AbstractElementSpec) && _line_entry_or_nothing(spec, Ref(0)) !== nothing
+            push!(out, _hook_description(spec) * " at " * entry_path(entry))
+        end
+    end
+    return out
+end
+
+# `ScheduledObserver(MomentObserver)` for a scheduled wrapper (the wrapper's
+# hook field per `_HOOK_KINDS`), the bare type name for an unwrapped hook.
+function _hook_description(hook)
+    for k in _HOOK_KINDS
+        hasfield(typeof(hook), k.field) &&
+            return "$(nameof(typeof(hook)))($(nameof(typeof(getfield(hook, k.field)))))"
+    end
+    return string(nameof(typeof(hook)))
+end
 
 
 # Contracts and analyses walk the same containers the runtime line walk does:
@@ -926,7 +1003,12 @@ admits (`docs/design/turn_modulation.md`), would make split calls differ from
 one call until the owner decides to persist successors or forbid state
 (2026-10-13 neighbour audit, U1-1). Set `start_turn` to a non-negative
 integer to explicitly reposition the task before that call, for example when
-restoring a checkpoint. A failed call does not advance the stored turn.
+restoring a checkpoint. A failed call does not advance the stored turn,
+whatever failed: a turn, a finalizer after the last turn, or the output tail
+that follows (the loss accounting and the artifact's close); the turn is
+stored only once the call has completed in full, and an artifact a failure
+leaves open is closed, its lock released, before the error propagates
+(2026-10-18 comprehensive audit, F-77).
 
 Returns `rep`.
 """
@@ -1019,65 +1101,119 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
         # path surfaced an `HDF5.API.H5Error` while the real tracking error
         # was discarded, so the user debugged the wrong thing (2026-08-05_b
         # audit, U13-2).
+        #
+        # The accounting is reconciled ONCE and handed to both consumers, the
+        # console report and the artifact's /losses group, as the success
+        # path reconciles once: the artifact step recomputed it, two O(N)
+        # non-finite reductions per crashed run (2026-10-18 comprehensive
+        # audit, F-82). `nothing` when it could not be computed, said with a
+        # warning; the loss rows are still written and the artifact still
+        # closes.
+        crash_summary = try
+            _task_loss_summary(task, rep)
+        catch summary_error
+            @warn "the crashed run's loss accounting could not be reconciled; the " *
+                  "tracking error that stopped the run is the one below, and is the " *
+                  "one to fix" summary_error
+            nothing
+        end
         try
-            summary = _task_loss_summary(task, rep)
-            _report_losses(task, rep, summary, task.artifact !== nothing)
+            _report_losses(task, rep, crash_summary, task.artifact !== nothing)
         catch flush_error
-            @warn "the crashed run's loss accounting could not be flushed; the \
-                   tracking error that stopped the run is the one below, and is \
-                   the one to fix" flush_error
+            @warn "the crashed run's loss accounting could not be reported; the " *
+                  "tracking error that stopped the run is the one below, and is the " *
+                  "one to fix" flush_error
         end
         if task.artifact !== nothing && task.artifact.file !== nothing
             # Same best-effort rule for the artifact: flush what the run
             # produced (the losses recorded so far included, with the
             # reconciliation summary when it is computable), never replace
-            # the error that stopped the run.
+            # the error that stopped the run; then CLOSE it, whether or not
+            # the write succeeded, so its lock is released (a failed write
+            # skipped the close until F-77's fix, the same open-and-locked
+            # shape the output tail below had).
             try
-                crash_summary = try
-                    _task_loss_summary(task, rep)
-                catch
-                    nothing
-                end
                 _ra_write_losses!(task.artifact, task.loss_record[],
                                   _aperture_s_positions(task.elements), crash_summary)
-                finalize_run_artifact!(task.artifact)
             catch artifact_error
-                @warn "the crashed run's artifact could not be finalized; the \
-                       tracking error that stopped the run is the one below" artifact_error
+                @warn "the crashed run's loss rows could not be written to its artifact; " *
+                      "the tracking error that stopped the run is the one below" artifact_error
             end
+            _close_artifact_after_failure!(task.artifact)
         end
         rethrow()
     end
-    task.next_turn[] = next_turn
-    # INSIDE the policy scope, and that is not decoration: the accounting
-    # below reduces and gathers across the ranks, and outside the scope those
-    # collectives see a communicator of one -- so every rank would report and
-    # write its own shard's answer as the beam's, silently. Found by the
-    # step-3c gather returning only rank 0's loss rows; it applies equally to
-    # the loss summary, which step 3b globalized here and which was therefore
-    # not reached (docs/history/multi_process_step3c_2026_09_04.md).
-    _with_resolved_policy(active) do
-        _with_shard(rep, _mp_resolve_shard(length(rep))) do
-            summary = _global_loss_summary(_task_loss_summary(task, rep))
-            # The console-quiet rule: with an artifact attached the accounting
-            # goes into its /losses group (written just below), so the summary
-            # is "on file".
-            _report_losses(task, rep, summary, task.artifact !== nothing)
-            if task.artifact !== nothing
-                # Success path: /losses is written under the replay rule from
-                # the cumulative record (`_ra_write_losses!`: a continued
-                # file's earlier rows kept below this window, this record's
-                # appended; 2026-10-19, F-57), then the artifact closes. A
-                # failure HERE is the failure -- an output that cannot be
-                # written must raise, the task-observer rule.
-                _ra_write_losses!(task.artifact, task.loss_record[],
-                                  _aperture_s_positions(task.elements), summary,
-                                  first(_mp_current_shard(rep)); folded=true)
-                finalize_run_artifact!(task.artifact)
+    # The output tail, INSIDE the policy scope, and that is not decoration:
+    # the accounting below reduces and gathers across the ranks, and outside
+    # the scope those collectives see a communicator of one -- so every rank
+    # would report and write its own shard's answer as the beam's, silently.
+    # Found by the step-3c gather returning only rank 0's loss rows; it
+    # applies equally to the loss summary, which step 3b globalized here and
+    # which was therefore not reached (docs/history/multi_process_step3c_2026_09_04.md).
+    #
+    # The stored turn advances only AFTER this tail completes (below): a
+    # failure here is the failure -- an output that cannot be written must
+    # raise, the task-observer rule -- and the documented turn rule holds for
+    # it as for a crashed turn or a failed finalizer. Until the 2026-10-18
+    # comprehensive audit (F-77) the turn was stored first, so a failed
+    # /losses write left `next_turn` advanced against the docstring and the
+    # artifact open with its lock held: the task's next execute! was refused
+    # "already open" and a reader saw a live writer that was wedged. An
+    # artifact such a failure leaves open is closed best-effort, outside the
+    # scope as on the crash path, before the error propagates.
+    try
+        _with_resolved_policy(active) do
+            _with_shard(rep, _mp_resolve_shard(length(rep))) do
+                summary = _global_loss_summary(_task_loss_summary(task, rep))
+                # The console-quiet rule: with an artifact attached the
+                # accounting goes into its /losses group (written just
+                # below), so the summary is "on file".
+                _report_losses(task, rep, summary, task.artifact !== nothing)
+                if task.artifact !== nothing
+                    # Success path: /losses is written under the replay rule
+                    # from the cumulative record (`_ra_write_losses!`: a
+                    # continued file's earlier rows kept below this window,
+                    # this record's appended; 2026-10-19, F-57), then the
+                    # artifact closes.
+                    _ra_write_losses!(task.artifact, task.loss_record[],
+                                      _aperture_s_positions(task.elements), summary,
+                                      first(_mp_current_shard(rep)); folded=true)
+                    finalize_run_artifact!(task.artifact)
+                end
             end
         end
+    catch
+        _close_artifact_after_failure!(task.artifact)
+        rethrow()
     end
+    task.next_turn[] = next_turn
     return result
+end
+
+"""
+    _close_artifact_after_failure!(art) -> nothing
+
+Best-effort close of a run artifact a failing path left open: the crash path
+after its loss flush, and the success path's output tail when its /losses
+write or close threw (2026-10-18 comprehensive audit, F-77: the artifact
+stayed open with its lock held, the task's next `execute!` was refused
+"already open" and a reader saw a live writer that was wedged). Runs OUTSIDE
+the policy scope, as the crash flush does (a collective issued while the
+ranks disagree on having thrown would hang), and never replaces the error in
+flight: a failure here is a warning beside it. `finalize_run_artifact!`'s own
+`finally` closes the file and releases the lock even when its ledger stamp
+throws, so an artifact whose close itself failed reads as closed here and
+nothing runs twice.
+"""
+function _close_artifact_after_failure!(art::Union{Nothing,RunArtifact})
+    (art === nothing || art.file === nothing) && return nothing
+    try
+        finalize_run_artifact!(art)
+    catch artifact_error
+        @warn "the run's artifact could not be finalized after the run failed; the error " *
+              "that stopped the run is the one below" artifact_error
+    end
+    return nothing
 end
 
 """
@@ -1261,7 +1397,8 @@ _fast_tracking_path(task, runtime_entries) =
     _record_tracking_receipts!(task, runtime_entries, policy, turns, first_turn, prov)
 
 The two per-run receipts of a `TrackingTask`, recorded immediately before its
-first turn, AFTER every refusal that can still stop the run with no turn
+first turn (the output receipt `:tracking_output` beside them, by the caller,
+since F-80), AFTER every refusal that can still stop the run with no turn
 tracked: the divided-run refusal in `execute!`, and in
 `_execute_tracking_task!` the hidden-strong-beam refusal, the artifact's
 prepare (a luminosity-label mismatch, a provenance-slot collision), the
@@ -1380,13 +1517,6 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
                               aperture_names=record === nothing ? String[] : aperture_names(record),
                               task_kind=string(nameof(typeof(task))))
     end
-    # The task's output receipt, AFTER the artifact is prepared (2026-10-16 fix
-    # batch, S4-1/S4-10): the path and the luminosity channels it opened with,
-    # and the loss-report switch; the artifact's own resolution is the
-    # `:run_artifact_output` receipt the prepare just recorded. A prepare
-    # refusal leaves no output receipt claiming a run.
-    _record_execution!(:tracking_output, backend_type(policy),
-                       _ra_task_output_receipt(art, labels; loss_report=task.loss_report))
     Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => art,
                            _ACTIVE_PROBE_S_MAP =>
                                (art === nothing ? nothing :
@@ -1394,7 +1524,9 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
         prepare_observers!(task.observers, runtime_elems; turns=turns, first_turn=first_turn)
         prepare_line_observers!(runtime_entries; turns=turns, first_turn=first_turn)
     end
-    _warn_unfireable_schedules(task.observers, turns, first_turn)
+    _warn_unfireable_schedules(
+        _run_scheduled_hooks((observers=task.observers, actions=task.actions), runtime_entries),
+        turns, first_turn)
     # The artifact's luminosity channel needs the same diagnostic isolation
     # the luminosity observer requests; constant over the window, so hoisted.
     artifact_diagnostics = art !== nothing && !isempty(strong_beams)
@@ -1430,6 +1562,18 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     # refusal here left the earlier groups cut back) -- then the per-run
     # receipts, then the route's.
     art === nothing || commit_run_artifact!(art)
+    # The task's output receipt (2026-10-16 fix batch, S4-1/S4-10): the path
+    # and the luminosity channels the artifact opened with, and the
+    # loss-report switch; the artifact's own resolution is the
+    # `:run_artifact_output` receipt its prepare recorded. Recorded HERE,
+    # after the last refusal, beside the two per-run receipts: it sat right
+    # after the prepare until the 2026-10-18 comprehensive audit (F-80), so a
+    # duplicate probe name -- the observers' prepare refusal -- left
+    # `[:run_artifact_output, :tracking_output]` with no turn tracked, a
+    # receipt claiming a run where the stated rule says a refused run leaves
+    # none.
+    _record_execution!(:tracking_output, backend_type(policy),
+                       _ra_task_output_receipt(art, labels; loss_report=task.loss_report))
     _record_tracking_receipts!(task, runtime_entries, policy, turns, first_turn, turn_modulation)
     if artifact_diagnostics
         # The route that ACTUALLY ran, not the one requested: a receipt naming
@@ -1548,35 +1692,84 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
 end
 
 """
-Warn about a scheduled hook that cannot fire anywhere in the requested window.
+    _run_scheduled_hooks(task_hooks::NamedTuple, entries::Tuple) -> Vector{NamedTuple}
+
+Every scheduled hook of one run with where it sits, derived from `_HOOK_KINDS`:
+for each kind, the task-level hooks of `task_hooks` under the kind's
+`task_field` (`(observers=task.observers, actions=task.actions)`; each already
+its scheduled wrapper, `classify_task_hooks` wraps the bare forms) and the
+in-line entries of that kind among the compiled line's hook entries
+(`_line_hook_entries(entries)`), in line order. Each row: `placement` (`:task`
+or `:line`), `kind`, `field` (the wrapper's hook field), `hook` (the
+`ScheduledObserver` or `ScheduledAction`, whose `schedule` every row carries)
+and `index` (the line hook index, 0 at task level). A task kind without
+task-level hooks passes empty tuples.
+"""
+function _run_scheduled_hooks(task_hooks::NamedTuple, entries::Tuple)
+    hooks = NamedTuple[]
+    for k in _HOOK_KINDS, hook in _hook_tuple(getfield(task_hooks, k.task_field))
+        push!(hooks, (placement=:task, kind=k.kind, field=k.field, hook=hook, index=0))
+    end
+    for entry in _line_hook_entries(entries), k in _HOOK_KINDS
+        entry isa k.entry || continue
+        push!(hooks, (placement=:line, kind=k.kind, field=k.field,
+                      hook=getfield(entry, k.field), index=entry.hook_index))
+    end
+    return hooks
+end
+
+"""
+    _warn_unfireable_schedules(hooks::AbstractVector, turns, first_turn)
+
+Warn, once per `execute!`, about every scheduled hook of the run that cannot
+fire anywhere in the requested window.
 
 A `ScheduledObserver(obs, AtTurns([500]))` on a `turns = 10` run observed
 nothing and said nothing -- the run looked complete and the output file was
 empty or absent (2026-08-05_b audit, U13-6). `execute!` already hands the
 prepare step both `turns` and `first_turn`, so the driver has exactly what a
-warning needs; nothing was asking the question.
+warning needs; nothing was asking the question. `hooks` is the ONE
+enumeration of the run's scheduled hooks (`_run_scheduled_hooks`, every kind
+of `_HOOK_KINDS` at both placements): the check read the task-level observers
+alone until the 2026-10-18 comprehensive audit (F-76), so a line-placed
+observer, a task action and a line action on the same schedule ran silently.
+The warning names each hook -- placement, kind, type, line hook index,
+schedule -- in its `hooks` keyword, with `turns` and `first_turn` beside it
+(F-83: the `\\` of the old message sat outside the string literal, so
+`schedule = schedule \\ turns = turns` was one keyword argument and the
+record printed a closure for the schedule and no `turns`). One warning per
+run, at most four per process (`maxlog`), so a chunked long run whose
+schedule lies in a later chunk is told, not flooded.
 
 Only a schedule that yields a KNOWN, empty set of turns is reported. A planner
 that cannot enumerate its turns (a predicate schedule) says nothing, because
 "unknown" is not "empty".
 """
-function _warn_unfireable_schedules(observers, turns::Integer, first_turn::Integer)
+function _warn_unfireable_schedules(hooks::AbstractVector, turns::Integer, first_turn::Integer)
     turns > 0 || return nothing
-    for hook in observers
-        schedule = hasfield(typeof(hook), :schedule) ?
-                   getfield(hook, :schedule) : nothing
-        schedule === nothing && continue
-        planned = _scheduled_turns(schedule, turns, first_turn)
+    labels = String[]
+    for h in hooks
+        planned = _scheduled_turns(getfield(h.hook, :schedule), turns, first_turn)
         planned === nothing && continue          # not enumerable: say nothing
         isempty(planned) || continue
-        @warn "a scheduled hook cannot fire in this run: its schedule selects no \
-               turn in the requested window, so it will observe nothing and its \
-               output will be empty or absent. Check the schedule against \
-               `turns` and the absolute `start_turn`." schedule = schedule \
-              turns = turns first_turn = first_turn maxlog = 4
+        push!(labels, _hook_label(h))
     end
+    isempty(labels) && return nothing
+    msg = "$(length(labels)) scheduled hook(s) cannot fire in this run: each schedule selects " *
+          "no turn of the requested window (turns = $(turns), starting at the absolute turn " *
+          "$(first_turn)), so the hook will observe or act nowhere and its output will be " *
+          "empty or absent. Check each schedule against `turns` and the absolute `start_turn`."
+    @warn msg hooks = labels turns = turns first_turn = first_turn maxlog = 4
     return nothing
 end
+
+# "task-level observer BPMObserver on AtTurns(Set([500]))",
+# "in-line action BeamSwapAction (line hook 2) on AtTurns(Set([500]))".
+_hook_label(h::NamedTuple) =
+    (h.placement === :task ? "task-level " : "in-line ") * String(h.kind) * " " *
+    string(nameof(typeof(getfield(h.hook, h.field)))) *
+    (h.placement === :line ? " (line hook $(h.index))" : "") *
+    " on " * sprint(show, getfield(h.hook, :schedule))
 
 # `record`, `times` and `backend` are REQUIRED POSITIONAL parameters, not
 # keywords with defaults, and that is deliberate. `TrackingTask` has TWO turn
@@ -1661,6 +1854,28 @@ struct LineActionEntry{A}
     action::A
     hook_index::Int
 end
+
+"""
+    _HOOK_KINDS
+
+The hook kinds a run carries, ONE table: each row names the kind, the in-line
+entry type the compile walk builds for it (`_line_entry_or_nothing`,
+src/tasks/BeamObservers.jl), the field holding the scheduled hook -- the same
+name on the entry (`LineObserverEntry.observer` is the `ScheduledObserver`)
+and on the wrapper (`ScheduledObserver.observer` is the observer) -- and the
+`TrackingTask` field holding the kind's task-level hooks. Every check that
+must see "every hook of the run" derives its cases from here
+(`_run_scheduled_hooks`), so a kind cannot be covered at one placement and
+missed at another: the unfireable-schedule warning read the task-level
+observers alone, and a line-placed observer, a task action and a line action
+whose schedule selected no turn of the window ran silently (2026-10-18
+comprehensive audit, F-76). The suite pins the table against the module's
+entry types (the structs carrying a `hook_index`).
+"""
+const _HOOK_KINDS = (
+    (kind=:observer, entry=LineObserverEntry, field=:observer, task_field=:observers),
+    (kind=:action, entry=LineActionEntry, field=:action, task_field=:actions),
+)
 
 function _runtime_entries(task::TrackingTask, rep=nothing)
     # The loss record is sized and placed by the representation, so a task
@@ -2131,6 +2346,10 @@ function _append_runtime_line!(out, entry::LineEntry, hook_counter)
     # physical element goes through the placement's parameter merge.
     spec isa AbstractElementSpec ||
         return _append_runtime_line!(out, spec, hook_counter)
+    # A placement whose spec is a line (an own-state sub-line its parent kept
+    # whole) compiles to one `CompositeLine`: a hook inside it is refused by
+    # name, not by `compile_runtime`'s missing method (F-81).
+    spec isa ElementSpec{:line} && _refuse_hooks_in_whole_line(spec)
     push!(out, PhysicsEntry(compile_runtime(entry)))
     return out
 end
@@ -2141,6 +2360,11 @@ function _append_runtime_line!(out, element, hook_counter)
         push!(out, line_entry)
         return out
     end
+    # A line spec reaching this walk whole -- an own-state line placed bare,
+    # any line nested in a tuple or a vector -- compiles to one `CompositeLine`
+    # (`compile_runtime(::ElementSpec{:line})`); a hook inside it is refused
+    # by name first (F-81).
+    element isa ElementSpec{:line} && _refuse_hooks_in_whole_line(element)
     runtime = _runtime_or_existing(element)
     if runtime isa Tuple
         _append_runtime_line!(out, runtime, hook_counter)

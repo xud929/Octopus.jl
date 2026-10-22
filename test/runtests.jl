@@ -14256,6 +14256,36 @@ end
         @test kd in map(k -> k, summarize_registry().elements)
         @test example_spec(ElementSpec{kd}) isa ElementSpec
     end
+
+    # 2026-10-18 comprehensive audit, F-106 (fix batch 3, unit F): the RAW
+    # form of a strength-folding thin kind. `ElementSpec{:thin_quadrupole}(;
+    # k1l=0.1)` names a key the schema declares, so the unknown-key warning
+    # stayed quiet, and compiled to `knl = ()`: the identity, silently (px 0.0
+    # at x = 1e-3 against -1e-4 folded; probe_A_specs.jl A4). The compile
+    # constructor now folds the kind's declared named strengths from the ONE
+    # registry the friendly constructors and the override guard read
+    # (`_FOLDED_NAMED_STRENGTHS`), so both spellings compile to one element;
+    # the cases are derived from that registry: every thin kind, every key.
+    let thin_kinds = sort!([k for (k, keys) in Octopus._FOLDED_TUPLE_KEYS if keys == (:knl, :ksl)]; by=string)
+        @test thin_kinds == [:thin_dipole, :thin_multipole, :thin_quadrupole, :thin_sextupole]
+        for k in thin_kinds, (nkey, skey, order) in Octopus._FOLDED_NAMED_STRENGTHS[k],
+            (key, tuple_key) in ((nkey, :knl), (skey, :ksl))
+
+            kw = Dict{Symbol,Any}(key => 0.1)
+            raw = compile_runtime(ElementSpec{k}(; kw...))
+            friendly = compile_runtime(Octopus.ELEMENT_META_BY_KIND[k].friendly_constructor(; kw...))
+            @testset let kind = k, key = key
+                @test length(getfield(raw, tuple_key)) == order + 1     # was 0
+                @test getfield(raw, tuple_key) == getfield(friendly, tuple_key)
+                @test collect(raw(u...)) == collect(friendly(u...))
+            end
+        end
+        # One spelling per strength, raw as friendly: both set is refused by name.
+        @test_throws ArgumentError compile_runtime(ElementSpec{:thin_quadrupole}(; k1l=0.1, knl=(0.0, 0.2)))
+        # A kicker (no fold table) and a friendly spec read as before.
+        @test compile_runtime(ElementSpec{:hkicker}(; hkick=1.0e-3)).hkick == 1.0e-3
+        @test compile_runtime(ThinQuadrupoleSpec(k1l=0.05)).knl == (0.0, 0.05)
+    end
 end
 
 if _lane_gate("Element parameter effectiveness")
@@ -16855,6 +16885,65 @@ end
     @test TrackingTask(BeamLine("Q", qspec)).contracts == tuple_task.contracts
     @test TrackingTask(BeamLine("Q", qspec)).analyses == tuple_task.analyses
     @test TrackingTask((DriftSpec(L=1.0), [qspec])).contracts == tuple_task.contracts
+
+    # 2026-10-18 comprehensive audit, F-75 (fix batch 3, unit F): a
+    # hook-bearing placement. The compile walk (`_append_runtime_line!`)
+    # routes a `LineEntry` whose spec is a hook to the hook path; the arc walk
+    # (`_collect_spec_s!`) advanced past it without forwarding, so the probe
+    # arm never saw a hook placed through `BeamLine`, and every probe view of
+    # a `BeamLine`-built lattice was written without its `s` (probe map size
+    # 0 against 1 for the same line as a flat tuple; probe_u12.jl P4).
+    let hook = ScheduledObserver(MomentObserver(; name="m", orders=1)),
+        flat = (DriftSpec(L=1.0), hook, DriftSpec(L=2.0)),
+        placed = Octopus._element_tuple(BeamLine("RING", DriftSpec(L=1.0), hook, DriftSpec(L=2.0)))
+        @test all(e -> e isa Octopus.LineEntry, placed)
+        mflat, mline = Octopus._line_probe_s_map(flat), Octopus._line_probe_s_map(placed)
+        @test length(mline) == length(mflat) == 1              # was 0 against 1
+        @test mline[hook.observer] == mflat[hook.observer] == 1.0
+        # A hook still advances nothing, through either container ...
+        ap = ApertureSpec(x_limit=1.0e-3, name="A")
+        @test Octopus._aperture_s_positions((DriftSpec(L=1.0), hook, ap)) ==
+              Octopus._aperture_s_positions(Octopus._element_tuple(BeamLine("R2", DriftSpec(L=1.0), hook, ap))) ==
+              [1.0]
+        # ... and the compile walk builds the same entries either way.
+        @test map(typeof, Octopus._runtime_line_entries(flat)) ==
+              map(typeof, Octopus._runtime_line_entries(placed))
+        # End to end: the probe view of a BeamLine-built task carries its arc position.
+        path = tempname() * ".h5"
+        task = TrackingTask(BeamLine("RING", DriftSpec(L=1.0), hook, DriftSpec(L=2.0)); artifact=path)
+        execute!(task, Phase6DRep([1e-4], [0.0], [0.0], [0.0], [0.0], [0.0]); turns=1)
+        @test read(TaskOutput(path), :moments; name="m").s == 1.0   # was nothing
+        rm(path; force=true)
+    end
+
+    # F-81 (= F-240): a hook inside a line that compiles WHOLE -- an own-state
+    # line placed bare, a line nested in a tuple, an own-state line inside a
+    # line -- is refused by name (the bare own-state line at construction, the
+    # rest at the compile walk, before any turn runs), where the first
+    # `execute!` died with a raw `MethodError: no method matching
+    # compile_runtime(::ScheduledObserver{...})` (probe_u12.jl P1): the
+    # design's "no in-line hooks inside a composite assembly"
+    # (docs/theory/beam_line_composition.md), now said by the code.
+    let hook = ScheduledObserver(MomentObserver(; name="inner", orders=1)),
+        d1 = DriftSpec(L=1.0), d2 = DriftSpec(L=2.0),
+        rep() = Phase6DRep([1e-4], [0.0], [0.0], [0.0], [0.0], [0.0]),
+        said(f) = (e = try f(); nothing catch err; err end;
+                   e isa ArgumentError ? sprint(showerror, e) : "")
+        own = said(() -> TrackingTask(BeamLine("CRYO", d1, hook, d2; x_offset=1.0e-4)))
+        @test occursin("\"CRYO\"", own) && occursin("x_offset", own)
+        @test occursin("ScheduledObserver(MomentObserver) at CRYO/SCHEDULEDOBSERVER", own)   # `entry_path`
+        @test occursin("CompositeLine", own) && occursin("bare", own)
+        nested = TrackingTask((BeamLine("RING", d1, hook, d2),))      # kept whole by the tuple
+        @test occursin("\"RING\"", said(() -> execute!(nested, rep(); turns=1)))
+        @test nested.next_turn[] == 0
+        outer = TrackingTask(BeamLine("OUTER", d1, BeamLine("CRYO", d1, hook, d2; x_offset=1.0e-4)))
+        @test occursin("\"CRYO\"", said(() -> execute!(outer, rep(); turns=1)))     # the sub-line kept whole
+        # The hook test is the compile walk's own: a bare observer is a hook too.
+        @test occursin("MomentObserver at", said(() -> Octopus._runtime_line_entries(
+            (BeamLine("BARE", d1, MomentObserver(; name="bare", orders=1), d2),))))
+        # The dissolving form, the documented one, compiles (and ran end to end above).
+        @test Octopus._runtime_line_entries(Octopus._element_tuple(BeamLine("RING", d1, hook, d2))) isa Tuple
+    end
 end
 
 # Deliberate mid-run failure for the crashed-execute! tests below.
@@ -16863,6 +16952,16 @@ struct FailAtTurnAction <: Octopus.AbstractBeamAction
 end
 Octopus.apply_action!(a::FailAtTurnAction, ctx, rep) =
     (ctx.turn == a.at && error("deliberate failure at turn $(ctx.turn)"); nothing)
+# Output-tail failure injector (2026-10-18 comprehensive audit, F-77): spoils a
+# spec's `L` at one turn, so the arc walk the success path's /losses write runs
+# AFTER every turn tracked (`_aperture_s_positions`) fails there and nowhere
+# earlier.
+struct SpoilLengthAtTurn <: Octopus.AbstractBeamObserver
+    spec::ElementSpec
+    at::Int64
+end
+Octopus.observe!(o::SpoilLengthAtTurn, ctx, rep) =
+    (ctx.turn == o.at && set_param!(o.spec, :L, "spoiled"); nothing)
 
 # Mid-run ledger peek for the run-artifact testset: reads the OPEN
 # artifact's /execution current_turn and the channel cursor at one turn,
@@ -17013,6 +17112,87 @@ Octopus.apply_action!(::ReseedGlobalRNGAction, ctx, rep) =
     end
 end
 
+@testset "A scheduled hook that cannot fire warns, for every hook kind at every placement" begin
+    # 2026-10-18 comprehensive audit, F-76 and F-83 (fix batch 3, unit F).
+    # `AtTurns([500])` on a 10-turn window: the U13-6 warning read the
+    # task-level observers alone, so a line-placed observer, a task action and
+    # a line action whose schedule selects no turn of the window ran silently
+    # (probe_u12.jl P3: warned 0, 1, 0, 0 of the four), and the `@warn` had a
+    # `\` OUTSIDE its string literal, so `schedule = schedule \ turns = turns`
+    # parsed as one keyword argument (a closure printed for the schedule, no
+    # `turns`). The cases are DERIVED from the hook-kind table `_HOOK_KINDS`
+    # (one rule for every kind) times the two placements, so a third kind
+    # joins the table and is tested here with no new line.
+    kinds = Octopus._HOOK_KINDS
+    @test Set(k.kind for k in kinds) == Set([:observer, :action])
+    # Every in-line hook entry type of the module (the structs carrying a
+    # `hook_index`) is a row of the table: a new entry kind cannot stay out.
+    entry_types = Set{Any}()
+    for n in names(Octopus; all=true)
+        isdefined(Octopus, n) || continue
+        T = getfield(Octopus, n)
+        U = T isa UnionAll ? Base.unwrap_unionall(T) : T      # the entries are parametric
+        U isa DataType && isstructtype(U) && :hook_index in fieldnames(U) && push!(entry_types, T)
+    end
+    @test Set(Any[k.entry for k in kinds]) == entry_types
+    never = AtTurns([500])
+    hook_of(kind) = kind === :observer ?
+        ScheduledObserver(BPMObserver("late_" * String(kind)), never) :
+        ScheduledAction(BeamSwapAction(() -> error("an unfireable action fired")), never)
+    mk() = Phase6DRep([1.0e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
+    unfireable(logs) = [r for r in logs if r.level == Logging.Warn && occursin("cannot fire", r.message)]
+    for k in kinds, placement in (:task, :line)
+        hook = hook_of(k.kind)
+        task = placement === :task ?
+            TrackingTask((DriftSpec(L=1.0), DriftSpec(L=2.0)); hooks=(hook,)) :
+            TrackingTask((DriftSpec(L=1.0), hook, DriftSpec(L=2.0)))
+        logs, _ = Test.collect_test_logs() do
+            execute!(task, mk(); turns=10)
+        end
+        warns = unfireable(logs)
+        @testset let kind = k.kind, placement = placement
+            @test length(warns) == 1
+            if length(warns) == 1
+                w = only(warns)
+                # F-83: the window and the hooks are keyword arguments of the record.
+                @test haskey(w.kwargs, :turns) && w.kwargs[:turns] == 10
+                @test haskey(w.kwargs, :first_turn) && w.kwargs[:first_turn] == 0
+                @test haskey(w.kwargs, :hooks) && length(w.kwargs[:hooks]) == 1
+                label = haskey(w.kwargs, :hooks) ? string(only(w.kwargs[:hooks])) : ""
+                @test occursin(placement === :task ? "task-level" : "in-line", label)
+                @test occursin(String(k.kind), label)
+                @test occursin("AtTurns", label)
+            end
+        end
+    end
+    # A window that reaches the schedule is silent, at either placement, and
+    # the window is the ABSOLUTE one (`start_turn`); a predicate schedule
+    # ("unknown" is not "empty") says nothing.
+    let task = TrackingTask((DriftSpec(L=1.0), hook_of(:observer), DriftSpec(L=2.0));
+                            hooks=(hook_of(:observer),))
+        logs, _ = Test.collect_test_logs() do
+            execute!(task, mk(); turns=3, start_turn=499)
+        end
+        @test isempty(unfireable(logs))
+    end
+    let task = TrackingTask((DriftSpec(L=1.0),);
+                            hooks=(ScheduledObserver(BPMObserver("pred"), PredicateSchedule(ctx -> false)),))
+        logs, _ = Test.collect_test_logs() do
+            execute!(task, mk(); turns=3)
+        end
+        @test isempty(unfireable(logs))
+    end
+    # Every unfireable hook of one run is named in ONE warning.
+    let task = TrackingTask((DriftSpec(L=1.0), hook_of(:observer), DriftSpec(L=2.0));
+                            hooks=(hook_of(:action),))
+        logs, _ = Test.collect_test_logs() do
+            execute!(task, mk(); turns=10)
+        end
+        warns = unfireable(logs)
+        @test length(warns) == 1 && length(only(warns).kwargs[:hooks]) == 2
+    end
+end
+
 @testset "A crashed execute! still delivers its loss artifacts" begin
     # Audit part 7, T6. The stored turn deliberately does not advance on
     # failure (documented retry semantics), so the retry replays the same
@@ -17061,6 +17241,107 @@ end
     execute!(chunked, r2; turns=3)
     execute!(chunked, r2; turns=3)
     @test readings(bpm2)[1] == [0, 1, 2, 3, 4, 5]
+end
+
+@testset "The output tail: a failure after the last turn keeps the stored turn and closes the artifact, a refusal leaves no output receipt, a crash reconciles once" begin
+    # 2026-10-18 comprehensive audit, F-77, F-80 and F-82 (fix batch 3, unit F).
+    mk() = Phase6DRep([1.0e-4, -1.0e-4], zeros(2), zeros(2), zeros(2), zeros(2), zeros(2))
+    # (a) F-77: the success path's output step -- the loss accounting and the
+    # artifact's close, after every turn tracked -- fails (the arc walk of the
+    # /losses write, spoiled by an observer at the last turn). `execute!`
+    # documents "a failed call does not advance the stored turn" and every
+    # path that closes the artifact releases its lock; on 24e8683 the stored
+    # turn read 3, the artifact stayed open and locked, and the retry was
+    # refused "already open" (probe_u12_p5b.jl).
+    let path = tempname() * ".h5"
+        d = DriftSpec(L=1.0)
+        task = TrackingTask((d, DriftSpec(L=2.0)); hooks=(SpoilLengthAtTurn(d, 2),), artifact=path)
+        rep = mk()
+        err = try
+            execute!(task, rep; turns=3)
+            nothing
+        catch e
+            e
+        end
+        @test err isa MethodError                    # the output step's own failure surfaces
+        @test task.next_turn[] == 0                  # was 3
+        @test task.artifact.file === nothing         # was open
+        @test !isfile(path * ".lock")                # was held
+        set_param!(d, :L, 1.0)
+        retry = try                                  # was refused "already open"
+            execute!(task, rep; turns=1)
+            nothing
+        catch e
+            e
+        end
+        @test retry === nothing
+        @test task.next_turn[] == 1
+        @test task.artifact.file === nothing && !isfile(path * ".lock")
+        rm(path; force=true)
+    end
+    # (b) F-80: the `:tracking_output` receipt follows EVERY refusal that can
+    # stop the run with no turn tracked, as the two per-run receipts do: a
+    # duplicate probe name (the observers' prepare) left
+    # `[:run_artifact_output, :tracking_output]` and no turn tracked on
+    # 24e8683 (probe_u12.jl P2).
+    let path = tempname() * ".h5"
+        task = TrackingTask((DriftSpec(L=1.0), ScheduledObserver(MomentObserver(; name="dup", orders=1)),
+                             DriftSpec(L=2.0), ScheduledObserver(MomentObserver(; name="dup", orders=1)));
+                            artifact=path)
+        audit = ExecutionAudit()
+        err_box = Ref{Any}(nothing)          # `with_execution_audit` returns the audit, not the block's value
+        with_execution_audit(audit) do
+            try
+                execute!(task, mk(); turns=3)
+            catch e
+                err_box[] = e
+            end
+        end
+        err = err_box[]
+        @test err isa ArgumentError && occursin("duplicate probe name", sprint(showerror, err))
+        consumers = [r.consumer for r in execution_receipts(audit)]
+        @test :run_artifact_output in consumers       # the prepare ran and said so
+        @test !(:tracking_output in consumers)        # was recorded
+        @test !(:tracking_turn_timing in consumers)
+        @test task.next_turn[] == 0
+        @test task.artifact.file === nothing && !isfile(path * ".lock")
+        rm(path; force=true)
+    end
+    # (c) F-82: the crash path reconciles the loss accounting ONCE, as the
+    # success path does (two `loss_summary` reductions per crashed execute! on
+    # 24e8683, probe_u12.jl P7). Counted through a more specific method that
+    # defers to the real one with `invoke` -- no body is copied -- added for
+    # this block and deleted after it; `invokelatest`, because the method is
+    # newer than this block's world. The success path's count of one is the
+    # instrument's own control.
+    let path = tempname() * ".h5", calls = Ref(0)
+        Octopus.eval(quote
+            function loss_summary(rep::Phase6DRep, record::LossRecord)
+                $calls[] += 1
+                return invoke(loss_summary, Tuple{Phase6DRep,Any}, rep, record)
+            end
+        end)
+        try
+            lost() = Phase6DRep([5.0e-3, 0.0], zeros(2), zeros(2), zeros(2), zeros(2), zeros(2))
+            ap = ApertureSpec(x_limit=1.0e-3, y_limit=1.0e-3, name="A")
+            task = TrackingTask((DriftSpec(L=1.0), ap); hooks=(FailAtTurnAction(1),), artifact=path)
+            allow_lost_particles(; enabled=true) do
+                @test_throws ErrorException Base.invokelatest(execute!, task, lost(); turns=3)
+            end
+            @test calls[] == 1                                        # was 2
+            @test read(TaskOutput(path), :losses).summary.dead == 1   # and the flush still lands
+            calls[] = 0
+            ok = TrackingTask((DriftSpec(L=1.0), ap); artifact=tempname() * ".h5")
+            allow_lost_particles(; enabled=true) do
+                Base.invokelatest(execute!, ok, lost(); turns=3)
+            end
+            @test calls[] == 1
+            rm(ok.artifact.path; force=true)
+        finally
+            Base.delete_method(which(Octopus.loss_summary, (Phase6DRep, Octopus.LossRecord)))
+        end
+        rm(path; force=true)
+    end
 end
 
 @testset "ParamMeta alternatives derive Symbol perturbations" begin
