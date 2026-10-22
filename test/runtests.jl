@@ -14677,6 +14677,50 @@ end
 end
 
 
+@testset "The conventions note's SAD cubic carries the code's 1/(1+delta) (F-164)" begin
+    # docs/theory/lattice_hamiltonian_and_conventions.md 6.3.1 wrote the SAD
+    # cubic of the hard-edge dipole fringe without the `1/(1+delta)` that the
+    # code (`c3 = b^2/(72 fg)/p`) and PTC carry, and with the z term one power
+    # short: the pair is the exact kick of V = b^2 y^4 / (72 FG (1+delta)),
+    # dp_y = -dV/dy, dz = +dV/ddelta in the z = s - l convention (2026-10-18
+    # audit, U17-6; PTC agreement to 4e-12 at delta = 0.09 where the
+    # factor-free form parts by 8e-8). The note states the code's pair and the
+    # kernel still forms it that way: two textual tripwires, one each.
+    note = read(joinpath(pkgdir(Octopus), "docs", "theory", "lattice_hamiltonian_and_conventions.md"), String)
+    @test occursin("\\frac{h^2y^3}{18\\,FG\\,(1+\\delta)}", note)
+    @test occursin("\\frac{h^2y^4}{72\\,FG\\,(1+\\delta)^2}", note)
+    @test !occursin("\\Delta z=+\\frac{h^2y^4}{72\\,FG}\\cdot\\frac{1+\\delta}{(1+\\delta)^2}", note)
+    src = read(joinpath(pkgdir(Octopus), "src", "elements", "lattice_magnets.jl"), String)
+    @test occursin("c3 = b * b / (72 * fg) / p", src) && occursin("py -= 4 * c3 * y^3", src) && occursin("z -= c3 * y^4 / p", src)
+    # And the kick IS that of V: at the exit face with fint*hgap != 0, the cubic's
+    # share of (dp_y, dz) at two deltas scales as 1/(1+delta) and 1/(1+delta)^2
+    # relative to each other, read off the kernel by differencing against the
+    # same face with the integrals' cubic removed through fg -> 0 at fixed
+    # Phi (the main fringe term depends on fg too, so compare the DIFFERENCE
+    # of two gap values, which isolates the fg-dependent part, and check the
+    # delta scaling of its cubic-in-y component by a y^3 / y^4 fit).
+    O = Octopus
+    function cubic_share(delta, y)
+        a = O._fringe_dipole_exact(0.3, 0.5, 0.03, 1.0, 0.0, 0.0, y, 0.0, 0.0, delta)
+        b = O._fringe_dipole_exact(0.3, 0.5, 0.0, 1.0, 0.0, 0.0, y, 0.0, 0.0, delta)
+        return a[4] - b[4], a[5] - b[5]
+    end
+    # The fg-dependent part at small y: the cubic (y^3 in py, y^4 in z) plus
+    # the main term's fg pieces (linear in y and higher). Isolate the cubic by
+    # the odd/even y combination y^3: f(y) - 2 f(y/2)*... simpler: fit on two y.
+    for delta in (0.0, 0.09)
+        p1, z1 = cubic_share(delta, 1.0e-3)
+        p2, z2 = cubic_share(delta, 2.0e-3)
+        # py: main fg term is linear in y (tan Phi's fg share), so the y^3 part is
+        # (p2 - 2 p1)/6 per (1e-3)^3; z: main fg share is y^2, the cubic y^4:
+        # (z2 - 4 z1)/12 per (1e-3)^4
+        c3 = 0.3^2 / (72 * 0.5 * 0.03) / (1 + delta)
+        @test isapprox((p2 - 2 * p1) / 6, -4 * c3 * (1.0e-3)^3; rtol=2.0e-3)
+        @test isapprox((z2 - 4 * z1) / 12, -c3 * (1.0e-3)^4 / (1 + delta); rtol=2.0e-3)
+    end
+end
+
+
 
 @testset "Thin elements, markers and RBEND" begin
     u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)

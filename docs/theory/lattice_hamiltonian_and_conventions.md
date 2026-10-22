@@ -878,10 +878,20 @@ Two details worth copying verbatim:
   precision as $B\to0$ — the same removable-singularity trap as Section 5.2.
 - There is a **cubic term with no counterpart in most codes**, present in both
   the exact and expanded branches:
-  $$\Delta p_y=-\frac{h^2y^3}{18\,F G},\qquad
-    \Delta z=+\frac{h^2y^4}{72\,FG}\cdot\frac{1+\delta}{(1+\delta)^2} .$$
+  $$\Delta p_y=-\frac{h^2y^3}{18\,FG\,(1+\delta)},\qquad
+    \Delta z=-\frac{h^2y^4}{72\,FG\,(1+\delta)^2} ,$$
+  the exact kick of the potential $V=\dfrac{h^2y^4}{72\,FG\,(1+\delta)}$
+  ($\Delta p_y=-\partial V/\partial y$, $\Delta z=+\partial V/\partial\delta$ in
+  the $z=s-l$ convention, whose longitudinal sign is the negative of PTC's), as
+  the code forms it (`c3 = b^2/(72 fg)/p`, `py -= 4 c3 y^3`, `z -= c3 y^4/p`).
   It is inherited from SAD (the source comments it as such). Omitting it means
-  never matching PTC on a bend with a finite gap.
+  never matching PTC on a bend with a finite gap. The $1/(1+\delta)$ factors
+  are PTC's too: measured against MAD-X 5.03.06 PTC at $\delta=0.09$,
+  $y=2\times10^{-2}$ the code agrees to $4\times10^{-12}$ where the factor-free
+  form this note used to print would part by $8\times10^{-8}$ per face; the
+  committed pin runs $|\delta|\le3\times10^{-3}$, where the two forms differ by
+  at most $8\times10^{-12}$ against its $10^{-11}$ tolerance, and barely
+  resolved them (2026-10-18 comprehensive audit, F-164).
 
 #### 6.3.2 The expanded branch is a different map
 
