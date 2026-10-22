@@ -14339,8 +14339,10 @@ end
     # rest on, measured on 1e5 particles (probes 1 to 7 in
     # result/audit_crab_noise_2026_10_16/fixes/I/): the device fuses `a*b + c`
     # into one FMA where the host rounds twice (which multiply it fuses is the
-    # compiler's choice; the drift is bitwise at L = 0.5 only because scaling
-    # by a power of two is exact), and its libm differs from the host's on
+    # compiler's choice; the straight drift is bitwise at a power-of-two L
+    # because the scaling is exact and, since fix batch 3b, its radicand is
+    # one fma on both sides -- before that by the kernel's luck), and its libm
+    # differs from the host's on
     # transcendentals by one to three ulp on a few percent of arguments, so
     # only untouched or single-operation coordinates are bitwise.
     #
@@ -32108,6 +32110,48 @@ end
     # And they are absent from the log, because the aperture did not lose them.
     losses = loss_records(record)
     @test !any(in(losses.particle_id), hand_killed)
+end
+
+@testset "The straight drift's radicand is the source's fusion on both backends (fix batch 3b)" begin
+    # 2026-10-22: gate b3b2 of the comprehensive-audit fix batch 3 found the
+    # straight drift at L = 0.5 parted by one ulp between CPU and CUDA in x for
+    # 52 of 478 recorded losses ("Aperture losses are identical on CPU and
+    # CUDA", below): the device had begun to contract `(1 + pz)^2` into the
+    # radicand's first subtraction once the F-167 guard changed the kernel
+    # around it (1165 of 20000 x in the one-drift kernel; 0 before the guard;
+    # a standalone kernel of the plain shape contracts it on either tree).
+    # `_ps_radicand` spells the radicand `fma(1 + pz, 1 + pz, -pt2)` with
+    # `pt2 = _pt2_fused(px, py)`, so its roundings are the source's on both
+    # sides, the rule `_pt2_fused` already followed. Host-side: the shape on
+    # both IEEE types; the plain form on a complex-step coordinate; one drift
+    # at L = 0.5 reproduced to the bit in x and y by the hand formula (red on
+    # the unfixed tree, where the plain radicand parts them on a few percent
+    # of particles); the guard still kills an over-momentum particle through
+    # it. Device-side, CUDA permitting: one drift at L = 0.5 is bitwise across
+    # backends in all six coordinates, the aperture-identity test's premise.
+    rng = MersenneTwister(2026)
+    for T in (Float64, Float32)
+        px, py, pz = T(1e-3) .* randn(rng, T, 3)
+        t = 1 + pz
+        @test Octopus._ps_radicand(px, py, pz) === fma(t, t, -fma(px, px, py * py))
+    end
+    pxc, pyc, pzc = complex(1e-3, 1e-20), complex(-2e-3, 0.0), complex(5e-4, 0.0)
+    @test Octopus._ps_radicand(pxc, pyc, pzc) == (1 + pzc)^2 - pxc * pxc - pyc * pyc
+    @test isnan(Octopus._ps_or_dead(Octopus._ps_radicand(1.5, 0.0, 0.0)))
+    n = 2000
+    x0, px0, y0, py0, z0, pz0 = (1e-3 .* randn(rng, n) for _ in 1:6)
+    rep = Phase6DRep(copy(x0), copy(px0), copy(y0), copy(py0), copy(z0), copy(pz0))
+    track!(rep, (compile_runtime(DriftSpec(L=0.5)),), 1; policy=CPUThreadsExecutionPolicy())
+    ps0 = [sqrt(fma(1 + pz0[i], 1 + pz0[i], -fma(px0[i], px0[i], py0[i] * py0[i]))) for i in 1:n]
+    @test all(rep.x[i] === x0[i] + px0[i] / ps0[i] * 0.5 for i in 1:n)
+    @test all(rep.y[i] === y0[i] + py0[i] / ps0[i] * 0.5 for i in 1:n)
+    if Octopus._HAS_CUDA && Octopus.CUDA.functional()
+        dev = Phase6DRep((Octopus.CUDA.CuArray(copy(a)) for a in (x0, px0, y0, py0, z0, pz0))...)
+        track!(dev, (compile_runtime(DriftSpec(L=0.5)),), 1; policy=CUDAExecutionPolicy())
+        @test coords_identical(dev, rep)
+    else
+        @test_skip "CUDA device not available"
+    end
 end
 
 @testset "Aperture losses are identical on CPU and CUDA" begin

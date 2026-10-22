@@ -185,8 +185,12 @@ table it prints is the current measurement). The rule, measured 2026-10-17
 (fix I of the crab-cavity noise neighbour audit): both backends round the
 IEEE operations alike, but the device fuses `a*b + c` into one FMA where the
 host rounds twice -- which multiply it fuses is the compiler's choice in the
-surrounding kernel, and the straight drift is bitwise at `L = 0.5` only
-because scaling by a power of two is exact -- and the device's libm differs
+surrounding kernel, so a product whose rounding must agree is spelled `fma` on
+both sides (`_pt2_fused`; since fix batch 3b, 2026-10-22, the straight drift's
+radicand `_ps_radicand` too, after the F-167 guard changed the kernel around the
+plain form and the device began contracting it), and the straight drift is
+bitwise at a power-of-two `L` because the scaling is exact and its radicand is
+the source's -- and the device's libm differs
 from the host's by one to three ulp on a few percent of transcendental
 arguments. So a coordinate is bitwise across backends only when the kind never
 writes it or writes it through single or fusion-exact operations: every

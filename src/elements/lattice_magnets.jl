@@ -173,6 +173,24 @@ have no `fma`.
 end
 @inline _diff_of_products(a, b, c, d) = a * b - c * d
 
+# The straight drift's radicand `(1 + pz)^2 - (px^2 + py^2)` as `fma(1 + pz, 1 + pz,
+# -_pt2_fused(px, py))` on IEEE floats: its three roundings are the source's on
+# both backends, the rule `_pt2_fused` follows. Spelled plain, which of its
+# products the device contracted was the compiler's choice in the surrounding
+# kernel: none in the one-drift kernel before the F-167 guard (0 of 20000 x
+# parted from the host at L = 0.5), `(1 + pz)^2` into the first subtraction
+# once the guard changed the kernel around it (1165 of 20000; a standalone
+# kernel of the plain shape contracts it on either tree), so the drift's bitwise
+# agreement at a power-of-two L -- the premise of the aperture-identity test --
+# had held by accident (gate b3b2 of the 2026-10-22 fix batch 3b, its record).
+# Moves the host's x and y by one ulp on 8% of particles (1608 of 20000) and z
+# on 0.1% (20), within the kind's class. The plain form on every other number
+# type, as `_pt2_fused`. The curved drift keeps the plain radicand: its class
+# is bounded by the device's fused rotation products and the two libms anyway.
+@inline _ps_radicand(px::T, py::T, pz::T) where {T<:Union{Float32,Float64}} =
+    (t = 1 + pz; fma(t, t, -_pt2_fused(px, py)))
+@inline _ps_radicand(px, py, pz) = (1 + pz)^2 - px * px - py * py
+
 """
     _ps_or_dead(radicand)
     _dead(x, px, y, py, z, pz)
@@ -330,7 +348,7 @@ same sweep and metric: see the suite's pins (F-161 testset).
 end
 
 @inline function _lattice_drift(::Val{false}, h::T, L::T, x, px, y, py, z, pz) where {T}
-    ps0 = _ps_or_dead((1 + pz)^2 - px * px - py * py)
+    ps0 = _ps_or_dead(_ps_radicand(px, py, pz))
     return x + px / ps0 * L, px, y + py / ps0 * L, py,
            z - L * _pt2_fused(px, py) / (ps0 * ((1 + pz) + ps0)), pz
 end
@@ -1079,7 +1097,7 @@ function _cross_backend_rounding(op::LatticeMagnet{M,T,N,ORDER,F,MC,NC,C}) where
     content = N > 0 || NC > 0 || !iszero(op.e1) || !iszero(op.e2)
     if !curved && !content
         return _rounding_class(untouched=(:px, :py, :pz), ulp=(:x, :y, :z), ulp_bound=8,
-            why="the straight drift: the device fuses `x + px/ps0 L` into one FMA where the host rounds the product first (bitwise at L = 0.5 only because scaling by a power of two is exact; 7% of 1e5 particles part at L = 0.35, 26% at L = 100 m) and fuses the radicand `(1+pz)^2 - px^2 - py^2` in some kernels; z reads them through the cancellation-free excess (coincident at this beam's amplitudes); px, py, pz are never written")
+            why="the straight drift: the device may fuse `x + px/ps0 L` into one FMA where the host rounds the product first -- it did on 7% of 1e5 particles at L = 0.35 and 26% at L = 100 m in the 2026-10-17 kernel, on none of 1e5 at either length in the one-drift kernel of 2026-10-22, the choice being the compiler's in the surrounding kernel, so the bound stays; at a power-of-two L the scaling is exact and the radicand is `_ps_radicand`, one fma on both sides (fix batch 3b), so the drift is bitwise there by construction -- the aperture-identity test's premise; z reads them through the cancellation-free excess (coincident at this beam's amplitudes); px, py, pz are never written")
     elseif !curved
         return _rounding_class(untouched=(:pz,), ulp=(:x, :px, :y, :py, :z), ulp_bound=32,
             why="a straight magnet: the kick `px - L g ar` and the recurrence `kn tr - ks ti` fuse on the device (34% of 1e5 particles part in px through a quadrupole), the fringe maps use `exp`, `tan` and `atan`, and the drift's x, y, z read the kicked momenta; pz is never written (1 to 2 ulps of scale over 3 turns bare, 8 with soft fringes and an offset)")
