@@ -620,6 +620,16 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   the cluster mode index matched by eigenvalue, three dead scripts ported
   with a retired-spelling tripwire, the MPI seam child's arms that fail by
   name; two integration joins with their own test; thirteen rows retired.
+- [`comprehensive_audit_fixes_2026_10_21_batch3.md`](history/comprehensive_audit_fixes_2026_10_21_batch3.md) —
+  the comprehensive audit's fix batch 3, the runtime rows through eight units
+  (sub-agents proposing, the integrator verifying each red on the unfixed base and
+  green on the integrated tree, two cross-unit changes made on the merged tree):
+  the strong-strong stack's conventions and dead twins, the task walkers and the
+  output tail, the fused moment row and the BPM's provenance, the collision-point chromatic kick and the cancellation-free
+  exact drift, the floor plan's tilts and refusals, the beam's validation and
+  host-side draw, the knob derivative's lookup and the clocked collectives, the
+  analysis driver's gain fold and executed routes; the rounding-class row waits
+  on the owner.
 - [`comprehensive_audit_fixes_2026_10_20_batch2.md`](history/comprehensive_audit_fixes_2026_10_20_batch2.md) —
   the comprehensive audit's fix batch 2, the five instrument rows through four
   units (sub-agents proposing, the integrator verifying each red on the

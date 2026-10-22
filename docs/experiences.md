@@ -1959,6 +1959,91 @@ wait while summary rows keep appearing is slow, not hung; its verdict is as vali
 as a fast one, and launching more work on the same mount deepens the queue.
 Diagnose from the mount statistics before suspecting the tree or killing the run.
 
+## A convention is one function
+
+Batch 3 of the audit's fix campaign met the same defect in five dresses: a luminosity
+scale with two conventions, a slicing-method alias list spelled in three places, a
+deposit-method pair hand-written at every validator and message, a hook-kind table that
+existed only in the code that happened to warn, and a namespace prefix matched by
+`startswith` in one view and by the dot in another. Each fix was one table or one predicate
+that every consumer reads (`_LONGITUDINAL_SLICING_METHODS`, `_PIC_DEPOSIT_METHODS`,
+`_HOOK_KINDS`, `_knob_under_prefix`, `LongitudinalSlices.live`) and a tripwire that derives
+the consumers from it, so a second spelling cannot grow back unnoticed. Where two units
+held the two halves (unit M's predicate, unit K's twin), the integrator joined them on the
+merged tree with a red run first.
+
+## A refused run leaves no receipt claiming it ran
+
+Both task kinds recorded their output receipt before the last refusal that could stop the
+run -- the observers' prepare -- so a duplicate probe name or a refusing observer left
+`:tracking_output` or `:strong_strong_output` on record with no turn tracked (F-80, U6-5).
+The receipt now follows the commit, beside the per-run receipts, and the strong-strong
+twin was shown red with a refusing test observer because the audit's own refusal had
+moved into the artifact's prepare in batch 1. A receipt is a claim; it is recorded where the
+claim becomes true.
+
+## A check's precondition is part of the check
+
+A luminosity-schedule memo keyed on the schedule and the turn passed every multi-turn test
+and returned the previous run's value on a one-turn run (F-6); a sliced pair's non-finite
+verdict taken by one owner passed at two ranks, where a mismatch is mutual by arithmetic,
+and split at three (F-11); a positivity test with `> 0` admitted a 1.65e-24 rounding residue
+(F-125). Each check was green on the cases it was written for and red on the case it
+existed for. The regression test states the precondition -- one-turn runs, both directions,
+the rounding floor -- and the fix keys on it: the run epoch, the joint verdict, the floor.
+
+## Declared uncertainty lives in the caller's coordinates
+
+`map_uncertainty` and a finite-difference provenance's `step^2 ||J||_F` bound a perturbation
+of the matrix the caller handed in; the analysis compares them with the SCALED matrix's
+defect, where the similarity `E -> C E C^-1` amplifies a perturbation by up to
+`max_ij C_ii / C_jj` (63 on the DBA ring, 1.5e3 at beta = 1000 m). Folding the declared
+numbers unscaled under-asserted the resolution test by that factor (F-194). An uncertainty
+crosses a change of coordinates multiplied by the transformation's gain, and the gain is
+reported beside the arms so a reader can see which one won.
+
+## Nothing is accepted for its shape alone
+
+A Bool where a number is expected, a `hvoffset` key nobody reads, a longitudinal
+component the rigid Gaussian's field ignores, a differentiation variable that is not a knob,
+a `sigma` beside an `emit`, a second spelling of the coupling coefficients: each was
+accepted and silently ignored or silently overridden (F-122 to F-124, F-181, F-185, F-199,
+A-6). The repaired constructors refuse each by name at construction, before anything is
+activated or drawn, so a refusal consumes no stream and a configuration the code did not
+read cannot look like one it did.
+
+## A performance fix is proven bitwise before it is timed
+
+The fused CPU moment row (F-78) and the host-side counter draw of a CUDA beam (F-189) were
+pinned equal to the folds they replaced -- sixteen committed `/moments` fixtures
+byte-identical, every CPU beam bit unmoved, a CUDA beam now the CPU beam of the same seed
+bit for bit -- before any timing was quoted, and the timings (15.6x on the row at N = 1e5)
+are ratios against baselines measured in the same process under the same load (43 to 48
+on the shared box). A speed-up whose output moved is a different computation; one proven
+identical first can be timed with a plain number.
+
+## Never edit a running shell script
+
+Bash reads a script incrementally by byte offset. The verify scripts of batch 3 were
+edited (an override for the red worktree, another for the runner) while three runs were
+inside their `julia` line; when the child exited, bash resumed mid-line in the edited file
+and executed a fragment (`--threads=4: command not found`, `stage3_run_testsets.jl:
+Permission denied`), leaving exit codes 126 and 127 after the runner's own `TESTSETS-DONE`
+marker. The verdict lines and the restore steps survived; the exit codes did not. A script
+in use is frozen: write the new behaviour to a new file and switch the next launch to it.
+
+## A cost pin is a neighbour of every path it measures
+
+Batch 3's first two-arm gate was red in both arms at one assertion: the 2026-10-16 cost pin
+that holds every once-per-execute! walk under 256 bytes measured 352 for
+`prepare_line_observers!`, because unit G's repeated-observer refusal counted a line's
+placements inside that walk with a vector and an `IdDict`. The unit had run eight new
+testsets and ten neighbours green; the pin's testset was not among them, because nothing
+in the walk's name or file points at it. The fix moved the count to the once-per-compile
+path, where the hook entries are already resolved. The rule: a change to a function that
+a cost or allocation pin measures re-runs that pin before the gate, and the pins are found
+by grepping `test/` for the function's name, not by reading the function's file.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

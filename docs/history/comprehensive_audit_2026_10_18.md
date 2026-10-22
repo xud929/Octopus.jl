@@ -2090,3 +2090,7 @@ Minor rows of 7b stay open for the next batches.
 ## Addendum 2026-10-21 (fix campaign, batch 2)
 
 The five instrument rows of section 7b (contracts that cannot fail, suite checks, the validators, validation scripts and harnesses) were closed by the fix batch recorded in [`comprehensive_audit_fixes_2026_10_20_batch2.md`](comprehensive_audit_fixes_2026_10_20_batch2.md); the runtime rows and the documentation and Minor rows stay open for batches 3 and 4.
+
+## Addendum 2026-10-22 (fix campaign, batch 3)
+
+Eight runtime rows of section 7b (the strong-strong solver stack, the task walkers, the observers, the weak-strong option values, the floor plan, the beam, the knobs, the analysis driver) were closed by the fix batch recorded in [`comprehensive_audit_fixes_2026_10_21_batch3.md`](comprehensive_audit_fixes_2026_10_21_batch3.md); the rounding-class row waits on the owner's two design decisions, the element-kinds row did not land in this batch, and the documentation and Minor rows (batch 4) remain. The closings are in the ledger archive; the pointer row of `todo.md` carries what the batch left for the owner.

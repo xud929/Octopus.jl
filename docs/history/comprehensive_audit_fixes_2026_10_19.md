@@ -537,3 +537,7 @@ the `:standard` tie and strong-strong apertures; the CUDA launch census on
 another device (the tripwire re-measures); the production-size validation
 arms and the 8192-turn coherent-modes headline; the benchmark's timings as a
 performance record.
+
+## Addendum 2026-10-22 (push and CI)
+
+The batch was pushed as b9c1253 on 2026-10-20 (23 commits over cb3c344); CI run 466 completed green. Recorded by the fix batch 3 commit, as the status line above promised.

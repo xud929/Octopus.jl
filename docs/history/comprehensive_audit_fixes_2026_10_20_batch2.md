@@ -322,3 +322,7 @@ sizes), the CUDA arm's budget on another host, the lane's order couplings beyond
 the one the integration found (the gate as one process is the check), the
 `-C haswell` arm beyond what the AVX2 gate arm itself measures, and the items the
 units priced rather than fixed (the pointer row names them).
+
+## Addendum 2026-10-22 (push and CI)
+
+The batch was pushed as da40d39 on 2026-10-21 (eleven commits over b9c1253); CI run 467 completed green. Recorded by the fix batch 3 commit, as the status line above said.
