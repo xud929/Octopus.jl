@@ -20374,12 +20374,18 @@ end
 
     # F-168 (a), the real tree: EVERY declared default compared, none skipped.
     # The old `haskey(base, key)` gate compared 77 of 608; the identity below
-    # is what a skip breaks, and the pair count may only grow (2026-10-20: 607,
-    # the 608 less `line.L`, which declares no default now because `BeamLine`
-    # refuses one on every base).
+    # is what a skip breaks, and the pair count may only grow, except where a
+    # declared default was a lie (2026-10-20: 607, the 608 less `line.L`, which
+    # declares no default now because `BeamLine` refuses one on every base;
+    # 2026-10-22: 599, fix batch 3 unit H having removed the eight literal
+    # defaults of the Linear6D optics parameters that the constructor never
+    # applied -- the exit parameters follow their entrance partners by the rule
+    # the schema states, the entrance parameters declare none -- so a default
+    # the code does not read is no longer declared; the gate of batch 3b found
+    # this ratchet at 607).
     r = validate_element_metadata()
     @test r.passed
-    @test r.default_pairs >= 607
+    @test r.default_pairs >= 599
     @test r.defaults_checked == r.default_pairs
     # The weaker base (the example's required parameters alone) is used exactly
     # where the constructor refuses the declared default beside the example --
@@ -20395,7 +20401,7 @@ end
     end
     # F-168 (b), the gate shown open, together with F-171 and F-172 on one
     # lying drift: `h` is absent from the drift example (the old gate never
-    # compared it; its default moved to 6), `misalign_convention` defaults to
+    # compared it; its default moved to 1), `misalign_convention` defaults to
     # a value outside (:bmad, :madx), `x_offset` lost the table's unit and
     # `y_offset` the table's default, `L` has no meaning, the runtime map
     # carries a method the list does not, the description and the keywords
@@ -20405,7 +20411,13 @@ end
         rt[Damping6DMap] = first(values(drift.runtime_types))
         liar = rebuild(drift;
             parameters=merge(drift.parameters, (
-                h=withmeta(drift.parameters.h; default=6),
+                # h = 1 on the example's L = 0.5: a curved drift the compile
+                # accepts (|h L| = 0.5 < pi/2) and a map that differs from the
+                # straight one. It was 6 until fix batch 3b (2026-10-22): unit H's
+                # quarter-turn refusal (F-167) then refused the injected default
+                # at compile instead of compiling it to a different map, and the
+                # gate found this testset asserting the old shape.
+                h=withmeta(drift.parameters.h; default=1),
                 misalign_convention=withmeta(drift.parameters.misalign_convention; default=:elegant),
                 x_offset=withmeta(drift.parameters.x_offset; unit=""),
                 y_offset=withmeta(drift.parameters.y_offset; default=1),
