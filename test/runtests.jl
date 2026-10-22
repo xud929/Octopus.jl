@@ -14379,6 +14379,49 @@ end
 end
 
 
+@testset "Linear6DSpec refuses the matrix and the optics form together, and the raw optics form reads its declared and partner defaults (F-165)" begin
+    # `Linear6DSpec(matrix=I6, beta1=..., dmu=...)` stored the matrix and
+    # silently discarded the optics keywords (2026-10-18 audit, U17-7): a
+    # configuration you set that the code never read. Both forms together are
+    # refused by name, friendly and raw; each form alone builds as before.
+    I6 = Matrix{Float64}(I, 6, 6)
+    err = try
+        Linear6DSpec(matrix=I6, beta1=(1.0, 2.0, 3.0), dmu=(0.1, 0.2, 0.3))
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError && occursin("beta1", err.msg) && occursin("dmu", err.msg)
+    @test_throws ArgumentError Linear6DSpec(matrix=I6, alpha1=(0.5, 0.0, 0.0))
+    @test_throws ArgumentError Linear6DSpec{Float32}(matrix=I6, R2=(0.1, 0.0, 0.0, 0.0))
+    @test hasparam(Linear6DSpec(matrix=I6), :matrix)
+    s = Linear6DSpec(beta1=(1.0, 2.0, 3.0), dmu=(0.1, 0.2, 0.3))
+    @test !hasparam(s, :matrix) && param(s, :beta2) == param(s, :beta1)
+    raw_both = ElementSpec{:linear6d}(; matrix=I6, beta1=(1.0, 2.0, 3.0), dmu=(0.1, 0.2, 0.3))
+    @test_throws ArgumentError compile_runtime(raw_both)
+    # The raw optics form compiles with the schema's declared defaults and the
+    # partner defaults the friendly constructor applies (beta2 = beta1,
+    # alpha2 = alpha1, zeta2 = zeta1, eta2 = eta1, R2 = R1), which the schema
+    # now states instead of declaring a literal default the constructor never
+    # applied.
+    kw = (beta1=(1.0, 2.0, 3.0), dmu=(0.1, 0.2, 0.3), zeta1=(0.01, 0.0, 0.0, 0.0), alpha1=(0.1, -0.2, 0.0))
+    @test Matrix(compile_runtime(ElementSpec{:linear6d}(; kw...))) == Matrix(compile_runtime(Linear6DSpec(; kw...)))
+    sch = Octopus.parameter_schema(Linear6DSpec)
+    for (k, partner) in ((:beta2, "beta1"), (:alpha2, "alpha1"), (:zeta2, "zeta1"), (:eta2, "eta1"), (:R2, "R1"))
+        @test occursin("defaults to $(partner)", sch[k].meaning) && sch[k].default === nothing
+    end
+    # A raw optics spec missing one of the two keys the form needs is refused
+    # by name, not with a KeyError.
+    err2 = try
+        compile_runtime(ElementSpec{:linear6d}(; beta1=(1.0, 2.0, 3.0)))
+        nothing
+    catch e
+        e
+    end
+    @test err2 isa ArgumentError && occursin("dmu", err2.msg)
+end
+
+
 
 @testset "Thin elements, markers and RBEND" begin
     u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
