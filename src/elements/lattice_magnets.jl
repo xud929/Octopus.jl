@@ -1100,16 +1100,44 @@ end
 
 const _FRINGE_MODES = (:none, :multipole, :soft_quad, :all)
 
-function _fringe_bits(mode::Symbol, edge::Bool)
+function _fringe_bits(mode::Symbol, bend_fringe::Bool, geometry::Bool)
     mode in _FRINGE_MODES || throw(ArgumentError(
         "fringe must be one of $(_FRINGE_MODES); got $(repr(mode))"))
     bits = 0
     (mode === :multipole || mode === :all) && (bits |= FRINGE_MULTIPOLE)
     (mode === :soft_quad || mode === :all) && (bits |= FRINGE_SOFT_QUAD)
-    # The hard-edge dipole fringe is Maxwell-required rather than an edge-angle
-    # effect, so it follows the same switch instead of being a separate opt-in.
-    edge && (bits |= FRINGE_DIPOLE_EDGE | FRINGE_BEND)
+    # Two switches, as PTC has them. `bend_fringe` is PTC's BEND_FRINGE: the
+    # Maxwell-required hard-edge dipole fringe (FINT/HGAP) at both faces and
+    # the dipole term's exclusion from the multipole fringe, a bend's by
+    # default and never a straight magnet's. The pole-face geometry (exact
+    # rotation, face curvature, wedge) is `geometry`, which follows the
+    # pole-face parameters on every kind. One switch carried both until the
+    # 2026-10-18 audit (F-160), so a straight magnet with a dipole component
+    # ran the dipole fringe PTC never applies to it.
+    bend_fringe && (bits |= FRINGE_BEND)
+    geometry && (bits |= FRINGE_DIPOLE_EDGE)
     return bits
+end
+
+"""
+    _warn_fringe_integrals_without_bend_fringe(spec, bend_fringe, fint1, fint2, hgap1, hgap2)
+
+`fint`/`hgap` feed only the hard-edge dipole fringe that `bend_fringe`
+switches; set on a kind whose declared default leaves that switch off (the
+straight kinds, F-160) and with `bend_fringe` not given, they would be read
+and do nothing -- a silently ignored non-default request -- so the compile
+warns once per kind and names both remedies. Given either way, silence.
+"""
+function _warn_fringe_integrals_without_bend_fringe(spec::ElementSpec, bend_fringe::Bool,
+                                                    fint1, fint2, hgap1, hgap2)
+    (bend_fringe || hasparam(spec, :bend_fringe)) && return nothing
+    all(iszero, (fint1, fint2, hgap1, hgap2)) && return nothing
+    @warn "ElementSpec{$(repr(kind(spec)))}: fint1/fint2/hgap1/hgap2 feed the hard-edge dipole " *
+          "fringe, which bend_fringe switches and which is off by default on this kind (PTC's " *
+          "BEND_FRINGE is a bend's); they are read and do nothing here. Set bend_fringe=true " *
+          "to apply the fringe, or bend_fringe=false to say the integrals are deliberate " *
+          "metadata." kind = kind(spec) fint1 = fint1 fint2 = fint2 hgap1 = hgap1 hgap2 = hgap2 maxlog = 1 _id = Symbol(:lattice_fint_without_bend_fringe_, kind(spec))
+    return nothing
 end
 
 """
@@ -1215,8 +1243,21 @@ function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Ty
                 " (bend_model = :exact keeps a bend's dipole in the exact map, which handles the regime)."))
         end
     end
-    edge = Bool(getparam(spec, :bend_fringe, true))
-    bits = _fringe_bits(Symbol(getparam(spec, :fringe, :none)), edge)
+    # `bend_fringe` is read from the kind's schema (`_declared_param`): the
+    # bend declares it true, the five straight kinds false -- PTC's
+    # BEND_FRINGE is a bend's, and a quadrupole with a dipole component
+    # measured 4.0e-6 to 1.1e-5 from MAD-X PTC with it on, 1.3e-12 with it off
+    # (2026-10-18 audit, F-160). The pole-face geometry follows its own
+    # parameters on every kind (and rides along with the switch, so a bend
+    # compiles to the same bits as before).
+    bend_fringe = Bool(_declared_param(spec, :bend_fringe))
+    e1 = T(getparam(spec, :e1, zero(T))); e2 = T(getparam(spec, :e2, zero(T)))
+    fint1 = T(getparam(spec, :fint1, zero(T))); fint2 = T(getparam(spec, :fint2, zero(T)))
+    hgap1 = T(getparam(spec, :hgap1, zero(T))); hgap2 = T(getparam(spec, :hgap2, zero(T)))
+    hface1 = T(getparam(spec, :hface1, zero(T))); hface2 = T(getparam(spec, :hface2, zero(T)))
+    geometry = bend_fringe || !iszero(e1) || !iszero(e2) || !iszero(hface1) || !iszero(hface2)
+    _warn_fringe_integrals_without_bend_fringe(spec, bend_fringe, fint1, fint2, hgap1, hgap2)
+    bits = _fringe_bits(Symbol(getparam(spec, :fringe, :none)), bend_fringe, geometry)
     hf = Int(getparam(spec, :highest_fringe, 0))
     hf >= 0 || throw(ArgumentError("highest_fringe must be non-negative, got $hf"))
     wc = getparam(spec, :wedge_coeff, (1, 2))
@@ -1224,10 +1265,7 @@ function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Ty
         "wedge_coeff must hold two values, got $(length(wc))"))
     return LatticeMagnet{typeof(method),T,length(kn),order,bits,mc,length(psi),curved}(
         method, L, hc, b0, kn, ks, psi, nst,
-        T(getparam(spec, :e1, zero(T))), T(getparam(spec, :e2, zero(T))),
-        T(getparam(spec, :fint1, zero(T))), T(getparam(spec, :fint2, zero(T))),
-        T(getparam(spec, :hgap1, zero(T))), T(getparam(spec, :hgap2, zero(T))),
-        T(getparam(spec, :hface1, zero(T))), T(getparam(spec, :hface2, zero(T))),
+        e1, e2, fint1, fint2, hgap1, hgap2, hface1, hface2,
         T(getparam(spec, :va, zero(T))), T(getparam(spec, :vs, zero(T))),
         T(wc[1]), T(wc[2]), hf,
         Bool(getparam(spec, :kill_ent_fringe, false)),
@@ -1281,12 +1319,12 @@ const _LATTICE_BODY_PARAMS = (
     bend_model=ParamMeta(default=:exact, alternatives=(:exact, :drift_kick), meaning="where the dipole sits in the splitting: :exact puts it in the integrable map (no splitting error, exact at nst=1); :drift_kick puts it in the kick, reproducing PTC MODEL=1 at finite nst"),
     curved=ParamMeta(default=nothing, meaning="force the curved or straight body path. `nothing` lets the frame decide, i.e. curved when h != 0. Resolved at compile_runtime and carried in the type, so no curvature test happens inside the tracking kernel. `true` at h = 0 exercises the curved closed form where the straight one also applies; `false` at h != 0 ignores the curvature and warns"),
     curved_order=ParamMeta(default=8, meaning="truncation order of the curved-frame field expansion used by curved multipole bodies (Section 4.4); a convergence parameter, unused when h == 0 or the magnet is a pure dipole"),
-    bend_fringe=ParamMeta(default=true, meaning="pole-face maps (exact rotation, face curvature, FINT/HGAP, wedge) and the Maxwell-required hard-edge dipole fringe. Defaults ON because it is first-order optics whenever e1 or e2 is nonzero: measured J[4,3] moves from 0 to -0.036 at e1=e2=0.1. With perpendicular faces it is purely nonlinear (linear map identical to 0 ulp), but it is still what PTC does and what Maxwell requires. Set false only to obtain the bare integrable map"),
+    bend_fringe=ParamMeta(default=true, meaning="PTC's BEND_FRINGE: the Maxwell-required hard-edge dipole fringe with FINT/HGAP at both faces, and the dipole term's exclusion from the multipole fringe. A bend's by default and a straight magnet's never: the bend kind declares it true, the five straight kinds false, read from the schema at compile (a quadrupole with a dipole component measured 4.0e-6 to 1.1e-5 from MAD-X PTC with it on and 1.3e-12 with it off; 2026-10-18 audit, F-160). With perpendicular faces and no gap it is purely nonlinear (linear map identical to 0 ulp) but still what PTC does and Maxwell requires. The pole-face geometry (exact rotation, face curvature, wedge) is not this switch's: it follows e1, e2, hface1, hface2 on every kind"),
     fringe=_COMMON_PARAMS.fringe,
     highest_fringe=_COMMON_PARAMS.highest_fringe,
-    wedge_coeff=ParamMeta(default=(1, 2), meaning="coefficients of the quadrupole-in-wedge kick applied at an angled pole face, PTC's wedge_coeff. The default (1,2) is what PTC's MAD8_WEDGE branch hardcodes and is its behaviour with fringes off; PTC's other branch reads a module variable left with no initializer, so (0,0) reproduces that. Inactive unless bend_fringe is on, a pole-face angle is nonzero, and the magnet carries a quadrupole component"),
-    e1=ParamMeta(default=0, meaning="entrance pole-face angle"),
-    e2=ParamMeta(default=0, meaning="exit pole-face angle"),
+    wedge_coeff=ParamMeta(default=(1, 2), meaning="coefficients of the quadrupole-in-wedge kick applied at an angled pole face, PTC's wedge_coeff. The default (1,2) is what PTC's MAD8_WEDGE branch hardcodes and is its behaviour with fringes off; PTC's other branch reads a module variable left with no initializer, so (0,0) reproduces that. Inactive unless a pole-face angle is nonzero and the magnet carries a quadrupole component"),
+    e1=ParamMeta(default=0, meaning="entrance pole-face angle; the exact pole-face rotation and the wedge apply whenever it is nonzero, on every kind, whatever bend_fringe"),
+    e2=ParamMeta(default=0, meaning="exit pole-face angle; applied whenever nonzero, as e1"),
     fint1=ParamMeta(default=0, meaning="entrance fringe-field integral"),
     fint2=ParamMeta(default=0, meaning="exit fringe-field integral"),
     hgap1=ParamMeta(default=0, meaning="entrance half gap"),
@@ -1302,10 +1340,17 @@ const _LATTICE_BODY_PARAMS = (
 # Derived, not hand-listed: the authoritative key list IS the table above.
 const _LATTICE_BODY_KEYS = keys(_LATTICE_BODY_PARAMS)
 
+# The straight kinds' `bend_fringe`: the ONE table's entry with the default
+# PTC gives a straight magnet (off), declared once and referenced by the five
+# kinds so the per-kind default cannot drift (F-160). `_lattice_magnet` reads
+# the default from the schema, so declaring it here IS setting it.
+const _STRAIGHT_BEND_FRINGE = ParamMeta(default=false, unit=_LATTICE_BODY_PARAMS.bend_fringe.unit,
+    meaning="PTC's BEND_FRINGE, OFF by default on this straight kind as in PTC (the bend kind declares it on): the Maxwell-required hard-edge dipole fringe with FINT/HGAP and the dipole term's exclusion from the multipole fringe act only when set true. The pole-face geometry (e1, e2, hface1, hface2, wedge) applies whenever set, whatever this switch. " * _LATTICE_BODY_PARAMS.bend_fringe.meaning)
+
 # One shared construction_help sentence naming every body key, concatenated
 # into each kind's help so the metadata validator's mention check holds for
 # all six without six hand-copied enumerations.
-const _LATTICE_BODY_HELP = " Body keys read by the ONE shared lattice-magnet runtime for every kind (drift, quadrupole, sextupole, octupole, multipole, sbend), so any of these is legal and tracked on any of the six -- the kind names the intent, the keys carry the field and geometry: h (frame curvature; a curved drift is real), b0 (dipole strength; a drift given b0 bends), kn and ks (multipole strengths; index i holds K_{i-1}), bend_model (:exact or :drift_kick), curved and curved_order (body-path override and curved-frame truncation order), bend_fringe with pole-face geometry e1, e2, fint1, fint2, hgap1, hgap2, hface1, hface2 and wedge_coeff, fringe with highest_fringe, va, vs (soft-edge quadrupole fringe), kill_ent_fringe, kill_exi_fringe."
+const _LATTICE_BODY_HELP = " Body keys read by the ONE shared lattice-magnet runtime for every kind (drift, quadrupole, sextupole, octupole, multipole, sbend), so any of these is legal and tracked on any of the six -- the kind names the intent, the keys carry the field and geometry: h (frame curvature; a curved drift is real), b0 (dipole strength; a drift given b0 bends), kn and ks (multipole strengths; index i holds K_{i-1}), bend_model (:exact or :drift_kick), curved and curved_order (body-path override and curved-frame truncation order), bend_fringe (PTC's BEND_FRINGE, the hard-edge dipole fringe with fint1, fint2, hgap1, hgap2: on by default for sbend, off on the straight kinds), the pole-face geometry e1, e2, hface1, hface2 and wedge_coeff (applied whenever set, on every kind), fringe with highest_fringe, va, vs (soft-edge quadrupole fringe), kill_ent_fringe, kill_exi_fringe."
 
 # ---------------------------------------------------------------------------
 # Named strength keywords.
@@ -1619,6 +1664,7 @@ end
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = merge(_LATTICE_BODY_PARAMS, (
+        bend_fringe=_STRAIGHT_BEND_FRINGE,
         L=ParamMeta(required=true, meaning="arc length in metres"),
         nst=ParamMeta(default=1, meaning="integration steps; a PURE drift is exact and ignores them, but the shared lattice-magnet runtime reads body strengths on every kind, so a drift given kn/ks content splits and steps like any magnet"),
         integrator_order=ParamMeta(default=2, meaning="unused by a pure drift, which is exact; splits a drift carrying body strengths, as on any magnet"),
@@ -1640,6 +1686,7 @@ end
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = merge(_LATTICE_BODY_PARAMS, (
+        bend_fringe=_STRAIGHT_BEND_FRINGE,
         L=_COMMON_PARAMS.L,
         k1=ParamMeta(default=0, meaning="normal quadrupole strength K1; the normal way to build a quadrupole. Folded into kn[2] at construction"),
         k1s=ParamMeta(default=0, meaning="skew quadrupole strength; folded into ks[2] at construction"),
@@ -1678,6 +1725,7 @@ end
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = merge(_LATTICE_BODY_PARAMS, (
+        bend_fringe=_STRAIGHT_BEND_FRINGE,
         L=_COMMON_PARAMS.L,
         k2=ParamMeta(default=0, meaning="normal sextupole strength K2; the normal way to build a sextupole. Folded into kn[3] at construction"),
         k2s=ParamMeta(default=0, meaning="skew sextupole strength; folded into ks[3] at construction"),
@@ -1716,6 +1764,7 @@ end
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = merge(_LATTICE_BODY_PARAMS, (
+        bend_fringe=_STRAIGHT_BEND_FRINGE,
         L=_COMMON_PARAMS.L,
         k3=ParamMeta(default=0, meaning="normal octupole strength K3; the normal way to build an octupole. Folded into kn[4] at construction"),
         k3s=ParamMeta(default=0, meaning="skew octupole strength; folded into ks[4] at construction"),
@@ -1754,6 +1803,7 @@ end
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = merge(_LATTICE_BODY_PARAMS, (
+        bend_fringe=_STRAIGHT_BEND_FRINGE,
         L=_COMMON_PARAMS.L,
         k0=ParamMeta(default=0, meaning="normal dipole strength K0, i.e. a corrector kick; folded into kn[1] at construction"),
         k0s=ParamMeta(default=0, meaning="skew dipole strength; folded into ks[1] at construction"),

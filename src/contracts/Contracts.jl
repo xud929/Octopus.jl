@@ -3160,9 +3160,13 @@ end
 # pole-face angle against a quadrupole component. One table, five merges, so a
 # working-point fix lands everywhere at once. Defined ABOVE the probe table's
 # docstring, not between it and its const, per the detachment tripwire.
+# `bend_fringe=true` on purpose: the straight kinds declare it false (PTC's
+# BEND_FRINGE is a bend's; 2026-10-18 audit, F-160), and fint/hgap feed only
+# the fringe it switches, so the probe turns it on to keep them reachable and
+# to make the Bool flip a real change.
 const _LATTICE_BODY_PROBE = (h=0.05, b0=0.15, e1=0.1, e2=0.1,
                              fint1=0.5, fint2=0.5, hgap1=0.03, hgap2=0.03,
-                             hface1=0.02, hface2=0.02, curved_order=3)
+                             hface1=0.02, hface2=0.02, curved_order=3, bend_fringe=true)
 
 """
     ElementParameterEffectivenessContract(; probes=DEFAULT_ELEMENT_PARAM_PROBES,

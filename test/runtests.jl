@@ -14621,6 +14621,62 @@ end
 end
 
 
+@testset "bend_fringe is PTC's BEND_FRINGE, on by default for the bend kind and off on the straight kinds; the pole-face geometry follows its parameters (F-160)" begin
+    # `bend_fringe` defaulted to true for every lattice-magnet kind, so a
+    # straight magnet with a dipole component and `fringe=:multipole` ran PTC's
+    # FRINGE_DIPOLE and dropped the dipole from the multipole fringe -- which
+    # PTC does only for bends: against MAD-X 5.03.06 PTC the default was off by
+    # 4.0e-6 to 1.1e-5 where `bend_fringe=false` agreed to 1.3e-12 (2026-10-18
+    # audit, U17-1). The switch now means exactly PTC's BEND_FRINGE (the
+    # Maxwell-required hard-edge dipole fringe with FINT/HGAP, and the dipole
+    # term's exclusion from the multipole fringe), declared per kind in the
+    # schema and read from it; the pole-face geometry (rotation, face
+    # curvature, wedge) follows e1/e2/hface on every kind, as PTC's edge maps
+    # do, so `e1` on a quadrupole keeps acting (the U9-2 pin) and a bend with
+    # `bend_fringe=false` keeps its pole-face rotation.
+    O = Octopus
+    u = (2.3e-3, 4.1e-4, -1.7e-3, -3.2e-4, 1.5e-3, 9.0e-4)
+    track(spec) = collect(compile_runtime(spec)(u...))
+    # (i) the declared default, per kind, derived from the registry
+    lattice_kinds = sort!([k for (k, m) in O.ELEMENT_META_BY_KIND if m.runtime_type === LatticeMagnet])
+    @test length(lattice_kinds) == 6
+    for k in lattice_kinds
+        pm = O.parameter_schema(ElementSpec{k})[:bend_fringe]
+        @testset let kind = k, default = pm.default
+            @test default === (k === :sbend)
+            @test occursin("BEND_FRINGE", pm.meaning)
+        end
+    end
+    # (ii) a straight magnet with a dipole component: the default is the
+    # bend_fringe=false map, bitwise, and differs from bend_fringe=true
+    q = (L=0.4, k1=1.7, kn=(0.1,), nst=4, fringe=:multipole, highest_fringe=2)
+    @test track(QuadrupoleSpec(; q...)) == track(QuadrupoleSpec(; q..., bend_fringe=false))
+    @test track(QuadrupoleSpec(; q...)) != track(QuadrupoleSpec(; q..., bend_fringe=true))
+    @test !O._has(compile_runtime(QuadrupoleSpec(; q...)), O.FRINGE_BEND)
+    @test track(MultipoleSpec(L=0.3, k0=0.05, k1=1.2, nst=4, fringe=:multipole, highest_fringe=2)) ==
+          track(MultipoleSpec(L=0.3, k0=0.05, k1=1.2, nst=4, fringe=:multipole, highest_fringe=2, bend_fringe=false))
+    # (iii) the bend keeps it on by default (the PTC fixtures' setting)
+    b = (L=1.1, angle=0.198, nst=4, fint1=0.5, fint2=0.5, hgap1=0.03, hgap2=0.03)
+    @test track(SBendSpec(; b...)) == track(SBendSpec(; b..., bend_fringe=true))
+    @test track(SBendSpec(; b...)) != track(SBendSpec(; b..., bend_fringe=false))
+    @test O._has(compile_runtime(SBendSpec(L=1.1, angle=0.198)), O.FRINGE_BEND)
+    # (iv) the pole-face geometry follows its parameters, not the switch
+    @test track(QuadrupoleSpec(L=0.3, k1=1.2, e1=0.2)) != track(QuadrupoleSpec(L=0.3, k1=1.2))
+    @test track(QuadrupoleSpec(L=0.3, k1=1.2, e1=0.2)) == track(QuadrupoleSpec(L=0.3, k1=1.2, e1=0.2, bend_fringe=false))
+    @test track(SBendSpec(L=1.0, angle=0.1, e1=0.1, bend_fringe=false)) != track(SBendSpec(L=1.0, angle=0.1, bend_fringe=false))
+    @test track(SBendSpec(L=1.0, angle=0.1, hface1=0.02, bend_fringe=false)) != track(SBendSpec(L=1.0, angle=0.1, bend_fringe=false))
+    # (v) fint/hgap feed only the switched fringe: set on a straight kind that
+    # leaves the switch at its default, they warn; given either way, silence.
+    fq = (L=0.3, k1=1.2, fint1=0.5, hgap1=0.03)
+    @test_logs (:warn, r"bend_fringe") match_mode=:any compile_runtime(QuadrupoleSpec(; fq...))
+    @test_logs min_level=Base.CoreLogging.Warn compile_runtime(QuadrupoleSpec(; fq..., bend_fringe=true))
+    @test_logs min_level=Base.CoreLogging.Warn compile_runtime(QuadrupoleSpec(; fq..., bend_fringe=false))
+    @test_logs min_level=Base.CoreLogging.Warn compile_runtime(SBendSpec(; b...))
+    # (vi) the effectiveness contract's straight probes keep fint/hgap reachable
+    @test O._LATTICE_BODY_PROBE.bend_fringe === true
+end
+
+
 
 @testset "Thin elements, markers and RBEND" begin
     u = (3.0e-3, 3.0e-4, -2.0e-3, -2.2e-4, 2.0e-3, 1.1e-3)
