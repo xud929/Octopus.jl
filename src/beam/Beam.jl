@@ -21,17 +21,40 @@ catch
 end
 
 """
-    BeamParams(; charge, mc2, E0, r0, npart)
+    BeamParams(; charge=0, mc2=0, E0=0, r0=0, npart=0)
+    BeamParams{T}(; charge=0, mc2=0, E0=0, r0=0, npart=0)
 
-Physical beam parameters. Energies are in eV, `charge` is in units of electron
-charge, and `npart` is the represented particle count.
+Physical beam parameters: `charge` in units of the elementary charge, `mc2` the
+rest energy and `E0` the reference total energy in eV, `r0` the classical
+radius in m, `npart` the represented particle count (a float: the population a
+macro-particle set stands for). Any keyword may be omitted; its default is zero.
+The untyped form stores the keywords in the type they promote to over a
+`Float64` floor and never narrows (`BeamParams(charge=1, E0=275e9)` is a
+`BeamParams{Float64}`, the precision rule every element kind follows); the typed
+form converts each keyword to `T`. The positional form
+`BeamParams(charge, mc2, E0, r0, npart)` takes five values of one type.
+
+Until the 2026-10-18 audit (A-6) the defaults were `@kwdef`'s `zero(FloatT)`,
+which the untyped keyword method cannot evaluate, so the documented keyword
+form worked only with all five keywords given and died with
+`UndefVarError: FloatT` otherwise.
 """
-@kwdef struct BeamParams{FloatT}
-	charge::FloatT = zero(FloatT) # in unit of electron charge e
-	mc2::FloatT = zero(FloatT) # rest mass mc^2 in unit of eV
-	E0::FloatT = zero(FloatT) # in unit of eV
-	r0::FloatT = zero(FloatT) # classical radius
-	npart::FloatT = zero(FloatT) # number of particles
+struct BeamParams{FloatT}
+	charge::FloatT # in unit of electron charge e
+	mc2::FloatT # rest mass mc^2 in unit of eV
+	E0::FloatT # in unit of eV
+	r0::FloatT # classical radius
+	npart::FloatT # number of particles
+end
+
+function BeamParams{T}(; charge=zero(T), mc2=zero(T), E0=zero(T), r0=zero(T),
+                       npart=zero(T)) where {T}
+	return BeamParams{T}(T(charge), T(mc2), T(E0), T(r0), T(npart))
+end
+
+function BeamParams(; charge=0.0, mc2=0.0, E0=0.0, r0=0.0, npart=0.0)
+	T = promote_type(Float64, typeof(charge), typeof(mc2), typeof(E0), typeof(r0), typeof(npart))
+	return BeamParams{T}(; charge, mc2, E0, r0, npart)
 end
 
 """
@@ -52,6 +75,16 @@ struct Phase6DRep{FloatArray} <: AbstractPhaseRep
 			"Phase6DRep coordinate arrays must have equal lengths; got $(lengths)"))
 		return new{A}(x, px, y, py, z, pz)
 	end
+end
+
+# Six arrays of two or more types miss the inner constructor's `where {A}` (one
+# array type for all six) and land here, refused by name; they used to die in a
+# MethodError that named no cause (2026-10-18 audit F-190/U27-8).
+function Phase6DRep(x, px, y, py, z, pz)
+	types = unique(map(a -> string(typeof(a)), (x, px, y, py, z, pz)))
+	throw(ArgumentError(
+		"Phase6DRep needs six coordinate arrays of ONE array type (one element type, " *
+		"one storage); got $(join(types, ", ")). Convert them to a common type first."))
 end
 
 if _HAS_ADAPT
@@ -124,7 +157,16 @@ function _resolve_rng(::Type{BTAG}, rng, seed, rng_id) where {BTAG<:AbstractExec
 	return nothing
 end
 
-function _alloc_counter_randn(::Type{CPUThreadsBackend}, T, N, dim::Integer;
+"""
+Draw `N` standard normals of coordinate `dim` from the counter RNG, on the HOST
+whatever the backend: the key is `(seed, turn 0, rng_id, particle, dim)`, so
+the values depend on nothing but the arguments, and `_standard_gaussian_rep`
+standardizes them here and uploads the result. Until the 2026-10-18 audit
+(F-189/U27-5) a CUDA twin of this function uploaded the raw draws and the
+standardization ran on the device, whose `sum` reduces in another order, so
+same-seed CPU and CUDA beams differed by O(ulp) in every coordinate.
+"""
+function _alloc_counter_randn(T, N, dim::Integer;
                               cutoff=Inf, seed::Integer=global_rng_seed(),
                               rng_method=global_rng_method_code(),
                               rng_id::Integer=0)
@@ -136,13 +178,40 @@ function _alloc_counter_randn(::Type{CPUThreadsBackend}, T, N, dim::Integer;
 	return out
 end
 
-function _alloc_counter_randn(::Type{CUDABackend}, T, N, dim::Integer;
-                              cutoff=Inf, seed::Integer=global_rng_seed(),
-                              rng_method=global_rng_method_code(),
-                              rng_id::Integer=0)
+"""
+`values` on the storage of backend `BTAG`: the array itself for the CPU, a
+`CuArray` copy for CUDA (the array unchanged when it already is one).
+"""
+_on_backend(::Type{CPUThreadsBackend}, values::AbstractVector) = values
+function _on_backend(::Type{CUDABackend}, values::AbstractVector)
 	_HAS_CUDA || error("CUDABackend requires CUDA.jl to be available.")
-	return CUDA.CuArray(_alloc_counter_randn(CPUThreadsBackend, T, Int(N), dim;
-		cutoff=cutoff, seed=seed, rng_method=rng_method, rng_id=rng_id))
+	return values isa CUDA.CuArray ? values : CUDA.CuArray(values)
+end
+
+"""The representation on backend `BTAG`'s storage, coordinate by coordinate through `_on_backend`."""
+_rep_on_backend(::Type{BTAG}, rep::Phase6DRep) where {BTAG<:AbstractExecutionBackend} =
+	Phase6DRep(map(a -> _on_backend(BTAG, a), coordinate_arrays(rep))...)
+
+"""
+Refuse, by name, a sampling keyword the draw could not honour: a non-positive
+`cutoff` (the clip `clamp(x, -c, c)` with `c <= 0` is garbage, or a zero beam,
+silently; `Inf` disables the cut), a negative or non-integer `seed` (the
+counter seed is a `UInt64`, and `UInt64(-1)` was an InexactError) and a
+non-integer or negative `rng_id` (the registry's own refusal of a negative id,
+`claim_rng_id!`, is repeated here so that it lands before anything is
+activated or drawn; a non-integer id used to reach the draw as a TypeError).
+Called from `Beam` before the policy is activated and from
+`_standard_gaussian_rep` for its direct callers (2026-10-18 audit, F-187 and
+F-190).
+"""
+function _check_beam_sampling(cutoff, seed, rng_id)
+	(cutoff isa Real && cutoff > 0) || throw(ArgumentError(
+		"Beam cutoff must be a positive number of standard deviations (Inf disables the cut); got $(cutoff)"))
+	seed === nothing || (seed isa Integer && seed >= 0) || throw(ArgumentError(
+		"Beam seed must be a non-negative integer (the counter RNG seed is a UInt64) or nothing; got $(seed)"))
+	(rng_id isa Integer && rng_id >= 0) || throw(ArgumentError(
+		"Beam rng_id must be a non-negative integer (0 assigns a fresh stream); got $(rng_id)"))
+	return nothing
 end
 
 function _standardize!(values)
@@ -162,16 +231,20 @@ end
 function _standard_gaussian_rep(::Type{BTAG}, ::Type{T}, N::Integer;
                                 cutoff=5, rng=nothing, seed=nothing,
                                 rng_id::Integer=0) where {BTAG<:AbstractExecutionBackend,T<:Real}
+	_check_beam_sampling(cutoff, seed, rng_id)
 	resolved_rng = _resolve_rng(BTAG, rng, seed, rng_id)
 	if resolved_rng === nothing
 		counter_seed = seed === nothing ? global_rng_seed() : UInt64(seed)
 		counter_method = global_rng_method_code()
 		counter_rng_id = rng_id == 0 ? next_rng_id!(consumer=:beam) :
 		                               claim_rng_id!(rng_id; consumer=:beam)
+		# Drawn and standardized on the host for EITHER backend, uploaded once
+		# (2026-10-18 audit F-189/U27-5): the standardized rep is the same
+		# array on both backends, bit for bit.
 		coords = ntuple(i -> begin
-			_standardize!(_alloc_counter_randn(BTAG, T, Int(N), i;
+			_on_backend(BTAG, _standardize!(_alloc_counter_randn(T, Int(N), i;
 				cutoff=cutoff, seed=counter_seed, rng_method=counter_method,
-				rng_id=counter_rng_id))
+				rng_id=counter_rng_id)))
 		end, 6)
 		return Phase6DRep(coords...)
 	end
@@ -536,9 +609,12 @@ coordinate_array(beam::Beam, dim::Integer) = coordinate_array(beam.rep, dim)
 end
 
 """
-    Beam(N, policy_or_backend, FloatT=Float64; beta, alpha=(0,0,0), sigma=nothing,
-         emit=nothing, rng=..., zeta=zeros(...), eta=zeros(...),
-         coupling=zeros(...), initial_offset=zeros(...))
+    Beam(N, policy_or_backend, FloatT=Float64;
+         beta=(1,1,1), alpha=(0,0,0), sigma=nothing, emit=nothing,
+         coupling=zeros(4), R=nothing, C=nothing, mode=XY_MODEA,
+         eta=zeros(4), zeta=zeros(4), initial_offset=zeros(6),
+         cutoff=5, rng=nothing, seed=nothing, rng_id=0,
+         charge=0, mc2=0, E0=0, r0=0, npart=N)
 
 Construct a beam with randomized six-dimensional coordinates on either the CPU
 threaded backend or CUDA backend:
@@ -552,29 +628,57 @@ threaded backend or CUDA backend:
 representation is needed.
 
 `beta=(βx,βy,βz)` and `alpha=(αx,αy,αz)` use the same three-plane Twiss
-convention as `Linear6DSpec` and `LumpedRadSpec`. For sigma-based construction,
-the longitudinal covariance is `cov(z,pz) = -αz*σz^2/βz`. A legacy
-two-component `alpha=(αx,αy)` is accepted temporarily and interpreted as
-`(αx,αy,0)`.
+convention as `Linear6DSpec` and `LumpedRadSpec`. The beam size is given ONCE:
+`sigma=(σx,σy,σz)` sets the rms sizes directly, `emit=(εx,εy,εz)` sets them as
+`σ = sqrt(β ε)`, and giving both is refused by name (until the 2026-10-18
+audit, F-185, `emit` silently won); with neither, the sizes are 1. For
+sigma-based construction, the longitudinal covariance is
+`cov(z,pz) = -αz*σz^2/βz`. A legacy two-component `alpha=(αx,αy)` is accepted
+temporarily and interpreted as `(αx,αy,0)`.
+
+`coupling`, `R` and `C` are three names for the same four x-y coupling
+coefficients `(r1, r2, r3, r4)` of [`XYCoupling`](@ref) (`R` is the element
+specs' spelling, `coupling` the original one, `C` is accepted for scripts that
+use it); give at most one, two are refused by name. `mode` selects the coupling
+branch (`XY_MODEA`, `XY_MODEB`) and acts only when the coefficients are nonzero.
+`eta=(η1..η4)` is the momentum dispersion of [`MomentumDispersion`](@ref),
+`zeta=(ζ1..ζ4)` the crab dispersion of [`CrabDispersion`](@ref); each map is
+applied only when nonzero. `cutoff` truncates the standard normals at that many
+standard deviations before they are standardized (`Inf` disables it; it must be
+positive). The remaining keywords (`charge`, `mc2`, `E0`, `r0`, `npart`) build
+the beam's [`BeamParams`](@ref); `npart` defaults to `N`.
+
+Every keyword is validated before anything is drawn, activated or claimed, so a
+refused construction leaves the stream registry and the policy as they were
+(2026-10-18 audit, F-187: a refusal used to have consumed a stream id).
 
 `policy_or_backend` may be `CPUThreadsExecutionPolicy()`,
 `CUDAExecutionPolicy()`, a deprecated `GPUExecutionPolicy()`,
-`CPUThreadsBackend`, or `CUDABackend`.
+`CPUThreadsBackend`, or `CUDABackend`; the policy form hands its policy to the
+backend form through the keyword `execution_policy`, which is not meant to be
+passed by hand (pass the policy as the second argument).
 If `rng` is omitted, coordinates are generated with the Octopus global counter
 RNG using `global_rng_seed()`, `global_rng_method()`, and the beam `rng_id`.
 If `rng_id == 0`, a stream id is assigned with `next_rng_id!()`; an explicit
 id is claimed with `claim_rng_id!`, which warns when an auto-assigned consumer
 or a consumer of another class (radiation, a turn-modulation rule, a BPM)
 already holds it in this process, and stays silent for another beam (the one
-policy of every stochastic consumer, 2026-10-16). Passing an explicit `rng`
-uses that RNG as a convenience override and ignores `rng_id`.
+policy of every stochastic consumer, 2026-10-16). `seed` overrides the global
+seed for this beam's draw and is deprecated (it warns; set the global seed
+instead). The counter path draws, standardizes and normalizes on the host for
+either backend and uploads once, so a CUDA beam is the CPU beam of the same
+seed and `rng_id` bit for bit before the initial maps (2026-10-18 audit,
+F-189). Passing an explicit `rng` uses that RNG as a convenience override and
+ignores `rng_id`; that path draws where the RNG lives and makes no
+cross-backend claim.
 """
 function Beam(N::Integer, policy::AbstractExecutionPolicy, FloatT::Type{RT}=Float64; kwargs...) where {RT<:Real}
     # Checked here as well as in the backend-tag method below, so the refusal
-    # lands before `activate_policy!` mutates global state for a call that
-    # cannot succeed.
+    # lands before anything happens for a call that cannot succeed. The policy
+    # is activated by that method, after every keyword has been validated and
+    # before the draw (2026-10-18 audit F-187/U27-3: it used to be activated
+    # here, before any check).
     _require_sampling_float(RT)
-	activate_policy!(policy)
 	return Beam(Int(N), backend_type(policy), RT; execution_policy=policy, kwargs...)
 end
 
@@ -599,7 +703,6 @@ communication, and costs one transient allocation of the full beam per rank.
 function Beam(N::Integer, policy::MultiProcessExecutionPolicy, FloatT::Type{RT}=Float64;
               kwargs...) where {RT<:Real}
     _require_sampling_float(RT)
-    activate_policy!(policy)
     whole = Beam(Int(N), backend_type(policy), RT; execution_policy=policy, kwargs...)
     context = _open_multi_process_context(
         MultiProcessRequest(policy.ranks),
@@ -636,24 +739,37 @@ function Beam(N::Integer, backend::Type{BTAG}, FloatT::Type{RT}=Float64;
 	_require_sampling_float(RT)
 	N > 0 || throw(ArgumentError("random Beam construction requires a positive particle count; got $(N)"))
 	params = _beam_params(RT, Int(N); kwargs...)
-	rep = _standard_gaussian_rep(BTAG, RT, Int(N);
-		cutoff=cutoff, rng=rng, seed=seed, rng_id=rng_id)
+	# Every keyword is validated BEFORE the policy is activated and before the
+	# draw takes or claims a stream id and allocates 6N normals (2026-10-18
+	# audit F-187/U27-3: a construction refused for `beta=(1.0, 2.0)` had
+	# consumed a stream and shifted every later auto-assigned consumer).
+	β = _tuple_typed(beta, 3, RT; keyword=:beta)
 	α = _beam_alpha(alpha, RT)
-	if emit === nothing
-		σ = sigma === nothing ? ntuple(_ -> one(RT), 3) : _tuple_typed(sigma, 3, RT)
-		_normalize_sigma!(rep, _tuple_typed(beta, 3, RT), α, σ)
+	normalization = _beam_normalization(sigma, emit, RT)
+	r = _beam_coupling_coefficients(coupling, R, C, RT)
+	η = _tuple_typed(eta, 4, RT; keyword=:eta)
+	ζ = _tuple_typed(zeta, 4, RT; keyword=:zeta)
+	offset = _tuple_typed(initial_offset, 6, RT; keyword=:initial_offset)
+	_check_beam_sampling(cutoff, seed, rng_id)
+	execution_policy === nothing || activate_policy!(execution_policy)
+	# The counter path draws, standardizes and normalizes on the HOST for either
+	# backend and uploads once, so a CUDA beam is the CPU beam of the same seed
+	# and stream bit for bit (2026-10-18 audit F-189/U27-5; the device fuses the
+	# normalization's `px - alpha*x` into one rounding, measured 2026-10-21, so
+	# it cannot run there and agree). The explicit-rng path (deprecated) draws
+	# where its RNG lives and makes no such claim.
+	draw_backend = rng === nothing ? CPUThreadsBackend : BTAG
+	rep = _standard_gaussian_rep(draw_backend, RT, Int(N);
+		cutoff=cutoff, rng=rng, seed=seed, rng_id=rng_id)
+	if normalization[1] === :sigma
+		_normalize_sigma!(rep, β, α, normalization[2])
 	else
-		_normalize_emit!(rep, _tuple_typed(beta, 3, RT), α, _tuple_typed(emit, 3, RT))
+		_normalize_emit!(rep, β, α, normalization[2])
 	end
-	coupling_values = C === nothing ? (R === nothing ? coupling : R) : C
+	rep = _rep_on_backend(BTAG, rep)
 	_apply_initial_maps!(rep, BTAG, RT;
-		coupling=_tuple_typed(coupling_values, 4, RT),
-		eta=_tuple_typed(eta, 4, RT),
-		zeta=_tuple_typed(zeta, 4, RT),
-		mode=mode,
-		policy=execution_policy,
-	)
-	add_offset!(rep, _tuple_typed(initial_offset, 6, RT))
+		coupling=r, eta=η, zeta=ζ, mode=mode, policy=execution_policy)
+	add_offset!(rep, offset)
 	return Beam{BTAG, typeof(params), typeof(rep)}(params, rep)
 end
 
@@ -662,7 +778,46 @@ function _beam_alpha(alpha, ::Type{T}) where {T}
 		Base.depwarn("two-component Beam alpha is deprecated; pass (alpha_x, alpha_y, alpha_z)", :Beam)
 		return (T(alpha[1]), T(alpha[2]), zero(T))
 	end
-	return _tuple_typed(alpha, 3, T)
+	return _tuple_typed(alpha, 3, T; keyword=:alpha)
+end
+
+"""
+The beam-size request as `(:sigma, σ)` or `(:emit, ε)`: `sigma` and `emit`
+spell the same three numbers (`σ = sqrt(β ε)`), so both at once is a
+contradiction refused by name (2026-10-18 audit F-185/U27-1: `emit` won
+silently, so `sigma=1e-3` beside `emit=1e-8` built a 1e-4 beam). Neither gives
+unit sizes.
+"""
+function _beam_normalization(sigma, emit, ::Type{T}) where {T}
+	if sigma !== nothing && emit !== nothing
+		throw(ArgumentError(
+			"Beam accepts sigma or emit, not both: sigma=$(sigma) and emit=$(emit) were given " *
+			"together. sigma=(σx, σy, σz) sets the rms sizes directly, emit=(εx, εy, εz) sets " *
+			"them as sqrt(β ε); drop one."))
+	end
+	emit === nothing && return (:sigma, sigma === nothing ? ntuple(_ -> one(T), 3) :
+	                                     _tuple_typed(sigma, 3, T; keyword=:sigma))
+	return (:emit, _tuple_typed(emit, 3, T; keyword=:emit))
+end
+
+"""
+The four x-y coupling coefficients `(r1, r2, r3, r4)` from whichever of their
+three spellings carries a value: `coupling` (its default, four zeros, carries
+none), `R` or `C`. Two spellings with values are refused by name; before the
+2026-10-18 audit (F-185/U27-1) `C` silently overrode `R`, and either overrode
+`coupling`.
+"""
+function _beam_coupling_coefficients(coupling, R, C, ::Type{T}) where {T}
+	given = Pair{Symbol,Any}[]
+	any(!iszero, coupling) && push!(given, :coupling => coupling)
+	R === nothing || push!(given, :R => R)
+	C === nothing || push!(given, :C => C)
+	length(given) <= 1 || throw(ArgumentError(
+		"Beam accepts ONE spelling of the x-y coupling coefficients (r1, r2, r3, r4): coupling, " *
+		"R and C name the same four numbers, but " *
+		join(("$(k)=$(v)" for (k, v) in given), " and ") * " were given together; keep one."))
+	isempty(given) && return _tuple_typed(coupling, 4, T; keyword=:coupling)
+	return _tuple_typed(last(given[1]), 4, T; keyword=first(given[1]))
 end
 
 function _beam_params(::Type{T}, N::Int; kwargs...) where {T}
@@ -680,8 +835,12 @@ function _beam_params(::Type{T}, N::Int; kwargs...) where {T}
 	)
 end
 
-function _tuple_typed(values, n::Int, ::Type{T}) where {T}
-	length(values) == n || throw(ArgumentError("expected $n values, got $(length(values))"))
+function _tuple_typed(values, n::Int, ::Type{T}; keyword=nothing) where {T}
+	# Named when a `Beam` keyword is being checked, so the refusal says which
+	# one (2026-10-18 audit F-187: "expected 3 values, got 2" named none).
+	length(values) == n || throw(ArgumentError(keyword === nothing ?
+		"expected $n values, got $(length(values))" :
+		"Beam keyword $(keyword) expects $(n) values, got $(length(values)): $(values)"))
 	return ntuple(i -> T(values[i]), n)
 end
 
@@ -758,8 +917,14 @@ function _fourth_central(v, μ)
 	return sum(x -> (x - μ)^4, v) / length(v)
 end
 
-# Masked counterparts, used when `allow_lost_particles` is on. `flags === nothing`
-# routes back to the plain reductions above so the default path is untouched.
+# Masked counterparts, used by `_bpm_centroid` (src/tasks/BPMObserver.jl) when
+# `allow_lost_particles` is on; `flags === nothing` routes back to the plain
+# reductions above so the default path is untouched. They are sequential
+# left-to-right folds, which is what makes a one-rank masked BPM reading byte
+# for byte the divided reading of `_masked_global_sum` (Policies.jl), so their
+# order stays. `beam_statistics` no longer reduces through them: it compacts
+# the live entries once and runs the plain reductions on the survivors
+# (2026-10-18 audit F-186/U27-2, below).
 _stat_live(::Nothing, i) = true
 _stat_live(flags::Vector{Bool}, i) = @inbounds flags[i]
 
@@ -808,6 +973,12 @@ The return value contains:
 - `emittance`: three rms emittances for `(x,px)`, `(y,py)`, `(z,pz)`
 - `xz_covariance`, `yz_covariance`
 - `diagonal_fourth_central`: six fourth central moments, or `nothing`
+
+Under [`allow_lost_particles`](@ref) the moments are those of the live
+particles and `n` is the live count: the live entries are compacted and the
+same reductions run on them, so the result equals `beam_statistics` of a
+representation holding only the survivors, bit for bit (2026-10-18 audit,
+F-186).
 """
 function beam_statistics(rep::Phase6DRep; diagonal_fourth::Bool=false)
 	coords = _host_coordinate_arrays(rep)
@@ -827,7 +998,21 @@ function beam_statistics(rep::Phase6DRep; diagonal_fourth::Bool=false)
 		"An empty rep is legal for storage and I/O, but there are no moments to compute." :
 		"beam_statistics needs at least one LIVE particle; all $(length(rep)) in " *
 		"this Phase6DRep are lost (NaN coordinates)."))
-	means = collect(T, (_mean(coords[i], flags, nlive) for i in 1:6))
+	# One reduction order (2026-10-18 audit F-186/U27-2): under
+	# `allow_lost_particles` the live entries are compacted ONCE and every
+	# moment below is the plain reduction over the survivors, so "masked over
+	# the poisoned beam" and "unmasked over the survivors" are one arithmetic on
+	# one array and agree bit for bit at any size and for any values -- the
+	# identity the lost-particle design rests on (`Policies.jl`,
+	# `_masked_global_sum`). Before, the masked moments were sequential
+	# conditional loops while the plain ones are Base's pairwise sums, and the
+	# identity held only where the two associated alike (the suite's n = 200
+	# sinusoid; random values at n = 200000 put the covariance 1.1e-23 apart,
+	# and with zero losses the flag alone moved every mean). The compaction is
+	# one O(N) copy per coordinate against the 21 + 6 (+ 6) passes below; the
+	# default path is untouched.
+	live = flags === nothing ? coords : map(c -> c[flags], coords)
+	means = collect(T, (_mean(live[i]) for i in 1:6))
 	cov = Matrix{T}(undef, 6, 6)
 	# Upper triangle only, mirrored: 21 O(N) passes rather than 36. The mirror
 	# is exact, not an approximation -- `_covariance` sums
@@ -836,7 +1021,7 @@ function beam_statistics(rep::Phase6DRep; diagonal_fourth::Bool=false)
 	# the matrix is unchanged bit for bit. Measured on this reduction alone:
 	# 24.97 ms -> 15.02 ms at 1M particles, 39.8% of `beam_statistics`.
 	for i in 1:6, j in i:6
-		c = _covariance(coords[i], means[i], coords[j], means[j], flags, nlive)
+		c = _covariance(live[i], means[i], live[j], means[j])
 		cov[i, j] = c
 		cov[j, i] = c
 	end
@@ -848,7 +1033,7 @@ function beam_statistics(rep::Phase6DRep; diagonal_fourth::Bool=false)
 		emit[plane + 1] = sqrt(max(cov[i, i] * cov[j, j] - cov[i, j] * cov[j, i], zero(T)))
 	end
 	fourth = diagonal_fourth ?
-		[_fourth_central(coords[i], means[i], flags, nlive) for i in 1:6] : nothing
+		[_fourth_central(live[i], means[i]) for i in 1:6] : nothing
 	return (
 		labels = (:x, :px, :y, :py, :z, :pz),
 		# `n` is what every moment above was divided by. Under
@@ -880,7 +1065,11 @@ beam_statistics(beam::Beam; kwargs...) = beam_statistics(beam.rep; kwargs...)
     write_beam_coordinates(io_or_path, rep_or_beam; npart=length(rep), append=true)
 
 Write the Octopus compact coordinate record format: `UInt32(npart)` followed
-by six contiguous `Float64` coordinate arrays.
+by six contiguous `Float64` coordinate arrays, the first `npart` particles of
+each. `npart` must lie in `0:length(rep)`: a request for more particles than
+the representation holds is refused by name, as `CoordinateSnapshotObserver`
+refuses it, never clamped (until the 2026-10-18 audit, F-188, the record was
+silently shortened to the particle count and the shorter count returned).
 
 The path form APPENDS by default (`append=true`), adding one record per
 call; `read_beam_coordinates(path; record=i)` selects among them and
@@ -889,7 +1078,13 @@ audit, U15-6 — this default was undocumented, and a write-twice-read-once
 sequence silently returned the stale first record).
 """
 function write_beam_coordinates(io::IO, rep::Phase6DRep; npart=length(rep))
-	n = min(Int(npart), length(rep))
+	n = Int(npart)
+	0 <= n <= length(rep) || throw(ArgumentError(n < 0 ?
+		"write_beam_coordinates npart $(n) is negative; a record holds 0 to $(length(rep)) " *
+		"of this representation's particles" :
+		"write_beam_coordinates npart $(n) exceeds the particle count $(length(rep)); a record " *
+		"holds exactly the particles asked for and is never padded or clamped " *
+		"(CoordinateSnapshotObserver refuses the same request)"))
 	write(io, UInt32(n))
 	for coord in _host_coordinate_arrays(rep)
 		write(io, Float64.(view(coord, 1:n)))
@@ -923,6 +1118,11 @@ remaining, so a torn file is reported at the record where the framing breaks
 rather than returning plausible garbage or a `Vector` of the wrong length. On a
 non-seekable stream (a pipe) the check is skipped -- there is nothing to check
 against -- and the docstring above is the only warning.
+
+A `record` past the last one is refused by name, with the index asked for and
+the number of records the stream holds (until the 2026-10-18 audit, F-190, it
+was a bare `EOFError`); a negative `record` is refused rather than read as
+record 0.
 """
 function read_beam_coordinates(path::AbstractString; record::Integer=0, FloatT=Float64)
 	open(path, "r") do io
@@ -930,12 +1130,28 @@ function read_beam_coordinates(path::AbstractString; record::Integer=0, FloatT=F
 	end
 end
 function read_beam_coordinates(io::IO; record::Integer=0, FloatT=Float64)
+	record >= 0 || throw(ArgumentError(
+		"read_beam_coordinates record index must be non-negative (0 is the first record " *
+		"written); got $(record)"))
 	total = try
 		filesize(io)
 	catch
 		-1                      # not seekable: no bound to check against
 	end
 	function _framed_count(index)
+		# Past the last record: reported by index and by how many records the
+		# stream holds (every record before it was framed), instead of the
+		# bare EOFError `read(io, UInt32)` raised (2026-10-18 audit F-190).
+		eof(io) && throw(ArgumentError(index == 0 ?
+			"beam coordinate record 0 was requested, but the stream is empty: it holds no record" :
+			"beam coordinate record $(index) was requested, but the stream holds $(index) " *
+			"record(s) (indices 0 to $(index - 1))"))
+		if total >= 0 && total - position(io) < sizeof(UInt32)
+			throw(ArgumentError(
+				"beam coordinate record $(index) has a torn header: $(total - position(io)) " *
+				"byte(s) remain where a UInt32 particle count is expected. The file is TORN " *
+				"at this record; truncate to the last good record or rewrite the file."))
+		end
 		n = Int(read(io, UInt32))
 		n >= 0 || throw(ArgumentError(
 			"beam coordinate record $(index) declares a negative particle count"))

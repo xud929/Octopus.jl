@@ -110,7 +110,11 @@ function example_catalog()
             "One knob driving many element parameters, in two production-shaped " *
             "scenarios built on the strong-strong example's constants. The " *
             "precedent for parameterising a lattice rather than editing it.",
-            Type[KnobRef, TrackingTask, ElementSpec]),
+            # The objects a script NAMES (the suite's catalogue tripwire reads
+            # each script for them): its knobs are declared through `@knob` and
+            # `@knob_expr`, so `KnobRef`, which it never names, is not listed
+            # (2026-10-18 audit F-190/U27-7).
+            Type[TrackingTask, ElementSpec, BeamLine]),
         ReferenceExample(
             "examples/twiss_dispersion_dba_ring.jl",
             "The coupled Twiss and canonical dispersion analysis of a DBA ring with " *
