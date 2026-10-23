@@ -3330,8 +3330,17 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
     # atol=0). Skew content stays OUT of the baseline: a named skew beside a
     # nonzero ks-tuple entry hits the fold contradiction guard and would
     # flip ks from checked to constructor-rejected.
+    # The two highest SKEW orders carry content too (fix batch 4b, F-112):
+    # from a zero baseline their only candidate is +0.13, a fifth-order kick
+    # of 2.6e-18 at the probe's 2.3 mm (roundoff's size, physics' origin);
+    # with content the x1.37 candidate moves the map by the strength's own
+    # scale. The fold-contradiction guard only fires for a named strength
+    # beside a nonzero tuple entry of the SAME order, and the `ks` candidate
+    # `(0.0, 0.31)` sets order 1, so `ks` stays checked (measured: 23 refused,
+    # unchanged).
     :multipole => merge(_LATTICE_BODY_PROBE,
                    (L=0.3, k1=1.2, k2=8.0, k3=40.0, k4=900.0, k5=20000.0,
+                    k4s=900.0, k5s=20000.0,
                     curved_order=6, nst=2, fringe=:all, va=0.03, vs=1.0e-4,
                     highest_fringe=2, x_offset=1.0e-3)),
     # `highest_fringe = 2`, not 1. At 1 the multipole fringe is capped below the
@@ -3361,7 +3370,12 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
                   zeta2=(0.012, 0.0, 0.0, 0.0), R1=(0.02, 0.01, 0.0, 0.0),
                   R2=(0.021, 0.011, 0.0, 0.0)),
     :marker => NamedTuple(),
-    :thin_multipole => (k1l=0.05, k2l=1.2, x_offset=1.0e-3),
+    # Fourth- and fifth-order content, normal and skew (the PTC case
+    # `thin_multipole_k5`'s values), so the x1.37 candidate moves the map by
+    # the strength's scale; from a zero baseline +0.13 moved it by 1e-16 at
+    # fifth order (fix batch 4b, F-112).
+    :thin_multipole => (k1l=0.05, k2l=1.2, k4l=400.0, k5l=5000.0, k4sl=300.0, k5sl=-300.0,
+                        x_offset=1.0e-3),
     :thin_dipole => (k0l=1.0e-3, x_offset=1.0e-3),
     :thin_quadrupole => (k1l=0.05, x_offset=1.0e-3),
     :thin_sextupole => (k2l=1.2, x_offset=1.0e-3),
@@ -3410,6 +3424,12 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
     # equally, and an isotropic transverse map commutes with a roll about s,
     # so `tilt` would read as inert when it is only unprobeable there.
     :lumped_radiation => (damping_turns=(1000.0, 800.0, 500.0), rng_id=1),
+    # The same symmetry for the chromaticity kick: its example has
+    # `xi = (1, 1)`, `beta = (1, 1)`, an isotropic map that commutes with a
+    # roll, so `tilt` was credited on the conjugation's roundoff (6.5e-19;
+    # 2026-10-18 audit, F-112). Unequal chromaticities and betas make the
+    # roll physical.
+    :chromaticity_kick => (xi=(1.2, -0.8), beta=(0.82, 0.075), alpha=(0.01, -0.02)),
 )
 """
 Parameters that every kind CARRIES rather than consumes.
@@ -3514,8 +3534,34 @@ const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     # of these twelve, because an exempted pair is never judged. All twelve are
     # swept now (`checked` 530 -> 542, `exemptions_declared` 38 -> 26).
     (:thin_rf_cavity, :tilt) => "the map is independent of the transverse coordinates, so a roll about s commutes (cancels to roundoff)",
-    (:thin_rf_cavity, :ref_tilt) => "transverse-independent map; a design roll commutes like tilt does",
+    # `(:thin_rf_cavity, :ref_tilt)` RETIRED (fix batch 4b, F-112): "a design
+    # roll commutes like tilt does" was false under the six-DOF probe. The
+    # design roll composes OUTSIDE the misalignment (the PTC `reftilt_mis`
+    # cases exist for exactly that order), so it turns the pitches' axes and
+    # with them the longitudinal displacement `offset * pitch` the cavity
+    # reads: measured 2.9e-13 at the shipped probe, six orders above the
+    # marker's conjugation roundoff (4e-19..4e-17), the same class of false
+    # exemption as F-107's twelve. Swept now; its evidence sits below the
+    # weak-evidence floor and the contract lists it as such.
+    # The same roll on the accelerating cavity, whose kick reads z and pz and
+    # scales px, py by one factor, commutes exactly (F-112; the thin RF
+    # cavity's row above said it of its kind and this kind had none).
+    (:thin_accelerating_cavity, :tilt) => "the kick reads z and pz only and scales px, py by one factor, so a roll about s commutes (cancels to roundoff; measured 8.7e-19 at the six-DOF probe)",
+    # The marker's eighth placement parameter, by the same identity-map reason
+    # as its seven rows above (F-112): either composition order of a
+    # conjugation that cancels is invisible (measured 4.3e-19).
+    (:marker, :misalign_convention) => "identity map; either composition order of a conjugation that cancels exactly is invisible (the marker's placement rows' class)",
 )
+
+"""
+The elliptical thin strong beam the Gaussian strong beam's probe wraps
+(`ELEMENT_PARAM_PROBE_OVERRIDES`): the example's `kbb` and `beta`, with
+`sigma_x = 2 sigma_y` so a roll about s is physical. A function, called when
+the probe is built, since `ThinStrongBeamSpec` is not defined where the
+override table is evaluated; defined ABOVE the table so the table can name it.
+"""
+_elliptical_thin_strong_beam_probe() =
+    ThinStrongBeamSpec(kbb=1.0e-4, beta=(1.0, 1.0), sigma=(2.0e-3, 1.0e-3))
 
 """
 Keys merged ONTO a kind's probe (whether that probe is curated or the kind's own
@@ -3532,9 +3578,23 @@ where `DEFAULT_ELEMENT_PARAM_PROBES` is evaluated.
 `:sqrt_density`. It was therefore reported declared-but-not-consumed the moment
 the sweep widened enough to reach it, when it is in fact perfectly effective at
 the configuration where it applies (2026-08-05_b audit, U4-2/U4-3).
+
+The strong beams' examples are ROUND (`sigma = (1e-3, 1e-3)`, `beta = (1, 1)`),
+and a round Gaussian kick commutes with a roll about s, so `tilt` on both kinds
+was credited on the conjugation's roundoff (1.4e-17; 2026-10-18 audit, F-112).
+An elliptical beam (sigma_x = 2 sigma_y) makes the roll physical: the thin
+beam's stored 4 x 4 `covariance` is overridden directly, the Gaussian beam's
+`thin` sub-spec through a zero-argument FUNCTION -- an override value that is
+a function is called when the probe is built, because an element spec cannot
+be constructed where this table is evaluated (the contracts are included
+before the elements). `thin` stays unperturbable (a sub-spec) and
+`covariance` unperturbable (a matrix), so neither bucket moves.
 """
 const ELEMENT_PARAM_PROBE_OVERRIDES = Dict{Symbol,Any}(
-    :gaussian_strong_beam => (slice_method=:equal_width, slice_width=3.0e-3),
+    :thin_strong_beam => (covariance=[4.0e-6 0.0 0.0 0.0; 0.0 4.0e-6 0.0 0.0;
+                                      0.0 0.0 1.0e-6 0.0; 0.0 0.0 0.0 1.0e-6],),
+    :gaussian_strong_beam => (slice_method=:equal_width, slice_width=3.0e-3,
+                              thin=_elliptical_thin_strong_beam_probe),
 )
 
 """
@@ -3549,11 +3609,38 @@ reported as declared-but-ignored unless its `(kind, parameter)` pair is
 listed in `inactive` with a reason. The probe keywords and default inactive
 list, and why probing goes through the friendly constructor, are documented
 on [`DEFAULT_ELEMENT_PARAM_PROBES`](@ref).
+
+Every candidate perturbation runs and the LARGEST movement is the evidence
+(until the 2026-10-22 fix batch the loop stopped at the first bit that moved,
+before the scale-correct x1.37 candidate was tried, so `thin_rf_cavity.frequency`
+was credited by +0.13 Hz at 1.2e-16; 2026-10-18 audit, F-112). The evidence
+is published per parameter in `metrics[:deviations]`, and a checked parameter
+whose largest movement lies below `weak_evidence_floor` is listed in
+`metrics[:weak_evidence]` and named in the message: below that size the sweep
+cannot tell physics from roundoff by magnitude alone, and the reader must
+consult structure. The floor is REPORTING, not a verdict (the verdict stays
+`atol`), and no floor could be one: the inert-conjugation roundoff class
+measured on the marker's placement rows is 4e-19..4e-17 at the probe's 1e-3
+coordinates, while genuine physics at the same probe sits as low as 1e-16 for
+a fifth-order multipole strength; `1e-12` is the audit's own threshold, five
+orders above the roundoff class and where the suite's smallest pinned physics
+(the thin kinds' misalignment-convention step, 2.2e-12) begins.
+
+The two undecided buckets are NAMED and classified (F-111):
+`metrics[:unperturbable_reasons]` maps each pair to why no perturbation could
+be formed ([`_perturb_candidates_or_reason`](@ref)), with the Symbol
+parameters whose `alternatives` the schema never declared listed in
+`metrics[:undeclared_alternatives]`; `metrics[:rejected_reasons]` maps each
+pair to the first refusal with its stage, `constructor:` or `compile_or_map:`
+-- a candidate the constructor accepts and the compile or the map then throws
+on is an element's validation seam, not a constructor's refusal, and reads
+differently.
 """
 Base.@kwdef struct ElementParameterEffectivenessContract <: AbstractImplementationContract
     probes::Dict{Symbol,Any} = DEFAULT_ELEMENT_PARAM_PROBES
     inactive::Dict{Tuple{Symbol,Symbol},String} = DEFAULT_INACTIVE_ELEMENT_PARAMS
     atol::Float64 = 0.0
+    weak_evidence_floor::Float64 = 1.0e-12
 end
 
 # Candidate perturbations for a declared parameter, most physical first. The
@@ -3595,45 +3682,71 @@ const _PLACEMENT_PROBE_DOF = (
     x_offset=1.0e-3, y_offset=-0.7e-3, z_offset=0.5e-3,
     x_pitch=0.8e-3, y_pitch=-0.6e-3, tilt=0.9e-3)
 
-function _perturb_candidates(key::Symbol, current, pmeta)
-    key === :tracking_method && return ()
-    # Declared alternatives win outright: they are the schema saying "these
-    # are this parameter's other legitimate values", which is strictly more
-    # information than any generic type rule -- and the only road to a
-    # Symbol/flag parameter, which has no numeric neighbourhood (U4-12).
+"""
+    _perturb_candidates_or_reason(key, current, pmeta) -> Tuple | Symbol
+
+Candidate perturbations for a declared parameter (a `Tuple`, most physical
+first), or the REASON none can be formed (a `Symbol`), so the sweep can name
+why a pair is unperturbable instead of counting it (2026-10-18 audit, F-111):
+`:tracking_method` (a declaration, not a value with a neighbourhood);
+`:undeclared_alternatives` (a Symbol-valued enum -- by its value or by its
+declared default, since a probe may carry the object a Symbol selected, as the
+strong beam's `virtual_drift` does -- whose `ParamMeta` declares no
+`alternatives`: the schema's omission, not this contract's, and the one reason
+an owner can retire by declaring them); `:rule_or_object_tuple` (a tuple
+holding a turn-modulation rule object or `nothing`, the per-harmonic
+`phase_noise` shape, which has no numeric neighbourhood -- never a
+`Float64(nothing)`; 2026-10-12 review, C4); `:no_candidate_for_type` (a
+matrix, a sub-spec, a line's entries). [`_perturb_candidates`](@ref) returns
+`()` for every reason.
+
+Declared alternatives win outright: they are the schema saying "these are
+this parameter's other legitimate values", which is strictly more information
+than any generic type rule -- and the only road to a Symbol/flag parameter
+(U4-12). A `nothing` default carries no type at all, so the shapes an element
+parameter actually takes are offered and the constructor picks. An
+integer-declared physical quantity is perturbed by a physical amount before
+the enum-style step. Real parameters get an additive AND a multiplicative
+candidate: a fixed +0.13 is unphysical for any small-scale quantity, and
+unphysical is not the same as ineffective -- `gaussian_strong_beam.slice_width`
+is a length in metres against a 7 mm bunch, so +0.13 m puts every particle in
+one slice and the map does not move -- while for a large-scale quantity (a
+cavity frequency of 4e8 Hz) +0.13 moves the map by roundoff only and the x1.37
+candidate is the physical one; the sweep runs every candidate and keeps the
+largest movement (F-112).
+"""
+function _perturb_candidates_or_reason(key::Symbol, current, pmeta)
+    key === :tracking_method && return :tracking_method
     if pmeta isa ParamMeta && !isempty(pmeta.alternatives)
         alts = Tuple(a for a in pmeta.alternatives if a != current)
         isempty(alts) || return alts
     end
     current isa Bool && return (!current,)
-    current isa Symbol && return ()
+    (current isa Symbol || (pmeta isa ParamMeta && pmeta.default isa Symbol)) &&
+        return :undeclared_alternatives
     if current isa Tuple
         isempty(current) && return ((0.0, 0.31),)
-        # A tuple holding anything but numbers -- a turn-modulation rule object
-        # or `nothing`, the per-harmonic `phase_noise` shape -- has no numeric
-        # neighbourhood this contract can form: unperturbable, never a
-        # `Float64(nothing)` (2026-10-12 review, C4).
-        all(entry -> entry isa Real, current) || return ()
+        all(entry -> entry isa Real, current) || return :rule_or_object_tuple
         return (ntuple(i -> Float64(current[i]) + 0.17 * i, length(current)),)
     end
-    # A `nothing` default carries no type at all, so offer the shapes an element
-    # parameter actually takes and let the constructor pick.
     current === nothing && return (true, false, 1.0e-3, 1)
     if current isa Integer
-        # An integer-declared physical quantity is still a physical quantity:
-        # perturb it by a physical amount before trying the enum-style step.
         return _perturb_is_physical(key, pmeta) ? (1.0e-3, Int(current) + 1) :
                                                   (Int(current) + 1, Int(current) + 2)
     end
-    # Additive AND multiplicative. A fixed +0.13 is unphysical for any
-    # small-scale quantity, and unphysical is not the same as ineffective:
-    # `gaussian_strong_beam.slice_width` is a length in metres against a 7 mm
-    # bunch, so +0.13 m puts every particle in one slice and the map does not
-    # move -- the parameter looks dead when it is only being asked the wrong
-    # question. A relative perturbation is scale-correct for exactly these
-    # (2026-08-05_b audit, U4-3).
     current isa Real && return (Float64(current) + 0.13, Float64(current) * 1.37)
-    return ()
+    return :no_candidate_for_type
+end
+
+"""
+    _perturb_candidates(key, current, pmeta) -> Tuple
+
+The candidate perturbations of [`_perturb_candidates_or_reason`](@ref), with
+`()` for a parameter that has none.
+"""
+function _perturb_candidates(key::Symbol, current, pmeta)
+    candidates = _perturb_candidates_or_reason(key, current, pmeta)
+    return candidates isa Symbol ? () : candidates
 end
 
 # Parameters that are not INDEPENDENTLY variable, and the joint moves that
@@ -3724,8 +3837,9 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
     # without a probe)", which a reader takes for completeness. That is the
     # AGENTS.md rule "do not report an unrun check as passed", in the file whose
     # job is to enforce it.
-    unperturbable = String[]   # no perturbation this contract can form
-    rejected = String[]        # constructor refused the perturbed value
+    unperturbable_reasons = Dict{String,Symbol}()   # pair => why no perturbation could be formed (F-111)
+    rejected_reasons = Dict{String,String}()        # pair => "constructor: ..." or "compile_or_map: ..." (F-111)
+    deviations = Dict{String,Float64}()             # pair => the largest movement an accepted candidate made (F-112)
     carried = String[]         # carried by every kind, consumed by none (see CARRIED_ELEMENT_PARAMS)
     exemptions_seen = Set{Tuple{Symbol,Symbol}}()   # U4-17: which `inactive` entries applied
     for T in registered_element_specs()
@@ -3751,8 +3865,12 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
             continue
         end
         if haskey(ELEMENT_PARAM_PROBE_OVERRIDES, meta.kind)
-            merge!(probe, Dict{Symbol,Any}(
-                pairs(ELEMENT_PARAM_PROBE_OVERRIDES[meta.kind])))
+            for (k, v) in pairs(ELEMENT_PARAM_PROBE_OVERRIDES[meta.kind])
+                # A zero-argument function is evaluated HERE: an override whose
+                # value is an element spec cannot be built where the table is
+                # (the contracts are included before the elements).
+                probe[k] = v isa Function ? v() : v
+            end
         end
         # Every probe carries all six placement degrees of freedom unless it
         # sets its own: the misalignment CONVENTION is observable only with
@@ -3802,9 +3920,9 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
             current = get(probe, key, pmeta.default)
             coupled = _perturb_coupled_overrides(meta.kind, key, probe)
             candidates = coupled === nothing ?
-                _perturb_candidates(key, current, pmeta) : coupled
-            if isempty(candidates)
-                push!(unperturbable, "$(meta.kind).$(key)")
+                _perturb_candidates_or_reason(key, current, pmeta) : coupled
+            if candidates isa Symbol
+                unperturbable_reasons["$(meta.kind).$(key)"] = candidates
                 continue
             end
             # The question is "does this parameter reach the map AT ALL", so
@@ -3817,27 +3935,42 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
             # reasoning for skipping outright, and it is wrong for a
             # perturbation that is unphysical rather than invalid, so the
             # constructor arbitrates validity and the map arbitrates effect
-            # (2026-08-05_b audit, U4-3).
+            # (2026-08-05_b audit, U4-3). EVERY candidate runs: the loop used
+            # to break at the first movement above `atol`, i.e. at the first
+            # bit, which credited a 4e8 Hz frequency on +0.13 Hz before x1.37
+            # was tried (F-112). Construction and compile-or-track are judged
+            # apart, so a refusal is named by its stage (F-111).
             accepted = false
             deviation = 0.0
+            refusals = String[]
             for candidate in candidates
                 override = candidate isa Dict{Symbol,Any} ?
                     candidate : Dict{Symbol,Any}(key => candidate)
+                spec = try
+                    ctor(; merge(probe, override)...)
+                catch err
+                    push!(refusals, "constructor: " * first(split(sprint(showerror, err), '\n')))
+                    nothing
+                end
+                spec === nothing && continue
                 moved = try
-                    collect(compile_runtime(ctor(; merge(probe, override)...))(u...))
-                catch
+                    collect(compile_runtime(spec)(u...))
+                catch err
+                    push!(refusals, "compile_or_map: " * first(split(sprint(showerror, err), '\n')))
                     nothing
                 end
                 moved === nothing && continue
                 accepted = true
                 deviation = max(deviation, _probe_deviation(moved, baseline))
-                deviation > contract.atol && break
             end
             if !accepted
-                push!(rejected, "$(meta.kind).$(key)")
+                downstream = findfirst(startswith("compile_or_map:"), refusals)
+                rejected_reasons["$(meta.kind).$(key)"] =
+                    downstream === nothing ? first(refusals) : refusals[downstream]
                 continue
             end
             checked += 1
+            deviations["$(meta.kind).$(key)"] = deviation
             deviation <= contract.atol && push!(ignored, "$(meta.kind).$(key)")
         end
     end
@@ -3846,13 +3979,31 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
     # entry now documents something that does not exist (U4-17).
     stale_exemptions = sort!([string(k, ".", p) for (k, p) in keys(contract.inactive)
                               if !((k, p) in exemptions_seen)])
+    # Weak evidence (F-112): checked, but on a movement below the floor, where
+    # the sweep cannot tell physics from roundoff by size alone. Listed and
+    # named, never silently credited; the verdict stays `atol`.
+    weak = Dict{String,Float64}(name => d for (name, d) in deviations
+                                if contract.atol < d < contract.weak_evidence_floor)
+    unperturbable_names = sort!(collect(keys(unperturbable_reasons)))
+    rejected_names = sort!(collect(keys(rejected_reasons)))
+    undeclared = sort!([name for (name, why) in unperturbable_reasons
+                        if why === :undeclared_alternatives])
     metrics = Dict{Symbol,Any}(:checked => checked, :ignored => length(ignored),
                                :skipped_kinds => length(skipped),
                                :broken_kinds => length(broken),
-                               :unperturbable => length(unperturbable),
-                               :rejected => length(rejected),
+                               :unperturbable => length(unperturbable_names),
+                               :rejected => length(rejected_names),
                                :carried => length(carried),
-                               :undecided => length(unperturbable) + length(rejected),
+                               :undecided => length(unperturbable_names) + length(rejected_names),
+                               :unperturbable_names => unperturbable_names,
+                               :unperturbable_reasons => unperturbable_reasons,
+                               :undeclared_alternatives => undeclared,
+                               :rejected_names => rejected_names,
+                               :rejected_reasons => rejected_reasons,
+                               :deviations => deviations,
+                               :weak_evidence_floor => contract.weak_evidence_floor,
+                               :weak_evidence => weak,
+                               :weak_evidence_count => length(weak),
                                :exemptions_declared => length(contract.inactive),
                                :exemptions_applied => length(exemptions_seen),
                                :stale_exemptions => length(stale_exemptions))
@@ -3865,12 +4016,50 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
         join(stale_exemptions, ", "); metrics=metrics)
     isempty(ignored) && return ContractResult(true,
         "every parameter this contract could decide reached the map " *
-        "($(checked) checked, $(length(skipped)) kinds without a probe; " *
-        "$(length(unperturbable)) with no formable perturbation, " *
-        "$(length(rejected)) whose perturbation the constructor rejected -- " *
-        "neither group is verified)"; metrics=metrics)
+        "($(checked) checked, $(length(skipped)) kinds without a probe); " *
+        "undecided and NOT verified: " *
+        _effectiveness_undecided_summary(unperturbable_reasons, rejected_reasons) *
+        (isempty(weak) ? "" :
+         "; $(length(weak)) checked on weak evidence (largest movement below " *
+         "$(contract.weak_evidence_floor)): " * join(sort!(collect(keys(weak))), ", "));
+        metrics=metrics)
     return ContractResult(false,
         "declared but not consumed: " * join(sort(ignored), ", "); metrics=metrics)
+end
+
+"""
+    _effectiveness_undecided_summary(unperturbable_reasons, rejected_reasons) -> String
+
+The two undecided buckets of the element-parameter sweep by REASON and by
+name (2026-10-18 audit, F-111): the tracking-method declarations as a count
+(one per kind, structural), every other unperturbable group by name, and the
+refusals split by the stage that refused -- so a reader of the pass message
+can tell a declaration from an enum nobody declared, and a constructor's
+refusal from a value the constructor accepted and the map died on.
+"""
+function _effectiveness_undecided_summary(unperturbable_reasons, rejected_reasons)
+    by_reason = Dict{Symbol,Vector{String}}()
+    for (name, why) in unperturbable_reasons
+        push!(get!(Vector{String}, by_reason, why), name)
+    end
+    parts = String[]
+    n_tracking = length(get(by_reason, :tracking_method, String[]))
+    n_tracking == 0 || push!(parts, "$(n_tracking) tracking_method declarations")
+    for (why, label) in ((:undeclared_alternatives, "Symbol parameters with undeclared alternatives"),
+                         (:rule_or_object_tuple, "tuples of rule objects"),
+                         (:no_candidate_for_type, "values of a type the sweep cannot vary"))
+        names = sort(get(by_reason, why, String[]))
+        isempty(names) || push!(parts, "$(length(names)) $(label): " * join(names, ", "))
+    end
+    by_constructor = count(startswith("constructor:"), values(rejected_reasons))
+    downstream = sort!([name for (name, why) in rejected_reasons
+                        if !startswith(why, "constructor:")])
+    return "$(length(unperturbable_reasons)) with no formable perturbation (" *
+           join(parts, "; ") * "), $(length(rejected_reasons)) whose every candidate " *
+           "was refused ($(by_constructor) by the constructor" *
+           (isempty(downstream) ? "" :
+            "; $(length(downstream)) accepted at construction and failing at compile or in the map: " *
+            join(downstream, ", ")) * ")"
 end
 
 # ---------------------------------------------------------------------------

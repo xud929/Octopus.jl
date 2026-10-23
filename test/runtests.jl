@@ -15505,8 +15505,18 @@ if _lane_gate("Element parameter effectiveness")
     # two units' counts add, measured on the merged tree): twelve exemptions whose structural reasons the six-DOF probe
     # falsifies (the thin kicks' and the thin RF cavity's x/y offsets, the two
     # boosts' y offsets; movements 1e-8 to 2.3e-6 through the pitch and the
-    # tilt) retired and swept.
-    @test r.metrics[:checked] >= 549
+    # tilt) retired and swept. 549 -> 548 on 2026-10-22 (fix batch 4b unit
+    # CT, F-112): the one lowering, and by structural rows, not lost coverage
+    # -- `thin_accelerating_cavity.tilt` (the kick reads z and pz only and
+    # scales px, py by one factor, so a roll about s commutes; measured
+    # 8.7e-19, the conjugation's roundoff) and `marker.misalign_convention`
+    # (the identity map cancels either composition order; 4.3e-19) joined the
+    # inactive table beside the rows that already said the same of their
+    # kinds, while `thin_rf_cavity.ref_tilt` LEFT it: the design roll
+    # composes outside the pitches and turns their longitudinal displacement,
+    # which the cavity reads (measured 2.9e-13, six orders above the marker's
+    # roundoff class) -- a false exemption of F-107's kind. Net -2 +1.
+    @test r.metrics[:checked] >= 548
 
     # What the contract does NOT decide has to be visible, and bounded
     # (2026-08-05_b audit, U4-2). 112 of 501 declared parameters used to be
@@ -15664,6 +15674,79 @@ if _lane_gate("Element parameter effectiveness")
                                                         -3.2e-4, 1.5e-3, 9.0e-4)
         @test all(isfinite, out)
     end
+
+    # The two undecided buckets are NAMED and classified, not counted
+    # (2026-10-18 audit, F-111): a reader of the pass message could not tell a
+    # tracking-method declaration from an enum parameter whose legal values the
+    # schema never declared, and the ratchets above pin the SIZE of the blind
+    # spot, not its membership. The names and the reason each pair could not
+    # be perturbed are in the metrics; the message states them by reason.
+    # A FRESH result under its own name: the `let` blocks above reassign the
+    # testset's `r` to their failing runs (the emptied allowlist, the killing
+    # probe), which is what the first draft of this block read (0.1 s after
+    # the warm-up above; the suite's 25 s on this contract is compile).
+    r0 = validate(ElementParameterEffectivenessContract())
+    @test r0.status === :passed
+    @test sort(r0.metrics[:unperturbable_names]) == sort(collect(keys(r0.metrics[:unperturbable_reasons])))
+    @test length(r0.metrics[:unperturbable_names]) == r0.metrics[:unperturbable]
+    @test sort(r0.metrics[:rejected_names]) == sort(collect(keys(r0.metrics[:rejected_reasons])))
+    @test length(r0.metrics[:rejected_names]) == r0.metrics[:rejected]
+    @test all(in((:tracking_method, :undeclared_alternatives, :rule_or_object_tuple, :no_candidate_for_type)),
+              values(r0.metrics[:unperturbable_reasons]))
+    # the tracking-method declarations, DERIVED: every kind whose schema
+    # carries one and whose row is not exempt (the marker's is)
+    @test count(==(:tracking_method), values(r0.metrics[:unperturbable_reasons])) ==
+          count(T -> (m = Octopus._element_meta_or_nothing(T); m !== nothing &&
+                      haskey(Octopus.parameter_schema(T), :tracking_method) &&
+                      !haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (m.kind, :tracking_method))),
+                Octopus.registered_element_specs())
+    # the audit's blind spot BY NAME: two Symbol parameters whose `meaning`
+    # lists their legal values and whose ParamMeta declares no `alternatives`,
+    # so the sweep has no road to them. Each leaves this list the day its
+    # owner (src/elements/strong_beam.jl) declares them -- the sweep then
+    # checks it, or an `inactive` row says why not -- and a THIRD name here is
+    # a new undeclared enum, to be declared, never appended.
+    @test r0.metrics[:undeclared_alternatives] ==
+          ["gaussian_strong_beam.slice_method", "thin_strong_beam.virtual_drift"]
+    # every refusal today is the CONSTRUCTOR's, by its message; a candidate
+    # the constructor accepts and the compile or the map then throws on (the
+    # `hvoffset` seam of F-116, refused by name since fix batch 3) would read
+    # "compile_or_map:" here, the seam visible instead of folded into a count
+    @test all(startswith("constructor:"), values(r0.metrics[:rejected_reasons]))
+    @test occursin("undeclared alternatives", r0.message) &&
+          occursin("gaussian_strong_beam.slice_method", r0.message)
+
+    # Every candidate runs and the LARGEST movement is the evidence (2026-10-18
+    # audit, F-112): the loop used to break at the first bit that moved, before
+    # the scale-correct x1.37 candidate was tried, so `thin_rf_cavity.frequency`
+    # (4.008e8 Hz) was credited by +0.13 Hz at 1.2e-16 and `multipole.k5` by
+    # 2.8e-17; and a roll on an ISOTROPIC probe (the strong beams' round
+    # example, the chromaticity kick's xi = (1, 1)) credited `tilt` on the
+    # conjugation's roundoff. The per-parameter evidence is published, and what
+    # moved only below the weak-evidence floor is listed, never silently
+    # credited as if it were physics.
+    @test haskey(r0.metrics, :deviations) && length(r0.metrics[:deviations]) == r0.metrics[:checked]
+    @test all(d -> d > 0.0, values(r0.metrics[:deviations]))          # checked means moved (atol = 0)
+    @test r0.metrics[:weak_evidence_floor] == ElementParameterEffectivenessContract().weak_evidence_floor == 1.0e-12
+    weak = r0.metrics[:weak_evidence]
+    @test weak isa Dict && all(d -> 0.0 < d < r0.metrics[:weak_evidence_floor], values(weak))
+    @test issubset(keys(weak), keys(r0.metrics[:deviations]))
+    @test r0.metrics[:weak_evidence_count] == length(weak)
+    # the pairs the audit listed as credited on roundoff that a scale-correct
+    # candidate or an anisotropic probe makes PHYSICAL (measured at or above
+    # the floor on the fixed tree; the values are in the unit CT report)
+    for name in ("thin_rf_cavity.frequency", "thin_accelerating_cavity.frequency",
+                 "chromaticity_kick.tilt", "thin_strong_beam.tilt", "gaussian_strong_beam.tilt",
+                 "multipole.k4", "multipole.k4s", "thin_multipole.k4l", "thin_multipole.k4sl")
+        @test r0.metrics[:deviations][name] >= r0.metrics[:weak_evidence_floor]
+    end
+    # ... and the aperture's five boundary-relative rows stay weak by
+    # construction (their shifts are O(px dz, theta^2) ~ 1e-5 against margins
+    # of 1.3e-4, as the probe's comment derives) and are therefore LISTED
+    for name in ("aperture.z_offset", "aperture.x_pitch", "aperture.y_pitch")
+        @test haskey(weak, name)
+    end
+    @test isempty(weak) || occursin("weak evidence", r0.message)
 end
 end # _lane_gate("Element parameter effectiveness")
 
