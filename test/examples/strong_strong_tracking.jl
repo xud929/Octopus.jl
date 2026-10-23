@@ -289,7 +289,10 @@ end
 # `Main`, which is not one. Measured on this tree 2026-09-06:
 # `Base.PkgId(Main.Octopus)` is `Base.PkgId(nothing, "Main")` and
 # `Base.get_extension(Main.Octopus, :OctopusMPIExt)` is `nothing` under the
-# include, against `OctopusMPIExt` under `using Octopus`. Without the extension
+# include, against `OctopusMPIExt` under `using Octopus` followed by `using MPI`
+# (a `[weakdeps]` extension attaches only once both are loaded, so `using
+# Octopus` alone also gives `nothing`; this comment said "under `using Octopus`"
+# until 2026-10-22, the 2026-10-18 audit's U55-4 probe). Without the extension
 # every process is its own communicator of one, `ranks = :auto` accepts that as
 # legitimate, and `mpiexec -n 8` runs EIGHT identical whole simulations racing
 # on one artifact path: exit 0, plausible timings, wrong answer. The one failure
