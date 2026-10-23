@@ -18,21 +18,32 @@ Run from the project root; the first argument selects the part, the rest are
     julia --project=. validation/crab_cavity_noise_response.jl noise     [turns=65536 scale_check=10 table_turns=1048576 long_turns=1048576 rms_streams=4096 out=<dir>]
     julia --project=. validation/crab_cavity_noise_response.jl tablefile [path=<out>/W1_realised_offsets.tsv turns=100000 scale=1 phase_rms=10e-6 strength_rel_rms=0 out=<dir>]
     julia --project=. validation/crab_cavity_noise_response.jl pilot     [turns=6000 n_macro=100000 turns_timing=1000 n_macro_timing=1000000 moment_step=1 gpu=1 threads=4 n0=2000 artifact_dir=<out> out=<dir>]
-    julia --project=. validation/crab_cavity_noise_response.jl sweep     tag=<tag> [cases=B0,W1,A1,W2,W3,P1,T2,A4,AP1,AT1,C0,C1,C2,T1 turns=100000 turns_pink=131072 turns_a4=25000 turns_a4s=12500 n_macro=1000000 moment_step=1 gpu=1 threads=4 n0=2000 radiation=0 artifact_dir=<out> table_file=<out>/W1_realised_offsets_T<turns>.tsv out=<dir>]
-    julia --project=. validation/crab_cavity_noise_response.jl control   tsv=<sweep tsv> [case=C1 baseline=C0 tol_centroid=0.01 cov_cases=C0,C1,C3,C2 tol_c2=0.10 tol_c2_y=0.05 n0=2000]
-    julia --project=. validation/crab_cavity_noise_response.jl report    tsv=<sweep tsv> [ref_y_over_x_phase=<none> ref_phase_white_x=1.72e-7 ref_amp_white_x=1.10e-6 ref_pink_ratio_x=0.15 ref_pink_ratio_y=0.17 tol_rate=1.25 tol_exp=0.1 tol_ratio=0.25 tol_t1=1e-10 tol_epsc_frac=0.8 tol_jc_frac=0.10 tol_baseline=0.05 tol_halves=0.20 tol_resid=0.05 tol_c1_epsc=0.01]
+    julia --project=. validation/crab_cavity_noise_response.jl sweep     tag=<tag> [cases=B0,W1,A1,W2,W3,P1,T2,A4,A4s,A2,A05,AP1,AT1,C0,C1,C2,T1 turns=100000 turns_pink=131072 turns_a4=25000 turns_a4s=12500 n_macro=1000000 moment_step=1 gpu=1 threads=4 n0=2000 radiation=0 artifact_dir=<out> table_file=<out>/W1_realised_offsets_T<turns>.tsv out=<dir>]
+    julia --project=. validation/crab_cavity_noise_response.jl control   tsv=<sweep tsv> [case=C1 baseline=C0 tol_centroid=0.01 cov_cases=C0,C1,C3,C2 tol_c2=0.10 tol_c2_y=0.05 n0=2000 out=<dir>]
+    julia --project=. validation/crab_cavity_noise_response.jl report    tsv=<sweep tsv> [ref_y_over_x_phase=<none> ref_phase_white_x=1.72e-7 ref_amp_white_x=1.10e-6 ref_pink_ratio_x=0.15 ref_pink_ratio_y=0.17 tol_rate=1.25 tol_exp=0.1 tol_ratio=0.25 tol_t1=1e-10 tol_epsc_frac=0.8 tol_jc_frac=0.10 tol_baseline=0.05 tol_halves=0.20 tol_resid=0.05 tol_c1_epsc=0.01 out=<dir>]
 
 An override key a part does not read is REFUSED by name before the part's
 work starts (comprehensive audit 2026-10-18, F-207: `tol_ration=0.01` gave
 60/60 PASS where `tol_ratio=0.01` fails, so a misspelt tolerance was judged
 at its default); every part reads all of its keys at entry and then asserts
 that no key of the command line is left unread, naming the stray key and the
-keys it does read. `out` (every part) is the output directory, default `result/crab_noise/`
-under the project root (git-ignored; never evidence). Everything a verdict
-rests on is printed and written to TSV there. The theory behind parts
-`pilot`, `sweep` and `report` is docs/theory/crab_cavity_noise_response.md
-(section 7 is the plan this script executes; section 6 the reference
-numbers, which enter `report` only as its overridable defaults).
+keys it does read. The bracketed defaults above are HELD TO THE CODE at
+load: after its option block every part compares each documented `key=value`
+(a `<placeholder>` excepted) with the default its code supplied, numerically
+where both are numbers, and refuses a header that disagrees, a documented key
+the part does not read, or a read key the header omits, then prints a receipt
+line naming how many it checked (fix batch 4 of the 2026-10-18 audit, D13:
+the report's four reference numbers were typed here and again at their
+`opt_float` calls with nothing holding the two together). `out` (every part)
+is the output directory, default `result/crab_noise/` under the project root
+(git-ignored; never evidence). Everything a verdict rests on is printed and
+written to TSV there. The theory behind parts `pilot`, `sweep` and `report`
+is docs/theory/crab_cavity_noise_response.md (section 7 is the plan this
+script executes: its sweep table is `SWEEP_CASES` below and the default
+`cases=` order is every row of it but the optional C3; sections 6 and 5.2 are
+the reference numbers, declared once in `REPORT_REFERENCE_DEFAULTS` and
+entering `report` only as its overridable defaults; the suite holds that
+declaration to the note's text).
 
 PART `noise` (question 1; CPU, about two and a half minutes after the
 Octopus load, the three spectral cases included).
@@ -244,7 +255,10 @@ Error metrics and tolerances (each printed as PASS/FAIL with its number):
 Outputs: `<out>/noise_summary.tsv` (one row per rule, cavity, slot and
 check), `<out>/noise_correlations.tsv` (one row per pair),
 `<out>/noise_pink_bands.tsv` (per pink slot and band: measured, reference
-mean and sd, z), the artifacts
+mean and sd, z, and `judged`, true for exactly the bands the chi-square sums:
+the trusted bands below the normaliser, whose own z is NaN, a zero deviation
+over a zero sd -- the column was named `trusted` and was true for the
+normaliser as well until 2026-10-22, audit F-209/U40-14), the artifacts
 `<out>/noise_table_provenance.h5`, `<out>/noise_recorded_<rule>.h5` (one
 per rule, the recorded series) and
 `<out>/noise_recorded_spectral_<preset>_<amplitudes>.h5` (one per spectral
@@ -298,7 +312,7 @@ device must be present (a harness predating it cannot show which device
 ran), an integer index under gpu=1 and NA under gpu=0; a table-fed run must
 carry the file's column digests in its `/turn_modulation` provenance. A run
 that cannot show this is an error, not a row.
-Estimators (plan, section 2) from `read(TaskOutput(path), :moments; name =
+Estimators (the theory note's section 7) from `read(TaskOutput(path), :moments; name =
 "weak_beam")` -- the means `m100000`, `m010000` and the CENTRAL second
 moments `m200000`, `m110000`, `m020000` (vertical `m001000`, `m000100`,
 `m002000`, `m001100`, `m000200`), one row per recorded turn:
@@ -325,8 +339,13 @@ Artifacts go to `artifact_dir` (pass a local disk: per-turn observer writes
 on a networked filesystem are the dominant cost) and are copied under
 `<out>/artifacts/`.
 
-PART `sweep` (the plan's section 4, 14 runs plus the optional C3; every
-case radiation off, moment step 1; `cases=` selects and orders them):
+PART `sweep` (the theory note's section 7 sweep table: 17 runs by default,
+every row but the optional C3 in the order of `SWEEP_CASES`; every case
+radiation off, moment step 1; `cases=` selects and orders them. Until
+2026-10-22 the default order was a hand-typed list of 14 that omitted A05, A2
+and A4s, so a default sweep could not deliver acceptance item 2 for amplitude
+noise and `report` ended PASS on 49 checks instead of 60 -- audit
+F-209/U40-12, fix batch 4 D13):
     B0  none                       kbb 1 chrom 2,2  T        baseline
     W1 W2 W3  phase white s=1,2,4  kbb 1 chrom 2,2  T        rates, exponent
     P1  phase pink (16 octaves)    kbb 1 chrom 2,2  T_pink   pink/white
@@ -347,7 +366,7 @@ skipped, a case whose log already holds a CRAB-NOISE line and whose artifact
 exists is re-read (fits recomputed) without re-running, anything else runs.
 T1's table file is built by `tablefile` when missing.
 
-PART `report`: the plan's acceptance (section 5) on a sweep TSV, each item
+PART `report`: the theory note's section 7 acceptance on a sweep TSV, each item
 PASS/FAIL with its number and tolerance, rates baseline-subtracted (B0 for
 the colliding runs, C0 for the kbb = 0 chrom 0 controls):
  (1) W1, W2, W3, A05, A1, A2, T2, AT1 horizontal J_raw rates within a
@@ -402,7 +421,11 @@ strong beam (C1) or under horizontal amplitude noise without the strong beam
 (C2). The
 reference numbers are arguments with the theory note's section 6 values as
 defaults; no verdict uses a constant that is not printed.
-Prints `CRAB-NOISE-REPORT checks=.. failed=.. verdict=PASS|FAIL`; exit 1 on FAIL.
+Prints `CRAB-NOISE-REPORT checks=.. failed=.. not_evaluated=.. verdict=PASS|FAIL`,
+`not_evaluated` counting the NOTE lines (an item whose cases or artifacts the
+TSV lacks is a visible skip in the summary line, not a silent absence from
+`checks`; a TSV of the 14-case default order of before 2026-10-22 reports `checks=49 not_evaluated=5` against `checks=60 not_evaluated=0`);
+exit 1 on FAIL.
 
 PART `control` (acceptance 6, the sharp linear check): with kbb = 0 and
 chromaticity 0 every map the centroid meets is linear or composes to the
@@ -465,11 +488,70 @@ end
 # set (comprehensive audit 2026-10-18, F-207). The set of known keys is DERIVED
 # from the reads, not listed: a new `opt(...)` is known the moment it is written.
 const OPTS_CONSUMED = Set{String}()
-opt(key, default) = (push!(OPTS_CONSUMED, key); get(OPTS, key, default))
+# Every default a part reads is recorded with its key (`OPTS_DEFAULTS`), so the
+# header's usage line can be held to the code (`assert_header_defaults`).
+const OPTS_DEFAULTS = Dict{String,String}()
+opt(key, default) = (push!(OPTS_CONSUMED, key); OPTS_DEFAULTS[key] = string(default); get(OPTS, key, default))
 opt_int(key, default) = parse(Int, opt(key, string(default)))
 opt_float(key, default) = parse(Float64, opt(key, string(default)))
 has_opt(key) = (push!(OPTS_CONSUMED, key); haskey(OPTS, key))
+# The header's usage lines, parsed from this file's own text: per part, the
+# documented keys in order, each with its documented default or `nothing` for
+# a `<placeholder>` (a required argument before the bracket, a path, `<none>`).
+const HEADER_USAGE = let text = read(@__FILE__, String)
+    usage = Dict{String,Vector{Pair{String,Union{Nothing,String}}}}()
+    for m in eachmatch(r"^\s*julia --project=\. validation/crab_cavity_noise_response\.jl (\w+)\s+(.*)$"m, text)
+        part, rest = String(m.captures[1]), String(m.captures[2])
+        entries = Pair{String,Union{Nothing,String}}[]
+        for tok in split(split(rest, '[')[1])
+            kv = match(r"^(\w+)=(.*)$", tok)
+            kv === nothing || push!(entries, String(kv.captures[1]) => nothing)
+        end
+        bracket = match(r"\[(.*)\]", rest)
+        if bracket !== nothing
+            for tok in split(bracket.captures[1])
+                kv = match(r"^(\w+)=(.*)$", tok)
+                kv === nothing && error("header usage token $(repr(tok)) of part $(part) is not key=value")
+                v = String(kv.captures[2])
+                push!(entries, String(kv.captures[1]) => (occursin('<', v) ? nothing : v))
+            end
+        end
+        usage[part] = entries
+    end
+    usage
+end
+# The header is the only copy of the defaults a reader sees, and until
+# 2026-10-22 nothing held it to the code: the report's four reference numbers
+# lived there and at their `opt_float` calls (fix batch 4, D13). Each part's
+# documented `key=value` must equal the default its code supplied (numerically
+# when both parse as numbers), every documented key must be read by the part,
+# and every key the part reads with a default must be documented.
+function assert_header_defaults(part)
+    haskey(HEADER_USAGE, part) || error("the header documents no usage line for part $(part)")
+    entries = HEADER_USAGE[part]
+    documented = Set(first.(entries))
+    problems = String[]
+    for (key, value) in entries
+        (value === nothing || !haskey(OPTS_DEFAULTS, key)) && continue
+        code = OPTS_DEFAULTS[key]
+        hv, cv = tryparse(Float64, value), tryparse(Float64, code)
+        same = value == code || (hv !== nothing && cv !== nothing && hv == cv)
+        same || push!(problems, "$(key): header $(value), code $(code)")
+    end
+    for key in sort!(collect(setdiff(documented, OPTS_CONSUMED)))
+        push!(problems, "$(key): documented in the header, read by nothing in part $(part)")
+    end
+    for key in sort!(collect(setdiff(keys(OPTS_DEFAULTS), documented)))
+        push!(problems, "$(key): read with default $(repr(OPTS_DEFAULTS[key])), absent from the header's usage line")
+    end
+    isempty(problems) || error("part $(part): the header's usage line and the code disagree -- " *
+                               join(problems, "; ") * ". The header is held to the code at load; change both together.")
+    n_defaults = count(e -> e.second !== nothing, entries)
+    println("options: part $(part) reads $(length(OPTS_CONSUMED)) keys; the header's $(n_defaults) documented defaults equal the code's")
+    return nothing
+end
 function assert_options_consumed(part)
+    assert_header_defaults(part)
     unread = sort!(collect(setdiff(keys(OPTS), OPTS_CONSUMED)))
     isempty(unread) && return nothing
     error("part $(part) does not read the override key(s) $(join(unread, ", ")): a key " *
@@ -765,7 +847,11 @@ function run_noise_part()
     @printf("  pink rms VERDICT band at %d turns: rms/sigma within [%.4f, %.4f] (two-sided 99 %%: the 0.5 %% and 99.5 %% quantiles over %d synthetic streams; mean %.4f, sd %.4f, formula %.4f)\n\n",
             N_LONG, pink_band[1], pink_band[2], rms_streams, mean(pink_rms_long_mc), std(pink_rms_long_mc), pink_rms_one_sigma(PINK_OCTAVES, N_LONG))
     pink_rows = String[]
-    push!(pink_rows, join(["cavity", "slot", "band", "bins", "measured", "ref_mean_log2", "ref_sd_log2", "z", "trusted"], '\t'))
+    # `judged`: exactly the bands the chi-square below sums (the trusted bands
+    # below the normaliser). The normaliser's z is 0/0 = NaN -- a zero deviation
+    # over a zero sd -- and the column, named `trusted`, flagged it true until
+    # 2026-10-22 (audit F-209/U40-14).
+    push!(pink_rows, join(["cavity", "slot", "band", "bins", "measured", "ref_mean_log2", "ref_sd_log2", "z", "judged"], '\t'))
 
     checks = 0
     failed = 0
@@ -871,7 +957,7 @@ function run_noise_part()
                 if is_pink
                     z = (log2.(bands) .- pink_mu) ./ pink_sd
                     for i in eachindex(bands)
-                        push!(pink_rows, join([cav, label, i, bins[i], bands[i], pink_mu[i], pink_sd[i], z[i], i >= first_trusted], '\t'))
+                        push!(pink_rows, join([cav, label, i, bins[i], bands[i], pink_mu[i], pink_sd[i], z[i], first_trusted <= i < length(bands)], '\t'))
                     end
                     zt = z[first_trusted:end-1]
                     Q = sum(abs2, zt)
@@ -1177,8 +1263,13 @@ end
 
 # ---------------------------------------------------------------------------
 # The subprocess driver and the fits (parts `tablefile`, `pilot`, `sweep`).
-# Design: docs/theory/crab_cavity_noise_response.md section 7 and the
-# campaign plan (result/crab_noise/D1/plan.md, committed with the record).
+# Design: docs/theory/crab_cavity_noise_response.md section 7 (the plan this
+# script executes: estimators, sizing, the sweep table, the acceptance list)
+# and the measured records docs/history/crab_cavity_noise_validation_2026_10_14.md
+# and docs/history/crab_cavity_noise_relative_strength_2026_10_15.md. (Until
+# 2026-10-22 this comment pointed at `result/crab_noise/D1/plan.md` "committed
+# with the record": `result/` is git-ignored and no plan file is in the
+# repository; audit F-209/U40-10.)
 # ---------------------------------------------------------------------------
 const HARNESS = joinpath(ROOT, "test", "examples", "crab_cavity_noise.jl")
 const BETA_STAR = (x = BETA_X_STAR, y = 0.072)
@@ -1195,8 +1286,9 @@ const FIT_FIELDS = vcat(["n_rows", "n_window", "t_first", "t_last", "n0"],
                         ["lumi_rows", "lumi_mean_fit", "lumi_trend", "lumi_trend_se"])
 const TSV_HEADER = join(vcat(["id", "case", "artifact_copy", "table_file", "load_at_launch"], RECEIPT_FIELDS, FIT_FIELDS), '\t')
 
-# The sweep of the plan (section 4): id, rule, scale, whether the phase and
-# the strength rules are active, kbb_scale, chromaticity, the turn class.
+# The sweep of the theory note's section 7 table: id, rule, scale, whether the
+# phase and the strength rules are active, kbb_scale, chromaticity, the turn
+# class.
 # `phase = 0` sends OCTOPUS_PHASE_RMS=0 (no phase rule), `strength = 0`
 # OCTOPUS_STRENGTH_REL_RMS=0. T1 is the table fed with W1's realised draws.
 const SWEEP_CASES = (
@@ -1219,7 +1311,16 @@ const SWEEP_CASES = (
     (id = "T1", rule = "table", scale = 1.0, phase = 1, strength = 0, kbb = 1.0, chrom = "2,2", tkind = :T, table = true),
     (id = "C3", rule = "white", scale = 1.0, phase = 1, strength = 0, kbb = 0.0, chrom = "2,2", tkind = :T, table = false),
 )
-const SWEEP_DEFAULT_ORDER = "B0,W1,A1,W2,W3,P1,T2,A4,AP1,AT1,C0,C1,C2,T1"
+# The default `cases=` order is DERIVED from the table: every row but the
+# optional C3, in the table's order (B0 first, the baseline every colliding
+# rate is subtracted against; T1 last, after W1 whose realised draws feed its
+# table file). Until 2026-10-22 it was a hand-typed list of 14 that omitted
+# A05, A2 and A4s, so a default sweep could not deliver acceptance item 2 for
+# amplitude noise or the A05 and A2 rate items, and `report` ended PASS on 49
+# checks instead of 60 with three NOTE lines (2026-10-18 comprehensive audit,
+# F-209/U40-12; fix batch 4, D13). The header's `cases=` list is held to this
+# string at load (`assert_header_defaults`).
+const SWEEP_DEFAULT_ORDER = join([c.id for c in SWEEP_CASES if c.id != "C3"], ",")
 
 tag_num(s) = replace(string(s), "." => "p", "-" => "m")
 sweep_case_name(c, turns, n_macro) =
@@ -1700,9 +1801,24 @@ function run_sweep_part()
 end
 
 # ---------------------------------------------------------------------------
-# Part `report`: the plan's acceptance on a sweep TSV (plus the T1 == W1
+# Part `report`: the theory note's acceptance on a sweep TSV (plus the T1 == W1
 # artifact comparison, which reads the two artifacts).
 # ---------------------------------------------------------------------------
+# The theory note's reference numbers, declared ONCE: section 6 (the
+# production-point rates per turn at s = 1, relative to the plane's emittance)
+# and section 5.2 (the pink-to-white PSD ratios averaged over the tune bands).
+# `report` reads its `ref_*` defaults here, the header's usage line is held to
+# this table at load (`assert_header_defaults`), and the suite holds the table
+# to the note's own text (testset "Elements and scripts follow-ups", part 4b).
+# Until 2026-10-22 the four numbers were typed in the header and again at
+# their `opt_float` calls, with nothing holding either to the note (fix batch
+# 4 of the 2026-10-18 audit, D13).
+const REPORT_REFERENCE_DEFAULTS = (
+    ref_phase_white_x = 1.72e-7,    # section 6: phase WhiteNoise, sigma_phi = 10 urad, x
+    ref_amp_white_x = 1.10e-6,      # section 6: amplitude WhiteNoise, sigma_A = 1e-4 relative, x
+    ref_pink_ratio_x = 0.15,        # section 5.2: rho_bar_x over the horizontal tune band
+    ref_pink_ratio_y = 0.17,        # section 5.2: rho_bar_y over the vertical tune band
+)
 # The beam-beam parameter of the weak beam at the IP from the strong beam's
 # sizes, xi = N r_p beta* / (2 pi gamma sigma (sigma_x + sigma_y)).
 function beam_beam_xi()
@@ -1789,16 +1905,17 @@ end
 function run_report_part()
     tsv = opt("tsv", "")
     isempty(tsv) && error("report needs tsv=<sweep tsv>")
-    # Reference numbers (docs/theory/crab_cavity_noise_response.md section 6)
-    # and tolerances (section 7), every one overridable.
+    # Reference numbers (docs/theory/crab_cavity_noise_response.md sections 6
+    # and 5.2, declared once in REPORT_REFERENCE_DEFAULTS) and tolerances
+    # (section 7), every one overridable.
     has_opt("ref_amp_white_y") && error(
         "ref_amp_white_y is retired (2026-10-15): the relative strength rule leaves strengthY = 0, so there is " *
         "no both-planes vertical prediction; the vertical rate under amplitude noise is the beam-beam coupling " *
         "alone (INFO) and C2 must show none without beam-beam (7)")
-    ref = (phase_white_x = opt_float("ref_phase_white_x", 1.72e-7),
-           amp_white_x = opt_float("ref_amp_white_x", 1.10e-6),
-           pink_ratio_x = opt_float("ref_pink_ratio_x", 0.15),
-           pink_ratio_y = opt_float("ref_pink_ratio_y", 0.17),
+    ref = (phase_white_x = opt_float("ref_phase_white_x", REPORT_REFERENCE_DEFAULTS.ref_phase_white_x),
+           amp_white_x = opt_float("ref_amp_white_x", REPORT_REFERENCE_DEFAULTS.ref_amp_white_x),
+           pink_ratio_x = opt_float("ref_pink_ratio_x", REPORT_REFERENCE_DEFAULTS.ref_pink_ratio_x),
+           pink_ratio_y = opt_float("ref_pink_ratio_y", REPORT_REFERENCE_DEFAULTS.ref_pink_ratio_y),
            y_over_x_phase = has_opt("ref_y_over_x_phase") ? opt_float("ref_y_over_x_phase", 0.0) : nothing)
     tol_rate = opt_float("tol_rate", 1.25)
     tol_exp = opt_float("tol_exp", 0.1)
@@ -1821,7 +1938,12 @@ function run_report_part()
         ok || (failed += 1)
         println("  ", ok ? "PASS" : "FAIL", "  ", rpad(label, 50), value, "   (", tol, ")")
     end
-    note(msg) = println("  NOTE  ", msg)
+    # Every NOTE is an item the TSV could not deliver (a case or an artifact
+    # copy missing): counted and printed in the summary line as
+    # `not_evaluated`, so an unrun item is a visible skip rather than a smaller
+    # `checks` (2026-10-18 audit, F-209/U40-12).
+    notes = 0
+    note(msg) = (notes += 1; println("  NOTE  ", msg))
     println("crab cavity noise, part report on ", tsv, " (", length(rows), " rows: ", join(sort(collect(keys(byid))), ", "), ")")
     println("reference rates per turn at scale 1 (relative d<J_raw>/dn): phase white x $(ref.phase_white_x); amplitude white x $(ref.amp_white_x) (y: none -- the relative strength rule leaves strengthY = 0, so the vertical response is the beam-beam coupling alone, INFO); pink/white $(ref.pink_ratio_x) (x), $(ref.pink_ratio_y) (y); scaling s^2")
 
@@ -1870,10 +1992,15 @@ function run_report_part()
     within_factor("W3", :x, 16ref.phase_white_x, "W3 phase white x (s = 4)")
     within_factor("A1", :x, ref.amp_white_x, "A1 amplitude white x")
     within_factor("A05", :x, 0.25ref.amp_white_x, "A05 amplitude white x (s = 0.5)")
-    within_factor("A2", :x, 4ref.amp_white_x, "A2 amplitude white x (s = 2, 25000 turns)")
-    for (id, T) in (("A4s", 12500), ("A4", 25000))
+    # The turn counts in these labels are the ROWS' own `turns`: typed defaults
+    # (25000, 12500) mislabelled a `turns_a4=` or `turns_a4s=` sweep until
+    # 2026-10-22 (audit F-209/U40-13).
+    within_factor("A2", :x, 4ref.amp_white_x,
+                  "A2 amplitude white x (s = 2" * (haskey(byid, "A2") ? ", $(byid["A2"]["turns"]) turns)" : ")"))
+    for id in ("A4s", "A4")
         haskey(byid, id) || continue
         r = byid[id]
+        T = r["turns"]
         (m, se) = rates[(id, :x)]
         growth = m * (num(r, "t_last") - num(r, "t_first"))
         @printf("  INFO  %-50s measured %+.3e, predicted %.3e, ratio %.3f; halves %+.3e/%+.3e (first/second %.3f), luminosity trend %+.2e per turn; growth %.0f %% over the window: the small-growth regime's edge, decelerating (INFO; the exponent uses A05, A1, A2)\n",
@@ -1985,7 +2112,9 @@ function run_report_part()
     println()
     println("(5) beam-beam on: eps_c slope >= $(tol_epsc_frac) of the J_raw slope; J_c mean over the second half < $(100tol_jc_frac) % of the total growth; (8) halves within $(100tol_halves) % of the rate, residual rms < $(100tol_resid) % of the growth (white drives; for the pink runs these two are INFO, see (8b))")
     for id in ("W1", "W2", "W3", "P1", "T1", "T2", "A05", "A1", "A2", "AP1", "AT1", "A4s", "A4")
-        haskey(byid, id) || continue
+        # A verdict-carrying case the TSV lacks is a NOTE (counted as
+        # not_evaluated), not a silent `continue`; A4 and A4s are INFO rows.
+        haskey(byid, id) || (id in ("A4", "A4s") || note("$(id) missing: its eps_c/J_raw, J_c and fit-quality items not checked"); continue)
         r = byid[id]
         is_pink = r["rule"] == "pink"
         is_info = id in ("A4", "A4s")
@@ -2097,7 +2226,7 @@ function run_report_part()
                 rate(r, "epsc", :x; sub = false)[1], rate(r, "jraw", :x; sub = false)[1], num(r, "jc_mean_x") / EPS_DESIGN.x, num(r, "jc_max_x") / EPS_DESIGN.x)
     end
     println()
-    println("CRAB-NOISE-REPORT checks=$(checks) failed=$(failed) verdict=$(failed == 0 ? "PASS" : "FAIL")")
+    println("CRAB-NOISE-REPORT checks=$(checks) failed=$(failed) not_evaluated=$(notes) verdict=$(failed == 0 ? "PASS" : "FAIL")")
     failed == 0 || exit(1)
 end
 

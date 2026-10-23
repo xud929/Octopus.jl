@@ -666,13 +666,17 @@ itself (2026-10-16 neighbour audit, U7-3 and U7-4):
    (1.128e-8 m horizontal, 1.004e-9 m vertical); the luminosity's mean and
    relative trend over the same window. `pilot` calibrates (white at scale
    100 and 30, the baseline drift, a `kbb = 0` case, the ms per turn at the
-   sweep's size and the projected wall clock); `sweep` runs the theory
-   note's cases B0, W1-W3, P1, T1, T2, A1, A4, AP1, AT1, C0, C1, C2 by
-   default and, on request through `cases=`, the amplitude-arm cases A05, A2
-   and A4s that the report's items 1 and 2 read and the optional C3 (1e5
-   turns, 2^17 for the pink runs, 2.5e4 for A4 and A2, 1.25e4 for A4s; 1e6
-   macroparticles; radiation off; moment step 1), one TSV row per case,
-   resumable. Part `tablefile` writes W1's realised offsets as the harness's
+   sweep's size and the projected wall clock); `sweep` runs every row of the
+   theory note's section 7 sweep table by default -- B0, W1-W3, P1, T2, A4,
+   A4s, A2, A05, AP1, AT1, C0, C1, C2, T1, the order of the script's
+   `SWEEP_CASES` from which the default `cases=` list is derived -- and the
+   optional C3 on request through `cases=` (1e5 turns, 2^17 for the pink
+   runs, 2.5e4 for A4 and A2, 1.25e4 for A4s; 1e6 macroparticles; radiation
+   off; moment step 1), one TSV row per case, resumable. Until 2026-10-22 the
+   default was a hand-typed list of 14 without A05, A2 and A4s, so a default
+   sweep could not deliver acceptance item 2 for amplitude noise and `report`
+   ended PASS on 49 checks instead of 60 (comprehensive audit 2026-10-18,
+   F-209/U40-12; fix batch 4, D13). Part `tablefile` writes W1's realised offsets as the harness's
    `OCTOPUS_TABLE_FILE` for T1 (exact Float64 round-trip, FNV-1a digests
    printed); part `control` is the sharp linear check of C1, the recorded
    centroid against the realisation-aware prediction propagated through the
@@ -697,7 +701,20 @@ itself (2026-10-16 neighbour audit, U7-3 and U7-4):
    residual rms below 5 % of the growth). The falsifiers are printed by name
    when they trigger; no verdict uses a constant that is not printed
    (brought current 2026-10-22 with the script's `report` header; audit
-   F-208).
+   F-208). The four reference numbers are declared once, in the script's
+   `REPORT_REFERENCE_DEFAULTS` (the note's sections 6 and 5.2); the header's
+   usage lines are held to the code at load -- every part compares each
+   documented `key=value` default with the one its code supplied and refuses
+   a disagreement, a documented key it does not read or a read key the header
+   omits, printing a receipt line (`options: part report reads 18 keys; the
+   header's 14 documented defaults equal the code's`) -- and the suite holds
+   the declaration to the note's own text and the header's `cases=` list to
+   the sweep table (testset "Elements and scripts follow-ups", part 4b; fix
+   batch 4, D13). The summary line counts the items a TSV could not deliver:
+   `CRAB-NOISE-REPORT checks=60 failed=0 not_evaluated=0 verdict=PASS` on
+   the 2026-10-15 sweep (S0B, 18 rows) and `checks=49 failed=0
+   not_evaluated=5 verdict=PASS` on the same TSV cut to the former
+   14-case default (fix batch 4 receipts, `result/fix_batch4_2026_10_22/probes/VA/`).
 
 Run from the project root (`artifact_dir` should be a local disk: the
 per-turn observer write on a networked filesystem dominates a long run):
@@ -718,8 +735,13 @@ and `noise_recorded_spectral_<preset>_<amplitudes>.h5` from `noise`;
 `W1_realised_offsets*.tsv` from `tablefile`; `pilot.tsv`, `sweep_<tag>.tsv`
 and `control_<case>_centroid.tsv`, the subprocess logs under `logs/` and the
 artifact copies under `artifacts/`. Each judging part ends with one
-machine-readable line (`CRAB-NOISE-RULES`, `CRAB-NOISE-REPORT`,
-`CRAB-NOISE-CONTROL`, each `... verdict=PASS|FAIL`) and exits 1 on any FAIL.
+machine-readable line (`CRAB-NOISE-RULES`, `CRAB-NOISE-REPORT` with its
+`not_evaluated` count, `CRAB-NOISE-CONTROL`, each `... verdict=PASS|FAIL`) and
+exits 1 on any FAIL. In `noise_pink_bands.tsv` the column `judged` marks
+exactly the bands the pink band-shape chi-square sums (the trusted bands below
+the normaliser, whose own z is NaN: a zero deviation over a zero sd); it was
+named `trusted` and flagged the normaliser too until 2026-10-22 (audit
+F-209/U40-14).
 The committed record with the measured numbers is
 `docs/history/crab_cavity_noise_validation_2026_10_14.md`.
 

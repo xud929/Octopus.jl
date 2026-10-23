@@ -11991,6 +11991,48 @@ struct _FixGSubjectOp{E} <: Octopus.AbstractTrackOp; subject::E; end
     @test harness_has == map(_ -> true, harness_has)
     @test validation_has == map(_ -> true, validation_has)
 
+    # (4b) Fix batch 4 (2026-10-22; D13, F-209/U40-12): the crab script's
+    # reference numbers are declared once (`REPORT_REFERENCE_DEFAULTS`) and the
+    # script holds its own header to them at load, but CI never runs the
+    # script, so the suite holds the declaration to the theory note's text --
+    # section 6's production-point rates and section 5.2's tune-band pink
+    # ratios, parsed from the note's own table and sentence -- and the header's
+    # default `cases=` list to the sweep table's rows (every id but the
+    # optional C3, in the table's order), the derivation spelled as the script
+    # spells it.
+    note = read(joinpath(root, "docs", "theory", "crab_cavity_noise_response.md"), String)
+    defaults_block = match(r"const REPORT_REFERENCE_DEFAULTS = \((.*?)\n\)"s, validation)
+    @test defaults_block !== nothing
+    script_ref(key) = (m = defaults_block === nothing ? nothing :
+                           match(Regex(key * "\\s*=\\s*([0-9.eE+-]+)"), defaults_block.captures[1]);
+                       m === nothing ? nothing : parse(Float64, m.captures[1]))
+    note_rate(row) = (m = match(row, note);
+                      m === nothing ? nothing : parse(Float64, m.captures[1]) * 10.0^parse(Int, m.captures[2]))
+    note_ratio(plane) = (m = match(Regex("\\\\bar\\\\rho_" * plane * " \\\\approx ([0-9.]+)"), note);
+                         m === nothing ? nothing : parse(Float64, m.captures[1]))
+    crab_refs = (ref_phase_white_x = (script_ref("ref_phase_white_x"),
+                                      note_rate(r"\| phase, [^|\n]*\| white \| \$x\$ \| \$([0-9.]+)\\times10\^\{(-?\d+)\}\$")),
+                 ref_amp_white_x = (script_ref("ref_amp_white_x"),
+                                    note_rate(r"\| amplitude, [^|\n]*\| white \| \$x\$ \| \$([0-9.]+)\\times10\^\{(-?\d+)\}\$")),
+                 ref_pink_ratio_x = (script_ref("ref_pink_ratio_x"), note_ratio("x")),
+                 ref_pink_ratio_y = (script_ref("ref_pink_ratio_y"), note_ratio("y")))
+    for (name, (code, doc)) in pairs(crab_refs)
+        @testset let reference = name, script_value = code, note_value = doc
+            @test script_value !== nothing && note_value !== nothing
+            @test script_value !== nothing && note_value !== nothing &&
+                  isapprox(script_value, note_value; rtol=1e-9)
+        end
+    end
+    sweep_block = match(r"const SWEEP_CASES = \((.*?)\n\)"s, validation)
+    header_cases = match(r"sweep\s+tag=<tag> \[cases=([A-Za-z0-9,]+) ", validation)
+    @test sweep_block !== nothing && header_cases !== nothing
+    if sweep_block !== nothing && header_cases !== nothing
+        ids = [String(m.captures[1]) for m in eachmatch(r"\(id = \"([A-Za-z0-9]+)\"", sweep_block.captures[1])]
+        @test length(ids) >= 17 && "C3" in ids          # the note's sweep table and its optional row
+        @test header_cases.captures[1] == join(filter(!=("C3"), ids), ",")
+        @test occursin("const SWEEP_DEFAULT_ORDER = join([c.id for c in SWEEP_CASES if c.id != \"C3\"], \",\")", validation)
+    end
+
     # (5) U6-6: the default seed is one constant per MPI-capable harness,
     # derived by the MPI testset from the harness's text; the suite's own
     # text no longer carries the copy.
