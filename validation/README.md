@@ -302,7 +302,23 @@ the vectors and one driver under test.
 
 The moment tolerances scale as `1/sqrt(N)` (6σ), so every `N` below is a valid
 run; they were fixed constants calibrated to `N = 1e6` and failed a healthy
-generator at the smaller `N` this file recommends (U25-3).
+generator at the smaller `N` this file recommends (U25-3). Every bound is six
+sigma of the statistic's own sampling sd and is printed beside the value: the
+means and correlations `1/sqrt(N)`, the normal variance `sqrt(2/N)`, the
+uniform variance `sqrt((mu_4 - sigma^4)/N) = 1/sqrt(180 N)` (mu_4 = 1/80,
+sigma^2 = 1/12), and the three tail fractions `P(|N| > 2, 3, 4)` their
+binomial sd `sqrt(p (1 - p)/N)` with `p` from the package's normal CDF. Until
+2026-10-22 the uniform-variance bound was the normal-case `sqrt(2/N)` scaled by
+the variance -- 1.58 times too loose, a 9.5-sigma gate called six -- and the
+tail fractions were printed "expected about ..." and never judged, so a
+generator with clipped tails passed (comprehensive audit 2026-10-18, F-209:
+U40-6, U40-7). Receipt, fix batch 4 at `N = 200000`: `counter RNG validation
+passed` with the uniform variance `0.083248` against `1/12` within `1.0e-3`
+and the tails `0.04548 / 0.002615 / 4.0e-5` against `0.04550 / 0.00270 /
+6.33e-5` within their bounds; the same run with the normal generator clipped
+at `|x| <= 3` FAILS the two outer tails (the pre-fix script passed it), and
+with the uniform variance inflated by 1.6 % FAILS the variance bound at
+`1.25e-3` against `1.0e-3` (the pre-fix bound was `1.58e-3`; it passed).
 
 Run the default one-million-sample check:
 
@@ -489,10 +505,17 @@ fit averages); the pink sequence's rms about zero for `sigma = 1` lies in
 independent unit normals, so the expectation of `rms^2` is exactly 1 at any
 length, but the slow generators take one or two values in a run and the
 sample rms of one run scatters with a one-sigma of 7.6 % at 65536 turns and
-13.8 % at 16384, `Var[rms^2] = (2/(K^2 N)) sum_k 2^k (2K - 1 - 2k)`, with a
-heavy upper tail -- Monte Carlo over 2048 streams: 0.6 % of streams fall
-outside the band at 65536 turns and 5.9 % at 16384; measured `0.9054` at
-65536 turns and `0.8799` at 16384, both deterministic at seed 42); and the
+14.7 % at 16384, `Var[rms^2] = (2/(K^2 N)) sum_k min(2^k, N) (2K - 1 - 2k)`
+-- the `min` because a generator slower than the run holds one value; with
+`2^k` alone the form is valid while `2^(K-1) <= N` and reads 15.3 % at 16384,
+and the "13.8 %" written here, in the script's header and in the suite's twin
+until 2026-10-22 was the value of neither (audit F-209/U40-8) -- with a heavy
+upper tail; the rms distribution is skewed, so half the sd of `rms^2`
+overstates it: Monte Carlo over 8192 synthetic streams gives 13.3 % at 16384
+(`result/fix_batch4_2026_10_22/probes/VA/probe_pink_rms_sigma.log`) and 5.6 %
+of streams outside the band (0.6 % at 65536 turns, 2048 streams, 2026-10-13);
+measured `0.9054` at 65536 turns and `0.8799` at 16384, both deterministic at
+seed 42); and the
 pink offset on one turn computed alone from a fresh compile equals the
 sequence's entry exactly. Beside the rms the script prints the sample
 standard deviation about the run's mean with its expectation

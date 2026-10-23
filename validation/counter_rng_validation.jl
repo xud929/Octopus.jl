@@ -43,6 +43,16 @@ What each half of this script can and cannot detect (2026-08-05_b audit, U25-2):
 The moment checks remain useful for what they are: they catch a driver that
 mis-maps counters onto the block function, which a known-answer vector on the
 block alone would not see. Neither half is a full statistical test suite.
+
+Every bound is SIX SIGMA of the statistic's own sampling sd at the run's N and
+is printed beside the value: the means and correlations 1/sqrt(N) (the uniform
+mean over sqrt(12)), the normal variance sqrt(2/N), the uniform variance
+sqrt((mu_4 - sigma^4)/N) = 1/sqrt(180 N), and the three tail fractions
+P(|N| > 2, 3, 4) their binomial sd sqrt(p (1 - p)/N), with p from the
+package's own normal CDF. Until 2026-10-22 the uniform-variance bound was the
+normal-case sqrt(2/N) scaled by the variance (1.58 times too loose) and the
+tail fractions were printed, never judged (2026-10-18 comprehensive audit,
+F-209: U40-6, U40-7).
 =#
 
 N = parse(Int, get(ENV, "OCTOPUS_RNG_VALIDATION_N", "1000000"))
@@ -84,6 +94,10 @@ corr_neighbor = cor(samples[1:end-1], samples[2:end])
 tail2 = count(x -> abs(x) > 2, samples) / N
 tail3 = count(x -> abs(x) > 3, samples) / N
 tail4 = count(x -> abs(x) > 4, samples) / N
+tails = Dict(2 => tail2, 3 => tail3, 4 => tail4)
+# The expected two-sided tail fractions P(|N| > k) = 2 (1 - Phi(k)) of a unit
+# normal, from the package's own normal CDF rather than three typed constants.
+tail_expected = Dict(k => 2 * (1 - Octopus._snorm_cdf(float(k))) for k in (2, 3, 4))
 
 repro_ok = normal_value(seed, turn, rng_id, 123, 4, Float64) ==
            normal_value(seed, turn, rng_id, 123, 4, Float64)
@@ -91,25 +105,6 @@ stream_sep = normal_value(seed, turn, rng_id, 123, 4, Float64) !=
              normal_value(seed, turn, rng_id + 1, 123, 4, Float64)
 turn_sep = normal_value(seed, turn, rng_id, 123, 4, Float64) !=
            normal_value(seed, turn + 1, rng_id, 123, 4, Float64)
-
-println("Counter RNG validation")
-println("N = ", N)
-println("seed = ", seed)
-println("turn = ", turn)
-println("rng_id = ", rng_id)
-println("backend = ", backend)
-println("normal mean = ", mean_normal)
-println("normal variance = ", var_normal)
-println("uniform mean = ", mean_uniform)
-println("uniform variance = ", var_uniform)
-println("corr(normal component 1, component 2) = ", corr_pair)
-println("corr(neighbor particles, component 1) = ", corr_neighbor)
-println("P(|N| > 2) = ", tail2, " expected about 0.0455003")
-println("P(|N| > 3) = ", tail3, " expected about 0.0026998")
-println("P(|N| > 4) = ", tail4, " expected about 6.334e-5")
-println("reproducible same counter = ", repro_ok)
-println("different rng_id separates stream = ", stream_sep)
-println("different turn separates stream = ", turn_sep)
 
 # Tolerances SCALE with N, because the statistics they bound do.
 #
@@ -129,15 +124,52 @@ sigma_corr = 1 / sqrt(N)                 # sd of a correlation at rho = 0
 tol_mean_normal = 6 * sigma_mean
 tol_var_normal = 6 * sigma_var
 tol_mean_uniform = 6 * sigma_mean / sqrt(12)      # uniform sd is 1/sqrt(12)
-tol_var_uniform = 6 * (1 / 12) * sqrt(2 / N)      # scaled by the uniform variance
+# The sd of a sample variance is sqrt((mu_4 - sigma^4)/N) for ANY distribution;
+# for U(0, 1) mu_4 = 1/80 and sigma^2 = 1/12, so it is sqrt(1/(180 N)) =
+# 0.0745/sqrt(N). Until 2026-10-22 this line read `6 * (1/12) * sqrt(2/N)`
+# (0.1179/sqrt(N) per sigma): the NORMAL-case sqrt(2/N) scaled by the uniform
+# variance, which the comment presented as the derivation; 1.58 times too
+# loose, so the "6 sigma" gate on the uniform variance was a 9.5-sigma gate
+# (2026-10-18 comprehensive audit, F-209/U40-6).
+sigma_var_uniform = sqrt((1 / 80 - 1 / 144) / N)
+tol_var_uniform = 6 * sigma_var_uniform
 tol_corr = 6 * sigma_corr
+# A tail fraction is a binomial proportion with sd sqrt(p (1 - p)/N); the same
+# six sigma. Until 2026-10-22 the three fractions were printed "expected about
+# ..." and never entered `ok`, although the header counted them among the
+# moment checks: a generator with clipped or inflated tails (a truncated
+# inverse CDF, a Box-Muller with a bad logarithm) passed this script
+# (F-209/U40-7).
+tol_tail(p) = 6 * sqrt(p * (1 - p) / N)
 
+println("Counter RNG validation")
+println("N = ", N)
+println("seed = ", seed)
+println("turn = ", turn)
+println("rng_id = ", rng_id)
+println("backend = ", backend)
+println("normal mean = ", mean_normal, "   (|.| <= ", tol_mean_normal, ": 6 sigma of 1/sqrt(N))")
+println("normal variance = ", var_normal, "   (|. - 1| <= ", tol_var_normal, ": 6 sigma of sqrt(2/N))")
+println("uniform mean = ", mean_uniform, "   (|. - 1/2| <= ", tol_mean_uniform, ": 6 sigma of 1/sqrt(12 N))")
+println("uniform variance = ", var_uniform, "   (|. - 1/12| <= ", tol_var_uniform, ": 6 sigma of sqrt((mu_4 - sigma^4)/N) = 1/sqrt(180 N))")
+println("corr(normal component 1, component 2) = ", corr_pair, "   (|.| <= ", tol_corr, ": 6 sigma of 1/sqrt(N))")
+println("corr(neighbor particles, component 1) = ", corr_neighbor, "   (|.| <= ", tol_corr, ")")
+for k in (2, 3, 4)
+    println("P(|N| > ", k, ") = ", tails[k], "   (expected ", tail_expected[k], ", |. - expected| <= ",
+            tol_tail(tail_expected[k]), ": 6 sigma of the binomial sd sqrt(p (1 - p)/N))")
+end
+println("reproducible same counter = ", repro_ok)
+println("different rng_id separates stream = ", stream_sep)
+println("different turn separates stream = ", turn_sep)
+
+tails_ok = all(abs(tails[k] - tail_expected[k]) <= tol_tail(tail_expected[k]) for k in (2, 3, 4))
 ok = abs(mean_normal) < tol_mean_normal &&
      abs(var_normal - 1) < tol_var_normal &&
      abs(mean_uniform - 0.5) < tol_mean_uniform &&
      abs(var_uniform - 1 / 12) < tol_var_uniform &&
      abs(corr_pair) < tol_corr &&
      abs(corr_neighbor) < tol_corr &&
+     tails_ok &&
      repro_ok && stream_sep && turn_sep
 
 if write_csv
@@ -158,6 +190,7 @@ if write_csv
         println(io, "tail2,$tail2")
         println(io, "tail3,$tail3")
         println(io, "tail4,$tail4")
+        println(io, "tails_passed,$tails_ok")
         println(io, "reproducible,$repro_ok")
         println(io, "stream_separated,$stream_sep")
         println(io, "turn_separated,$turn_sep")

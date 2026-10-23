@@ -13124,10 +13124,16 @@ end
     # (seed 42, rng_id 7, slot 1: 0.8799 at this size, which only a re-keying
     # can move, and the keying is pinned bitwise in (b)), not a tolerance. The
     # expectation of rms^2 is exactly 1 at any length, but its scatter at
-    # 16384 turns is wide and skewed: Var[rms^2] = (2/(K^2 N)) sum_k 2^k
-    # (2K - 1 - 2k) = 0.0937 (std 0.306; one sigma of the rms 13.8 %, Monte
-    # Carlo 13.4 % over 2048 streams), with a heavy upper tail from the slow
-    # generators. The script's [0.8, 1.25] at 65536 turns (one sigma 7.6 %)
+    # 16384 turns is wide and skewed: Var[rms^2] = (2/(K^2 N)) sum_k min(2^k, N)
+    # (2K - 1 - 2k) = 0.0860 (std 0.293; half of it, the one sigma of the rms,
+    # 14.7 %; Monte Carlo 13.3 % over 8192 streams, the rms distribution being
+    # skewed so half the sd of rms^2 overstates it), with a heavy upper tail
+    # from the slow generators. The `min` is because generators 14 and 15 hold
+    # for the whole run here: the form with 2^k alone is valid while 2^(K-1)
+    # <= N, gives 0.0937 (15.3 %) at this size, and "13.8 %" -- the value of
+    # neither -- stood in this comment, the script's header and the README
+    # until 2026-10-22 (audit F-209/U40-8). The script's [0.8, 1.25] at 65536
+    # turns (one sigma 7.6 %, where every 2^k < N)
     # misses 5.9 % of streams at THIS size (120 of 2048, binomial SE 0.5 %), so
     # a re-keying would have gone red 1 time in 17 for no defect (2026-10-13
     # neighbour audit, U7-4). [0.75, 1.6] lies below the measured 0.1 %
