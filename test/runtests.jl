@@ -6380,10 +6380,16 @@ Mimics `analyze`'s receipts and configuration report from the options alone.
 failed result instead of throwing), `:index_dropped` (an explicit
 `longitudinal_mode` index is reported as honoured -- receipt and selection
 flags explicit and certified, `selected` the request -- while the result
-keeps the heuristic's selection and its dispersion; 2026-10-18 audit, F-140).
+keeps the heuristic's selection and its dispersion; 2026-10-18 audit, F-140),
+`:emittances_doubled` (the covariance is built from twice the requested tuple
+while the receipt records the tuple: the value defect of F-145).
 The result carries `dispersion.longitudinal` and an `eta` that depend on the
-selection the verb actually made, as `analyze`'s do.
+selection the verb actually made, as `analyze`'s do, and a covariance whose
+eigen-emittances are the tuple the verb actually used (`_st4b_b_covariance`).
 """
+# the matched covariance the fake run reports for a tuple: U = I, Sigma = diag(eps_j, eps_j), whose
+# eigen-emittances ARE the tuple (times `scale` for the :emittances_doubled defect)
+_st4b_b_covariance(d, em, scale) = Matrix(Diagonal(repeat(scale .* collect(Float64, em)[1:div(d, 2)], inner=2)))
 function _st4b_b_fake_run(a::TwissDispersionAnalysis, input; defect::Symbol=:none)
     M = input isa Octopus.LinearizedMap ? input.matrix : input
     d = size(M, 1)
@@ -6446,7 +6452,7 @@ function _st4b_b_fake_run(a::TwissDispersionAnalysis, input; defect::Symbol=:non
     eta = actual_sel == 2 ? [0.0, 0.5, 0.0, 0.0] : [0.1 * actual_sel, 0.2, 0.0, 0.0]
     physical = (zeta=D(zeta), eta=D(eta), h=D(0.5), tunes=[0.47, 1.6, 0.87])
     covariance = a.emittances === nothing ? Octopus.Determined{Matrix{Float64}}(:unavailable, nothing, nothing, :not_requested, "") :
-        D(ones(d, d))
+        D(_st4b_b_covariance(d, a.emittances, defect === :emittances_doubled ? 2.0 : 1.0))
     groups = a.clusters === :auto ? (d == 6 ? [[1, 6], [2, 5], [3, 4]] : [[1, 4], [2, 3]]) : a.clusters
     clusters = (partition_source=(a.clusters === :auto ? :auto : :explicit),
                 clusters=[(members=g, forced=isinf(a.resolution_chord)) for g in groups])
@@ -7938,6 +7944,11 @@ end
     # this lie was indistinguishable from the truth)
     r = probe((a, x) -> _st4b_b_fake_run(a, x; defect=:index_dropped))
     @test !r.passed && occursin("longitudinal_mode", r.message) && occursin("did NOT move", r.message)
+    # the emittances tuple's VALUE is observable: a run that reads the tuple, records it honestly in its receipt and
+    # builds the matched covariance from a DOUBLED tuple (eigen-emittances 2 eps_j) fails the observable; the
+    # presence-only test (covariance :unique against the default's :not_requested) passed it (2026-10-18 audit, F-145)
+    r = probe((a, x) -> _st4b_b_fake_run(a, x; defect=:emittances_doubled))
+    @test !r.passed && occursin("emittances", r.message) && occursin("eigen-emittances", r.message)
     # a run that throws where a result is expected is a FAILED probe carrying the message
     r = probe((a, x) -> error("scratch verb exploded"))
     @test !r.passed && r.status === :failed && occursin("scratch verb exploded", r.message)
