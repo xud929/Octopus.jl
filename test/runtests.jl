@@ -2263,6 +2263,44 @@ end
     @test_throws ArgumentError Octopus._normalizer_to_vectors(zeros(4, 3))
 end
 
+@testset "Mais-Ripken: the (M7) rephasing is the frame's one phase convention, floor included (F-193)" begin
+    # Theory 6.2's position convention (u_1x > 0, u_2y > 0 real) was implemented twice: `_rephase_mode` for the
+    # frame (floor `_PHASE_REFERENCE_FLOOR = sqrt(eps)` relative; below it the (E14) pivot, the largest component,
+    # fixes the phase) and `_mais_ripken`'s own (M7) multiplier on the primary component down to `64 eps ||u||`, so
+    # between the two floors `MaisRipkenSet.vectors` and `NormalModeFrame4D.vectors` were two conventions for one
+    # quantity, differing by an O(1) phase (2026-10-18 audit, F-193 = U23-3). One function now: `_mais_ripken`
+    # rephases through `_rephase_mode`, and `projection_rtol` decides the (M6) phase flags alone.
+    # (i) a primary component between the two floors: 1e-10 ||u|| relative
+    u1 = ComplexF64[1e-10 * exp(0.7im), -im, 1.0 + 0.2im, -0.3im]
+    u2 = ComplexF64[0.4, 0.1im, 1.0 + 0.5im, -im]
+    @test 64 * eps() * norm(u1) < abs(u1[1]) < Octopus._PHASE_REFERENCE_FLOOR * norm(u1)
+    mr = Octopus._mais_ripken(u1, u2)
+    @test mr.vectors[1] == Octopus._rephase_mode(u1, 1)          # bitwise: the same function on the same input
+    @test mr.vectors[2] == Octopus._rephase_mode(u2, 3)
+    v1 = mr.vectors[1]; piv = argmax(abs.(v1))
+    # the pivot, not the tiny primary, is made real and positive (to the roundoff of the unit multiplier: the
+    # multiplier conj(ref) / |ref| is formed first, so the pivot's imaginary part is a rounding residue, not 0)
+    @test piv != 1 && real(v1[piv]) > 0 && abs(imag(v1[piv])) <= 8 * eps() * norm(v1)
+    @test abs(abs(v1[1]) - abs(u1[1])) <= 4 * eps() * abs(u1[1])  # a unit multiplier: moduli unchanged
+    # (M1) is phase-independent: the set of the rephased vectors is the set of the inputs to roundoff
+    mr2 = Octopus._mais_ripken(mr.vectors...)
+    nU = norm(u1)^2 + norm(u2)^2
+    @test norm(mr2.beta - mr.beta) <= 64 * eps() * nU && norm(mr2.alpha - mr.alpha) <= 64 * eps() * nU && norm(mr2.kappa - mr.kappa) <= 64 * eps() * nU
+    # (ii) above both floors: the set of a frame carries the frame's own vectors (one convention, applied twice,
+    # moves a component by the roundoff of a unit multiplier at most; measured 2 eps ||u|| on these maps)
+    for M in _PB_MAPS[1:20]
+        fr = _pb_frame(M).frame
+        mrf = Octopus._mais_ripken(fr)
+        for j in 1:2
+            @test norm(mrf.vectors[j] - fr.vectors[j]) <= 8 * eps() * norm(fr.vectors[j])
+            @test mrf.vectors[j] == Octopus._rephase_mode(fr.vectors[j], j == 1 ? 1 : 3)
+        end
+    end
+    # (iii) the zero-projection limit of the existing pins is unchanged: an exactly real primary is kept
+    mr0 = Octopus._mais_ripken(Matrix(1.0I, 4, 4))
+    @test mr0.vectors == Octopus._normalizer_to_vectors(Matrix(1.0I, 4, 4))
+end
+
 @testset "Mais-Ripken covariance: (M9)-(M16) agree, close under the map, and refuse a zero projection" begin
     # kappa: Sigma is quadratic in U and linear in the emittances (||U||_F^2
     # max eps); (M12)-(M16) divide by sqrt(beta beta), so their kappa carries
@@ -3823,6 +3861,39 @@ end
     @test rm.matrix == Mrm && rm.matrix !== Mrm   # a copy of the matrix actually passed, not of an unrelated one (stage 9, R2-2-1)
     @test rm.rho_M1 >= rm.rho_M0 && rm.schur_backward_error <= 64 * _MC_EPS * norm(rm.matrix)
     @test rm.tau_real == Octopus._REAL_CLASS_MULTIPLIER * sqrt(max(rm.rho_M0, rm.schur_backward_error) * max(1, opnorm(rm.matrix)))   # one root over the product (stage 9)
+end
+
+@testset "Mode clusters: the real-class floor's window is measured from the tree: rotated Jordan pairs stay real-class, the smallest complex pair stays complex (F-193)" begin
+    # The `_REAL_CLASS_MULTIPLIER` docstring cited a re-measurement driver that is not in the tree
+    # (stage9/verify/orch_major_v3.jl; 2026-10-18 audit, F-193 = U23-2). This testset IS the committed driver: the
+    # accepted side, every rotated +1 Jordan pair of the drift families L in (1, 3, 10, 100) under symplectic
+    # conjugations of strength 0.2 .. 3.0 (four seeds each; the audit's probe 5 ran 384 of them), and the rejected
+    # side, the smallest genuine complex pair of the fixture table, R(1e-6) (+) R(1.2); both measured as
+    # |Im rho| / tau_real and printed, so the window the docstring quotes is re-derived by every suite run. The
+    # VERDICTS are pinned (a Jordan pair is never a complex pair, the small complex pair is never real-class); the
+    # constant itself, and the window's empty accepted side, are the owner's item (docs/todo.md, the Twiss row).
+    worst = 0.0; worst_at = ""; n = 0
+    for L in (1.0, 3.0, 10.0, 100.0), strength in (0.2, 0.5, 1.0, 1.5, 2.0, 3.0), seed in 1:4
+        W = Octopus._manufactured_symplectic_map(MersenneTwister(_MC_SEED + 1000 * seed + round(Int, 10 * strength)), 4; scale=strength).M
+        M = W * _mc_bd([1.0 L; 0.0 1.0], _mc_R(1.2)) * inv(W)
+        r = _mc_run(M)
+        idx = sortperm(abs.(r.eigenvalues .- 1))[1:2]          # the Jordan pair: the two eigenvalues nearest +1
+        @test all(r.real_class[idx]) && r.degeneracy_status === :unit_eigenvalue
+        @test count(c -> c.classification === :definite && c.resolved, r.clusters) == 1   # the R(1.2) pair survives
+        ratio = maximum(abs.(imag.(r.eigenvalues[idx]))) / r.tau_real
+        n += 1
+        ratio > worst && (worst = ratio; worst_at = "L = $(L), strength = $(strength), seed = $(seed), ||M||_2 = $(round(opnorm(M); sigdigits=3))")
+    end
+    @test n == 96 && 0 < worst < 1
+    # the rejected side: the table's smallest complex pair stays complex-class with the ten rule's margin
+    rc = _mc_run(_mc_bd(_mc_R(1e-6), _mc_R(1.2)))
+    @test !any(rc.real_class) && all(c -> c.classification === :definite, rc.clusters)
+    ratio_c = minimum(abs(imag(rho)) for rho in rc.eigenvalues) / rc.tau_real
+    @test ratio_c >= 10
+    c_real = Octopus._REAL_CLASS_MULTIPLIER
+    println("real-class floor (F-193): accepted extreme |Im rho| / tau_real = $(round(worst; sigdigits=3)) at $(worst_at) over $(n) rotated Jordan pairs; ",
+            "rejected extreme $(round(ratio_c; sigdigits=3)) on R(1e-6) (+) R(1.2); at multiplier 1 the one-tenth / ten window is ",
+            "[$(round(10 * worst * c_real; sigdigits=3)), $(round(ratio_c * c_real / 10; sigdigits=3))] (c_real = $(c_real))")
 end
 
 @testset "Mode clusters: a capped-chord tie merges the smallest gap first, so an isolated pair is not absorbed by a repeated one (fix batch 3 N, F-195)" begin

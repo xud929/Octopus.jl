@@ -54,10 +54,18 @@ Indices are `[j, a]`: mode `j` in `1:2`, plane `a` in `1:2` for `(x, y)`.
     is at or below `projection_rtol ||u_j||^2`
     (the design: "the phase fix applies only to nonzero position components").
   * `phase_valid` -- the two flags, `is_determined.(phases)`.
-  * `vectors` -- the eigenvectors rephased to the (M7) convention (`u_1x > 0`,
-    `u_2y > 0` real) where the primary position projection is nonzero, else the
-    input vector unchanged. Rephasing changes nothing in (M1).
-  * `projection_rtol` -- the relative floor the flags were decided with.
+  * `vectors` -- the eigenvectors rephased to the theory 6.2 position
+    convention (`u_1x > 0`, `u_2y > 0` real) by `_rephase_mode`, the ONE
+    phase convention of the analysis (the frame of eigenmodes_4d.jl applies
+    the same function): the primary component is made real and positive when
+    it exceeds `_PHASE_REFERENCE_FLOOR * ||u_j||` (`sqrt(eps)` relative), else
+    the (E14) pivot, the largest component, is. Until fix batch 4b this set
+    rephased on the primary down to its own floor `projection_rtol ||u_j||`
+    (`64 eps`), so between the two floors `MaisRipkenSet.vectors` and
+    `NormalModeFrame4D.vectors` were two conventions for one quantity
+    (2026-10-18 audit, F-193 = U23-3). Rephasing changes nothing in (M1).
+  * `projection_rtol` -- the relative floor the (M6) phase flags were decided
+    with; it does not enter `vectors`.
 """
 struct MaisRipkenSet
     beta::Matrix{Float64}
@@ -287,7 +295,10 @@ is `Determined` unavailable with `:zero_projection` when
 `sqrt(beta_jx beta_jy) <= projection_rtol ||u_j||^2`, the scale-aware floor
 for a vanishing position component (the exactly uncoupled limit lands here for
 BOTH modes). `projection_rtol` is a roundoff-scale relative floor, provisional
-until the stage 2 measurement. Nothing is checked about the (E3) normalization
+until the stage 2 measurement. The (M7) `vectors` are rephased by
+`_rephase_mode` (eigenmodes_4d.jl), the one phase convention of theory 6.2
+with its one floor `_PHASE_REFERENCE_FLOOR` (fix batch 4b, F-193; see
+[`MaisRipkenSet`](@ref)). Nothing is checked about the (E3) normalization
 or the orientation here: the caller's frame is authoritative, and the (M2)/(M3)
 sums in the result say how far from normalized it is.
 """
@@ -321,12 +332,10 @@ function _mais_ripken(u1::AbstractVector, u2::AbstractVector; projection_rtol::R
             Determined((cos=real(z) / prod, sin=imag(z) / prod))
         end
     end
-    # (M7) convention: u_1x > 0 and u_2y > 0 real where the primary projection
-    # is nonzero; the multiplier is conj(prim) / |prim|, no angle evaluated.
-    vectors = ntuple(2) do j
-        prim = v[j][j == 1 ? 1 : 3]
-        abs(prim) > Float64(projection_rtol) * norm(v[j]) ? v[j] .* (conj(prim) / abs(prim)) : v[j]
-    end
+    # (M7) convention: u_1x > 0 and u_2y > 0 real, by the frame's own `_rephase_mode` (one function, one floor;
+    # the pivot below `_PHASE_REFERENCE_FLOOR`): a second rephasing rule on the primary down to `projection_rtol`
+    # made two conventions of one quantity between the floors (F-193).
+    vectors = (_rephase_mode(v[1], 1), _rephase_mode(v[2], 3))
     return MaisRipkenSet(beta, alpha, gamma, kappa, row_sums, col_sums, m5,
         u1_eval, u1_eval, u2_eval, u1_eval - u2_eval,
         phases, map(is_determined, phases), vectors, Float64(projection_rtol))
