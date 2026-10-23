@@ -959,8 +959,12 @@ end
     # shortcut: det J = rho^3 != 1, so declaring Symplectic6DMap would claim
     # an obligation the map deliberately does not meet -- and the derived
     # symplecticity tripwire (U4-8) refuses exactly that claim. The Lorentz
-    # boost pair set the precedent. The map's own exact laws (det J = rho^3,
-    # symplectic after undoing the rescale) are pinned in the suite.
+    # boost pair set the precedent. The map's own exact laws (det J = rho^3;
+    # symplectic after undoing the rescale of px, py, pt by rho in the exit
+    # pair's canonical coordinates) are both pinned in the suite's testset
+    # "Accelerating cavity changes the reference exactly (Scope B)" -- the
+    # second since 2026-10-22 (fix batch 4a lead D8); until then this comment
+    # claimed both while only the determinant was pinned.
     tracking_methods = [NonSymplectic6DMap]
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]

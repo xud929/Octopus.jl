@@ -16660,6 +16660,33 @@ end
     @test out[1] == 1e-3 && out[3] == -2e-3
     J = ForwardDiff.jacobian(v -> collect(op(v...)), collect(cin))
     @test isapprox(det(J), op.rho^3; rtol=1e-12)
+    # Sec. 8 item 3, the other exact law: the map is symplectic once the
+    # reference-momentum rescale is undone. `M = C_out o S_rho o K o C_in` (the
+    # entry and exit canonical conversions, the kick, the rescale of (px, py, pt)
+    # by rho), so undoing the rescale in the EXIT pair's canonical (z1, pt)
+    # coordinates, `C_out o S_(1/rho) o C_out^-1 o M = C_out o K o C_in`, must be
+    # symplectic: every factor is. Pinned on the thin kick (the thick form
+    # rescales between its drift halves, where an exit-side undo is not the
+    # inverse). Tolerance: the suite's symplectic-defect bound 64 eps (the
+    # Linear6D validator's constant, as the Twiss fixtures pin it) on the
+    # scale-free Frobenius measure, and the validator's own row ratio <= 1;
+    # measured 5.2e-17 here and 4.4e-17 on a 51 MeV, phase 0.3 cavity, where the
+    # raw map reads 1.0e-2 and an undo by rho^2 9.9e-3, so a missing or wrong
+    # undo is red (result/fix_batch4_2026_10_22/probes/TR/probe_cpu_f116_d8.log;
+    # fix batch 4a lead D8: until 2026-10-22 only the determinant was pinned
+    # while the element's comment claimed both laws were).
+    undone = v -> begin
+        x, px, y, py, z, pz = op(v...)
+        z1, pt = Octopus.convert_longitudinal(Octopus.PATHLENGTH_DELTA => Octopus.TIME_ENERGY, z, pz;
+                                              beta0=op.beta1, gamma0=op.gamma1)
+        zn, pzn = Octopus.convert_longitudinal(Octopus.TIME_ENERGY => Octopus.PATHLENGTH_DELTA, z1, pt / op.rho;
+                                               beta0=op.beta1, gamma0=op.gamma1)
+        return [x, px / op.rho, y, py / op.rho, zn, pzn]
+    end
+    Ju = ForwardDiff.jacobian(undone, collect(cin))
+    @test Octopus._symplectic_defect(Ju).frobenius <= 64 * eps()
+    @test Octopus._symplectic_defect(Ju).row_ratio <= 1
+    @test isapprox(det(Ju), 1.0; rtol=1e-12)
 
     # Sec. 8 item 1: the thin kick composed with explicit half drifts equals
     # the thick element, to round-off.
