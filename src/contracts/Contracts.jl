@@ -4084,6 +4084,23 @@ The CUDA launch surfaces are checked with every launch family requested at
 threads; the two must differ, or an override the consumer dropped would read
 exactly the inherited count (the public-configuration contract's F-10), and
 the contract refuses a `cuda_threads` equal to it.
+
+Three guards of the 2026-10-22 fix batch (2026-10-18 audit, F-109, F-110,
+F-113), each judged on every process before any device runs. A declared
+alternative equal to the value the BASELINE solver actually carries -- the
+probe's own value, or the schema default the probe leaves in place, read off
+`solver_configuration` of the very baseline that half compares against, the
+device probe for a CUDA-only option -- FAILS by name: the sweep would compare
+the solver against itself (the guard used to read the probe's value only, so a
+default the probe did not set was never consulted and `batch_mode =>
+:wavefront` counted as checked). An execution or performance option whose
+declared consumer is `:solver_runtime`, the dump of the solver under test,
+FAILS by name unless an `inactive` row covers it: the dump proves storage,
+not consumption, and the matcher no longer reads a requested value back out
+of it. The device half's comparator is NaN-aware (`_solver_contract_spread`:
+both-NaN unchanged, NaN against finite a definite change) and a baseline whose
+two calibration runs disagree on a NaN slot fails the solver instead of
+calibrating an infinite floor.
 """
 Base.@kwdef struct SolverOptionEffectivenessContract <: AbstractImplementationContract
     n_particles::Int = 256
@@ -4168,17 +4185,100 @@ end
 Largest relative difference between two observables, over coordinates and
 luminosities together. Used instead of an exact comparison wherever float atomic
 reordering makes bitwise equality unavailable.
+
+NaN-aware, by `_probe_deviation`'s rule (U4-1): a slot where both sides are
+NaN is unchanged, a NaN against a finite value is a definite change (`Inf`),
+finite pairs compare relatively. Until the 2026-10-22 fix batch the coordinate
+loop had no NaN handling, `max` propagated the NaN, and `NaN > floor` is
+false, so an option that turned a coordinate into NaN passed the device half's
+"must not move" and a NaN in a calibration baseline made the floor itself NaN
+(2026-10-18 audit, F-110; measured `NaN false NaN` on the audit's repro).
 """
 function _solver_contract_spread(a, b)
     worst = 0.0
     for (x, y) in zip(a[1], b[1])
+        if isnan(x) || isnan(y)
+            isequal(x, y) || return Inf
+            continue
+        end
         worst = max(worst, abs(x - y) / max(abs(x), abs(y), eps()))
     end
     for (x, y) in zip(a[2], b[2])
-        (isnan(x) && isnan(y)) && continue
+        if isnan(x) || isnan(y)
+            isequal(x, y) || return Inf
+            continue
+        end
         worst = max(worst, abs(x - y) / max(abs(x), abs(y), eps()))
     end
     return worst
+end
+
+"""
+    _solver_contract_cuda_floor(a, b) -> Float64 | nothing
+
+The device half's noise floor from two runs of the same baseline: one hundred
+times their repeat spread, floored at the tolerance the strong-strong
+backend-consistency contracts already use for "the same result" across routes
+(rtol = 1e-10), so self-calibration can only RAISE it if the hardware is
+noisier than that. The CUDA grid solvers are not bitwise reproducible run to
+run (float atomic deposition reorders), and the repository's own convention
+-- "bit-parity (~1e-15)" with coordinate residuals ~1e-12 -- is that such a
+difference is not a change; a genuine algorithmic difference sits seven or
+more orders above it (green_cache moved the CPU result by 2e-3, the spectral
+method switch by 5e-3). `nothing` when the two runs disagree on a NaN slot:
+no floor can be calibrated from a baseline that is not repeatable, and the
+caller fails the solver by name instead of judging its options against
+`Inf` (F-110).
+"""
+function _solver_contract_cuda_floor(a, b)
+    spread = _solver_contract_spread(a, b)
+    isfinite(spread) || return nothing
+    return max(spread * 100, 1.0e-10)
+end
+
+"""
+    _solver_contract_circular_consumer(meta) -> Bool
+
+Whether an option's declared consumer would certify it circularly: an
+execution or performance option whose `consumer` is `:solver_runtime`, the
+receipt that dumps the solver object under test. That receipt proves the value
+was STORED, not read, so the contract refuses such an option by name unless an
+`inactive` row covers it (2026-10-18 audit, F-113: the matcher's
+`:configuration` branch read the requested value back out of the dump, a
+circular acceptance path that was dormant only because no execution option
+named the consumer, with nothing guarding that).
+"""
+_solver_contract_circular_consumer(meta) =
+    _solver_option_is_execution(meta) && meta.consumer === :solver_runtime
+
+"""
+    _solver_contract_cuda_probe(T, probe) -> NamedTuple
+
+The probe the device half of `SolverOptionEffectivenessContract` runs for
+solver `T`: `grid_extent = :extrema` where the solver declares the keyword,
+since the CUDA PIC backend rejects the CPU probe's `:sigma` outright rather
+than ignoring it (which is the behaviour this whole contract is about), and
+the CPU probe unchanged otherwise (the soft-Gaussian solver has no such
+keyword and rejected it). One function for both halves, so the vacuity guard
+judges the very baseline the device half compares against (F-109).
+"""
+_solver_contract_cuda_probe(T, probe) =
+    haskey(solver_option_schema(T), :grid_extent) ?
+        merge(NamedTuple(probe), (grid_extent=:extrema,)) : NamedTuple(probe)
+
+"""
+    _solver_contract_baseline_value(solver, name) -> Any
+
+The value option `name` holds on a constructed baseline solver, read from
+`solver_configuration` (the resolved configuration every solver publishes,
+the hybrid merging its composed PIC's) and from the property when the
+configuration lacks the key; an option neither exposes throws, and the caller
+reports it by name.
+"""
+function _solver_contract_baseline_value(solver, name::Symbol)
+    cfg = solver_configuration(solver)
+    haskey(cfg, name) && return cfg[name]
+    return getproperty(solver, name)
 end
 
 """
@@ -4215,8 +4315,13 @@ _solver_contract_moved(a, b) =
     a[1] != b[1] || !isequal(a[2], b[2])
 
 # Did a receipt named by the option's declared consumer carry the requested
-# value? For :solver_runtime the whole configuration travels in the receipt; the
-# specialised consumers publish their own fields.
+# value, as a field named after the option? The specialised consumers publish
+# their own fields. The `:solver_runtime` receipt -- a dump of the solver
+# object under test -- is NOT consulted: reading the requested value back out
+# of its `configuration` certified storage, not consumption (previous audit
+# U4-6's mechanism; the branch that did so was removed in the 2026-10-22 fix
+# batch, F-113, and the sweep refuses an execution option that names that
+# consumer, `_solver_contract_circular_consumer`).
 function _solver_contract_receipt_carries(receipts, consumer::Symbol,
                                           name::Symbol, value,
                                           backend::Union{Nothing,DataType}=nothing)
@@ -4238,10 +4343,6 @@ function _solver_contract_receipt_carries(receipts, consumer::Symbol,
         return _cuda_pic_launch_receipts_carry(receipts, value)
     for r in receipts
         r.consumer === consumer || continue
-        if haskey(r.values, :configuration)
-            cfg = r.values.configuration
-            haskey(cfg, name) && isequal(getproperty(cfg, name), value) && return true
-        end
         haskey(r.values, name) && isequal(getproperty(r.values, name), value) && return true
         # cuda_pic_launch publishes one receipt per FAMILY rather than per
         # option, so the generic paths above cannot match. See
@@ -4325,6 +4426,7 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
     failures = String[]
     checked = 0
     deferred_cuda = Tuple{Symbol,Symbol}[]
+    vacuous = Set{Tuple{Symbol,Symbol}}()   # alternative equal to its baseline value (F-109): judged by neither half
     solver_exemptions_seen = Set{Tuple{Symbol,Symbol}}()   # U4-17
     # Pin the RNG, as every other strong-strong contract does. Without this the
     # probe beams depend on whatever global state the caller left behind: this
@@ -4339,6 +4441,7 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
         kind = nameof(T)
         probe = get(contract.probes, kind, NamedTuple())
         alternatives = get(contract.alternatives, kind, Dict{Symbol,Any}())
+        cuda_probe = _solver_contract_cuda_probe(T, probe)
         baseline_solver = T(; probe...)
         baseline = _solver_contract_observable(baseline_solver, base1, base2,
                                                CPUThreadsBackend)
@@ -4352,17 +4455,50 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
                       "$(kind).$(name) has no declared alternative and no stated reason")
                 continue
             end
-            if !(CPUThreadsBackend in meta.supported_backends)
-                push!(deferred_cuda, (kind, name))
+            # An execution or performance option whose declared consumer is
+            # the `:solver_runtime` dump cannot be certified here: the dump
+            # proves the value was stored, not read (F-113). Refused by name,
+            # before any collision and on every process.
+            if _solver_contract_circular_consumer(meta)
+                push!(failures,
+                      "$(kind).$(name) declares consumer :solver_runtime, the dump of the solver " *
+                      "under test, which cannot certify a $(meta.category) option; name the " *
+                      "consumer boundary that reads it, or exempt it with a reason")
                 continue
             end
+            on_cpu = CPUThreadsBackend in meta.supported_backends
             alt_value = _solver_alternative_value(name, alternatives[name])
             companions = _solver_alternative_companions(name, alternatives[name])
-            option_probe = merge(NamedTuple(probe), companions)
-            if haskey(option_probe, name) &&
-               isequal(getproperty(option_probe, name), alt_value)
+            # The vacuity guard, against the BASELINE the option's half runs
+            # (the CPU probe, or the device probe for a CUDA-only option, with
+            # the companions folded in) on every process, device or not: an
+            # alternative equal to the value the baseline solver actually
+            # carries -- the probe's own, or the schema default the probe
+            # leaves in place -- would compare the solver against itself.
+            # Until the 2026-10-22 fix batch the guard compared with the
+            # probe's value only, after the CUDA-only deferral, so a default
+            # the probe did not set was never consulted (2026-10-18 audit,
+            # F-109: `batch_mode => :wavefront` counted as checked).
+            option_probe = merge(on_cpu ? NamedTuple(probe) : cuda_probe, companions)
+            baseline_value = try
+                _solver_contract_baseline_value(T(; option_probe...), name)
+            catch err
+                push!(failures, "$(kind).$(name) baseline could not be built or read: " *
+                                first(split(sprint(showerror, err), '\n')))
+                continue
+            end
+            if isequal(baseline_value, alt_value)
+                push!(vacuous, (kind, name))
                 push!(failures,
-                      "$(kind).$(name) declares an alternative equal to its own probe value")
+                      "$(kind).$(name) declares an alternative equal to its baseline value " *
+                      "($(repr(alt_value)); " *
+                      (haskey(option_probe, name) ? "its own probe value" :
+                                                    "the schema default the probe leaves in place") *
+                      "): the sweep would compare the solver against itself")
+                continue
+            end
+            if !on_cpu
+                push!(deferred_cuda, (kind, name))
                 continue
             end
             solver = try
@@ -4453,10 +4589,9 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
         # performance categories, so the assertion is the mirror of the CPU
         # half: the result must NOT move, and the value must appear in a
         # receipt named by the option's declared consumer.
-        # `grid_extent` only where the solver declares it -- the soft-Gaussian
-        # solver has no such keyword and rejected it.
-        cuda_probe = haskey(solver_option_schema(T), :grid_extent) ?
-            merge(NamedTuple(probe), (grid_extent=:extrema,)) : NamedTuple(probe)
+        # The device probe, the ONE function the CPU loop's vacuity guard also
+        # judged against (`_solver_contract_cuda_probe`, F-109).
+        cuda_probe = _solver_contract_cuda_probe(T, probe)
         # Every option the DEVICE must honour, which is not the same set as
         # "the options only the device has". An option that BOTH backends read
         # and that is an execution or performance choice belongs here too:
@@ -4468,12 +4603,17 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
         # `_solver_option_is_execution` is what keeps physics options out: the
         # assertion below is "the result must NOT move", which is the wrong
         # claim for anything the CPU half checks by making it move.
+        # ... minus the options the CPU loop already refused by name: an
+        # alternative equal to its baseline (F-109) or a circular consumer
+        # (F-113) would be judged vacuously here.
         cuda_only = [(name, meta) for (name, meta) in pairs(solver_option_schema(T))
                      if CUDABackend in meta.supported_backends &&
                         (!(CPUThreadsBackend in meta.supported_backends) ||
                          _solver_option_is_execution(meta)) &&
                         !haskey(contract.inactive, (kind, name)) &&
-                        haskey(alternatives, name)]
+                        haskey(alternatives, name) &&
+                        !((kind, name) in vacuous) &&
+                        !_solver_contract_circular_consumer(meta)]
         if !isempty(cuda_only)
             # Run the baseline TWICE and take the spread as the noise floor.
             # The CUDA grid solvers are not bitwise reproducible run to run --
@@ -4485,23 +4625,23 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
             cuda_baseline, cuda_floor = try
                 a = _solver_contract_cuda_observable(T(; cuda_probe...), base1, base2)
                 b = _solver_contract_cuda_observable(T(; cuda_probe...), base1, base2)
-                # Floor at the tolerance the strong-strong backend-consistency
-                # contracts already use for "the same result" across routes
-                # (rtol = 1e-10); self-calibration can only raise it if the
-                # hardware is noisier than that. A route change reorders float
-                # atomic sums, and the repository's own convention -- quoted
-                # throughout the optimization histories as "bit-parity
-                # (~1e-15)" with coordinate residuals ~1e-12 -- is that such a
-                # difference is not a change. A genuine algorithmic difference
-                # sits seven or more orders above it: green_cache moved the CPU
-                # result by 2e-3 and the spectral method switch by 5e-3.
-                a, max(_solver_contract_spread(a, b) * 100, 1.0e-10)
+                # 100x the repeat spread, floored at the repository's 1e-10
+                # class, or `nothing` for a baseline that is not repeatable
+                # (the derivation is `_solver_contract_cuda_floor`'s).
+                a, _solver_contract_cuda_floor(a, b)
             catch err
                 push!(failures, "$(kind) CUDA baseline threw: " *
                                 first(split(sprint(showerror, err), '\n')))
-                nothing, 0.0
+                nothing, nothing
             end
-            if cuda_baseline !== nothing
+            if cuda_baseline !== nothing && cuda_floor === nothing
+                # A NaN slot the two calibration runs disagree on: no floor can
+                # be calibrated, and judging the options against `Inf` would
+                # pass every one of them (F-110). Failed by name instead.
+                push!(failures, "$(kind) CUDA baseline is not repeatable: its two calibration " *
+                                "runs disagree on a NaN slot, so no noise floor can be calibrated " *
+                                "and its $(length(cuda_only)) device option(s) were not judged")
+            elseif cuda_baseline !== nothing
                 for (name, meta) in cuda_only
                     cuda_alt = _solver_alternative_value(name, alternatives[name])
                     solver = try

@@ -16145,16 +16145,94 @@ if _lane_gate("Solver option effectiveness")
     end
 
     # An alternative equal to the probe's own value would compare a solver
-    # against itself and pass vacuously.
+    # against itself and pass vacuously. (The guard judges the BASELINE value
+    # since fix batch 4b, F-109 -- the probe's value here, the schema default
+    # in the testset below -- and names which it was.)
     let alts = copy(Octopus._default_solver_option_alternatives())
         alts[:GaussianPICPoissonSolver] =
             merge(alts[:GaussianPICPoissonSolver], Dict{Symbol,Any}(:deposit_method => :TSC))
         bad = validate(SolverOptionEffectivenessContract(alternatives=alts))
         @test bad.status === :failed
-        @test occursin("equal to its own probe value", bad.message)
+        @test occursin("GaussianPICPoissonSolver.deposit_method declares an alternative equal to its baseline value", bad.message)
+        @test occursin("its own probe value", bad.message)
     end
 end
 end # _lane_gate("Solver option effectiveness")
+
+@testset "Solver option effectiveness: baseline-equal alternatives, NaN slots and the configuration dump (F-109, F-110, F-113)" begin
+    # F-109: the vacuity guard compares a declared alternative with the
+    # BASELINE its half runs against -- the probe's value when the probe sets
+    # the option, the schema default it leaves in place otherwise -- on every
+    # process, CUDA-only options included. Until this fix it compared with the
+    # probe's value only, so an alternative equal to a default the probe did
+    # not set compared the solver against itself and counted as checked
+    # (measured on the unfixed tree with `batch_mode => :wavefront`: no guard
+    # message, the option "checked"). Every other option is given no
+    # alternative here, so the sweep refuses each without a collision and the
+    # four baselines are the only runs.
+    let alts = Dict{Symbol,Any}(nameof(T) => Dict{Symbol,Any}() for T in Octopus._solver_contract_types())
+        @test !haskey(Octopus._default_solver_option_probes()[:PICPoissonSolver], :batch_mode)
+        @test PICPoissonSolver().batch_mode === :wavefront
+        alts[:PICPoissonSolver] = Dict{Symbol,Any}(:batch_mode => :wavefront)
+        bad = validate(SolverOptionEffectivenessContract(n_particles=16, alternatives=alts))
+        @test bad.status === :failed
+        @test occursin("PICPoissonSolver.batch_mode declares an alternative equal to its baseline value", bad.message)
+        @test occursin("schema default", bad.message)
+        # a CUDA-only option is guarded on this process too, device or not
+        @test PICPoissonSolver().cuda_async === true
+        @test !(CPUThreadsBackend in solver_option_schema(PICPoissonSolver).cuda_async.supported_backends)
+        alts[:PICPoissonSolver] = Dict{Symbol,Any}(:cuda_async => true)
+        bad_cuda = validate(SolverOptionEffectivenessContract(n_particles=16, alternatives=alts))
+        @test bad_cuda.status === :failed
+        @test occursin("PICPoissonSolver.cuda_async declares an alternative equal to its baseline value", bad_cuda.message)
+    end
+
+    # F-110: `_solver_contract_spread` propagated NaN through `max`, and the
+    # device half's `spread > cuda_floor` is false for NaN, so an option that
+    # turned a coordinate into NaN passed "must not move" and a NaN in a
+    # calibration baseline made the floor NaN (measured on the unfixed tree:
+    # `NaN false NaN`). The rule is `_probe_deviation`'s (U4-1): a slot where
+    # both sides are NaN is unchanged, a NaN against a finite value is a
+    # definite change (Inf), finite pairs compare as before; a floor that
+    # cannot be calibrated is `nothing`, which the device half fails by name.
+    @test Octopus._solver_contract_spread(([1.0, NaN], [1.0]), ([1.0, 2.0], [1.0])) == Inf
+    @test Octopus._solver_contract_spread(([1.0], [NaN]), ([1.0], [1.0])) == Inf
+    @test Octopus._solver_contract_spread(([NaN, 1.0], [NaN]), ([NaN, 1.0], [NaN])) == 0.0
+    @test Octopus._solver_contract_spread(([1.0, 2.0], [3.0]), ([1.0, 2.0 * (1 + 1e-6)], [3.0])) ≈ 1e-6 rtol=1e-5
+    let a = ([1.0, 2.0], [3.0])
+        @test Octopus._solver_contract_cuda_floor(a, a) == 1.0e-10          # a repeatable baseline floors at the repository's class
+        @test Octopus._solver_contract_cuda_floor(a, ([1.0, 2.0 * (1 + 1e-6)], [3.0])) ≈ 1e-4 rtol=1e-5   # 100x the repeat spread
+        @test Octopus._solver_contract_cuda_floor(a, ([1.0, NaN], [3.0])) === nothing   # a NaN disagreement calibrates nothing
+        @test Octopus._solver_contract_cuda_floor(([NaN, 2.0], [3.0]), ([NaN, 2.0], [3.0])) == 1.0e-10   # both-NaN agrees
+    end
+
+    # F-113: the `:configuration` branch of `_solver_contract_receipt_carries`
+    # read the requested value back out of the `:solver_runtime` receipt -- a
+    # dump of the solver object under test -- a circular acceptance path,
+    # dormant only because no execution option named that consumer. The branch
+    # is gone (measured on the unfixed tree: `true` from a dump), and the
+    # contract refuses by name an execution or performance option whose
+    # declared consumer is `:solver_runtime` unless an `inactive` row covers it.
+    dump = [Octopus.ExecutionAuditReceipt(:solver_runtime, Octopus.CUDABackend,
+                                          (solver=:PICPoissonSolver, configuration=(cuda_async=false,)))]
+    @test !Octopus._solver_contract_receipt_carries(dump, :solver_runtime, :cuda_async, false, Octopus.CUDABackend)
+    direct = [Octopus.ExecutionAuditReceipt(:cuda_pic_algorithm, Octopus.CUDABackend,
+                                            (batch_mode=:wavefront, cuda_async=false))]
+    @test Octopus._solver_contract_receipt_carries(direct, :cuda_pic_algorithm, :cuda_async, false, Octopus.CUDABackend)
+    @test !Octopus._solver_contract_receipt_carries(direct, :cuda_pic_algorithm, :cuda_async, false, CPUThreadsBackend)   # the backend filter (U12-13)
+    exec_meta(; kw...) = Octopus.SolverOptionMeta(Bool, false, "probe"; category=:execution, kw...)
+    @test Octopus._solver_contract_circular_consumer(exec_meta())                         # `consumer` defaults to :solver_runtime
+    @test Octopus._solver_contract_circular_consumer(exec_meta(category=:performance))
+    @test !Octopus._solver_contract_circular_consumer(exec_meta(consumer=:cuda_pic_algorithm))
+    @test !Octopus._solver_contract_circular_consumer(Octopus.SolverOptionMeta(Bool, false, "probe"; category=:numerical))
+    # the schema sweep: no non-exempt execution or performance option of any
+    # concrete solver names the dump as its consumer
+    circular = ["$(nameof(T)).$(name)" for T in Octopus._solver_contract_types()
+                for (name, meta) in pairs(solver_option_schema(T))
+                if Octopus._solver_contract_circular_consumer(meta) &&
+                   !haskey(Octopus.DEFAULT_INACTIVE_SOLVER_OPTIONS, (nameof(T), name))]
+    @test isempty(circular)
+end
 
 @testset "Element parameters carry their own number type" begin
     u = (1.0e-3, 1.0e-4, -0.5e-3, 2.0e-4, 0.0, 1.0e-3)
