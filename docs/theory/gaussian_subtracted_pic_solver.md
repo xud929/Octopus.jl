@@ -127,10 +127,16 @@ implemented as `gaussian_beambeam_kick(sigx, sigy, x, y)`, using the Faddeeva
 function $w(z)=e^{-z^2}\operatorname{erfc}(-iz)$. For $\sigma_x>\sigma_y$,
 
 $$
-    K_x + i\,K_y
+    K_y + i\,K_x
     = \frac{2\sqrt\pi}{\sqrt{2(\sigma_x^2-\sigma_y^2)}}
       \left[\,w\!\big(z_1\big) - e^{-\frac{x^2}{2\sigma_x^2}-\frac{y^2}{2\sigma_y^2}}\,w\!\big(z_2\big)\right],
 $$
+
+(the standard $E_y + iE_x$ form of Bassetti-Erskine: the code takes
+`Kx = imag`, `Ky = real` of this expression, `_elliptic_gaussian_kick_principal`
+in `src/elements/strong_beam.jl`; the far field $w(z)\to i/(\sqrt\pi z)$ gives
+$2y/r^2 + i\,2x/r^2$. The display read $K_x + iK_y$ until 2026-10-22, audit
+F-230.)
 
 $$
     z_1=\frac{x+iy}{\sqrt{2(\sigma_x^2-\sigma_y^2)}},
@@ -730,7 +736,10 @@ coupled (rotated) subtraction of Section 7 would recover.
 above reports medians; the same runs also report a max-error column, and there
 the hybrid's worst point can exceed PIC's once the residual and the
 discretisation floor cross: measured `max_gain` **0.9957** at round/grid 128 in a
-fresh run, and 0.9988 / 0.9982 at 25:1 on grids 96 and 256 in `paper/data/`. The
+fresh run, and 0.9988 / 0.9982 at 25:1 on grids 96 and 256 in a 2026-07 scan
+whose files were not committed (no `paper/` directory exists in the tree;
+reproduce with `validation/gaussian_pic_field_validation.jl`, which reports
+`max_gain`). The
 bi-Gaussian script's random-draw columns show the same for the coupled case,
 HYB 1.30e-3 against PIC 1.25e-3. The shot-noise paragraph below explains why;
 the sentence above used to be unqualified and sat directly over it.
@@ -759,7 +768,11 @@ drivers, and the whole cost on GPU — are unchanged. The added work is:
 **Measured CPU cost (corrected 2026-07-24).** The earlier claim that the analytic
 add-back is "comparable to the grid interpolation it runs alongside" is wrong on
 CPU by an order of magnitude. Measured at the production case (2.56M e- /
-1.024M p, 15 slices, 8 threads), per directed slice-pair interaction:
+1.024M p, 15 slices, 8 threads), per directed slice-pair interaction (the
+per-term timings of the 2026-07-24 review, recorded in
+`../history/poisson_solver_review_2026_07_24.md`; no committed driver times the
+terms separately — `profiling/benchmark_collide_cpu.jl` times whole
+interactions):
 
 | term | time |
 | --- | ---: |

@@ -43,8 +43,10 @@ either. So:
   (2026-08-13, 171 of 184 testsets) — roughly a third of the gate, while
   keeping >90% of the *testset population*.
 
-The registered sections are exactly the 13 measured heavyweights; the list
-lives in the `_lane_gate` call sites and nowhere else (no second hand-copy).
+The registered sections were the 13 measured heavyweights at first landing
+(2026-08-13); the list lives in the `_lane_gate` call sites and nowhere else
+(no second hand-copy; `grep -o '_lane_gate("[^"]*"' test/runtests.jl | sort -u`
+lists them, 17 titles at 2026-10-22).
 Membership is a judgment renewed by measurement, not a property a tripwire
 can check: when a new testset lands, the question "does it belong behind a
 gate?" is part of its review, and this note's numbers are the precedent.
@@ -82,7 +84,7 @@ following change classes no amount of fast-lane green substitutes — each row i
 | element tracking kernels, `compile_runtime`, coordinate conversions | full gate | physics contracts and backend-consistency checks are skipped by the fast lane |
 | test infrastructure itself (gates, lanes, `runtests.jl` structure) | full gate | F2 again: a broken gate is the worst defect, because it silences every other one |
 | markdown-only, DERIVED: `git diff --name-only` lists only `.md` files and none of them is `docs/registry_snapshot.md` | fast lane on the final tree (owner decision 2026-09-03) | the classification is read from the diff, not claimed; the only docs checks the suite has -- the snapshot compare and the `AGENTS.md` source-map tripwire, both in "Architecture integrity" -- run in the fast lane, so the full gate added nothing but insurance against misclassification, and the derivation removes the misclassification |
-| docs plus anything else (a `.jl` comment, `ci.yml`, the snapshot) | full gate before commit | "it's only docs" is a claim; the derived row above is the check, and a diff outside it is not docs-only (the 2026-09-03 AGENTS.md restructure itself touched four `.jl` files and `ci.yml`) |
+| docs plus anything else (a `.jl` comment, `ci.yml`, the snapshot) | full gate (before the push, the bar stated above) | "it's only docs" is a claim; the derived row above is the check, and a diff outside it is not docs-only (the 2026-09-03 AGENTS.md restructure itself touched four `.jl` files and `ci.yml`) |
 
 During the inner development loop, the probe workflow recorded in
 `../guides/development_workflow.md` (script-mode `include("src/Octopus.jl")`
@@ -100,8 +102,9 @@ iteration path; the fast lane sits between probes and the gate.
    testsets actually ran — AGENTS.md Invariants).
 3. **No lane accumulates authority.** Green fast runs during development do
    not reduce the finish-line requirement; the full gate runs on the final
-   tree before every commit outside the derived markdown-only class of
-   section 3, and that class still runs the fast lane on the final tree.
+   tree before every push (owner decision 2026-09-04) outside the derived
+   markdown-only class of section 3, and that class still runs the fast lane
+   on the final tree.
 4. **Unknown lanes error.** `lane=fats` must die, not silently run full.
 
 ## 5. Deliberately not built (yet)
@@ -110,7 +113,7 @@ iteration path; the fast lane sits between probes and the gate.
   the structural tripwires. Worth building when `runtests.jl` is next
   reorganized; today the script-mode probe workflow covers targeted
   iteration, and wrapping all 184 testsets in named sections is a larger
-  restructuring than the 13-guard mechanism justified.
+  restructuring than the lane-gate mechanism justified.
 - **A `smoke` lane** (validators + docs checks only, ~5 min) — blocked on the
   same reorganization: the structural checks are scattered through the file,
   so positive selection needs section membership everywhere.

@@ -414,8 +414,11 @@ Bassetti-Erskine field before production use.
    $\phi=-k_{bb}\rho_0\psi_{lm}/(\alpha_l^2+\beta_m^2)$ and
    $\nabla^2\phi = k_{bb}\rho_0\psi_{lm} = k_{bb}\rho$.
 
-**Numerical** (verified on an arbitrary domain $a=1.3$, $b=0.8$, coupling
-$k_{bb}=-2.5$, $N=63$ interior points per dimension, FFTW DST-I):
+**Numerical** (verified at derivation time, 2026-07, on an arbitrary domain
+$a=1.3$, $b=0.8$, coupling $k_{bb}=-2.5$, $N=63$ interior points per dimension,
+FFTW DST-I; the manufactured-solution check is not a committed harness — the
+committed field validation is `validation/spectral_poisson_field_validation.jl`,
+Section 16):
 
 - **Manufactured band-limited solution.** With
   $\phi_{\text{ex}} = \sin(\pi x/a)\sin(\pi y/b) + \tfrac12\sin(2\pi x/a)\sin(3\pi y/b)
@@ -429,7 +432,15 @@ $k_{bb}=-2.5$, $N=63$ interior points per dimension, FFTW DST-I):
   boundary is $1.3\%$ of the interior maximum, consistent with a well-contained
   source in a Dirichlet box.
 
-## 15. Integration and validation plan
+## 15. Integration and validation plan (as written before landing; landed 2026-07)
+
+The solver landed as `SpectralPoissonSolver` (Sections 13, 16-18). Of the checks
+below, as of 2026-10-22: the field comparison is
+`validation/spectral_poisson_field_validation.jl` (not the PIC harness named
+here); the CPU/CUDA parity is the suite testset "CUDA spectral solver matches
+CPU" (`rtol = 1e-12`), not a contract — no
+`StrongStrongSpectralBackendConsistencyContract` exists. The plan is kept as
+written.
 
 Add the solver as an `AbstractPoissonSolver` variant (or a `green_type`/method
 option), reusing the existing deposition, slicing, and kick infrastructure and

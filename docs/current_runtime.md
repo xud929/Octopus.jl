@@ -39,10 +39,14 @@ execution, so future `compile_runtime` methods may return either one runtime
 object or a tuple of runtime objects.
 
 `TrackingContext` is currently an immutable, `isbits` execution context with
-`turn::Int64`, `seed::UInt64`, and `rng_method::UInt8`. It snapshots the
-Octopus global RNG state when constructed. Use `with_turn(ctx, turn)` to create
-a copy with a different turn value; this keeps future scalar context fields
-localized to one helper. The old coordinate-only fused tracking API is still
+`turn::Int64`, `seed::UInt64`, `rng_method::UInt8` and `index_offset::Int64`
+(the global particle-index offset of a shard, multi-process step 3a, so the
+counter RNG keys on the GLOBAL index; `0` in every single-process run). It
+snapshots the Octopus global RNG state when constructed. Use
+`with_turn(ctx, turn)` to create a copy with a different turn value and
+`with_index_offset(ctx, offset)` for the shard offset; this keeps the
+construction of a modified context in those helpers. The old coordinate-only
+fused tracking API is still
 supported:
 
 ```julia
@@ -81,8 +85,10 @@ rounds to one.
 Line-level observers/actions are compiled into the task runtime line. Active
 plans are cached by scheduled hook activity, so inactive hooks do not break
 fusion and large lines do not need to be fully replanned every turn. Cached
-plans store references to runtime elements; turn updates mutate those runtime
-objects in place.
+plans store references to runtime elements; the per-turn hook
+`update(elem, ctx)` is pure, and each plan segment holds its element in a
+`Ref` that the loop rebinds (the "Turn-dependent elements" paragraph under
+"Current Backends" below), so no runtime object is mutated in place.
 
 This is an implementation strategy, not a permanent user-facing lattice model.
 
@@ -327,7 +333,9 @@ Turn-dependent elements are the `TurnModulated` wrap
 (`src/elements/turn_modulated.jl`; design note `design/turn_modulation.md`).
 The per-turn hook `update(elem, ctx)` is pure and type-preserving; each plan
 segment holds its element or tuple in a `Ref`, the fast loop rebinds a local,
-and the turn loop rebuilds the tuple every turn with `ntuple(..., Val(N))`
+and the turn loop rebuilds the tuple every turn (the `@generated` literal-index
+unroll `_update_line_unrolled` in `src/elements/turn_modulated.jl` since 2026-10-16;
+the earlier `ntuple(..., Val(N))` form is history)
 and stores it back, so no runtime object is mutated and, for the shipped
 stateless rules (`WhiteNoise`, `PinkNoise`, `TurnTable`), the realised
 element is a function of the absolute turn alone. The rule never reaches the
@@ -809,11 +817,16 @@ argument for dividing across ranks rather than adding threads. And MPI is what
 takes the CPU past one socket: 16 ranks of 8 threads beat the best threads-only
 arm on every row, by 2.0x to 5.2x.
 
-Two caveats travel with the numbers. The 64-thread weak-strong arm is not
-linear in the turn count -- its rate climbs from 0.31 to 0.82 s a turn across
-one run -- so its entry is a fitted slope over a degrading series, not a
-steady state. And the PIC CUDA mean carries one 2.2 s stall in an otherwise
-0.31 s window. Both are stated where they are measured.
+Two caveats travel with the numbers. The 64-thread weak-strong entry (0.64 s)
+is the production benchmark's fitted slope; that benchmark's reading that the
+arm's rate "climbs from 0.31 to 0.82 s a turn" across one run was RETRACTED
+on 2026-09-07 (`history/weak_strong_64thread_lead_2026_09_07.md`: the
+per-turn rate had been differenced from SEPARATE whole-process wall times on
+a shared node, and replicating that protocol gives one series that falls and
+one that climbs; the instrumented re-run
+`history/weak_strong_rerun_instrumented_2026_09_07.md` measures both arms as
+step functions, not drifts). And the PIC CUDA mean carries one 2.2 s stall in
+an otherwise 0.31 s window. Both are stated where they are measured.
 
 ## Current Limitations
 

@@ -5,7 +5,9 @@
 > `ThinAcceleratingCavitySpec` / `ThinAcceleratingCavity` (Scope B,
 > 2026-08-14) exist, are exported, metadata-registered, and in the registry
 > snapshot; §6's scopes are records of what was built, not proposals. §9's
-> question 3 (`harmon`) remains open. This note was written before the
+> question 3 (`harmon`) was settled 2026-08-14 — both, in sequence (§9 item
+> 3; record: the 2026-08-14 campaign note in
+> `docs/history/todo_ledger_archive.md`). This note was written before the
 > implementation and its present tense below is the tense of the design
 > discussion — read §6 as "this is the design that was adopted"
 > (2026-08-05_b audit, U26-13). Scope B's closure block sits at the end of
@@ -337,8 +339,11 @@ A separate element kind, not a flag, for the reason in §3. It needs:
 > and `phase = 0` is on crest with a `cos` body — the "different zero" §3
 > promised. Model boundaries as recorded on the element: thin, relative
 > time with no autoscale, no velocity-slip term, single-pass. §8's items
-> 1–3 are suite testsets; item 4 (ν_s) belongs to the ring cavity and is
-> pinned there; item 5 (PTC, for THIS kind) remains open in `todo.md`.
+> 1–2 are suite testsets; item 3 is pinned as `det J = ρ³` (ForwardDiff) only
+> — the symplecticity of the map after undoing the rescale is not checked
+> (2026-10-22); item 4 (ν_s) belongs to the ring cavity and is pinned there;
+> item 5 (a PTC reference case for THIS kind) has no `todo.md` row and is
+> recorded as not planned (2026-10-22, the 2026-10-18 audit's fix batch 4a).
 
 ## 7. The self-referential phase, which has to be decided not discovered
 

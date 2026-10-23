@@ -264,8 +264,10 @@ axes are turned by $hL/2$ from its entrance axes. Octopus therefore exposes
 data means) with `:madx` available to reproduce MAD-X. (This paragraph and the
 table caption below named the values `:center` and `:entrance` until the
 2026-08-05_b audit; the constructor accepts only `:bmad` and `:madx`, so the
-note's own reproduction instructions raised an `ArgumentError`. §6a below
-already used the correct names, so the note contradicted itself.)
+note's own reproduction instructions raised an `ArgumentError`. The rest of
+this section — the `misalign_convention = :madx` measurement below and the
+later tables — already used the correct names, so the note contradicted
+itself.)
 
 Measured against `EALIGN` + `ptc_align`, with `misalign_convention = :madx`,
 one degree of freedom at a time on a quadrupole:
@@ -399,10 +401,12 @@ Agreement with PTC, driven through `sbend, tilt=`: **3.5e-13** for a pure dipole
    entry transform $T(-L/2)\,W\,T(+L/2)$ in the obvious notation; for a bend the
    $T$'s become arc shifts.
 
-3. **Reuse `_rot_xz`.** It is already in `lattice_magnets.jl`, already matches
+3. ~~**Reuse `_rot_xz`.** It is already in `lattice_magnets.jl`, already matches
    PTC bit for bit, and is already validated by `sbend_edge`. `ROT_YZ` should be
    the $x \leftrightarrow y$ relabelling of it, exactly as PTC does, so the two
-   cannot drift apart.
+   cannot drift apart.~~ **Not taken (2026-08): the implementation follows
+   item 1 — one `W`, one drift (`_frame_change`); `_rot_xz` is not called by
+   `misalignment.jl`.**
 
 4. **Keep the misalignment out of `ElementSpec`'s physics fields.** A
    misalignment is not a property of the magnet's field; it belongs with the
@@ -442,7 +446,9 @@ Agreement with PTC, driven through `sbend, tilt=`: **3.5e-13** for a pure dipole
   ([`aperture_and_particle_loss.md`](aperture_and_particle_loss.md)). The point
   that a misaligned magnet is the main reason a particle hits an aperture still
   stands, and the aperture deliberately carries its own `dx`/`dy` rather than
-  routing through the misalignment frames — see that note's Section 4.
+  routing through the misalignment frames — see that note's Section 5,
+  "Interaction with misalignment", and `ApertureSpec`'s docstring, where the
+  decision is recorded.
 - ~~**Survey.** PTC's approach presumes a survey exists. Octopus has no geometry
   layer, so the centre-referenced parameterization is the only workable one for
   now; a survey would be needed for a machine described by measured frames.~~

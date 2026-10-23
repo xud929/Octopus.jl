@@ -304,8 +304,14 @@ answer the question most studies actually ask.
 
 ## 3. Can a function live in `ElementSpec.params`?
 
-**Yes.** `params` is a `Dict{Symbol,Any}`; storing and calling a closure works
-today, verified directly:
+**Yes**, and the shipped home for the predicate is `ApertureSpec(alive = ...)`
+(a typed field, `src/elements/aperture.jl`). `params` is a `Dict{Symbol,Any}`,
+so storing and calling a closure works, as the 2026-08 probe below verified
+directly; since the unknown-key warning landed (2026-08-05 audit, U13-1;
+`docs/history/comprehensive_audit_2026_08_05.md`) the same construction emits
+the "unknown parameter(s) stored as descriptive metadata only" warning, because
+`alive` is not a marker parameter (the probe still runs; it is kept as the
+historical record, not as the recommended spelling):
 
 ```julia
 s = MarkerSpec(alive = (x,px,y,py,z,pz) -> x*x + y*y < 1e-4)
@@ -382,7 +388,11 @@ Three caveats decide whether it is a good idea:
   so a displaced magnet carries a displaced aperture. Checking in design
   coordinates is wrong for a misaligned element by exactly the offset. If the
   aperture is a separate element this is the user's problem; if it wraps, it
-  should sit inside the misalignment frames rather than outside.
+  should sit inside the misalignment frames rather than outside. **Decided (on
+  the element, `ApertureSpec`'s docstring in `src/elements/aperture.jl`): the
+  aperture carries its own `dx`/`dy` and is deliberately not routed through the
+  misalignment frames; a misaligned magnet's aperture is the user's offset to
+  state.**
 - ~~**Strong-strong.** A NaN particle interacts with nothing, but it still
   occupies a slice and a grid cell.~~ **ANSWERED (2026-08-01) by the step-2
   masking.** A dead particle now joins no slice under any of the five slicing

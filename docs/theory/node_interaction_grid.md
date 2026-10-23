@@ -168,6 +168,13 @@ And node indexing does nothing for the *longitudinal* sawtooth, which is a
 property of the two-node interpolation itself; that is what
 `slice_interpolation = :quadratic` addresses.
 
+Neither remedy composes with `interaction_grid = :node` today (stated
+2026-10-22, audit F-231): `grid_extent = :sigma` is refused by the
+`PICPoissonSolver` constructor and `slice_interpolation = :quadratic` by
+`_validate_pic_solver` at first use (the node-plane path applies its own
+interpolation; making them compose is future work for this program). They are
+the remedies on the `:slice_pair` route.
+
 ## References
 
 1. Companion note:

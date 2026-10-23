@@ -1,14 +1,17 @@
 # The Floor-Plan Survey
 
-> **Status: derivation (2026-08-14), written BEFORE the implementation, per
-> owner direction.** This note derives the global-geometry survey — position
+> **Status: derivation (2026-08-14), written before the implementation per
+> owner direction and verified at it the same day** (§4 item 2, "Measured at
+> implementation"; `MADXSurveyConsistencyContract` pins it against MAD-X
+> `SURVEY`; as of 2026-10-22 the implementation is `survey`/`FloorFrame` in
+> `src/elements/floor_plan.jl`). This note derives the global-geometry survey — position
 > `(X, Y, Z)` and orientation `(θ, φ, ψ)` per element, MAD-X's `SURVEY` — that
 > [`arc_survey_and_velocity_slip.md`](arc_survey_and_velocity_slip.md) §1
 > deliberately does not compute and
-> [`misalignment_and_patch_maps.md`](misalignment_and_patch_maps.md) §8 asks
+> [`misalignment_and_patch_maps.md`](misalignment_and_patch_maps.md) §8 asked
 > for. Every convention below is **measured against MAD-X 5.03.06**, not
 > assumed; the probe numbers are reproduced in the tables and re-checked by
-> the extended `MADXSurveyConsistencyContract` once implemented.
+> the extended `MADXSurveyConsistencyContract`.
 
 ## 1. Frame state and its propagation
 
@@ -37,7 +40,7 @@ With `R_X, R_Y, R_Z` right-handed rotations about the LOCAL axes:
 
 | element | `d` (local) | `R` |
 |---|---|---|
-| straight of length `L` (drift, quad, sext, oct, multipole, solenoid, cavities, thick anything) | `(0, 0, L)` | `I` |
+| straight of length `L` (drift, quad, sext, oct, multipole, cavities, a solenoid at `h = 0`, thick anything without curvature; a curved solenoid, `h ≠ 0`, follows the sbend row's rule, which the implementation applies to every element carrying `h`) | `(0, 0, L)` | `I` |
 | sbend, angle `α`, arc `L`, `ρ = L/α`, design roll `t` (`ref_tilt`) | `R_S(t)·(ρ(cos α − 1), 0, ρ sin α)` | `R_S(t)·R_Y(−α)·R_S(−t)` |
 | thin element (`L = 0`) | `0` | `I` |
 | patch | its `(dx, dy, dz)` and rotations, in `patch.jl`'s exact map order (§4) | per patch |
@@ -111,8 +114,10 @@ The `tilt = 0.3` row is the load-bearing one: it fixes the *extraction*
 ```
 
 whose values for `W = R_S(0.3)·R_Y(−0.5)·R_S(−0.3)` must reproduce the
-measured triple — the implementation asserts exactly this before anything
-else, and the extended contract then pins it per element against MAD-X.
+measured triple — the suite pins exactly this (`survey` of one
+`SBendSpec(L=2, angle=0.5, ref_tilt=0.3)` reproduces the triple to `1e-15`;
+the implementation itself carries no assertion), and the extended contract
+then pins it per element against MAD-X.
 
 **The gimbal edge.** At `φ = ±π/2` (`ŝ` along `±Y`, a vertical shot) `θ` and
 `ψ` are individually undefined; only `θ ∓ ψ`-type combinations survive.
@@ -157,12 +162,15 @@ positive-angle bend — which displaces downward — exits at `φ < 0`. The
 
 ## 5. Relation to the other geometry machinery
 
-The survey composes the SAME rotation primitives `_frame_change` already
-implements for misalignment conjugation (the 9-tuple `q` is a flattened
-`W`), but it composes them *forward along the line* rather than
-entry/exit-conjugated around one element. Reusing those primitives keeps one
-rotation convention in the codebase; the survey adds only the frame
-*accumulation* and the MAD-X angle extraction.
+The survey composes its own copies of the rotation primitives (`_fp_ry`,
+`_fp_rz`, `_fp_mul` in `src/elements/floor_plan.jl`; `_patch_rotation` is
+reused for patches) with the same convention `_frame_change` implements for
+misalignment conjugation (the 9-tuple `q` is a flattened `W`), but it
+composes them *forward along the line* rather than entry/exit-conjugated
+around one element. The code is not shared; the convention is, and the
+suite's measured triple pins it, so the codebase keeps one rotation
+convention while the survey adds only the frame *accumulation* and the MAD-X
+angle extraction.
 
 The arc survey (`s`) remains the tracking-side quantity — the velocity-slip
 channel and `ds_turn` consume it — and the floor plan does not replace it:

@@ -498,7 +498,11 @@ applies $z'=z-E$:
   kinetic momenta, and the curved solenoid's integrand
   $-\big((P_x^2+P_y^2)/((1+\delta)+p_s)+hx(1+\delta)\big)/p_s$.
 
-Measured after: 4.7, 15.6, 0.5 and 2.1 ulp respectively; the bend's floor is
+Measured after: 4.7 ulp for the curved drift (the sweep's worst case, at
+$h=0.35$; the $h=10^{-3}$ case quoted above reads 0.5), 15.6 for the bend, 0.5
+for the solenoid and 2.1 for the curved solenoid — each bounded by its own pin
+in the suite's "Cancellation-free longitudinal updates" testset and re-measured
+at the suite's seed by the 2026-10-18 audit (U48); the bend's floor is
 the deviation angle's rounding over $b_0$, 52.6 ulp at $b_0=0.05$. The bend's
 $x'$ went from 5863 to 2.1 ulp and $p_x'$ from 1225 to 1.6 ($L=0.5$). The
 price is two more roundings at the $hC_1$ scale in $p_x'$ as $b_0\to0$: 2.8
@@ -638,10 +642,17 @@ of the bend itself, and it is worth copying rather than re-deriving.
 Both maps are exactly symplectic — $1.4\times10^{-17}$ and $1.1\times10^{-16}$
 under PTC's orientation, against $0.22$ under the other one.
 
-**One more flag to pin:** `n_wedge`. At $0$ the closed form above is used; at
-nonzero values PTC instead *integrates* the wedge with its own Yoshida
-composition (`wyosh`, `wyoshik`, `wyoshid`), which gives different numbers at
-finite step count. Same class of switch as `MODEL` and `METHOD`.
+**One more flag to pin, in newer PTC only:** `n_wedge`. MAD-X 5.03.06's PTC —
+the generator of the committed reference,
+`validation/reference/ptc_madx_5.03.06.tsv` — has no such switch and uses the
+closed form above; the FOREST/Bmad PTC declares `n_wedge = 5` by default and
+*integrates* the wedge in `|n_wedge|` steps of its own Yoshida composition
+(`wyosh`, `wyoshik`, `wyoshid`), which gives different numbers at finite step
+count, so a reference regenerated with a newer MAD-X must set `n_wedge = 0`
+to agree with `_wedge`'s closed form at the `PTCConsistencyContract`
+tolerance (`default_atol = 1e-11`). Same class of switch as `MODEL` and
+`METHOD` (2026-10-18 audit, U48;
+`docs/history/comprehensive_audit_2026_10_18_unit_reports/U48_report.md`).
 
 ## 6. Fringe fields, as PTC implements them
 
@@ -800,7 +811,7 @@ design reached from the field side.
 > **normal** component $b_1$ is excluded from this sum — only the skew $a_1$
 > contributes — because `FRINGE_dipole` already handles it.
 
-### 6.3 The dipole face has six components, not one
+### 6.3 The dipole face has seven components, not one
 
 At the entrance of a sector bend (`fringe_TEAPOTr`, `DIR=1`, `EDGE(1)≠0`), in
 order:
@@ -881,6 +892,8 @@ Two details worth copying verbatim:
   $$\Delta p_y=-\frac{h^2y^3}{18\,FG\,(1+\delta)},\qquad
     \Delta z=-\frac{h^2y^4}{72\,FG\,(1+\delta)^2} ,$$
   the exact kick of the potential $V=\dfrac{h^2y^4}{72\,FG\,(1+\delta)}$
+  (with $b$ the dipole strength of Section 6.3.1 — `b = σ b1` in
+  `_fringe_dipole_exact` — not the frame curvature $h$)
   ($\Delta p_y=-\partial V/\partial y$, $\Delta z=+\partial V/\partial\delta$ in
   the $z=s-l$ convention, whose longitudinal sign is the negative of PTC's), as
   the code forms it (`c3 = b^2/(72 fg)/p`, `py -= 4 c3 y^3`, `z -= c3 y^4/p`).
@@ -956,8 +969,8 @@ $$
     J_1=-\frac{k_0L^2}{24},\qquad J_2=0 .
 $$
 
-Comparing with $f_1=-\sigma\,\mathcal F\lvert\mathcal F\rvert\,b/(24p_z)$ and
-$k_0=b/p_z$ identifies
+Comparing with $f_1=-\sigma\,\mathcal F\lvert\mathcal F\rvert\,b/(24(1+\delta))$ and
+$k_0=b/(1+\delta)$ identifies
 
 $$
     \boxed{\;\mathcal F=\texttt{VA}=\text{the equivalent linear-ramp length}\;}
@@ -979,12 +992,12 @@ $b=\lvert b_2+ia_2\rvert$: rotate to principal axes, apply the normal-quadrupole
 fringe, rotate back.
 
 **The longitudinal update is the symplectic completion.** The transverse map
-depends on $\delta$ through $p_z$, so $z$ must move. Expressing the map by the
+depends on $\delta$ through $1+\delta$, so $z$ must move. Expressing the map by the
 mixed-variable generating function
 
 $$
-    \tilde F=\left(e^{f_1}-1\right)xP_x+e^{f_1}\frac{f_2}{2p_z}P_x^2
-            +\left(e^{-f_1}-1\right)yP_y-e^{-f_1}\frac{f_2}{2p_z}P_y^2
+    \tilde F=\left(e^{f_1}-1\right)xP_x+e^{f_1}\frac{f_2}{2(1+\delta)}P_x^2
+            +\left(e^{-f_1}-1\right)yP_y-e^{-f_1}\frac{f_2}{2(1+\delta)}P_y^2
 $$
 
 (with $P_x,P_y$ the **new** momenta, held fixed under $\partial/\partial\delta$)
@@ -1012,18 +1025,21 @@ $$
     b=\sqrt{b_2^2+a_2^2},
 $$
 $$
-    f_1=\frac{-\sigma\,\mathcal F\lvert\mathcal F\rvert\,b}{24\,p_z},
+    f_1=\frac{-\sigma\,\mathcal F\lvert\mathcal F\rvert\,b}{24\,(1+\delta)},
     \qquad
-    f_2=\frac{\mathcal G\,b}{p_z},
+    f_2=\frac{\mathcal G\,b}{1+\delta},
 $$
 $$
-    x\to xe^{f_1}+\frac{f_2}{p_z}p_x,\quad p_x\to p_xe^{-f_1},
+    x\to xe^{f_1}+\frac{f_2}{1+\delta}p_x,\quad p_x\to p_xe^{-f_1},
     \qquad
-    y\to ye^{-f_1}-\frac{f_2}{p_z}p_y,\quad p_y\to p_ye^{f_1} .
+    y\to ye^{-f_1}-\frac{f_2}{1+\delta}p_y,\quad p_y\to p_ye^{f_1} .
 $$
 
-The $e^{\pm f_1}$ pairing preserves $xp_x$ and $yp_y$, so the map is symplectic
-by inspection.
+The divisor is $1+\delta$ throughout this section: PTC's `PZ` in
+`FRINGE2QUADR` is `1 + X(5)` under `TIME=FALSE`, not the kinetic root $p_z$ of
+Section 6.3.1, and the code follows PTC (`p = 1 + pz` in `_soft_quad_fringe`);
+the two differ at $O(p_x^2)$ (2026-10-18 audit, U48-6). The $e^{\pm f_1}$
+pairing preserves $xp_x$ and $yp_y$, so the map is symplectic by inspection.
 
 Two traps: $\mathcal F$ and $\mathcal G$ are the element's **`VA` and `VS`**,
 *not* the dipole's `FINT`/`HGAP`, despite the subroutine's argument names; and
@@ -1119,14 +1135,20 @@ Two practical points for the contract:
 - `VA` and `VS` now have physical meaning (Section 6.4) but no measurement
   recipe: extracting them from a measured or simulated gradient profile
   $k(s)$ means evaluating $J_1$ and $J_2$ numerically, which is a small utility
-  worth providing alongside the element.
+  worth providing alongside the element. **Recorded, not planned
+  (2026-10-22): no `docs/todo.md` row; the 2026-10-18 audit's fix batch 4a
+  recorded the item here rather than opening one (U48-14).**
 - Whether $b_1$ in the multipole array may represent a bend, or whether bending
   lives only in the dipole element with an explicit $h$. Section 4.4 makes this
   concrete: $h$ and $K_0$ are independent inputs to the same potential, so a
   "bend" is $K_0\neq0$ and a curved frame is $h\neq0$, and neither implies the
   other.
 - The $y$-truncation order of the curved-multipole series (Section 4.4) needs a
-  measured default at the working aperture.
+  measured default at the working aperture. **Recorded, not planned
+  (2026-10-22): `curved_order` ships with default 8 (`ParamMeta` in
+  `src/elements/lattice_magnets.jl`); the item sits as item 8 of a closed
+  record in `docs/history/todo_ledger_archive.md` and has no `docs/todo.md`
+  row.**
 - Reference-energy change (ramping) makes conventions #3/#4 explicitly
   $s$-dependent through $\beta_0$; out of scope here, but it is where the
   conversion in Section 2.2 stops being a constant-coefficient map.

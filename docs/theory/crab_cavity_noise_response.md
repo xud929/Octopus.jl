@@ -128,10 +128,14 @@ $$
 \langle\cos^2 ikz\rangle = \tfrac12\bigl(1+e^{-2(ik\sigma_z)^2}\bigr),
 $$
 
-| $i$ | $\langle\cos ikz\rangle$ | $\langle\cos^2 ikz\rangle$ | residual rms / dipole |
+| $i$ | $\langle\cos ikz\rangle$ | $\langle\cos^2 ikz\rangle$ | residual rms / dipole, $\sqrt{\langle\cos^2 ikz\rangle-\langle\cos ikz\rangle^2}$ |
 |---|---|---|---|
-| 1 | 0.9698 | 0.9422 | 0.043 |
-| 2 | 0.8845 | 0.8060 | 0.174 |
+| 1 | 0.9698 | 0.9422 | 0.042 |
+| 2 | 0.8845 | 0.8060 | 0.154 |
+
+(The last column is the exact centred rms over the bunch; the quadratic
+approximation $(ik\sigma_z)^2/\sqrt2$ gives 0.043 and 0.174, 13 % high on
+harmonic 2, and is what this table carried until 2026-10-22; audit F-242.)
 
 The energy kick acquires the error $+s_i x\,\delta\phi\sin(ikz)$, of
 relative size $\delta\phi\,ik\sigma_z \approx 2.5\times10^{-6}$ against the
@@ -411,7 +415,8 @@ $\tau_d$. Section 7 builds the control into the sweep.
 
 The derivation of this ratio is not an Octopus task (owner decision
 2026-10-18: a physics research problem, not framework development); the
-measured ratio stands as the validation's explicit input, `ref_y_over_x_phase`.
+measured ratio is an optional INFO annotation of the validation
+(`ref_y_over_x_phase`, no default, no verdict).
 
 The treatment above carries no vertical response to horizontal offset
 noise: the offset $d$ enters $F_x$ only. The validation sweep (the record,
@@ -438,7 +443,8 @@ baseline, so the falsifier of 3.2 did not fire. The ratio
 $R = (d\langle J_y\rangle/dn)/(d\langle J_x\rangle/dn)$ for white horizontal
 offset noise, $\langle(\partial_x F_y)^2\rangle\,\beta_y^*/\varepsilon_y$ over the
 weak-beam distribution against the horizontal response of 4.3, is not
-derived here (an owner row in `docs/todo.md`); its dependence on the noise
+derived here (owner decision 2026-10-18: not an Octopus task; the former
+`docs/todo.md` row is closed and archived); its dependence on the noise
 amplitude and on the spectrum, both measured, is unexplained until it is.
 
 ## 5. Coloured noise
@@ -552,17 +558,21 @@ summed over both cavities and both active harmonics with independent
 streams; a scale factor $s$ on the rms multiplies every rate by $s^2$ (the
 small-offset regime holds to $s \sim 100$).
 
-| noise | rule | plane | per turn | per hour | doubling time |
+| noise | rule | plane | per turn | per hour | doubling time (linear growth, $1/R$) |
 |---|---|---|---|---|---|
-| phase, $\sigma_\phi = 10$ µrad | white | $x$ | $1.72\times10^{-7}$ | 48.5 | 51 s |
-| | pink ($\bar\rho_x = 0.15$) | $x$ | $2.5\times10^{-8}$ | 7.1 | 350 s |
+| phase, $\sigma_\phi = 10$ µrad | white | $x$ | $1.72\times10^{-7}$ | 48.5 | 74 s |
+| | pink ($\bar\rho_x = 0.15$) | $x$ | $2.5\times10^{-8}$ | 7.1 | 510 s |
 | | table, white record | $x$ | as white | | |
 | | any | $y$ | 0 | | |
-| amplitude, $\sigma_A = 10^{-4}$ (relative) | white | $x$ | $1.10\times10^{-6}$ | 309 | 8 s |
+| amplitude, $\sigma_A = 10^{-4}$ (relative) | white | $x$ | $1.10\times10^{-6}$ | 309 | 12 s |
 | | white | $y$ | 0 without the strong beam; the coupling of 4.5 only with it | | |
-| | pink ($\bar\rho_x$) | $x$ | $1.6\times10^{-7}$ | 45 | 55 s |
+| | pink ($\bar\rho_x$) | $x$ | $1.6\times10^{-7}$ | 45 | 80 s |
 | | pink | $y$ | 0 without the strong beam; the coupling only with it | | |
-| phase, common-timing alternative | white | $x$ | $1.01\times10^{-7}$ | 28.5 | 87 s |
+| phase, common-timing alternative | white | $x$ | $1.01\times10^{-7}$ | 28.5 | 127 s |
+
+(A linear growth at rate $R$ per turn doubles the emittance after $1/R$ turns,
+$1/(R f_{\rm rev})$ seconds; the column read $\ln 2/R$ — 51, 350, 8, 55 and
+87 s — until 2026-10-22, audit F-242.)
 
 The amplitude rows' vertical entries read $9.5\times10^{-7}$ (white) and
 $1.6\times10^{-7}$ (pink) per turn under the superseded additive semantics of
@@ -578,7 +588,7 @@ prediction is a defect, not a model correction.
 On the size of these numbers: a per-turn white sequence of rms $\sigma_\phi$
 has the one-sided PSD $2\sigma_\phi^2/f_{\rm rev} = 2.6\times10^{-15}$
 rad²/Hz, flat to $f_{\rm rev}/2 = 39$ kHz, so the production point is a very
-noisy LLRF (the emittance doubles in a minute). By the $s^2$ law the
+noisy LLRF (the emittance doubles in 74 s). By the $s^2$ law the
 1 %-per-hour point is $\sigma_\phi = 0.14$ µrad of per-turn-equivalent
 white phase noise, or $\sigma_A = 5.7\times10^{-7}$. 
 
@@ -650,7 +660,8 @@ strengths; before 2026-10-15 the absolute $s\cdot10^{-4}|s_i|$).
 | P1 | phase `PinkNoise`(16 octaves) | 1 | on | 2/2 | $2^{17}$ | pink/white ratio vs $\bar\rho_x$ |
 | T1 | phase `TurnTable` = W1's realised offsets | 1 | on | 2/2 | $10^5$ | bitwise reproduction of W1 |
 | T2 | phase `TurnTable` = independent seeded white record | 1 | on | 2/2 | $10^5$ | table reproduces the white rate |
-| A1 A4 | strength `WhiteNoise` | 1, 4 | on | 2/2 | $10^5$ | $x$ rate; $y$ the coupling of 4.5 only; no centroid motion |
+| A05 A1 A2 | strength `WhiteNoise` | 0.5, 1, 2 | on | 2/2 | $10^5$ (A2: 25 000) | $x$ rate and exponent (small-growth set); $y$ the coupling of 4.5 only; no centroid motion |
+| A4 A4s | strength `WhiteNoise` | 4 | on | 2/2 | 25 000 / 12 500 | INFO: the small-growth regime's edge (39 % / 21 % growth) |
 | AP1 | strength `PinkNoise` | 1 | on | 2/2 | $2^{17}$ | pink/white in $x$ ($y$ information) |
 | AT1 | strength `TurnTable` = seeded white record of relative factors | 1 | on | 2/2 | $10^5$ | table reproduces white |
 | C0 | none | – | 0 | 0/0 | $10^5$ | linear baseline |
@@ -658,13 +669,19 @@ strengths; before 2026-10-15 the absolute $s\cdot10^{-4}|s_i|$).
 | C2 | strength `WhiteNoise` | 1 | 0 | 0/0 | $10^5$ | direct term lands in $\varepsilon_c$ in $x$; $\varepsilon_{c,y}$ at the baseline; centroid flat |
 | C3 (optional) | phase `WhiteNoise` | 1 | 0 | 2/2 | $10^5$ | reversible chromatic decoherence $\le 7\,\%$ of $J_c$ |
 
+(Brought current 2026-10-22 with the 2026-10-15 re-validation, record
+`../history/crab_cavity_noise_relative_strength_2026_10_15.md`; the A05, A2 and
+A4s cases and the INFO demotion of A4 are that record's.)
+
 **Acceptance.**
 
 1. Rates (baseline-subtracted $\bar J_{\rm raw}$ slope over $\varepsilon$)
-   for W1, A1 ($x$), T2, AT1 within a factor 1.25 of section 6; the
-   baseline slope below 5 % of the $s = 1$ prediction. A1's vertical rate
-   is reported as the coupling of 4.5, not judged against a prediction.
-2. The exponent of rate versus $s$ from W1–W3 (and A1, A4) equal to 2 within
+   for W1–W3, A05, A1, A2 ($x$), T2, AT1 within a factor 1.25 of section 6
+   (A4 and A4s are information at the small-growth regime's edge); the
+   baseline slope below 5 % of the $s = 1$ prediction. The amplitude runs'
+   vertical rates are reported as the coupling of 4.5, not judged against a
+   prediction.
+2. The exponent of rate versus $s$ from W1–W3 (and A05, A1, A2) equal to 2 within
    $\pm0.1$ (log–log fit).
 3. P1/W1 and AP1/A1 rate ratios in $x$ equal to $\bar\rho_x = 0.15$ within
    $\pm25\,\%$ (accept $[0.11, 0.19]$); the vertical AP1/A1 ratio is
@@ -678,7 +695,8 @@ strengths; before 2026-10-15 the absolute $s\cdot10^{-4}|s_i|$).
    prediction from the realised offsets (both cavities, bunch factor
    $\langle\cos ikz\rangle$ from the sampled $z$) to 1 % of its rms
    excursion; the $\varepsilon_c$ slope is below 1 % of the predicted raw
-   rate; $\bar J_{\rm raw} - \varepsilon_c = J_c$ turn by turn.
+   rate; $\bar J_{\rm raw} - \varepsilon_c = J_c$ holds to first order in
+   $J_c/\varepsilon_c$ and is printed (INFO), not judged.
 7. C2: the horizontal $\varepsilon_c$ growth follows the covariance
    propagation of the realised strength factors through the linear maps
    (the record's control part; a first-moment rate ratio carries a 100 %
@@ -732,8 +750,8 @@ backend beyond tolerance.
    re-validated, gated and pushed as c070750 (CI run 454 green; the status
    brought current by the 2026-10-16 neighbour audit); record
    `../history/crab_cavity_noise_relative_strength_2026_10_15.md`.
-3. **The production point is loud.** Doubling times of a minute (phase)
-   and eight seconds (amplitude); fine as a test point, where $10^5$ turns
+3. **The production point is loud.** Doubling times of 74 s (phase)
+   and 12 s (amplitude); fine as a test point, where $10^5$ turns
    (1.3 s of beam) give 2–11 % growth, but not an LLRF specification. The
    1 %/h-equivalent per-turn rms is 0.14 µrad / $5.7\times10^{-7}$.
 4. **The beam–beam-mediated change of the raw rate is 1–2 %**, not

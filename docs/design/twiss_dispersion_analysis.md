@@ -40,6 +40,11 @@ The mathematics it builds on is
 degeneracy theory of its Section 13 and the reproducible checks behind it are
 in [the degeneracy-theory record](../history/twiss_dispersion_degeneracy_theory_2026_09_11.md).
 This paragraph is the only place in the note that tracks implementation status.
+Stage 9, the post-campaign targeted neighbour audit (2026-09-16), and the
+later dated edits in the body (2026-09-14, 2026-10-14, the 2026-10-18 owner
+decision; 2026-10-22 the frozen `resolution_chord` default) are recorded
+where they sit — since 2026-10-22 the body is edited in place with dated
+notes rather than frozen — and the campaign history is the ledger of record.
 
 ## The problem
 
@@ -180,7 +185,7 @@ their defaults:
 | nonsymplectic | `:error` | or `:flag`; never a repair |
 | closed_orbit, closed_orbit_atol | `:require`, roundoff-derived | inactive on a bare matrix |
 | map_uncertainty | `0.0` | user-declared map error, folded into ρ_M |
-| resolution_chord | `1e-4`, provisional | see the resolution criterion |
+| resolution_chord | `1e-3` (design draft `1e-4`; frozen from the measured bracket, history Part D) | see the resolution criterion |
 | clusters | `:auto` | or an explicit partition of oriented-eigenvalue indices |
 | longitudinal_mode | maximum signed longitudinal area | or an explicit canonical eigenvalue index (either member of the mode's conjugate pair in the canonical spectrum; not the normal-mode number) |
 | preferred_form | `:auto` | Edwards–Teng form 1 or 2 |
@@ -443,6 +448,10 @@ default is set at the geometric mean between the largest q of a control that
 must resolve and the smallest q of one that must not, rounded to one digit,
 and that arithmetic travels with the tolerance. If the bracket does not contain
 `1e-4`, the measured value wins and this paragraph records the change.
+**Recorded 2026-10-22:** the bracket did not contain `1e-4`; the frozen value
+is `1e-3` (`_DEFAULT_RESOLUTION_CHORD` in `src/analysis/mode_clusters.jl`;
+[the campaign history](../history/twiss_dispersion_analysis_history.md),
+Part D "the chord table and the frozen default", with the margins).
 
 The same `ρ_M1` drives the Gram floor, the graph-singularity ratio, the
 coincident-trace guards, the minimal-polynomial tolerance, and the exact-set

@@ -136,8 +136,13 @@ $$
 $$
 
 where $\mathbf w_\beta$ is independent of the longitudinal coordinates,
-$\boldsymbol\zeta$ is crab dispersion, and $\boldsymbol\eta$ is momentum
-dispersion. Let
+$\boldsymbol\zeta$ is crab dispersion, and $\boldsymbol\eta$ here is the slope
+$d\mathbf r/dp_z$ on the synchrotron plane, i.e. the canonical
+`momentum_dispersion` keyword of `gaussian_strong_beam_covariance` divided by
+$h = 1 - \boldsymbol\zeta^T S_4\boldsymbol\eta_{\rm can}$ (the builder forms it
+through `_dispersion_graph`; the two coincide when
+$\boldsymbol\zeta^T S_4\boldsymbol\eta_{\rm can} = 0$; `twiss_dispersion.md`
+(D7)-(D8); stated 2026-10-22, audit F-231). Let
 
 $$
     L=

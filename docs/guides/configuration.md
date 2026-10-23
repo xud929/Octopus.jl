@@ -65,8 +65,9 @@ rather than redefine one.
    checks exports by module name ("every public configuration schema is
    exported").
 4. Add the policy's block to `validate_configuration_metadata()` in
-   `src/tasks/strongstrong/interface.jl`. The validator enumerates policy
-   types by hand (an open `../todo.md` row); its tree guard names any
+   `src/tasks/strongstrong/interface.jl`. The validator walks
+   `_concrete_octopus_subtypes(AbstractExecutionPolicy)` (derived; the
+   hand-enumeration row closed 2026-09-07, archive); its tree guard names any
    concrete policy that has no block. The block compares every schema
    default with a CONSTRUCTED default policy (`NewPolicy()`), never with a
    literal copy of the schema's own value: two of the five blocks compared

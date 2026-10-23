@@ -579,10 +579,13 @@ itself (2026-10-16 neighbour audit, U7-3 and U7-4):
    example's stream ids 11, 12, 14, 15 (tccb) and 21, 22, 24, 25 (tcca) --
    for 65536 turns by default. Metrics, each printed PASS/FAIL with its
    number: the sample rms against sigma (white and table within
-   `3 sqrt(1/(2N))`, 0.83 % at 65536; pink within three times the
-   construction's own one-sigma, `Var[rms^2]/sigma^4 = (2/(K^2 N)) sum_k
-   2^k (2K - 1 - 2k)`, 7.65 % at K = 16 and N = 65536, so 23 %, with a
-   Monte Carlo p-value from 2048 reference streams beside it); the pink
+   `3 sqrt(1/(2N))`, 0.83 % at 65536; pink judged on the slot realised over
+   `long_turns` (default 2^20) turns against the two-sided 99 % band of the
+   construction's rms over `rms_streams` (default 4096) synthetic streams of
+   that length (owner decision 2026-10-14), the N-turn rms -- whose one-sigma
+   from `Var[rms^2]/sigma^4 = (2/(K^2 N)) sum_k 2^k (2K - 1 - 2k)` is 7.65 %
+   at K = 16 and N = 65536 -- printed as INFO with its Monte Carlo two-sided
+   p-value from 2048 reference streams); the pink
    cells rebuilt bitwise from the counter RNG and its distinct generator
    draws unit-normal within `3 sqrt(2/M)`; the mean within three times its
    own one-sigma (pink: `sigma^2 (2^K - 1)/(K N)`, not `sigma^2/N`); the
@@ -641,8 +644,10 @@ itself (2026-10-16 neighbour audit, U7-3 and U7-4):
    relative trend over the same window. `pilot` calibrates (white at scale
    100 and 30, the baseline drift, a `kbb = 0` case, the ms per turn at the
    sweep's size and the projected wall clock); `sweep` runs the theory
-   note's cases B0, W1-W3, P1, T1, T2, A1, A4, AP1, AT1, C0, C1, C2 and the
-   optional C3 (1e5 turns, 2^17 for the pink runs, 2.5e4 for A4; 1e6
+   note's cases B0, W1-W3, P1, T1, T2, A1, A4, AP1, AT1, C0, C1, C2 by
+   default and, on request through `cases=`, the amplitude-arm cases A05, A2
+   and A4s that the report's items 1 and 2 read and the optional C3 (1e5
+   turns, 2^17 for the pink runs, 2.5e4 for A4 and A2, 1.25e4 for A4s; 1e6
    macroparticles; radiation off; moment step 1), one TSV row per case,
    resumable. Part `tablefile` writes W1's realised offsets as the harness's
    `OCTOPUS_TABLE_FILE` for T1 (exact Float64 round-trip, FNV-1a digests
@@ -651,19 +656,25 @@ itself (2026-10-16 neighbour audit, U7-3 and U7-4):
    linear maps, PASS within 1 % of its rms excursion.
 3. How do the rules compare? Part `report` on a sweep TSV: the theory
    note's acceptance items 1-8, each PASS/FAIL with its number and
-   tolerance -- the W1, W2, W3, A1 (x and y), A4, T2 and AT1 rates within a
-   factor 1.25 of the reference (`ref_*` times s^2; the references are
-   overridable arguments whose defaults are the note's section 6 values,
-   1.72e-7 per turn for phase white in x, 1.10e-6 and 9.5e-7 for amplitude
-   white in x and y) and the B0 slope below 5 % of the s = 1 prediction;
-   the s^2 exponent within 0.1; P1/W1 and AP1/A1 within 25 % of the pink
-   ratios 0.15 (x) and 0.17 (y); T1 equal to W1 to 1e-10 relative on every
-   moment column; `eps_c` growing at least 0.8 of `J_raw` with the
-   second-half `J_c` below 10 % of the growth and no vertical growth under
-   phase noise; the C1 and C2 controls; the fit quality (two-half slopes
-   within 20 % of the rate, residual rms below 5 % of the growth). The
-   falsifiers are printed by name when they trigger; no verdict uses a
-   constant that is not printed.
+   tolerance -- the W1, W2, W3, A05, A1, A2, T2 and AT1 horizontal rates
+   within a factor 1.25 of the reference (`ref_*` times s^2; the references
+   are overridable arguments whose defaults are the note's section 6 values,
+   1.72e-7 per turn for phase white in x and 1.10e-6 for amplitude white in
+   x; `ref_amp_white_y` is retired and refused, the vertical rates under
+   amplitude noise being the beam-beam coupling alone, printed as INFO) and
+   the B0 slope below 5 % of the s = 1 prediction; the s^2 exponent within
+   0.1 (phase from W1-W3, amplitude from A05, A1, A2; A4 and A4s are INFO at
+   the small-growth regime's edge); P1/W1 and AP1/A1 within 25 % of the pink
+   ratio 0.15 in x (the y ratio printed against 0.17 as INFO); T1 equal to
+   W1 to 1e-10 relative on every moment column; `eps_c` growing at least 0.8
+   of `J_raw` with the second-half `J_c` below 10 % of the growth (the
+   colliding runs' vertical rates printed, the plane mapping judged on the
+   C1 and C2 controls at 5 % of the predicted x rate); the C1 and C2
+   controls; the fit quality (two-half slopes within 20 % of the rate,
+   residual rms below 5 % of the growth). The falsifiers are printed by name
+   when they trigger; no verdict uses a constant that is not printed
+   (brought current 2026-10-22 with the script's `report` header; audit
+   F-208).
 
 Run from the project root (`artifact_dir` should be a local disk: the
 per-turn observer write on a networked filesystem dominates a long run):

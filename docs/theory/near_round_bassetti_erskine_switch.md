@@ -1083,6 +1083,20 @@ $1.2449\times10^{-8}$ for Float64. Both occur where the response
 norm is small, so the natural-scale errors in the table are the appropriate
 conditioning metric.
 
+The table is the 2026-07-30 snapshot, quoted without the host or libm identity.
+Re-run unmodified on 2026-10-18 (comprehensive audit, Sapphire Rapids host, CUDA
+active; unit report U46, lead U46-1), the committed harness reproduced every
+structural number to the printed digits (both $\eta$ intervals, the Float64
+force relative error, both core gradients, the 6D residual, the Section 10.2
+endpoint figures and the Float32 CPU/CUDA parity) but printed larger
+roundoff-floor maxima: Float32 force relative $5.4797\times10^{-6}$, force
+natural-scale $1.1852\times10^{-6}$, response natural-scale
+$1.7500\times10^{-5}$, response relative $3.0642\times10^{-3}$; Float64 force
+natural-scale $9.8139\times10^{-14}$, response natural-scale
+$3.9900\times10^{-11}$. Roundoff-floor maxima over a dense grid move with the
+host's libm and FMA contraction; refreshing the table needs a run that records
+both, not done as of 2026-10-22.
+
 ### 10.2 Endpoint continuity experiment
 
 At each endpoint, the script samples at
@@ -1143,7 +1157,9 @@ subtraction is inaccurate.
 
 The validation shows transition-force errors of
 $6.2\times10^{-12}$ or less in Float64 and
-$4.8\times10^{-6}$ or less in Float32 over the declared scan, with finite core
+$6\times10^{-6}$ or less in Float32 over the declared scan (the 2026-07-30
+snapshot read $4.8\times10^{-6}$, the 2026-10-18 audit re-run $5.5\times10^{-6}$;
+Section 10.1), with finite core
 gradients and CPU/CUDA agreement at the arithmetic-appropriate scale. The
 Float32 outer covariance response remains the limiting continuity quantity and
 should be remeasured if the CUDA Faddeeva approximation, expansion order, or

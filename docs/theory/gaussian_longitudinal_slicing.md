@@ -511,7 +511,9 @@ $$
 The inner steps $\Delta_k$ are **particle-independent**; only the entry offset
 $s_1=(z-z_1)/2$ moves with the particle, which is physics — a particle at the
 head collides earlier — not an integrator inconsistency. Measured residuals for
-the three virtual-drift models:
+the three virtual-drift models (residuals of the 2026-07 derivation session, not
+reproduced by a committed harness; the round-trip row was re-measured by the
+2026-10-18 audit at the same order, unit report U46, the other rows were not):
 
 | check | hirata | chromatic | exact |
 |---|---|---|---|
@@ -638,6 +640,12 @@ electron strong beam sliced, `:sqrt_density`):
 | $N_s$ | 1 | 3 | 4 | 5 | 7 | 9 | 11 | 15 | 21 | 31 | 45 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | $Q$ | 3.8e-4 | 6.7e-5 | 4.1e-5 | 2.8e-5 | 1.5e-5 | 9.8e-6 | 6.8e-6 | 3.8e-6 | 2.1e-6 | 9.9e-7 | 4.9e-7 |
+
+(The $N_s = 3, 5, 7, 9, 15, 21, 31, 45$ columns reproduce with
+`validation/gaussian_slicing_convergence.jl`; the $N_s = 1$, 4 and 11 cells come
+from a one-off run with an edited `ns_list` and are unreproduced since, and the
+"falls below at $N_s = 4$" conclusion below rests on that cell. Stated
+2026-10-22, audit F-231.)
 
 - With the **default paraxial drift**, slicing falls below the drift-model error
   at $N_s=4$. Use $N_s=5$; more slices refine a term that is no longer leading.

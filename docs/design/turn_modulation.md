@@ -357,10 +357,15 @@ isolated segment likewise. The existing `update!` is removed rather than kept
 beside the new verb (one hook, one meaning); the repo-wide grep the matrix
 names for a symbol rename is owed (done at stage 1).
 
-The `ntuple(..., Val(N))` form is load-bearing. `Base.map` over a tuple longer
-than 32 elements falls back to a generic path [5]; measured on a 40-element
-line it cost 9.6 µs and 79 kB of allocation per turn, against 20 ns and zero
-allocation for the unrolled form (section 7). The suite asserts zero
+The `ntuple(..., Val(N))` form was load-bearing against `Base.map` at this
+stage: `Base.map` over a tuple longer than 32 elements falls back to a generic
+path [5]; measured on a 40-element line it cost 9.6 µs and 79 kB of allocation
+per turn, against 20 ns and zero allocation for the unrolled form (section 7).
+It was itself replaced on 2026-10-16 by the `@generated` literal-index unroll
+`_update_line_unrolled` (`src/elements/turn_modulated.jl`) after the
+neighbour audit measured the closure form allocating 130-435 kB per turn on
+mixed lines of about four element types (finding U1-1; section 7 records the
+`_slot_draws` unroll, and this is its sibling). The suite asserts zero
 allocation in the rebuild and that the rebuilt tuple's type equals the input
 type, in the spirit of the `Core.Box` tripwire.
 

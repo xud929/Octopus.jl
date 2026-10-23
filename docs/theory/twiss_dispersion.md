@@ -1193,8 +1193,13 @@ means the canonical pair of (D6)–(D8), as `TwissDispersionAnalysis` reports it
 a consumer that needs the physical graph forms (D7) itself. The strong-beam
 covariance builder `gaussian_strong_beam_covariance` takes $(\boldsymbol\zeta,\boldsymbol\eta)$
 and converts through `_dispersion_graph` ($h=1-\boldsymbol\zeta^TS_4\boldsymbol\eta$).
-Xsuite's `dx, dpx, ...` and MAD-X's `deltap` dispersion are the slope $\boldsymbol\eta/h$ of
-(X2) and must be converted by (D8) before they are handed to Octopus as $\boldsymbol\eta$.
+Xsuite's `dx, dpx, ...` are the slope $\boldsymbol\eta/h$ of (X2) (gated, C1 and C3 of
+`validation/twiss_xsuite_benchmark.jl`); MAD-X's `deltap` dispersion equals it on
+the coasting cells where it was compared (U1, U2, K1, K2 of
+`validation/twiss_madx_benchmark.jl`: no cavity, $h = 1$, so (D8) is the
+identity) and is a forced-4D response, not $\boldsymbol\eta/h$, on a bunched or
+crab-coupled lattice (unverified against MAD-X as of 2026-10-22). Convert a
+slope by (D8) where $h \neq 1$ before handing it to Octopus as $\boldsymbol\eta$.
 
 ### 8.3 Extraction from the longitudinal eigenvector
 
@@ -2218,7 +2223,7 @@ The lattice benchmarks below are requirements, **not passed tests**.
 4. **Crab coupling:** embed a canonical thin kick $p_x\mapsto p_x+kz$, $p_z\mapsto p_z+kx$ in a stable ring. Include both companion kicks under (C2).
 5. **Full 6D covariance:** compare direct covariance transport with reconstruction from the three normal modes and specified rms mode emittances.
 6. **Dispersion solution methods:** compare eigenvector, both algebraic constructions, fixed-point, and Newton results on the same longitudinal branch. Check Parzen's block cubic against (D17), and the three signed-area row/column sums in (K12). Include a case with a poorly conditioned raw Sylvester operator and verify that the routine reports it or selects another method.
-7. **Ohmi and Xsuite conventions:** verify (O2)–(O5) and (X2) after coordinate conversion; distinguish full-6D normalization from forced 4D responses. (Discharged 2026-09-15: (X2) after the conversion Sh(-C/gamma0^2) against xtrack 0.112.0, the full-6D normalization against PTC ptc_twiss time=false after F = diag(1,1,1,1,-1,1), and the forced-4D versus full-6D distinction by the C3 T6 cell, gated; `validation/twiss_xsuite_benchmark.jl`, `validation/twiss_ptc_benchmark.jl`.)
+7. **Ohmi and Xsuite conventions:** verify (O2)–(O5) and (X2) after coordinate conversion; distinguish full-6D normalization from forced 4D responses. (Discharged 2026-09-15: (X2) after the conversion Sh(-C/gamma0^2) against xtrack 0.112.0, the full-6D normalization against PTC ptc_twiss time=false after F = diag(1,1,1,1,-1,1), and the forced-4D versus full-6D distinction recorded (not gated) beside the C1 rows (`xtrack_4d_route_dx_4d_beside_eta_x`), the C3 T6 cell gating the longitudinal witnesses; `validation/twiss_xsuite_benchmark.jl`, `validation/twiss_ptc_benchmark.jl`.)
 8. **Parameter continuation:** compare (D28) against finite differences, verify the $O((\Delta t)^2)$ predictor error and corrected graph residual, and preserve mode identity across a physical projection singularity using the full basis. Reject ambiguous steps near a mode collision; do not claim the individual plane remains unique there.
 9. **Exceptional cases:** exercise nearly equal mode frequencies, eigenvalues near $\pm1$, ill-conditioned longitudinal projections, and the $h=0$ graph singularity. Include negative $h$. Verify that diagnostics identify ambiguous or unavailable parameters without returning spurious unique values. Section 13 supplies the exact fixtures: the definite degenerate family $\operatorname{diag}(\mathcal R(\mu),\mathcal R(\gamma),\mathcal R(\mu))$ with its ambiguity set (N11)–(N14), the indefinite family (N15), the false polynomial graph (N17), and the rolled equal-tune FODO cell of Section 13.10 with its detuned controls.
 

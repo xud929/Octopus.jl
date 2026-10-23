@@ -1,6 +1,8 @@
 # The Solenoid: Exact Map, Canonical Momenta, and the Hard Edge
 
-Derivation note for the solenoid element. Written before the implementation,
+Derivation note for the solenoid element. Written before the implementation (as
+of 2026-10-22 the implementation is `src/elements/solenoid.jl`, pinned by the suite's
+solenoid testsets and `validation/symplecticity_validation.jl`),
 because the solenoid is the first Octopus element whose **stored momenta stop
 being the physical transverse momenta inside the magnet**, and that single fact
 decides the interface, the fringe model, and what a diagnostic is allowed to
@@ -334,7 +336,12 @@ changes outside the element map, and the solenoid map is a map like any other,
 so misalignment should compose without special handling. This should be
 *verified* rather than assumed, because a rotation about $s$ commutes with a
 solenoid while a pitch does not, and a wrapper that silently assumed
-commutation would be invisible on a roll test.
+commutation would be invisible on a roll test. **Status (2026-10-22): not
+verified — no suite test, validation script or PTC reference case misaligns a
+solenoid (the table's five `solenoid_*` cases carry no misalignment); a
+`solenoid_mis_dtheta` reference case would settle the pitch question. Recorded
+as not planned, with no `docs/todo.md` row (the 2026-10-18 audit's fix batch
+4a, U48-12).**
 
 **Aperture.** Nothing special: the aperture element reads $x,y$, which are the
 same in both momentum conventions.
@@ -593,10 +600,11 @@ That is a frame problem, not a curvature problem: a straight solenoid entered at
 an angle is a **patch, a straight-frame solenoid, and a patch back**. Adding $h$
 to `Solenoid` would not describe this case and would not help it.
 
-> **A patch element does not exist yet.** `MisalignedElement` is not a
+> **A patch element exists** (`PatchSpec`, `src/elements/patch.jl`, since 2026-08-02;
+> this paragraph predates it and keeps the distinction). `MisalignedElement` is not a
 > substitute: a misalignment is an *error* in where one magnet sits, restoring
 > the frame afterwards, while a patch is a *deliberate* transition to a new
-> reference frame that persists. Section 7.5 of
+> reference frame that persists. Section 7 (the recommended design) of
 > [`misalignment_and_patch_maps.md`](misalignment_and_patch_maps.md) already
 > recommends building one; see the `patch` item in `docs/history/todo_ledger_archive.md`. Until then
 > the crossing-angle solenoid has no clean expression — which is a reason to
@@ -699,7 +707,12 @@ therefore carry `knl = k1*L` in the MAD-X body against `k1` in the Octopus spec.
 
 - **PTC**: $4.7\times10^{-13}$ at `nst=8` and $3.6\times10^{-13}$ at `nst=32`,
   against `solenoid, l=1.3, ks=0.35, knl={0.0, 0.78}`. Two step counts, so the
-  comparison tests convergence and not one working point. Contract now 55 cases (the count is the committed PTC reference table's, `validation/reference/ptc_madx_5.03.06.tsv`; it read 41 until the 2026-08-05_b audit measured it).
+  comparison tests convergence and not one working point. Contract: every
+  case of the committed PTC reference table,
+  `validation/reference/ptc_madx_5.03.06.tsv` (61 distinct cases at
+  2026-10-22, counted from the table's `case` column; the count copied here
+  has drifted twice — 41, then 55 — so the table, not this note, is its
+  source).
 - **Reduces to a quadrupole**: `ks=0` with `k1` reproduces `QuadrupoleSpec` to
   $7\times10^{-18}$ — the splitting collapses to the thing it splits.
 - **Reduces to the exact solenoid**: any all-zero multipole set returns the

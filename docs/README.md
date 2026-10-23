@@ -36,8 +36,10 @@ duplicate derivations. (`knob_control.md` above is also a design note; it
 predates this folder and stays top-level because `AGENTS.md` links it.)
 
 - [`testing_lanes.md`](design/testing_lanes.md) — the fast development lane
-  (`Pkg.test(test_args=["lane=fast"])`): the measured time split behind the 13
-  guarded heavyweight sections, the loud-skip accounting rules, and the
+  (`Pkg.test(test_args=["lane=fast"])`): the measured time split behind the
+  lane-gated heavyweight sections (13 at the 2026-08-13 measurement; the list
+  is the `_lane_gate` call sites in `test/runtests.jl`, 17 titles at
+  2026-10-22), the loud-skip accounting rules, and the
   decision matrix for change classes where only the full gate (CUDA active)
   counts. The fast lane is a checkpoint, never a finish line.
 - [`multi_process_policy.md`](design/multi_process_policy.md) — the
@@ -47,7 +49,8 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   folds, the determinism that buys at fixed and at varying rank counts, and the
   per-step records for 3a-3c and 4a-4h.
 - [`run_artifact.md`](design/run_artifact.md) — the one-output-file-per-task
-  design (2026-08-18, decided, implementation on the ledger): the
+  design (decided and implemented 2026-08-18, all four migration steps; the
+  archive row "The run artifact: one output file per task" is the record): the
   probe/channel split, per-producer groups with independent turn axes (which
   dissolve the mixed-IP row-drop machinery), name identities from provenance
   paths, the three buffer shapes behind one protocol, the device-write
@@ -308,14 +311,19 @@ reference material, not API docs; the implementing code links back to them.
   crest" in the other), the four mutually incompatible phase conventions, and why
   an energy kick needs a beta factor to become a `pz` kick in our convention.
   **Scope A implemented** as `ThinRFCavitySpec` (`src/elements/rf_cavity.jl`,
-  kind `:thin_rf_cavity`, in the registry snapshot): thin, one localised kick,
-  non-accelerating, `L` buying drift space only. **Scope B (accelerating)
-  remains design only** — it needs `P0(s)` and the survey channel. One model
-  boundary is open and documented at both ends: the slip factor is `alpha_c`
-  alone, missing `-1/gamma0^2`, because a runtime element has no channel to its
+  kind `:thin_rf_cavity`, in the registry snapshot; 2026-08-02): thin, one
+  localised kick, non-accelerating, `L` buying drift space only. The model
+  boundary that was open at both ends — the slip factor `alpha_c` alone,
+  missing `-1/gamma0^2`, because a runtime element had no channel to its
   accumulated reference path (audit F16; 1.84x nu_s error at 2.5 GeV proton /
-  alpha_c = 0.2, negligible at EIC-class gamma0). (Status corrected by the
-  2026-08-05_b audit, U26-3.)
+  alpha_c = 0.2) — closed 2026-08-14 through the survey channel
+  (`_velocity_slip_g` carries the `gamma0^2` term; archive row "RF cavity
+  velocity-slip term"). **Scope B (accelerating) implemented 2026-08-14** as
+  `ThinAcceleratingCavitySpec` (kind `:thin_accelerating_cavity`, in the
+  registry snapshot; the campaign's audit trail is
+  [`neighbour_audit_2026_08_14.md`](history/neighbour_audit_2026_08_14.md)).
+  (Status corrected by the 2026-08-05_b audit, U26-3, and again 2026-10-22 by
+  the comprehensive audit's F-234.)
 - [`beam_line_composition.md`](theory/beam_line_composition.md) — design report
   for a beam line, read against MAD-X, Bmad, elegant, Accelerator Toolbox and
   JuAcc. Why every one of them separates the composition *language* from the
@@ -594,8 +602,8 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   `validation/`, `examples/`, `profiling/`, `ext/` and `docs/` file read line
   by line by an agent, the seams by the auditor) whose verbatim reports sit in
   [`comprehensive_audit_2026_10_18_unit_reports/`](history/comprehensive_audit_2026_10_18_unit_reports/INDEX.md):
-  about 520 leads, every one reproduced or read by the auditor, 243 confirmed
-  findings plus six auditor-direct items, 13 of them Major (a CUDA bounds
+  about 520 leads, every one reproduced or read by the auditor, 244 confirmed
+  findings plus six auditor-direct items, 15 of them Major (a CUDA bounds
   reduction fed a thread count that is not a warp multiple, a legal
   `threads=1024` crashing the default PIC route, a `:standard` Green kernel
   diverging CPU/CUDA under the default cache, strong-strong lines compiled
@@ -604,7 +612,11 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   cavity dropping its velocity slip, a Float32 loss record never reused, the
   canonical eigenvalue index swapped in resolved clusters, three committed
   scripts dead on a two-month-old constructor retirement, an MPI seam check
-  that cannot fail). No fix was applied (the pass was authorized to audit);
+  that cannot fail, and the full gate's native arm segfaulting twice at the
+  same point; fourteen §7b rows, F-200 and F-236 sharing the retirement row;
+  the tally 244 findings = 15 Major + 64 Moderate + 165 Minor is re-derived
+  by tag in the record's 2026-10-22 addendum). No fix was applied (the pass
+  was authorized to audit);
   every finding is a priced row in `todo.md`, the 41 inherited rows are
   dispositioned, the Phase 7 contracts and Phase 10 scripts were executed,
   and the two-arm gate's result is in its section 6.
@@ -620,6 +632,13 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   the cluster mode index matched by eigenvalue, three dead scripts ported
   with a retired-spelling tripwire, the MPI seam child's arms that fail by
   name; two integration joins with their own test; thirteen rows retired.
+- [`comprehensive_audit_fixes_2026_10_22_batch4a.md`](history/comprehensive_audit_fixes_2026_10_22_batch4a.md) —
+  the comprehensive audit's fix batch 4a, the documentation-drift row as a
+  markdown-only sweep (a read-only worklist derived from the record, four sweep
+  units in one worktree, the integrator reviewing the whole diff): status banners
+  dated, stale pointers and counts corrected or derived, retracted claims said so,
+  the record's own arithmetic noted in its addendum; the `.jl` halves deferred to
+  batch 4b, two AGENTS.md items left to the owner.
 - [`comprehensive_audit_fixes_2026_10_21_batch3.md`](history/comprehensive_audit_fixes_2026_10_21_batch3.md) —
   the comprehensive audit's fix batch 3, the runtime rows through nine units
   (unit H landing as batch 3b, in the record's addendum)
@@ -677,8 +696,12 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   post-campaign targeted neighbour audit of 93e1720..7711a8a: 44 units,
   220 leads, two majors fixed, seventeen moderates fixed, ninety-three
   minor and style edits, the rest ledgered) 2026-09-16; that last section
-  is the newest neighbour-audit precedent, recorded inside this file
-  rather than as a standalone `neighbour_audit_*.md`.
+  was the newest neighbour-audit precedent until the stage 4 audit inside
+  [`turn_modulation_stages3_4_2026_10_13.md`](history/turn_modulation_stages3_4_2026_10_13.md)
+  and the scoped pass
+  [`audit_crab_cavity_noise_neighbours_2026_10_16.md`](history/audit_crab_cavity_noise_neighbours_2026_10_16.md)
+  (the newest as of 2026-10-22); it is recorded inside this file rather
+  than as a standalone `neighbour_audit_*.md`.
 - [`twiss_external_benchmarks_2026_09_15.md`](history/twiss_external_benchmarks_2026_09_15.md) —
   the stage 8 external benchmark record: the conversion law per code (MAD-X
   J0 and slip, PTC F, xtrack slip), the beam pin, the PTC internal mass, the
@@ -854,6 +877,10 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   the row's "exactly two profiles", "belongs to the fallback" and "not
   reproducible standalone" were all sampling artifacts, and the fix is the pin's
   tolerance, now derived in-process, not the solver),
+  [`gpic_wobble_capture_2026_08_19.txt`](history/gpic_wobble_capture_2026_08_19.txt)
+  (the verbatim capture-trap output of the first wobble firing, 2026-08-19,
+  during the multi-process Phase 0 gate: two files, route wavefront/indexed,
+  column 4, both beams; the evidence behind the mechanism record above),
   [`luminosity_wrapper_support_2026_09_08.md`](history/luminosity_wrapper_support_2026_09_08.md)
   (the fused route carries luminosity through CompositeLine, MisalignedElement
   and RefTilted, so a wrapped strong beam reports for the first time; discovery,

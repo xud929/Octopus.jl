@@ -143,8 +143,10 @@ bound to a position". It is the second.
 
 The cost is that a BPM will not appear in `summarize_registry()`'s element list
 and will not be discoverable through `element_help`. That is the right trade —
-it is not an element — but it does mean BPM discovery needs its own answer, and
-observers currently have no naming scheme. See Section 6.
+it is not an element — but it does mean BPM discovery needs its own answer. As
+of 2026-10-22 the observer is named: `BPMObserver(name; ...)` carries its `name`
+into the artifact group `/bpm/<name>` (`src/tasks/BPMObserver.jl`). See
+Section 6.
 
 ## 4. The model Octopus adopts
 
@@ -212,7 +214,8 @@ A BPM that used `randn()` would break the chunked-execution invariant that
 - **Charge/intensity dependence and nonlinear button response.** Real BPMs have
   both. Both need a device model this note does not attempt.
 - **Naming and discovery.** A BPM needs an identity to be useful in a
-  correction study, and observers have no naming scheme. `docs/history/todo_ledger_archive.md` holds
+  correction study; `BPMObserver` takes `name` as its first argument (default
+  `"bpm"`), which is the identity the artifact uses (as of 2026-10-22). `docs/history/todo_ledger_archive.md` holds
   "element names fleet-wide", waiting for a second consumer — the BPM is *not*
   that consumer, since it is not an element, but it does establish that
   observers need the same thing. Recorded rather than solved here.

@@ -164,7 +164,7 @@ So the recommendation is to add almost nothing:
 
 | operation | proposal | why |
 |---|---|---|
-| concatenate | `vcat` / `*` | already means this |
+| concatenate | `vcat` / `*` (the proposal; as shipped, `BeamLine(name, a, b)` nests instead and neither operator is defined for lines) | already means this |
 | reflect | `reverse` | already means this; **order only**, per §2 |
 | repeat | `repeat` | already means this |
 | nest | plain nesting in the constructor, expanded immediately | matches all four codes |
@@ -173,7 +173,8 @@ JuAcc's `^` for repetition with binary exponentiation is a good instinct applied
 where it cannot pay: a lattice repeat count is small and the result is `O(n)`
 elements regardless, so `repeat` is clearer at identical cost. And JuAcc's `*`
 returns a bare `Vector` rather than a `Sequence`, silently dropping the name —
-whatever operators are chosen, they must be closed over the type.
+whatever operators are chosen, they must be closed over the type (as shipped,
+none is: the constructor nests).
 
 ## 5. On search: needed, but one selector instead of many
 
@@ -267,13 +268,15 @@ BeamLine
   CQS module or a cryomodule stays addressable as a unit, and cross-cutting
   groups that no tree could express are just further tags.
 - **Entries, not elements.** The tracking plan already accepts in-line
-  `ScheduledObserver`s, and observers currently have no identity scheme. If the
+  `ScheduledObserver`s, and observers are named (`BPMObserver(name; ...)` and the
+  artifact groups `/bpm/<name>`, `/moments/<name>`, as of 2026-10-22). If the
   line names entries, element naming and observer naming are one problem.
 - **Spec layer only.** `BeamLine` compiles to the same tuple
   `_build_tracking_plan` consumes today, exactly as `ElementSpec` compiles to a
   runtime object. Type stability, plan caching and the GPU path are untouched. A
   `BeamLine` iterated *during* tracking would be the failure mode to avoid.
-- **`s` computed and cached**, extending `_aperture_s_positions` to all entries.
+- **`s` computed on demand** by `s_positions` (the "cached" wording was the
+  proposal; decision 3 below took on-demand, like `_aperture_s_positions`).
 - **`find_entries(line, sel)`** as §5, with an assembly name as one more thing `sel`
   accepts — the engineer's `find_entries(line, sel"ARC1/CQS[12]")` and the physicist's
   `find_entries(line, QuadrupoleSpec)` are the same call (a friendly constructor

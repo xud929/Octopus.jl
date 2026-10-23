@@ -940,7 +940,13 @@ Scaling of the 6D map at 90,000 particles per beam, fifteen slices and a
 64x64 mesh, best of five on a shared box (which carried other work throughout, so these are best-observed rather than means): 451 ms undivided, 497 ms at one
 rank, then 372, 230, 130 and 74 ms at two, four, eight and sixteen ranks --
 6.7x over the one-rank divided run. At thirty-two ranks, more ranks than
-slices, it turns back up to 227 ms; that regime is a todo row, not a claim.
+slices, the same series read 227 ms; that series was taken through the bare
+`collide!` entry and is WITHDRAWN above ("Lifting the ceiling": every collide
+rebuilt the buffers a task holds across turns, a term invisible at one rank
+and dominant at many), where the run through the refs a task holds reads
+47.4 ms at thirty-two ranks on this 64x64 mesh and 39.7 ms on the 63x63 mesh
+of the mesh-width note (2026-10-22). The ranks-above-slices regime remains a
+todo row, not a claim.
 
 ### Step 4h: the dataflow loop for spectral
 
@@ -1040,7 +1046,11 @@ two per slice, one for the member count and one for the centroid fold, which
 every divided solver pays because they all slice. Folding them into one all-sum
 over a length-`ns` vector is bit-identical (`_mp_allsum!` folds element by
 element in rank order, which is what the scalar calls did) and takes the
-collide to 35. It bought less than a millisecond, and THAT is the lesson: the
+collide to 35 (the count at this attribution; the slicing fold's own comment
+in `src/tasks/strongstrong/slicing.jl` now says 12, and which count a divided
+spectral collide issues today is settled by re-measuring through
+`_mp_collective_times`, not by either text -- open, 2026-10-22). It bought
+less than a millisecond, and THAT is the lesson: the
 remaining 35 calls cost 141 us each where 91 cost 65, because a synchronising
 collective's measured time is mostly the skew it absorbs. Removing calls
 concentrates the same waiting into fewer of them. The count is still worth

@@ -199,7 +199,7 @@ its own — it is the Green function of a torus and its zero mode diverges. Take
 infinite-lattice limit of the periodic one in the gauge $G(0,0)=0$:
 
 $$
-    G(\mathbf r) = -\frac{1}{M^2}\sum_{\mathbf k\neq0}
+    G(\mathbf r) = \frac{1}{M^2}\sum_{\mathbf k\neq0}
         \frac{\cos(\mathbf k\cdot\mathbf r)-1}{\kappa^2(\mathbf k)},
     \qquad
     \kappa^2 = \frac{2-2\cos\theta_x}{h_x^{2}} + \frac{2-2\cos\theta_y}{h_y^{2}},
@@ -207,7 +207,10 @@ $$
 
 with $\theta=\mathbf k h$. The $(\cos-1)$ numerator removes the divergent zero mode and
 fixes the gauge; the result converges to the infinite-lattice kernel for
-$|m|,|n|\ll M$.
+$|m|,|n|\ll M$. $G$ is negative and decreasing — the $-\ln r$ behaviour of the
+normalization and asymptotics below and of `_pic_lattice_green_table`
+(`ghat = 1/kap`, `g - g0`, no minus); a leading minus sign that made the display
+read as $+\ln r$ was corrected 2026-10-22 (audit F-231).
 
 **Eigenvalues of the stencil.** Applying the five-point operator to a lattice plane
 wave $\psi_{mn}=e^{i(\theta_xm+\theta_yn)}$,
@@ -322,7 +325,11 @@ a real error source.
 > than the same quantity measured through
 > `validation/pic_gaussian_field_validation.jl`'s methodology.
 >
-> Re-measured with that documented harness (deterministic 320² quantile source,
+> Re-measured 2026-08-03 with a one-off script following that harness's
+> methodology (not committed; the harness itself hard-codes
+> `green_type=:integrated`, so the `:lattice`/`:standard`/`:fourth` columns of
+> this note have no runnable harness in the tree — 2026-10-18 audit, F-230;
+> deterministic 320² quantile source,
 > 161² field points over ±4σ, TSC, median relative error against
 > Bassetti–Erskine), the *conclusion* above survives but **the shipped code did
 > not deliver it** until the box fix in this section's Validity-window

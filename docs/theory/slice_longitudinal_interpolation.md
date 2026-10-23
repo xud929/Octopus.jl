@@ -141,7 +141,7 @@ at both ends.
 ### 3.2 Across a slice boundary
 
 Slices share boundaries — `param = (lb=boundary[i], center=center[i],
-rb=boundary[i+1])` at `pic_cpu.jl`, the `param1`/`param2` named tuples at the top of `collide!` — so for adjacent field slices $s$ and
+rb=boundary[i+1])` at `pic_cpu.jl`, the `param1`/`param2` named tuples (with a leading `weight` field) built in `_pic_collide_pair!` — so for adjacent field slices $s$ and
 $s+1$,
 
 $$
@@ -517,7 +517,7 @@ Two reasons the asymptotic gain of Section 7.3 will not be realized in full.
    macroparticle crossing a cell boundary as the source drifts produces a kink.
    A third $\sigma$-derivative sampled through CIC is therefore noisier than the
    clean estimate suggests. The precedent is `field_derivative = :fourth`
-   (the `GaussianPoissonSolver` docstring in `interface.jl`, and Section 2 of
+   (the `PICPoissonSolver` docstring in `interface.jl`, and Section 2 of
    [`pic_free_space_kernels.md`](pic_free_space_kernels.md)), which delivered
    $\sim1.6\times$ rather than the $4\times$ its order implies, for exactly this
    reason. `deposit_method = :TSC` is $C^1$ and should show a larger gain than
@@ -880,7 +880,8 @@ slice-boundary jump exactly but does nothing about **turn-to-turn** mesh jitter
 > **They cannot be combined, and the constructor says so (2026-08-06, audit lead
 > U26-9).** The natural reading of the paragraph above — and of §12's
 > recommendation of `:node` for dynamics work — is "enable both". That
-> combination throws: `_pic_validate` rejects any `grid_extent != :extrema`
+> combination throws: the `PICPoissonSolver` constructor (and
+> `_validate_pic_solver` again at first use) rejects any `grid_extent != :extrema`
 > unless `interaction_grid === :slice_pair`, because `:node` sizes its mesh from
 > per-node extrema and consults no extent estimator, so a non-default
 > `grid_extent` would be silently ignored. Rejecting rather than ignoring is
@@ -933,10 +934,16 @@ discretization error cancels exactly, as it does under `:node`.
 
 ### 10.6 CUDA
 
-`:node` is implemented on the CUDA sequential non-async route
-(`batch_mode = :sequential`, `cuda_async = false`), with CPU parity $9.5\times10^{-16}$
-and luminosity parity $2.7\times10^{-16}$. The wavefront and batched-FFT routes
-assume one mesh per slice pair and throw rather than silently using the wrong one.
+`:node` is implemented on the CUDA sequential route (`batch_mode = :sequential`,
+`cuda_async = false`) and on the production fully-indexed wavefront route; node
+caches are prebuilt in both branches of `pic_cuda.jl`. The CPU parity
+$9.5\times10^{-16}$ and luminosity parity $2.7\times10^{-16}$ were measured on
+the sequential route. Every other route assumes one mesh per slice pair and
+never reads the node caches: `_require_cuda_pic_options` refuses those flag
+combinations statically, and the one that can still arise at run time — the
+non-indexed wavefront sub-route that `pic_timing_detail = true` forces by
+disabling the async route — throws rather than silently using the wrong mesh
+(the §7.5 callout of 2026-08-06; restated here 2026-10-22, audit F-231).
 
 ## 11. Does any of it move the dynamics? Mostly not
 

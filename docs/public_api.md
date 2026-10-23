@@ -468,7 +468,16 @@ Use Julia help:
 ?tracking_method
 ?TrackingContext
 ?with_turn
+?with_index_offset
+?survey
+?FloorFrame
 ```
+
+`survey(elements)` returns the floor plan: one `FloorFrame` (global `X, Y, Z`,
+`theta, phi, psi` and the exit arc position `s`) per element exit in MAD-X
+`SURVEY` conventions, for a line spec, a `BeamLine` or a tuple of placements
+(`docs/theory/floor_plan_survey.md`; checked element for element against a
+committed MAD-X `SURVEY` reference by `MADXSurveyConsistencyContract`).
 
 Precision, one rule for every element kind (owner decision 2026-10-16):
 `Beam(n, policy, Float32)` is a `Float32` beam, and it needs `Float32` elements

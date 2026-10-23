@@ -65,8 +65,10 @@ workhorse; the other three serve distinct roles:
   `:grid_free` is a CPU-only direct-mode-sum reference. Matches PIC and the
   analytic kick to ~1% at production settings (the shared macroparticle
   graininess floor) at ~1.4× PIC cost; recommended flat-beam grid
-  `(127,383)` with `domain_factor=8`
-  (`docs/theory/spectral_sine_poisson_solver.md`).
+  `(127,383)` with `domain_factor=8` (derivation
+  `docs/theory/spectral_sine_poisson_solver.md`; the grid and the cost ratio
+  are the 2026-07-23 benchmark decision in
+  `docs/history/strong_strong_spectral_optimization_history.md`).
 - **Gaussian-subtracted PIC hybrid** (`GaussianPICPoissonSolver`) — a
   control-variate composition of the two approaches: the slice's
   erf-integrated reference Gaussian is subtracted from the deposited grid, only
@@ -134,9 +136,10 @@ Gaussian-subtracted-PIC solvers as commented alternatives (they share the same
 interface — see `?AbstractPoissonSolver`).
 
 For developing or A/B-testing the solvers, `test/examples/` holds configurable
-harnesses of the same two cases that expose solver selection, CUDA launch
-tuning, per-phase timing, and diagnostic/output switches through `OCTOPUS_*`
-environment variables:
+harnesses of three of the catalogued examples (the two beam-beam cases above
+and `examples/crab_cavity_noise.jl`, the crab-cavity noise case) that expose
+solver selection, CUDA launch tuning, per-phase timing, and diagnostic/output
+switches through `OCTOPUS_*` environment variables:
 
 ```bash
 OCTOPUS_USE_GPU=1 OCTOPUS_SOLVER=pic OCTOPUS_TURNS=100 \
@@ -146,8 +149,9 @@ julia --project=. test/examples/strong_strong_tracking.jl
 ## Validation
 
 Run the package regression suite at CI settings. This full lane is the finish
-line before every commit except a markdown-only diff, which finishes with the
-fast lane (`AGENTS.md`, Verification Matrix); it is multi-threaded because a
+line before every push (owner decision 2026-09-04; commits may accumulate
+locally) except a markdown-only diff, which finishes with the fast lane
+(`AGENTS.md`, Verification Matrix); it is multi-threaded because a
 single-threaded run skips the concurrency assertions:
 
 ```bash

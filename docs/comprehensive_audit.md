@@ -38,12 +38,16 @@ read them front to back. The budget that works:
 
 - Before starting: the **newest** `comprehensive_audit_*.md` record's
   executive summary and open-queue sections, plus the Measured Lessons at
-  the end of this document. At the time of writing the newest full record is
-  [`comprehensive_audit_2026_08_05_b.md`](history/comprehensive_audit_2026_08_05_b.md),
+  the end of this document. As of 2026-10-22 the newest full record is
+  [`comprehensive_audit_2026_10_18.md`](history/comprehensive_audit_2026_10_18.md)
+  (its fix batches are the `comprehensive_audit_fixes_2026_10_*.md` records),
   and the post-campaign precedents are the `history/neighbour_audit_*.md`
   records (newest standalone `neighbour_audit_2026_09_06.md`; a campaign
   whose records live in one history file records its audit there, and the
-  newest of all is the stage 9 section of
+  newest of all, as of 2026-10-22, is the scoped pass
+  `history/audit_crab_cavity_noise_neighbours_2026_10_16.md` with its unit
+  reports, after the stage 4 audit inside
+  `history/turn_modulation_stages3_4_2026_10_13.md` and the stage 9 section of
   `history/twiss_dispersion_analysis_history.md`, 2026-09-16); check
   `docs/history/` and the neighbour-audit list in `docs/README.md` for
   anything later.

@@ -52,8 +52,11 @@ Two recorded caveats carry over from the aperture walker unchanged:
 
 The floor plan proper — global `(X, Y, Z, θ, φ, ψ)` per element, where
 curvature *does* rotate the frame — is the geometry layer
-`misalignment_and_patch_maps.md` §8 asks for, and remains future work. The
-survey channel's `s` is one-dimensional by design.
+`misalignment_and_patch_maps.md` §8 asked for; it landed 2026-08-14 as
+`survey`/`FloorFrame` in `src/elements/floor_plan.jl`
+([`floor_plan_survey.md`](floor_plan_survey.md); record: the 2026-08-14
+campaign note in `docs/history/todo_ledger_archive.md`). The survey channel's
+`s` is one-dimensional by design.
 
 ## 2. What slips and what does not
 
@@ -134,7 +137,15 @@ fused, contextless, and direct `track_particle` paths.
 Both were plausible enough to design around; one was briefly implemented.
 The probe that killed them is the record
 (`nu_s` measured on a `Drift(C) + Linear6D(R₅₆) + cavity` ring at 2.5 GeV
-proton, `α_c = 0.2`, `C = 100 m`, prediction `ν_s(full η) = 0.0021744`):
+proton, `α_c = 0.2`, `C = 100 m`, prediction `ν_s(full η) = 0.0021744`).
+Probe of 2026-08-14, not committed: its voltage and tune extraction were not
+recorded, so the digits below are not reproducible from the tree. The
+2026-10-18 audit re-measured the same physics at `V = 1 MV`, `h = 1` (U49,
+`docs/history/comprehensive_audit_2026_10_18_unit_reports/U49_report.md`):
+bound `ν_s = 0.0020935`, bare `0.0038498`, `max|z|` over 4096 turns
+`1.000021594×10⁻³` — the analytic values to five digits, not these digits,
+whose implied voltage is about 1.08 MV. The suite's F16 testset pins the slip
+at 200 kV, `rtol 5e-3`. The two forms:
 
 - **Constant `s = Δs` inside the coordinate conversion** (passing the arc to
   `convert_longitudinal`'s `s` argument both ways). Measured

@@ -23,7 +23,8 @@ the rules are in [`../experiences.md`](../experiences.md).
   GPU-box specifics (the untracked `LocalPreferences.toml` that selects the
   CUDA runtime, device diagnostics) are in `../current_runtime.md`.
 - Test-only dependencies (`ForwardDiff`, `Symbolics`, `Logging`, `MPI`,
-  `MPICH_jll`) are listed under `[targets]` in `Project.toml`; a plain
+  `MPICH_jll`, `Printf`) are listed under `[targets]` in `Project.toml` (that
+  line is the list of record; this one is a copy); a plain
   `--project=.` session does not have them. The tracked `Manifest.toml` was
   re-resolved and committed 2026-09-07, so `Pkg.test` no longer prints the
   "dependencies have changed since the manifest was last resolved" banner and
@@ -55,8 +56,9 @@ julia --startup-file=no --project=. -e 'include("src/Octopus.jl"); using .Octopu
 # fast lane: a development checkpoint, never the finish line
 julia --project=. --threads=4 -e 'using Pkg; Pkg.test(test_args=["lane=fast"], julia_args=["--threads=4"])'
 
-# full gate at CI settings: the finish line before every commit, except a
-# diff that `git diff --name-only` shows to be markdown-only (AGENTS.md matrix)
+# full gate at CI settings: the finish line before every push (owner decision
+# 2026-09-04), except a diff that `git diff --name-only` shows to be
+# markdown-only (AGENTS.md matrix)
 julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
 
 # backend consistency: after changing generic, fused, stochastic or CUDA

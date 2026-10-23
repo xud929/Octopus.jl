@@ -7,7 +7,9 @@ audit records beside it. AGENTS.md states the working rules; this file is the
 evidence base — each lesson names the incidents that taught it, so a future
 session can weigh the rule against what actually happened. When new work
 teaches something reusable, it lands here (dated), and the full record goes to
-`history/`.
+`history/`. A number quoted in a lesson with no record pointer beside it was
+measured in that session's scratch and is recorded only here (stated
+2026-10-22, comprehensive audit F-235, U55-7).
 
 ## A check must be able to fail
 
@@ -21,7 +23,8 @@ teaches something reusable, it lands here (dated), and the full record goes to
   with the NaN-aware comparator and the survivable corner probe).
 - The element metadata validator caught 1 of 13 injected defects because its
   checks compared values that route through the same object — `x == x` in
-  three different costumes (U12-8, two remain open).
+  three different costumes (U12-8; its two successor rows closed 2026-09-07,
+  `history/todo_ledger_archive.md`).
 - Every can-fail control the suite carries exists because an earlier control
   could not fail: `status in (:passed, :failed)` asserts nothing (U16-2).
   Corollary learned twice since: the control's exemplar must be chosen so no
@@ -510,7 +513,12 @@ also means `Base.PkgId(Main.Octopus)` is `Base.PkgId(nothing, "Main")`. Package
 extensions are keyed on a package's id, so they never attach. Measured
 2026-09-06, one probe, both loads: `Base.get_extension(Main.Octopus,
 :OctopusMPIExt)` is `nothing` under the include and `OctopusMPIExt` under
-`using Octopus`.
+`using Octopus` followed by `using MPI` -- a `[weakdeps]` extension attaches
+only once both the package and the weak dependency are loaded, so `using
+Octopus` alone also gives `nothing` (this sentence said "under `using
+Octopus`" until 2026-10-22; corrected after the comprehensive audit's U55-4
+probe measured `nothing` under `using Octopus` alone and `OctopusMPIExt`
+after `using MPI`, `history/comprehensive_audit_2026_10_18_unit_reports/U55_report.md`).
 
 Nothing warns. The extension simply is not there, every method it would have
 added is missing, and the core fallback answers instead. When that fallback is
@@ -2082,6 +2090,17 @@ agreement that must hold is spelled on both sides: `_ps_radicand` is one `fma`, 
 `_pt2_fused` already was, and the aperture-identity test rests on construction, not
 luck. When a test asserts bitwise agreement across backends, name every operation whose
 rounding it depends on and spell each one the compiler cannot change.
+
+## A status banner is a dated claim
+
+"Written before the implementation", "remains future work", "question 3 remains open", "does not exist
+yet", "remains design only": the 2026-10-18 audit's documentation-drift row (F-208, F-230 to F-242) was
+mostly banners true the day they were written and false by the audit, none saying when it was written or
+what would retire it. Fix batch 4a made each a dated statement naming what landed and the record that
+holds the measurement; a banner that cannot name its retirement condition is a pointer to a `todo.md`
+row, or it is not written. Its sibling: a count the suite derives (heavyweight sections, findings, Major
+rows) is stated by its derivation or dropped -- three hand-copied counts disagreed with the tree by two
+to four, and two had been copied from each other.
 
 ## Standing decisions, deliberately not being done
 

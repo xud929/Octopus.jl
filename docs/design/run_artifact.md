@@ -85,11 +85,13 @@ sharpened:
 
 ### Artifact schema
 
-One group per producer, position and provenance as attributes:
+One group per producer; identity, row cursor and (for line-placed probes)
+position as attributes:
 
-    /luminosity/ip6          (turns, values)   attrs: label, s
+    /luminosity/ip6          (turns, values)   attrs: label, rows_valid_through_turn
     /luminosity/ip8          (turns, values)
-    /moments/IP6             scheduled blocks  attrs: name, s, provenance path
+    /moments/IP6             scheduled blocks  attrs: name, rows_valid_through_turn,
+                                               s (line-placed probes)
     /moments/ARC1_QF3
     /snapshot/injection      coordinate blocks attrs: name, s
     /bpm/BPM_07              readings          attrs: name, s, the device model
@@ -118,6 +120,12 @@ One group per producer, position and provenance as attributes:
                              checkpoint (turn_modulation_record.md, D10);
                              written by nothing today
 
+(2026-10-22, F-64: the luminosity `s` and the probe's provenance-path
+attribute shown here until this date were never stamped; `name` is the
+identity, `s` is stamped only for a line-placed probe, and every row group
+carries the `rows_valid_through_turn` cursor. The writer is documented as it
+is -- fix batch 4a, owner default -- rather than changed.)
+
 **Independent turn axes per dataset.** This is the payoff of declaring
 channels on producers: each collision writes its own `(turns, values)` pair,
 so per-IP luminosity schedules may disagree freely — and the mixed-IP
@@ -125,9 +133,13 @@ row-drop machinery (drop the row WHOLE, warn, count) becomes unnecessary
 rather than ported. A workaround evaporating is the sign the decomposition
 is right. The weak-strong per-element luminosity columns split the same way.
 
-**Names are identities.** Every probe takes a `name`, defaulting to its
-beam-line provenance path (`ARC1/CQS[3]` — machinery that exists), unique
-within a task, enforced loudly. This finally supplies the "observer identity
+**Names are identities.** Every probe takes a `name` (as shipped an explicit
+argument: a required keyword on `MomentObserver` and
+`CoordinateSnapshotObserver`, the BPM's first positional with the default
+`"bpm"`; the default from the beam-line provenance path `ARC1/CQS[3]` decided
+here was never implemented, never ledgered, and is struck 2026-10-22, owner
+default of fix batch 4a), unique within a task, enforced loudly. This finally
+supplies the "observer identity
 scheme" the original BPM design note deferred (archived ledger, BPM row).
 
 **Turn-modulation provenance.** `/turn_modulation/<slot>` records what the
@@ -201,11 +213,13 @@ shorter than its `turns` attribute is such a stopped run, read as it stands
 with one warning naming the dataset (the readers' element entry carries
 `first_turn` and `turns` from the attributes beside `element` and `beam`,
 `nothing` when the run did not record; review F2, 2026-10-15), and the
-`/execution` ledger's `current_turn` is a separate progress mark that a
-`TrackingTask` without strong beams writes to the file only at finalize,
-while the strong-strong loop stamps it before each turn (persisted at the
-luminosity flushes) and closes the turn's series row after it, so on a
-killed run the two can disagree and the rows decide. The series and the
+`/execution` ledger's `current_turn` is a separate progress mark, assigned
+at the top of every turn by both loops and persisted at every flush
+(luminosity, probe rows, series) and at finalize since the 2026-10-16
+neighbour audit (before it a `TrackingTask` without strong beams wrote it
+only at finalize); the turn's series row closes after the turn, so on a
+killed run the ledger may lead a channel by the one turn in flight and the
+rows decide. The series and the
 nominals are stored as `Float64` whatever the element's numeric type `T`, so
 "exactly as the element forms them" holds bit for bit for `T = Float64` and
 to `Float64` rounding otherwise. On CUDA the values are host-side already
@@ -537,8 +551,9 @@ turn; reading such a file stays possible, every row on disk with a warning
 naming the group. `observe!` computes the row, then commits it, and records
 its `:observer_output` receipt after its `initialized` refusal, as the
 snapshot twin does (F-84). The suite's "The run artifact's row cursor: ..."
-testset pins each shape against the measured values; the probes are under
-`result/fix_batch_2026_10_19/probes/T/`.
+testset pins each shape against the measured values (the one-off probes
+behind the numbers were not committed; the testset is the evidence,
+2026-10-22).
 
 **The partial provenance slot (decided 2026-10-16, owner; the stage 3-4
 audit's U5-2, restored by the crab-noise neighbour audit).** Since the
@@ -597,8 +612,11 @@ takeover -- the holder may be alive on another host, and a pid test or an
 age test would be a guess -- so a lock left by a killed run is removed by
 hand, and the refusal says which file. READERS do not take the lock: a
 second process may read while the first writes and sees the last flushed
-state (measured: eight readers during a 3000-turn write, each a consistent
-prefix; `result/.../auditor/probe_rw_reader2.log`). The public readers are
+state (the measurement behind this was a 2026-10-16 audit probe that was not
+committed and survives only in prose,
+`../history/crab_cavity_noise_audit_fixes_2026_10_16.md` section 1 item 1;
+its number is struck here, 2026-10-22, until a committed concurrent-reader
+harness reproduces it -- owed). The public readers are
 lock-aware instead: `TaskOutput`, `turn_modulation_provenance` and the
 `MomentOutput` HDF5 reads open through one `_ra_open`, which, when a live
 lock exists for the path, emits one `@info` per writer and process naming
@@ -646,12 +664,14 @@ task itself, in memory, read back with `turn_timings`. Record:
 [`../history/tracking_task_turn_timing_2026_09_07.md`](../history/tracking_task_turn_timing_2026_09_07.md).)
 and the opt-in/out keyword for execution logging harmonises with that
 diagnostics object on both tasks rather than inventing a second switch. The
-interim fix already landed on the moment files: a per-execution ledger
-(`/execution_elapsed`, `/execution_start_turn`, appended at prepare, updated
-per flush, created on demand for older files) with the scalar
-`/elapsed_time` keeping its documented current-execution semantics for
-existing readers — its overhead is one tiny dataset write per flush, so it
-needs no switch.
+interim fix that landed on the standalone moment files (a per-execution
+ledger `/execution_elapsed`, `/execution_start_turn` beside the scalar
+`/elapsed_time`) was retired with those files at step 4; the per-execution
+ledger is now the artifact's `/execution` table (`_RA_LEDGER_COLUMNS`:
+`start_turn`, `turns`, `current_turn`, `elapsed`, `rng_seed`, `rng_method`),
+read as `read(TaskOutput(path), :execution)`, and `read(out, :elapsed_time)`
+on an artifact refuses by name pointing there — its overhead is one ledger
+row write per flush, so it needs no switch (2026-10-22).
 
 **Seed provenance (decided 2026-10-16, owner; neighbour audit S5-4).** The
 ledger row carries two more columns, appended with the row at prepare:

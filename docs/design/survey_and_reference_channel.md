@@ -1,10 +1,14 @@
 # The Survey and Reference-Energy Channel
 
-> **Status: design, pre-implementation (2026-08-13).** This note records the
+> **Status: implemented 2026-08-14 (the F16 velocity slip of Scope A and the
+> accelerating cavity of Scope B, both that day). The design text below
+> stands as written on 2026-08-13, with its dated refinements and corrections
+> of 2026-08-14 in place and the statements implementation superseded marked
+> on 2026-10-22.** This note records the
 > architecture decision for the channel that tells a runtime element where it
 > sits on the reference trajectory — the accumulated arc position `s` and,
-> later, the local reference momentum `P0`. It is the shared prerequisite of
-> two open `docs/history/todo_ledger_archive.md` items: the RF velocity-slip defect (F16, the
+> later, the local reference momentum `P0`. It was the shared prerequisite of
+> two `docs/history/todo_ledger_archive.md` items, both closed: the RF velocity-slip defect (F16, the
 > 2026-08-05 audit) and RF Scope B (the accelerating cavity). The physics
 > derivations live in
 > [`theory/rf_cavity_and_reference_energy.md`](../theory/rf_cavity_and_reference_energy.md)
@@ -118,6 +122,12 @@ protocol) and declares `_requires_tracking_context`, so a contextless
 silently reverting to `s = 0`. This rides the exact machinery the stochastic
 elements already use, and applies the loud-beats-silent rule: the failure mode
 of this channel is quiet wrongness, and the refusal is the tripwire.
+
+> **Superseded at implementation (noted 2026-10-22).** The shipped cavity
+> declares no `_requires_tracking_context` (that fold is the aperture's,
+> `src/elements/aperture.jl`) and needs no context: the slip rides the
+> survey-bound `ds_turn` that `_bind_survey` fixes at compile, as a per-op
+> constant z-shift. See the Correction in 3c.
 
 ### 3c. Precision decisions
 
@@ -313,16 +323,25 @@ that observe the values at the consumer boundary:
 - **Refusal**: a contextless `track!` on a line containing a slip-corrected
   cavity errors; the error names the channel. (The `_requires_tracking_context`
   fold must include the new op — extend the existing testset, not a copy.)
+  (Superseded at implementation, 2026-10-22: no refusal exists or is needed;
+  the shipped cavity carries the slip through the survey-bound `ds_turn`
+  rather than a `_requires_tracking_context` declaration — the Correction in
+  3c.)
 - **Survey effectiveness at the consumer**: moving a cavity's position in the
   line moves the phase it computes (perturb `s_elem` → observe the kick), so
   the survey is verified *read*, not merely stored — a stored-but-unread
   survey is exactly the U3-2 class of false negative.
 - **Precision pin**: the phase and the coordinate round trip at large turn
   numbers (≥10⁶ turns' worth of `turn·C`) do not degrade with `turn`.
+  (Superseded at implementation, 2026-10-22: the shipped carrier is a per-op
+  constant z-shift with no turn counter — the Correction in 3c — so there is
+  no `turn·C` term to pin.)
 - **Neighbour walk** (the 2026-08-05_b lesson): the compile walk, the fused
   chain builder, the CUDA context path, and the `_requires_tracking_context`
   fold are the named neighbours; each gets re-read after the change, and the
-  full-suite gate at CI settings closes the campaign.
+  full-suite gate at CI settings closes the campaign. (The
+  `_requires_tracking_context` fold was not a neighbour of the shipped
+  change, 2026-10-22: see the Refusal item above.)
 
 Scope B's own contracts (delivered energy profile, damping) are specified at
 its implementation; they reuse this section's pattern.

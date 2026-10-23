@@ -12,13 +12,14 @@ benchmark `validation/coherent_beam_beam_modes.jl`, and
 > That line is broad and carries three near-degenerate maxima (2.860e-4 at
 > 0.09546, 2.517e-4 at 0.11938, 2.513e-4 at 0.10596), so `argmax` flips under
 > any perturbation at all: a fresh run at HEAD reports 0.10571 where the
-> committed archive reports 0.09546. Both are inside $[0.080, 0.168]$ and the
+> 2026-08-05 `result/` archive (not committed, as stated above) reports 0.09546. Both are inside $[0.080, 0.168]$ and the
 > physics claim — confined to the e band, broad, Landau-damped — is unaffected,
 > but the specific number is not reproducible and must not be quoted as a
 > measurement (2026-08-05_b audit, U22-17).
 >
-> The same sensitivity, at a smaller scale, in the aspect scan: the committed
-> `yokoya_vs_aspect_measured.tsv` no longer reproduces bit-for-bit at the flat
+> The same sensitivity, at a smaller scale, in the aspect scan: the 2026-08-05
+> `yokoya_vs_aspect_measured.tsv` (a `result/` file, never committed) no longer
+> reproduces bit-for-bit at the flat
 > end ($\Delta\Lambda = +9.9\times10^{-4}$ at $r = 0.05$, $-5.7\times10^{-5}$
 > at $r = 0.09$, exact from $r = 0.2$ up), although neither generating script has
 > changed. It is not thread nondeterminism — 1, 4 and 8 threads give identical
@@ -37,8 +38,11 @@ benchmark `validation/coherent_beam_beam_modes.jl`, and
 > 2026-08-05, so they still drew the pre-fix curve this note's §3 disowns
 > (2026-08-05_b audit, U22-13). **Regenerate before reading a figure**: run
 > `validation/coherent_mode_vlasov_theory.jl` and `coherent_mode_scans.jl`,
-> then `validation/plot_coherent_mode_theory.py`. The committed
-> `paper/data/*.tsv` are post-fix and match current code; only the PNGs drift.
+> then `validation/plot_coherent_mode_theory.py`. No `paper/` directory exists
+> in the tree and no TSV is committed (corrected 2026-10-22, audit F-230): the
+> `*.tsv` the two scripts write go to the git-ignored `result/`, and the numbers
+> quoted in Sections 3-4 are prose copies of the 2026-08-05 regeneration (also
+> in `validation/README.md`), so re-run the scripts to refresh them.
 
 ## 1. The rigid-bunch model, and why it is only the starting point
 
@@ -287,8 +291,12 @@ Three conclusions, in decreasing order of certainty:
    conclusion drawn from it.
 
    What survives is weaker and worth keeping: the reduction is a 1-2%
-   instrument, not a substitute for the full 2D computation, and the rigid-bunch
-   diagnostic in Section 2 still runs 1.21-1.41 rather than 1. Quantitative $Y$
+   instrument, not a substitute for the full 2D computation; the 1.21-1.41 the
+   rigid-bunch diagnostic once returned was the artefact of the circular
+   averaged-curvature normalisation (kept as a comment in
+   `validation/coherent_mode_vlasov_theory.jl`), and Self-check 4 now requires
+   the rigid limit to equal 1 within $2\times10^{-2}$ (measured 1.0000-1.0003 at
+   all eleven aspect ratios, 2026-10-18 audit, unit report U47). Quantitative $Y$
    for a specific machine still comes from the 2D Vlasov route or from direct
    simulation — which is what our benchmark provides.
 
@@ -321,8 +329,8 @@ $\xi=0.02$), compared against the measured PIC $\xi$ scan in
 > *positive* shift ($+0.04$ at $Q_0=0.31$)" — and destroyed the point being
 > made there, since the whole observation is that the measurement dips while
 > the map algebra predicts a rise. $\cot(2\pi\cdot0.31) = -0.396 < 0$, so the
-> drift is positive at this tune. The committed
-> `result/yokoya_vs_xi_theory.tsv` agrees: $1.2094$ and $1.2434$ against the
+> drift is positive at this tune. The regenerated
+> `result/yokoya_vs_xi_theory.tsv` (not committed) agrees: $1.2094$ and $1.2434$ against the
 > anchor $Y_0 = 1.20$, i.e. $+0.0094$ and $+0.0434$.
 
 ## 4. The asymmetric (EIC-like) case
@@ -403,7 +411,7 @@ behaviour is — while **falsifying its one detached-mode prediction**
 > Stating it truthfully makes the more important point visible: **the theory's
 > one falsifiable EIC prediction is not confirmed.** The discrete y mode at
 > $0.22432$ does not appear in the strong-strong measurement, in either the
-> committed spectra or a fresh run — global peaks sit in the e_x **band**
+> 2026-08-05 `result/` spectra (not committed) or a fresh run — global peaks sit in the e_x **band**
 > $[0.080, 0.168]$, at $0.2310$ (p_x) and $0.2109$ (both y), and the
 > $[0.220, 0.229]$ window holds
 > nothing above $10^{-3}$ of peak. The persistent line that IS observed sits at

@@ -1522,7 +1522,18 @@ The derivation provides several independent checks:
    $$
    A finite-difference Jacobian with nonzero centroid angle, curvature,
    $b_u$, and $\theta_u$ is a direct numerical check of all derivative
-   terms.
+   terms. `:hirata` and `:exact` are exactly symplectic; the `:chromatic`
+   composite was symplectic only to first order in $\Phi$ while it evaluated
+   the kick at the interaction-point $S$ (comprehensive audit 2026-10-18,
+   F-119; fixed 2026-10-21 by the collision-point kick of Section 7). A
+   finite-difference Jacobian does not resolve a defect of that size: the
+   measured residuals are step-dependent (hirata $8.7\times10^{-11}$,
+   chromatic $1.2\times10^{-8}$, exact $1.9\times10^{-9}$ at step $h$;
+   2026-10-18 audit probe, unit report U46 under
+   `../history/comprehensive_audit_2026_10_18_unit_reports/`), so it
+   confirmed no violation and would have missed this one. The dual-number
+   Jacobian of Section 7 did resolve it ($4.5\times10^{-9}$ against the
+   $10^{-13}$ floor) and is the check to run.
 
 ## References
 

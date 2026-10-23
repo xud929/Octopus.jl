@@ -218,7 +218,7 @@ except for the added fields.
 | per-turn rebuild of twenty wrapped cavities | about 2 us, 0 B | `turn_modulation.md` section 7 |
 | recording per turn | a few copies into the row buffer | D5, D6 |
 | file growth | 8 bytes per active slot per turn: 8 MB per million turns per slot; 64 MB per million turns for the example's eight active slots | arithmetic |
-| the example's moments table for comparison | 27 columns, about 216 bytes per turn | `run_artifact.md` |
+| the example's moments table for comparison | 27 columns (the `MomentObserver` default moment set, `src/tasks/BeamObservers.jl`), 27 x 8 = 216 bytes per turn | arithmetic |
 | per-turn tracking time the recording competes with | 3 ms (CUDA, 1e5 particles), 26 ms (CUDA, 1e6), 119 ms (16 threads, 1e5) | `../history/crab_cavity_noise_mpi_benchmark_2026_10_14.md` |
 
 The file growth is the reason the default is off. Nothing above is

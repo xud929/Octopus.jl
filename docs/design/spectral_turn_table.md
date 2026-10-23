@@ -122,8 +122,10 @@ today).
 
 (2026-10-16, D11: the factory's second keyword is `rng_id`, not `stream`,
 refused at 0 and not claimed in the registry, the equal-digest warning
-being its sharing check, so the keying reads `(seed, RNG_PHILOX, 0, rng_id,
-k, 1)`; the rule `SpectralNoise` claims its `rng_id` at construction as
+being its sharing check, so the keying reads `(seed, RNG_PHILOX, slot,
+rng_id, k, 1)` (2026-10-22: `slot`, as review F1 below and the factory's
+keyword say; `0` was the pre-F1 keying); the rule `SpectralNoise` claims its
+`rng_id` at construction as
 `WhiteNoise` and `PinkNoise` do, 0 auto-assigning a fresh id, and takes
 `seed = global_rng_seed()` when the line compiles, so inside a line the
 author writes no seed and the task constructor's sharing warning is the
@@ -187,7 +189,9 @@ choice.)
 
 (2026-10-16, after landing: the Rayleigh moduli are `rho_k = |z_k|`, `z_k =
 (n_1 + i n_2) / sqrt(2)` with `(n_1, n_2) = octopus_normal_pair(seed,
-RNG_PHILOX, 0, rng_id, k, 2)`, the Box-Muller pair 2 of the phase's cell,
+RNG_PHILOX, slot, rng_id, k, 2)` (2026-10-22: `slot`, as review F1 and the
+factory's keyword say; `0` was the pre-F1 keying), the Box-Muller pair 2 of
+the phase's cell,
 components 3-4 and NOT 2-3: component 2 is the second output of the pair
 built from the phase's own uniform and would tie the modulus to the phase.
 The phase and the scale `c` are the fixed table's, so the fixed table is
