@@ -15818,6 +15818,66 @@ end
     end
 end
 
+@testset "PTC rows cannot be lost silently: one dropped row, one malformed row (F-115)" begin
+    # The generator writes every case's particles alike (`PARTICLES`, indices
+    # 1:P, in validation/generate_ptc_reference.jl) and the contract derives
+    # that invariant from the table itself: a case whose particle set is not
+    # exactly 1:P fails by name, a data row that is not 14 tab-separated
+    # numeric fields fails naming its line, and a row naming no declared case
+    # is counted. Until this fix a malformed row was `continue`d and a case kept
+    # its coverage after one surviving row, so a table that lost rows narrowed
+    # the comparison under a passing verdict (2026-10-18 audit, F-115; measured
+    # on the unfixed tree: one `drift` row dropped -> :passed, metrics[:rows]
+    # 304; one tab removed -> :passed, the row skipped).
+    source = Octopus._ptc_reference_path(PTCConsistencyContract())
+    whole = validate(PTCConsistencyContract())
+    @test whole.status === :passed
+    @test whole.metrics[:rows] == whole.metrics[:cases] * whole.metrics[:particles_per_case]
+    @test whole.metrics[:particles_per_case] >= 2      # 1:P with P = 1 would prove little
+    @test whole.metrics[:rows_unmatched] == 0          # every row names a declared case
+    mktempdir() do dir
+        # (i) one row of one case lost: the coverage check needs a case with
+        #     NO rows and cannot see it; the completeness check must.
+        lost = joinpath(dir, "ptc_madx_lost_row.tsv")
+        open(lost, "w") do io
+            for line in eachline(source)
+                startswith(line, "drift\t3\t") && continue
+                println(io, line)
+            end
+        end
+        r1 = validate(PTCConsistencyContract(path=lost))
+        @test r1.status === :failed
+        @test occursin("drift", r1.message) && occursin("[1, 2, 4, 5]", r1.message)
+        # (ii) one tab lost from one row: 13 fields instead of 14, formerly skipped.
+        malformed = joinpath(dir, "ptc_madx_malformed.tsv")
+        nline = 0
+        open(malformed, "w") do io
+            for (i, line) in enumerate(eachline(source))
+                if startswith(line, "drift\t2\t")
+                    nline = i
+                    line = replace(line, "\t" => " "; count=1)
+                end
+                println(io, line)
+            end
+        end
+        @test nline > 0
+        r2 = validate(PTCConsistencyContract(path=malformed))
+        @test r2.status === :failed
+        @test occursin("malformed", r2.message) && occursin("line $(nline)", r2.message)
+        # (iii) one row duplicated: the particle set is not 1:P either.
+        doubled = joinpath(dir, "ptc_madx_doubled.tsv")
+        open(doubled, "w") do io
+            for line in eachline(source)
+                println(io, line)
+                startswith(line, "drift\t4\t") && println(io, line)
+            end
+        end
+        r3 = validate(PTCConsistencyContract(path=doubled))
+        @test r3.status === :failed
+        @test occursin("drift", r3.message) && occursin("twice", r3.message)
+    end
+end
+
 @testset "MAD-X survey consistency" begin
     # The arc survey against MAD-X's own expansion, element for element:
     # nesting, reflection (reverse here, -half there), heavy curvature (bend

@@ -2718,6 +2718,17 @@ at `default_atol = 1e-11` unless overridden (this docstring once pointed at
 "per-case defaults below" that never existed; 2026-08-05 audit, U3-9).
 Agreement is not uniform across elements and the differences are physical,
 not numerical -- see `docs/theory/lattice_hamiltonian_and_conventions.md`.
+
+The table is read whole or refused: a data row that is not 14 tab-separated
+fields (case, particle index, six coordinates in, six out) FAILS naming its
+line, every declared case must carry the generator's particles `1:P` exactly
+(the generator tracks one `PARTICLES` list through every case, so the table's
+own uniformity is the expectation and a case with a missing or doubled row
+fails by name), and a row naming a case the contract does not declare is
+counted in `metrics[:rows_unmatched]`. Until the 2026-10-22 fix batch a
+malformed row was skipped and a case kept its coverage after one surviving
+row, so a table that lost rows narrowed the comparison under a passing verdict
+(2026-10-18 audit, F-115).
 """
 Base.@kwdef struct PTCConsistencyContract <: AbstractImplementationContract
     path::Union{Nothing,String} = nothing
@@ -2966,30 +2977,54 @@ function validate(contract::PTCConsistencyContract; kwargs...)
     specs = _ptc_reference_specs()
     version = "unknown"
     worst = Dict{String,Float64}()
+    particles = Dict{String,Vector{Int}}()   # case => the particle indices its rows carry
+    malformed = String[]
     rows = 0
-    for line in eachline(path)
+    rows_unmatched = 0
+    for (lineno, line) in enumerate(eachline(path))
         if startswith(line, "#")
             m = match(r"MAD-X version:\s*(\S+)", line)
             m === nothing || (version = m.captures[1])
             continue
         end
-        startswith(line, "case") && continue
+        startswith(line, "case\t") && continue
         isempty(strip(line)) && continue
         f = split(line, '\t')
-        length(f) == 14 || continue
+        # A data row that is not 14 tab-separated fields -- the case, a particle
+        # index and twelve coordinates -- is a corrupt table, reported by its
+        # line, never skipped: until the 2026-10-22 fix batch `length(f) == 14
+        # || continue` dropped it silently and the case kept its coverage on the
+        # rows that survived (2026-10-18 audit, F-115).
+        particle = length(f) == 14 ? tryparse(Int, f[2]) : nothing
+        numbers = length(f) == 14 ? [tryparse(Float64, s) for s in f[3:14]] : nothing
+        if particle === nothing || numbers === nothing || any(isnothing, numbers)
+            push!(malformed, "line $(lineno) ($(length(f)) fields): " * first(line, 60))
+            continue
+        end
         name = f[1]
-        haskey(specs, name) || continue
-        v = parse.(Float64, f[3:14])
+        if !haskey(specs, name)
+            # A row for a case this contract no longer declares: right to skip,
+            # counted so it is visible (`:rows_unmatched`).
+            rows_unmatched += 1
+            continue
+        end
+        v = Vector{Float64}(numbers)
+        push!(get!(Vector{Int}, particles, name), particle)
         # A case may name one spec or a short line: MAD-X cannot hold a
         # zero-length sequence, so a thin element is referenced as itself
         # followed by a drift.
         entry = specs[name]
-        line = entry isa AbstractVector ? entry : (entry,)
-        out = collect(foldl((c, s) -> compile_runtime(s)(c...), line;
+        line_specs = entry isa AbstractVector ? entry : (entry,)
+        out = collect(foldl((c, s) -> compile_runtime(s)(c...), line_specs;
                             init=(v[1], v[2], v[3], v[4], v[5], v[6])))
         worst[name] = max(get(worst, name, 0.0), maximum(abs, out .- v[7:12]))
         rows += 1
     end
+    isempty(malformed) || return ContractResult(false,
+        "PTC reference table $(path) has $(length(malformed)) malformed row(s) " *
+        "(14 tab-separated fields expected: case, particle, six coordinates in, six out): " *
+        join(malformed, "; ") * ". Regenerate it with validation/generate_ptc_reference.jl " *
+        "on a machine with MAD-X.")
     rows == 0 && return ContractResult(false, "PTC reference table $(path) had no usable rows")
     # Every declared spec must have been compared. The row loop skips a name the
     # table does not carry (`haskey(specs, name) || continue`), which is right
@@ -3001,6 +3036,27 @@ function validate(contract::PTCConsistencyContract; kwargs...)
         "PTC reference table $(path) has no rows for $(length(untested)) declared " *
         "case(s): " * join(untested, ", ") * ". Regenerate it with " *
         "validation/generate_ptc_reference.jl on a machine with MAD-X.")
+    # Every case carries the SAME particles, 1:P, because the generator tracks
+    # one `PARTICLES` list through every case and refuses a case that returned
+    # fewer (validation/generate_ptc_reference.jl); the table's own uniformity
+    # is the expectation, derived here, never a count copied from the
+    # generator. A case whose particle set is not exactly 1:P lost a row or
+    # gained one, which the coverage check above -- a case with NO rows --
+    # cannot see (F-115; measured on the unfixed tree: one `drift` row dropped
+    # was `:passed` with 304 rows).
+    particles_per_case = maximum(length(v) for v in values(particles))
+    incomplete = String[]
+    for name in sort!(collect(keys(particles)))
+        seen = sort(particles[name])
+        seen == collect(1:particles_per_case) && continue
+        twice = unique(x for x in seen if count(==(x), seen) > 1)
+        push!(incomplete, "$(name) carries particles $(unique(seen)) of 1:$(particles_per_case)" *
+                          (isempty(twice) ? "" : " with $(join(twice, ", ")) listed twice"))
+    end
+    isempty(incomplete) || return ContractResult(false,
+        "PTC reference table $(path) is incomplete (every case carries the generator's " *
+        "particles 1:$(particles_per_case) alike): " * join(incomplete, "; ") *
+        ". Regenerate it with validation/generate_ptc_reference.jl on a machine with MAD-X.")
 
     failures = String[]
     for (name, d) in worst
@@ -3009,6 +3065,8 @@ function validate(contract::PTCConsistencyContract; kwargs...)
     end
     metrics = Dict{Symbol,Any}(:madx_version => version, :rows => rows,
                                :cases => length(worst),
+                               :particles_per_case => particles_per_case,
+                               :rows_unmatched => rows_unmatched,
                                :max_deviation => maximum(values(worst)))
     for (name, d) in worst
         metrics[Symbol("dev_", name)] = d
