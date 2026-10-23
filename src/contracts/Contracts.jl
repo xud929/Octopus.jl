@@ -2373,6 +2373,16 @@ against the soft-Gaussian construction -- and its 8% tolerance is where this
 contract's independent evidence about the kick actually lives. The spectral
 solvers' high-energy limit remains covered by
 `validation/high_energy_weakstrong_limit.jl`, which this contract mirrors.
+
+Both halves judge the electron. At infinite energy the electron is a frozen
+source whatever the solver, so the PIC electron's `max |change|` is held at
+`gaussian_atol` beside the soft-Gaussian one (metric
+`pic_electron_max_abs_change`; measured 5.4e-20 at the defaults, the slice
+drift's roundoff) -- until the 2026-10-22 fix batch the PIC half asserted the
+proton's luminosity and size and nothing about the electron (2026-10-18 audit,
+F-114; the validation script gained the same assertion as F-239 in fix batch
+2). A failure names every arm that broke, by its measured value and its
+tolerance.
 """
 Base.@kwdef struct HighEnergyWeakStrongLimitContract <: AbstractPhysicsContract
     n_particles::Int = 20000
@@ -2474,6 +2484,15 @@ function validate(contract::HighEnergyWeakStrongLimitContract; kwargs...)
 
         gaussian_proton_error = _wsl_max_abs(gaussian_proton.rep, reference_proton.rep)
         gaussian_electron_change = _wsl_max_abs(gaussian_electron.rep, electron.rep)
+        # The infinite-energy electron must come out of the PIC collision as it
+        # went in, too: the limit is "the electron is a frozen source" for
+        # every solver, and until the 2026-10-22 fix batch this half asserted
+        # the proton's luminosity and size and nothing about the electron
+        # (2026-10-18 audit, F-114; the mirror script's F-239). The same
+        # absolute tolerance as the soft-Gaussian electron, because the
+        # electron's immunity is the energy's, not the solver's (measured
+        # 5.4e-20 at the defaults, the slice drift's roundoff).
+        pic_electron_change = _wsl_max_abs(pic_electron.rep, electron.rep)
         gaussian_lum_rel = abs(gaussian_luminosity - reference_luminosity) /
             max(abs(reference_luminosity), eps(Float64))
         reference_rms = _wsl_centered_rms(reference_proton.rep)
@@ -2487,17 +2506,32 @@ function validate(contract::HighEnergyWeakStrongLimitContract; kwargs...)
         metrics[:gaussian_luminosity_relative_error] = gaussian_lum_rel
         metrics[:pic_luminosity_relative_error] = pic_lum_rel
         metrics[:pic_proton_size_relative_error] = pic_size_rel
+        metrics[:pic_electron_max_abs_change] = pic_electron_change
         metrics[:n_particles] = contract.n_particles
 
-        gaussian_passed = gaussian_proton_error <= contract.gaussian_atol &&
-                          gaussian_electron_change <= contract.gaussian_atol &&
-                          gaussian_lum_rel <= contract.gaussian_luminosity_rtol
-        pic_passed = pic_lum_rel <= contract.pic_luminosity_rtol &&
-                     pic_size_rel <= contract.pic_size_rtol
-        passed = gaussian_passed && pic_passed
+        # Each arm is judged by name, so a failure says WHICH claim broke; the
+        # message used to read "soft-Gaussian exactness or PIC model
+        # tolerance" and named no arm (F-114).
+        failures = String[]
+        gaussian_proton_error <= contract.gaussian_atol || push!(failures,
+            "soft-Gaussian proton deviates from the frozen-source reference by " *
+            "$(gaussian_proton_error) > $(contract.gaussian_atol)")
+        gaussian_electron_change <= contract.gaussian_atol || push!(failures,
+            "soft-Gaussian electron moved by $(gaussian_electron_change) > $(contract.gaussian_atol)")
+        gaussian_lum_rel <= contract.gaussian_luminosity_rtol || push!(failures,
+            "soft-Gaussian luminosity off by $(gaussian_lum_rel) relative > " *
+            "$(contract.gaussian_luminosity_rtol)")
+        pic_lum_rel <= contract.pic_luminosity_rtol || push!(failures,
+            "PIC luminosity off by $(pic_lum_rel) relative > $(contract.pic_luminosity_rtol)")
+        pic_size_rel <= contract.pic_size_rtol || push!(failures,
+            "PIC proton size off by $(pic_size_rel) relative > $(contract.pic_size_rtol)")
+        pic_electron_change <= contract.gaussian_atol || push!(failures,
+            "PIC electron moved by $(pic_electron_change) > $(contract.gaussian_atol) " *
+            "(the infinite-energy electron is a frozen source for every solver)")
+        passed = isempty(failures)
         message = passed ?
-            "Strong-strong collisions reduce to the frozen-source weak-strong kick at infinite source energy (soft-Gaussian exact; PIC within model tolerance)." :
-            "The high-energy weak-strong limit failed (soft-Gaussian exactness or PIC model tolerance)."
+            "Strong-strong collisions reduce to the frozen-source weak-strong kick at infinite source energy (soft-Gaussian exact and both electrons unmoved; PIC within model tolerance)." :
+            "The high-energy weak-strong limit failed: " * join(failures, "; ")
         return ContractResult(passed, message;
                               residual=max(gaussian_proton_error, pic_lum_rel),
                               metrics=metrics)
@@ -2684,6 +2718,17 @@ at `default_atol = 1e-11` unless overridden (this docstring once pointed at
 "per-case defaults below" that never existed; 2026-08-05 audit, U3-9).
 Agreement is not uniform across elements and the differences are physical,
 not numerical -- see `docs/theory/lattice_hamiltonian_and_conventions.md`.
+
+The table is read whole or refused: a data row that is not 14 tab-separated
+fields (case, particle index, six coordinates in, six out) FAILS naming its
+line, every declared case must carry the generator's particles `1:P` exactly
+(the generator tracks one `PARTICLES` list through every case, so the table's
+own uniformity is the expectation and a case with a missing or doubled row
+fails by name), and a row naming a case the contract does not declare is
+counted in `metrics[:rows_unmatched]`. Until the 2026-10-22 fix batch a
+malformed row was skipped and a case kept its coverage after one surviving
+row, so a table that lost rows narrowed the comparison under a passing verdict
+(2026-10-18 audit, F-115).
 """
 Base.@kwdef struct PTCConsistencyContract <: AbstractImplementationContract
     path::Union{Nothing,String} = nothing
@@ -2932,30 +2977,54 @@ function validate(contract::PTCConsistencyContract; kwargs...)
     specs = _ptc_reference_specs()
     version = "unknown"
     worst = Dict{String,Float64}()
+    particles = Dict{String,Vector{Int}}()   # case => the particle indices its rows carry
+    malformed = String[]
     rows = 0
-    for line in eachline(path)
+    rows_unmatched = 0
+    for (lineno, line) in enumerate(eachline(path))
         if startswith(line, "#")
             m = match(r"MAD-X version:\s*(\S+)", line)
             m === nothing || (version = m.captures[1])
             continue
         end
-        startswith(line, "case") && continue
+        startswith(line, "case\t") && continue
         isempty(strip(line)) && continue
         f = split(line, '\t')
-        length(f) == 14 || continue
+        # A data row that is not 14 tab-separated fields -- the case, a particle
+        # index and twelve coordinates -- is a corrupt table, reported by its
+        # line, never skipped: until the 2026-10-22 fix batch `length(f) == 14
+        # || continue` dropped it silently and the case kept its coverage on the
+        # rows that survived (2026-10-18 audit, F-115).
+        particle = length(f) == 14 ? tryparse(Int, f[2]) : nothing
+        numbers = length(f) == 14 ? [tryparse(Float64, s) for s in f[3:14]] : nothing
+        if particle === nothing || numbers === nothing || any(isnothing, numbers)
+            push!(malformed, "line $(lineno) ($(length(f)) fields): " * first(line, 60))
+            continue
+        end
         name = f[1]
-        haskey(specs, name) || continue
-        v = parse.(Float64, f[3:14])
+        if !haskey(specs, name)
+            # A row for a case this contract no longer declares: right to skip,
+            # counted so it is visible (`:rows_unmatched`).
+            rows_unmatched += 1
+            continue
+        end
+        v = Vector{Float64}(numbers)
+        push!(get!(Vector{Int}, particles, name), particle)
         # A case may name one spec or a short line: MAD-X cannot hold a
         # zero-length sequence, so a thin element is referenced as itself
         # followed by a drift.
         entry = specs[name]
-        line = entry isa AbstractVector ? entry : (entry,)
-        out = collect(foldl((c, s) -> compile_runtime(s)(c...), line;
+        line_specs = entry isa AbstractVector ? entry : (entry,)
+        out = collect(foldl((c, s) -> compile_runtime(s)(c...), line_specs;
                             init=(v[1], v[2], v[3], v[4], v[5], v[6])))
         worst[name] = max(get(worst, name, 0.0), maximum(abs, out .- v[7:12]))
         rows += 1
     end
+    isempty(malformed) || return ContractResult(false,
+        "PTC reference table $(path) has $(length(malformed)) malformed row(s) " *
+        "(14 tab-separated fields expected: case, particle, six coordinates in, six out): " *
+        join(malformed, "; ") * ". Regenerate it with validation/generate_ptc_reference.jl " *
+        "on a machine with MAD-X.")
     rows == 0 && return ContractResult(false, "PTC reference table $(path) had no usable rows")
     # Every declared spec must have been compared. The row loop skips a name the
     # table does not carry (`haskey(specs, name) || continue`), which is right
@@ -2967,6 +3036,27 @@ function validate(contract::PTCConsistencyContract; kwargs...)
         "PTC reference table $(path) has no rows for $(length(untested)) declared " *
         "case(s): " * join(untested, ", ") * ". Regenerate it with " *
         "validation/generate_ptc_reference.jl on a machine with MAD-X.")
+    # Every case carries the SAME particles, 1:P, because the generator tracks
+    # one `PARTICLES` list through every case and refuses a case that returned
+    # fewer (validation/generate_ptc_reference.jl); the table's own uniformity
+    # is the expectation, derived here, never a count copied from the
+    # generator. A case whose particle set is not exactly 1:P lost a row or
+    # gained one, which the coverage check above -- a case with NO rows --
+    # cannot see (F-115; measured on the unfixed tree: one `drift` row dropped
+    # was `:passed` with 304 rows).
+    particles_per_case = maximum(length(v) for v in values(particles))
+    incomplete = String[]
+    for name in sort!(collect(keys(particles)))
+        seen = sort(particles[name])
+        seen == collect(1:particles_per_case) && continue
+        twice = unique(x for x in seen if count(==(x), seen) > 1)
+        push!(incomplete, "$(name) carries particles $(unique(seen)) of 1:$(particles_per_case)" *
+                          (isempty(twice) ? "" : " with $(join(twice, ", ")) listed twice"))
+    end
+    isempty(incomplete) || return ContractResult(false,
+        "PTC reference table $(path) is incomplete (every case carries the generator's " *
+        "particles 1:$(particles_per_case) alike): " * join(incomplete, "; ") *
+        ". Regenerate it with validation/generate_ptc_reference.jl on a machine with MAD-X.")
 
     failures = String[]
     for (name, d) in worst
@@ -2975,6 +3065,8 @@ function validate(contract::PTCConsistencyContract; kwargs...)
     end
     metrics = Dict{Symbol,Any}(:madx_version => version, :rows => rows,
                                :cases => length(worst),
+                               :particles_per_case => particles_per_case,
+                               :rows_unmatched => rows_unmatched,
                                :max_deviation => maximum(values(worst)))
     for (name, d) in worst
         metrics[Symbol("dev_", name)] = d
@@ -3238,8 +3330,17 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
     # atol=0). Skew content stays OUT of the baseline: a named skew beside a
     # nonzero ks-tuple entry hits the fold contradiction guard and would
     # flip ks from checked to constructor-rejected.
+    # The two highest SKEW orders carry content too (fix batch 4b, F-112):
+    # from a zero baseline their only candidate is +0.13, a fifth-order kick
+    # of 2.6e-18 at the probe's 2.3 mm (roundoff's size, physics' origin);
+    # with content the x1.37 candidate moves the map by the strength's own
+    # scale. The fold-contradiction guard only fires for a named strength
+    # beside a nonzero tuple entry of the SAME order, and the `ks` candidate
+    # `(0.0, 0.31)` sets order 1, so `ks` stays checked (measured: 23 refused,
+    # unchanged).
     :multipole => merge(_LATTICE_BODY_PROBE,
                    (L=0.3, k1=1.2, k2=8.0, k3=40.0, k4=900.0, k5=20000.0,
+                    k4s=900.0, k5s=20000.0,
                     curved_order=6, nst=2, fringe=:all, va=0.03, vs=1.0e-4,
                     highest_fringe=2, x_offset=1.0e-3)),
     # `highest_fringe = 2`, not 1. At 1 the multipole fringe is capped below the
@@ -3269,7 +3370,12 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
                   zeta2=(0.012, 0.0, 0.0, 0.0), R1=(0.02, 0.01, 0.0, 0.0),
                   R2=(0.021, 0.011, 0.0, 0.0)),
     :marker => NamedTuple(),
-    :thin_multipole => (k1l=0.05, k2l=1.2, x_offset=1.0e-3),
+    # Fourth- and fifth-order content, normal and skew (the PTC case
+    # `thin_multipole_k5`'s values), so the x1.37 candidate moves the map by
+    # the strength's scale; from a zero baseline +0.13 moved it by 1e-16 at
+    # fifth order (fix batch 4b, F-112).
+    :thin_multipole => (k1l=0.05, k2l=1.2, k4l=400.0, k5l=5000.0, k4sl=300.0, k5sl=-300.0,
+                        x_offset=1.0e-3),
     :thin_dipole => (k0l=1.0e-3, x_offset=1.0e-3),
     :thin_quadrupole => (k1l=0.05, x_offset=1.0e-3),
     :thin_sextupole => (k2l=1.2, x_offset=1.0e-3),
@@ -3318,6 +3424,12 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
     # equally, and an isotropic transverse map commutes with a roll about s,
     # so `tilt` would read as inert when it is only unprobeable there.
     :lumped_radiation => (damping_turns=(1000.0, 800.0, 500.0), rng_id=1),
+    # The same symmetry for the chromaticity kick: its example has
+    # `xi = (1, 1)`, `beta = (1, 1)`, an isotropic map that commutes with a
+    # roll, so `tilt` was credited on the conjugation's roundoff (6.5e-19;
+    # 2026-10-18 audit, F-112). Unequal chromaticities and betas make the
+    # roll physical.
+    :chromaticity_kick => (xi=(1.2, -0.8), beta=(0.82, 0.075), alpha=(0.01, -0.02)),
 )
 """
 Parameters that every kind CARRIES rather than consumes.
@@ -3422,8 +3534,34 @@ const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     # of these twelve, because an exempted pair is never judged. All twelve are
     # swept now (`checked` 530 -> 542, `exemptions_declared` 38 -> 26).
     (:thin_rf_cavity, :tilt) => "the map is independent of the transverse coordinates, so a roll about s commutes (cancels to roundoff)",
-    (:thin_rf_cavity, :ref_tilt) => "transverse-independent map; a design roll commutes like tilt does",
+    # `(:thin_rf_cavity, :ref_tilt)` RETIRED (fix batch 4b, F-112): "a design
+    # roll commutes like tilt does" was false under the six-DOF probe. The
+    # design roll composes OUTSIDE the misalignment (the PTC `reftilt_mis`
+    # cases exist for exactly that order), so it turns the pitches' axes and
+    # with them the longitudinal displacement `offset * pitch` the cavity
+    # reads: measured 2.9e-13 at the shipped probe, six orders above the
+    # marker's conjugation roundoff (4e-19..4e-17), the same class of false
+    # exemption as F-107's twelve. Swept now; its evidence sits below the
+    # weak-evidence floor and the contract lists it as such.
+    # The same roll on the accelerating cavity, whose kick reads z and pz and
+    # scales px, py by one factor, commutes exactly (F-112; the thin RF
+    # cavity's row above said it of its kind and this kind had none).
+    (:thin_accelerating_cavity, :tilt) => "the kick reads z and pz only and scales px, py by one factor, so a roll about s commutes (cancels to roundoff; measured 8.7e-19 at the six-DOF probe)",
+    # The marker's eighth placement parameter, by the same identity-map reason
+    # as its seven rows above (F-112): either composition order of a
+    # conjugation that cancels is invisible (measured 4.3e-19).
+    (:marker, :misalign_convention) => "identity map; either composition order of a conjugation that cancels exactly is invisible (the marker's placement rows' class)",
 )
+
+"""
+The elliptical thin strong beam the Gaussian strong beam's probe wraps
+(`ELEMENT_PARAM_PROBE_OVERRIDES`): the example's `kbb` and `beta`, with
+`sigma_x = 2 sigma_y` so a roll about s is physical. A function, called when
+the probe is built, since `ThinStrongBeamSpec` is not defined where the
+override table is evaluated; defined ABOVE the table so the table can name it.
+"""
+_elliptical_thin_strong_beam_probe() =
+    ThinStrongBeamSpec(kbb=1.0e-4, beta=(1.0, 1.0), sigma=(2.0e-3, 1.0e-3))
 
 """
 Keys merged ONTO a kind's probe (whether that probe is curated or the kind's own
@@ -3440,9 +3578,23 @@ where `DEFAULT_ELEMENT_PARAM_PROBES` is evaluated.
 `:sqrt_density`. It was therefore reported declared-but-not-consumed the moment
 the sweep widened enough to reach it, when it is in fact perfectly effective at
 the configuration where it applies (2026-08-05_b audit, U4-2/U4-3).
+
+The strong beams' examples are ROUND (`sigma = (1e-3, 1e-3)`, `beta = (1, 1)`),
+and a round Gaussian kick commutes with a roll about s, so `tilt` on both kinds
+was credited on the conjugation's roundoff (1.4e-17; 2026-10-18 audit, F-112).
+An elliptical beam (sigma_x = 2 sigma_y) makes the roll physical: the thin
+beam's stored 4 x 4 `covariance` is overridden directly, the Gaussian beam's
+`thin` sub-spec through a zero-argument FUNCTION -- an override value that is
+a function is called when the probe is built, because an element spec cannot
+be constructed where this table is evaluated (the contracts are included
+before the elements). `thin` stays unperturbable (a sub-spec) and
+`covariance` unperturbable (a matrix), so neither bucket moves.
 """
 const ELEMENT_PARAM_PROBE_OVERRIDES = Dict{Symbol,Any}(
-    :gaussian_strong_beam => (slice_method=:equal_width, slice_width=3.0e-3),
+    :thin_strong_beam => (covariance=[4.0e-6 0.0 0.0 0.0; 0.0 4.0e-6 0.0 0.0;
+                                      0.0 0.0 1.0e-6 0.0; 0.0 0.0 0.0 1.0e-6],),
+    :gaussian_strong_beam => (slice_method=:equal_width, slice_width=3.0e-3,
+                              thin=_elliptical_thin_strong_beam_probe),
 )
 
 """
@@ -3457,11 +3609,38 @@ reported as declared-but-ignored unless its `(kind, parameter)` pair is
 listed in `inactive` with a reason. The probe keywords and default inactive
 list, and why probing goes through the friendly constructor, are documented
 on [`DEFAULT_ELEMENT_PARAM_PROBES`](@ref).
+
+Every candidate perturbation runs and the LARGEST movement is the evidence
+(until the 2026-10-22 fix batch the loop stopped at the first bit that moved,
+before the scale-correct x1.37 candidate was tried, so `thin_rf_cavity.frequency`
+was credited by +0.13 Hz at 1.2e-16; 2026-10-18 audit, F-112). The evidence
+is published per parameter in `metrics[:deviations]`, and a checked parameter
+whose largest movement lies below `weak_evidence_floor` is listed in
+`metrics[:weak_evidence]` and named in the message: below that size the sweep
+cannot tell physics from roundoff by magnitude alone, and the reader must
+consult structure. The floor is REPORTING, not a verdict (the verdict stays
+`atol`), and no floor could be one: the inert-conjugation roundoff class
+measured on the marker's placement rows is 4e-19..4e-17 at the probe's 1e-3
+coordinates, while genuine physics at the same probe sits as low as 1e-16 for
+a fifth-order multipole strength; `1e-12` is the audit's own threshold, five
+orders above the roundoff class and where the suite's smallest pinned physics
+(the thin kinds' misalignment-convention step, 2.2e-12) begins.
+
+The two undecided buckets are NAMED and classified (F-111):
+`metrics[:unperturbable_reasons]` maps each pair to why no perturbation could
+be formed ([`_perturb_candidates_or_reason`](@ref)), with the Symbol
+parameters whose `alternatives` the schema never declared listed in
+`metrics[:undeclared_alternatives]`; `metrics[:rejected_reasons]` maps each
+pair to the first refusal with its stage, `constructor:` or `compile_or_map:`
+-- a candidate the constructor accepts and the compile or the map then throws
+on is an element's validation seam, not a constructor's refusal, and reads
+differently.
 """
 Base.@kwdef struct ElementParameterEffectivenessContract <: AbstractImplementationContract
     probes::Dict{Symbol,Any} = DEFAULT_ELEMENT_PARAM_PROBES
     inactive::Dict{Tuple{Symbol,Symbol},String} = DEFAULT_INACTIVE_ELEMENT_PARAMS
     atol::Float64 = 0.0
+    weak_evidence_floor::Float64 = 1.0e-12
 end
 
 # Candidate perturbations for a declared parameter, most physical first. The
@@ -3503,45 +3682,71 @@ const _PLACEMENT_PROBE_DOF = (
     x_offset=1.0e-3, y_offset=-0.7e-3, z_offset=0.5e-3,
     x_pitch=0.8e-3, y_pitch=-0.6e-3, tilt=0.9e-3)
 
-function _perturb_candidates(key::Symbol, current, pmeta)
-    key === :tracking_method && return ()
-    # Declared alternatives win outright: they are the schema saying "these
-    # are this parameter's other legitimate values", which is strictly more
-    # information than any generic type rule -- and the only road to a
-    # Symbol/flag parameter, which has no numeric neighbourhood (U4-12).
+"""
+    _perturb_candidates_or_reason(key, current, pmeta) -> Tuple | Symbol
+
+Candidate perturbations for a declared parameter (a `Tuple`, most physical
+first), or the REASON none can be formed (a `Symbol`), so the sweep can name
+why a pair is unperturbable instead of counting it (2026-10-18 audit, F-111):
+`:tracking_method` (a declaration, not a value with a neighbourhood);
+`:undeclared_alternatives` (a Symbol-valued enum -- by its value or by its
+declared default, since a probe may carry the object a Symbol selected, as the
+strong beam's `virtual_drift` does -- whose `ParamMeta` declares no
+`alternatives`: the schema's omission, not this contract's, and the one reason
+an owner can retire by declaring them); `:rule_or_object_tuple` (a tuple
+holding a turn-modulation rule object or `nothing`, the per-harmonic
+`phase_noise` shape, which has no numeric neighbourhood -- never a
+`Float64(nothing)`; 2026-10-12 review, C4); `:no_candidate_for_type` (a
+matrix, a sub-spec, a line's entries). [`_perturb_candidates`](@ref) returns
+`()` for every reason.
+
+Declared alternatives win outright: they are the schema saying "these are
+this parameter's other legitimate values", which is strictly more information
+than any generic type rule -- and the only road to a Symbol/flag parameter
+(U4-12). A `nothing` default carries no type at all, so the shapes an element
+parameter actually takes are offered and the constructor picks. An
+integer-declared physical quantity is perturbed by a physical amount before
+the enum-style step. Real parameters get an additive AND a multiplicative
+candidate: a fixed +0.13 is unphysical for any small-scale quantity, and
+unphysical is not the same as ineffective -- `gaussian_strong_beam.slice_width`
+is a length in metres against a 7 mm bunch, so +0.13 m puts every particle in
+one slice and the map does not move -- while for a large-scale quantity (a
+cavity frequency of 4e8 Hz) +0.13 moves the map by roundoff only and the x1.37
+candidate is the physical one; the sweep runs every candidate and keeps the
+largest movement (F-112).
+"""
+function _perturb_candidates_or_reason(key::Symbol, current, pmeta)
+    key === :tracking_method && return :tracking_method
     if pmeta isa ParamMeta && !isempty(pmeta.alternatives)
         alts = Tuple(a for a in pmeta.alternatives if a != current)
         isempty(alts) || return alts
     end
     current isa Bool && return (!current,)
-    current isa Symbol && return ()
+    (current isa Symbol || (pmeta isa ParamMeta && pmeta.default isa Symbol)) &&
+        return :undeclared_alternatives
     if current isa Tuple
         isempty(current) && return ((0.0, 0.31),)
-        # A tuple holding anything but numbers -- a turn-modulation rule object
-        # or `nothing`, the per-harmonic `phase_noise` shape -- has no numeric
-        # neighbourhood this contract can form: unperturbable, never a
-        # `Float64(nothing)` (2026-10-12 review, C4).
-        all(entry -> entry isa Real, current) || return ()
+        all(entry -> entry isa Real, current) || return :rule_or_object_tuple
         return (ntuple(i -> Float64(current[i]) + 0.17 * i, length(current)),)
     end
-    # A `nothing` default carries no type at all, so offer the shapes an element
-    # parameter actually takes and let the constructor pick.
     current === nothing && return (true, false, 1.0e-3, 1)
     if current isa Integer
-        # An integer-declared physical quantity is still a physical quantity:
-        # perturb it by a physical amount before trying the enum-style step.
         return _perturb_is_physical(key, pmeta) ? (1.0e-3, Int(current) + 1) :
                                                   (Int(current) + 1, Int(current) + 2)
     end
-    # Additive AND multiplicative. A fixed +0.13 is unphysical for any
-    # small-scale quantity, and unphysical is not the same as ineffective:
-    # `gaussian_strong_beam.slice_width` is a length in metres against a 7 mm
-    # bunch, so +0.13 m puts every particle in one slice and the map does not
-    # move -- the parameter looks dead when it is only being asked the wrong
-    # question. A relative perturbation is scale-correct for exactly these
-    # (2026-08-05_b audit, U4-3).
     current isa Real && return (Float64(current) + 0.13, Float64(current) * 1.37)
-    return ()
+    return :no_candidate_for_type
+end
+
+"""
+    _perturb_candidates(key, current, pmeta) -> Tuple
+
+The candidate perturbations of [`_perturb_candidates_or_reason`](@ref), with
+`()` for a parameter that has none.
+"""
+function _perturb_candidates(key::Symbol, current, pmeta)
+    candidates = _perturb_candidates_or_reason(key, current, pmeta)
+    return candidates isa Symbol ? () : candidates
 end
 
 # Parameters that are not INDEPENDENTLY variable, and the joint moves that
@@ -3632,8 +3837,9 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
     # without a probe)", which a reader takes for completeness. That is the
     # AGENTS.md rule "do not report an unrun check as passed", in the file whose
     # job is to enforce it.
-    unperturbable = String[]   # no perturbation this contract can form
-    rejected = String[]        # constructor refused the perturbed value
+    unperturbable_reasons = Dict{String,Symbol}()   # pair => why no perturbation could be formed (F-111)
+    rejected_reasons = Dict{String,String}()        # pair => "constructor: ..." or "compile_or_map: ..." (F-111)
+    deviations = Dict{String,Float64}()             # pair => the largest movement an accepted candidate made (F-112)
     carried = String[]         # carried by every kind, consumed by none (see CARRIED_ELEMENT_PARAMS)
     exemptions_seen = Set{Tuple{Symbol,Symbol}}()   # U4-17: which `inactive` entries applied
     for T in registered_element_specs()
@@ -3659,8 +3865,12 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
             continue
         end
         if haskey(ELEMENT_PARAM_PROBE_OVERRIDES, meta.kind)
-            merge!(probe, Dict{Symbol,Any}(
-                pairs(ELEMENT_PARAM_PROBE_OVERRIDES[meta.kind])))
+            for (k, v) in pairs(ELEMENT_PARAM_PROBE_OVERRIDES[meta.kind])
+                # A zero-argument function is evaluated HERE: an override whose
+                # value is an element spec cannot be built where the table is
+                # (the contracts are included before the elements).
+                probe[k] = v isa Function ? v() : v
+            end
         end
         # Every probe carries all six placement degrees of freedom unless it
         # sets its own: the misalignment CONVENTION is observable only with
@@ -3710,9 +3920,9 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
             current = get(probe, key, pmeta.default)
             coupled = _perturb_coupled_overrides(meta.kind, key, probe)
             candidates = coupled === nothing ?
-                _perturb_candidates(key, current, pmeta) : coupled
-            if isempty(candidates)
-                push!(unperturbable, "$(meta.kind).$(key)")
+                _perturb_candidates_or_reason(key, current, pmeta) : coupled
+            if candidates isa Symbol
+                unperturbable_reasons["$(meta.kind).$(key)"] = candidates
                 continue
             end
             # The question is "does this parameter reach the map AT ALL", so
@@ -3725,27 +3935,42 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
             # reasoning for skipping outright, and it is wrong for a
             # perturbation that is unphysical rather than invalid, so the
             # constructor arbitrates validity and the map arbitrates effect
-            # (2026-08-05_b audit, U4-3).
+            # (2026-08-05_b audit, U4-3). EVERY candidate runs: the loop used
+            # to break at the first movement above `atol`, i.e. at the first
+            # bit, which credited a 4e8 Hz frequency on +0.13 Hz before x1.37
+            # was tried (F-112). Construction and compile-or-track are judged
+            # apart, so a refusal is named by its stage (F-111).
             accepted = false
             deviation = 0.0
+            refusals = String[]
             for candidate in candidates
                 override = candidate isa Dict{Symbol,Any} ?
                     candidate : Dict{Symbol,Any}(key => candidate)
+                spec = try
+                    ctor(; merge(probe, override)...)
+                catch err
+                    push!(refusals, "constructor: " * first(split(sprint(showerror, err), '\n')))
+                    nothing
+                end
+                spec === nothing && continue
                 moved = try
-                    collect(compile_runtime(ctor(; merge(probe, override)...))(u...))
-                catch
+                    collect(compile_runtime(spec)(u...))
+                catch err
+                    push!(refusals, "compile_or_map: " * first(split(sprint(showerror, err), '\n')))
                     nothing
                 end
                 moved === nothing && continue
                 accepted = true
                 deviation = max(deviation, _probe_deviation(moved, baseline))
-                deviation > contract.atol && break
             end
             if !accepted
-                push!(rejected, "$(meta.kind).$(key)")
+                downstream = findfirst(startswith("compile_or_map:"), refusals)
+                rejected_reasons["$(meta.kind).$(key)"] =
+                    downstream === nothing ? first(refusals) : refusals[downstream]
                 continue
             end
             checked += 1
+            deviations["$(meta.kind).$(key)"] = deviation
             deviation <= contract.atol && push!(ignored, "$(meta.kind).$(key)")
         end
     end
@@ -3754,13 +3979,31 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
     # entry now documents something that does not exist (U4-17).
     stale_exemptions = sort!([string(k, ".", p) for (k, p) in keys(contract.inactive)
                               if !((k, p) in exemptions_seen)])
+    # Weak evidence (F-112): checked, but on a movement below the floor, where
+    # the sweep cannot tell physics from roundoff by size alone. Listed and
+    # named, never silently credited; the verdict stays `atol`.
+    weak = Dict{String,Float64}(name => d for (name, d) in deviations
+                                if contract.atol < d < contract.weak_evidence_floor)
+    unperturbable_names = sort!(collect(keys(unperturbable_reasons)))
+    rejected_names = sort!(collect(keys(rejected_reasons)))
+    undeclared = sort!([name for (name, why) in unperturbable_reasons
+                        if why === :undeclared_alternatives])
     metrics = Dict{Symbol,Any}(:checked => checked, :ignored => length(ignored),
                                :skipped_kinds => length(skipped),
                                :broken_kinds => length(broken),
-                               :unperturbable => length(unperturbable),
-                               :rejected => length(rejected),
+                               :unperturbable => length(unperturbable_names),
+                               :rejected => length(rejected_names),
                                :carried => length(carried),
-                               :undecided => length(unperturbable) + length(rejected),
+                               :undecided => length(unperturbable_names) + length(rejected_names),
+                               :unperturbable_names => unperturbable_names,
+                               :unperturbable_reasons => unperturbable_reasons,
+                               :undeclared_alternatives => undeclared,
+                               :rejected_names => rejected_names,
+                               :rejected_reasons => rejected_reasons,
+                               :deviations => deviations,
+                               :weak_evidence_floor => contract.weak_evidence_floor,
+                               :weak_evidence => weak,
+                               :weak_evidence_count => length(weak),
                                :exemptions_declared => length(contract.inactive),
                                :exemptions_applied => length(exemptions_seen),
                                :stale_exemptions => length(stale_exemptions))
@@ -3773,12 +4016,50 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
         join(stale_exemptions, ", "); metrics=metrics)
     isempty(ignored) && return ContractResult(true,
         "every parameter this contract could decide reached the map " *
-        "($(checked) checked, $(length(skipped)) kinds without a probe; " *
-        "$(length(unperturbable)) with no formable perturbation, " *
-        "$(length(rejected)) whose perturbation the constructor rejected -- " *
-        "neither group is verified)"; metrics=metrics)
+        "($(checked) checked, $(length(skipped)) kinds without a probe); " *
+        "undecided and NOT verified: " *
+        _effectiveness_undecided_summary(unperturbable_reasons, rejected_reasons) *
+        (isempty(weak) ? "" :
+         "; $(length(weak)) checked on weak evidence (largest movement below " *
+         "$(contract.weak_evidence_floor)): " * join(sort!(collect(keys(weak))), ", "));
+        metrics=metrics)
     return ContractResult(false,
         "declared but not consumed: " * join(sort(ignored), ", "); metrics=metrics)
+end
+
+"""
+    _effectiveness_undecided_summary(unperturbable_reasons, rejected_reasons) -> String
+
+The two undecided buckets of the element-parameter sweep by REASON and by
+name (2026-10-18 audit, F-111): the tracking-method declarations as a count
+(one per kind, structural), every other unperturbable group by name, and the
+refusals split by the stage that refused -- so a reader of the pass message
+can tell a declaration from an enum nobody declared, and a constructor's
+refusal from a value the constructor accepted and the map died on.
+"""
+function _effectiveness_undecided_summary(unperturbable_reasons, rejected_reasons)
+    by_reason = Dict{Symbol,Vector{String}}()
+    for (name, why) in unperturbable_reasons
+        push!(get!(Vector{String}, by_reason, why), name)
+    end
+    parts = String[]
+    n_tracking = length(get(by_reason, :tracking_method, String[]))
+    n_tracking == 0 || push!(parts, "$(n_tracking) tracking_method declarations")
+    for (why, label) in ((:undeclared_alternatives, "Symbol parameters with undeclared alternatives"),
+                         (:rule_or_object_tuple, "tuples of rule objects"),
+                         (:no_candidate_for_type, "values of a type the sweep cannot vary"))
+        names = sort(get(by_reason, why, String[]))
+        isempty(names) || push!(parts, "$(length(names)) $(label): " * join(names, ", "))
+    end
+    by_constructor = count(startswith("constructor:"), values(rejected_reasons))
+    downstream = sort!([name for (name, why) in rejected_reasons
+                        if !startswith(why, "constructor:")])
+    return "$(length(unperturbable_reasons)) with no formable perturbation (" *
+           join(parts, "; ") * "), $(length(rejected_reasons)) whose every candidate " *
+           "was refused ($(by_constructor) by the constructor" *
+           (isempty(downstream) ? "" :
+            "; $(length(downstream)) accepted at construction and failing at compile or in the map: " *
+            join(downstream, ", ")) * ")"
 end
 
 # ---------------------------------------------------------------------------
@@ -3992,6 +4273,23 @@ The CUDA launch surfaces are checked with every launch family requested at
 threads; the two must differ, or an override the consumer dropped would read
 exactly the inherited count (the public-configuration contract's F-10), and
 the contract refuses a `cuda_threads` equal to it.
+
+Three guards of the 2026-10-22 fix batch (2026-10-18 audit, F-109, F-110,
+F-113), each judged on every process before any device runs. A declared
+alternative equal to the value the BASELINE solver actually carries -- the
+probe's own value, or the schema default the probe leaves in place, read off
+`solver_configuration` of the very baseline that half compares against, the
+device probe for a CUDA-only option -- FAILS by name: the sweep would compare
+the solver against itself (the guard used to read the probe's value only, so a
+default the probe did not set was never consulted and `batch_mode =>
+:wavefront` counted as checked). An execution or performance option whose
+declared consumer is `:solver_runtime`, the dump of the solver under test,
+FAILS by name unless an `inactive` row covers it: the dump proves storage,
+not consumption, and the matcher no longer reads a requested value back out
+of it. The device half's comparator is NaN-aware (`_solver_contract_spread`:
+both-NaN unchanged, NaN against finite a definite change) and a baseline whose
+two calibration runs disagree on a NaN slot fails the solver instead of
+calibrating an infinite floor.
 """
 Base.@kwdef struct SolverOptionEffectivenessContract <: AbstractImplementationContract
     n_particles::Int = 256
@@ -4076,17 +4374,100 @@ end
 Largest relative difference between two observables, over coordinates and
 luminosities together. Used instead of an exact comparison wherever float atomic
 reordering makes bitwise equality unavailable.
+
+NaN-aware, by `_probe_deviation`'s rule (U4-1): a slot where both sides are
+NaN is unchanged, a NaN against a finite value is a definite change (`Inf`),
+finite pairs compare relatively. Until the 2026-10-22 fix batch the coordinate
+loop had no NaN handling, `max` propagated the NaN, and `NaN > floor` is
+false, so an option that turned a coordinate into NaN passed the device half's
+"must not move" and a NaN in a calibration baseline made the floor itself NaN
+(2026-10-18 audit, F-110; measured `NaN false NaN` on the audit's repro).
 """
 function _solver_contract_spread(a, b)
     worst = 0.0
     for (x, y) in zip(a[1], b[1])
+        if isnan(x) || isnan(y)
+            isequal(x, y) || return Inf
+            continue
+        end
         worst = max(worst, abs(x - y) / max(abs(x), abs(y), eps()))
     end
     for (x, y) in zip(a[2], b[2])
-        (isnan(x) && isnan(y)) && continue
+        if isnan(x) || isnan(y)
+            isequal(x, y) || return Inf
+            continue
+        end
         worst = max(worst, abs(x - y) / max(abs(x), abs(y), eps()))
     end
     return worst
+end
+
+"""
+    _solver_contract_cuda_floor(a, b) -> Float64 | nothing
+
+The device half's noise floor from two runs of the same baseline: one hundred
+times their repeat spread, floored at the tolerance the strong-strong
+backend-consistency contracts already use for "the same result" across routes
+(rtol = 1e-10), so self-calibration can only RAISE it if the hardware is
+noisier than that. The CUDA grid solvers are not bitwise reproducible run to
+run (float atomic deposition reorders), and the repository's own convention
+-- "bit-parity (~1e-15)" with coordinate residuals ~1e-12 -- is that such a
+difference is not a change; a genuine algorithmic difference sits seven or
+more orders above it (green_cache moved the CPU result by 2e-3, the spectral
+method switch by 5e-3). `nothing` when the two runs disagree on a NaN slot:
+no floor can be calibrated from a baseline that is not repeatable, and the
+caller fails the solver by name instead of judging its options against
+`Inf` (F-110).
+"""
+function _solver_contract_cuda_floor(a, b)
+    spread = _solver_contract_spread(a, b)
+    isfinite(spread) || return nothing
+    return max(spread * 100, 1.0e-10)
+end
+
+"""
+    _solver_contract_circular_consumer(meta) -> Bool
+
+Whether an option's declared consumer would certify it circularly: an
+execution or performance option whose `consumer` is `:solver_runtime`, the
+receipt that dumps the solver object under test. That receipt proves the value
+was STORED, not read, so the contract refuses such an option by name unless an
+`inactive` row covers it (2026-10-18 audit, F-113: the matcher's
+`:configuration` branch read the requested value back out of the dump, a
+circular acceptance path that was dormant only because no execution option
+named the consumer, with nothing guarding that).
+"""
+_solver_contract_circular_consumer(meta) =
+    _solver_option_is_execution(meta) && meta.consumer === :solver_runtime
+
+"""
+    _solver_contract_cuda_probe(T, probe) -> NamedTuple
+
+The probe the device half of `SolverOptionEffectivenessContract` runs for
+solver `T`: `grid_extent = :extrema` where the solver declares the keyword,
+since the CUDA PIC backend rejects the CPU probe's `:sigma` outright rather
+than ignoring it (which is the behaviour this whole contract is about), and
+the CPU probe unchanged otherwise (the soft-Gaussian solver has no such
+keyword and rejected it). One function for both halves, so the vacuity guard
+judges the very baseline the device half compares against (F-109).
+"""
+_solver_contract_cuda_probe(T, probe) =
+    haskey(solver_option_schema(T), :grid_extent) ?
+        merge(NamedTuple(probe), (grid_extent=:extrema,)) : NamedTuple(probe)
+
+"""
+    _solver_contract_baseline_value(solver, name) -> Any
+
+The value option `name` holds on a constructed baseline solver, read from
+`solver_configuration` (the resolved configuration every solver publishes,
+the hybrid merging its composed PIC's) and from the property when the
+configuration lacks the key; an option neither exposes throws, and the caller
+reports it by name.
+"""
+function _solver_contract_baseline_value(solver, name::Symbol)
+    cfg = solver_configuration(solver)
+    haskey(cfg, name) && return cfg[name]
+    return getproperty(solver, name)
 end
 
 """
@@ -4123,8 +4504,13 @@ _solver_contract_moved(a, b) =
     a[1] != b[1] || !isequal(a[2], b[2])
 
 # Did a receipt named by the option's declared consumer carry the requested
-# value? For :solver_runtime the whole configuration travels in the receipt; the
-# specialised consumers publish their own fields.
+# value, as a field named after the option? The specialised consumers publish
+# their own fields. The `:solver_runtime` receipt -- a dump of the solver
+# object under test -- is NOT consulted: reading the requested value back out
+# of its `configuration` certified storage, not consumption (previous audit
+# U4-6's mechanism; the branch that did so was removed in the 2026-10-22 fix
+# batch, F-113, and the sweep refuses an execution option that names that
+# consumer, `_solver_contract_circular_consumer`).
 function _solver_contract_receipt_carries(receipts, consumer::Symbol,
                                           name::Symbol, value,
                                           backend::Union{Nothing,DataType}=nothing)
@@ -4146,10 +4532,6 @@ function _solver_contract_receipt_carries(receipts, consumer::Symbol,
         return _cuda_pic_launch_receipts_carry(receipts, value)
     for r in receipts
         r.consumer === consumer || continue
-        if haskey(r.values, :configuration)
-            cfg = r.values.configuration
-            haskey(cfg, name) && isequal(getproperty(cfg, name), value) && return true
-        end
         haskey(r.values, name) && isequal(getproperty(r.values, name), value) && return true
         # cuda_pic_launch publishes one receipt per FAMILY rather than per
         # option, so the generic paths above cannot match. See
@@ -4233,6 +4615,7 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
     failures = String[]
     checked = 0
     deferred_cuda = Tuple{Symbol,Symbol}[]
+    vacuous = Set{Tuple{Symbol,Symbol}}()   # alternative equal to its baseline value (F-109): judged by neither half
     solver_exemptions_seen = Set{Tuple{Symbol,Symbol}}()   # U4-17
     # Pin the RNG, as every other strong-strong contract does. Without this the
     # probe beams depend on whatever global state the caller left behind: this
@@ -4247,6 +4630,7 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
         kind = nameof(T)
         probe = get(contract.probes, kind, NamedTuple())
         alternatives = get(contract.alternatives, kind, Dict{Symbol,Any}())
+        cuda_probe = _solver_contract_cuda_probe(T, probe)
         baseline_solver = T(; probe...)
         baseline = _solver_contract_observable(baseline_solver, base1, base2,
                                                CPUThreadsBackend)
@@ -4260,17 +4644,50 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
                       "$(kind).$(name) has no declared alternative and no stated reason")
                 continue
             end
-            if !(CPUThreadsBackend in meta.supported_backends)
-                push!(deferred_cuda, (kind, name))
+            # An execution or performance option whose declared consumer is
+            # the `:solver_runtime` dump cannot be certified here: the dump
+            # proves the value was stored, not read (F-113). Refused by name,
+            # before any collision and on every process.
+            if _solver_contract_circular_consumer(meta)
+                push!(failures,
+                      "$(kind).$(name) declares consumer :solver_runtime, the dump of the solver " *
+                      "under test, which cannot certify a $(meta.category) option; name the " *
+                      "consumer boundary that reads it, or exempt it with a reason")
                 continue
             end
+            on_cpu = CPUThreadsBackend in meta.supported_backends
             alt_value = _solver_alternative_value(name, alternatives[name])
             companions = _solver_alternative_companions(name, alternatives[name])
-            option_probe = merge(NamedTuple(probe), companions)
-            if haskey(option_probe, name) &&
-               isequal(getproperty(option_probe, name), alt_value)
+            # The vacuity guard, against the BASELINE the option's half runs
+            # (the CPU probe, or the device probe for a CUDA-only option, with
+            # the companions folded in) on every process, device or not: an
+            # alternative equal to the value the baseline solver actually
+            # carries -- the probe's own, or the schema default the probe
+            # leaves in place -- would compare the solver against itself.
+            # Until the 2026-10-22 fix batch the guard compared with the
+            # probe's value only, after the CUDA-only deferral, so a default
+            # the probe did not set was never consulted (2026-10-18 audit,
+            # F-109: `batch_mode => :wavefront` counted as checked).
+            option_probe = merge(on_cpu ? NamedTuple(probe) : cuda_probe, companions)
+            baseline_value = try
+                _solver_contract_baseline_value(T(; option_probe...), name)
+            catch err
+                push!(failures, "$(kind).$(name) baseline could not be built or read: " *
+                                first(split(sprint(showerror, err), '\n')))
+                continue
+            end
+            if isequal(baseline_value, alt_value)
+                push!(vacuous, (kind, name))
                 push!(failures,
-                      "$(kind).$(name) declares an alternative equal to its own probe value")
+                      "$(kind).$(name) declares an alternative equal to its baseline value " *
+                      "($(repr(alt_value)); " *
+                      (haskey(option_probe, name) ? "its own probe value" :
+                                                    "the schema default the probe leaves in place") *
+                      "): the sweep would compare the solver against itself")
+                continue
+            end
+            if !on_cpu
+                push!(deferred_cuda, (kind, name))
                 continue
             end
             solver = try
@@ -4361,10 +4778,9 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
         # performance categories, so the assertion is the mirror of the CPU
         # half: the result must NOT move, and the value must appear in a
         # receipt named by the option's declared consumer.
-        # `grid_extent` only where the solver declares it -- the soft-Gaussian
-        # solver has no such keyword and rejected it.
-        cuda_probe = haskey(solver_option_schema(T), :grid_extent) ?
-            merge(NamedTuple(probe), (grid_extent=:extrema,)) : NamedTuple(probe)
+        # The device probe, the ONE function the CPU loop's vacuity guard also
+        # judged against (`_solver_contract_cuda_probe`, F-109).
+        cuda_probe = _solver_contract_cuda_probe(T, probe)
         # Every option the DEVICE must honour, which is not the same set as
         # "the options only the device has". An option that BOTH backends read
         # and that is an execution or performance choice belongs here too:
@@ -4376,12 +4792,17 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
         # `_solver_option_is_execution` is what keeps physics options out: the
         # assertion below is "the result must NOT move", which is the wrong
         # claim for anything the CPU half checks by making it move.
+        # ... minus the options the CPU loop already refused by name: an
+        # alternative equal to its baseline (F-109) or a circular consumer
+        # (F-113) would be judged vacuously here.
         cuda_only = [(name, meta) for (name, meta) in pairs(solver_option_schema(T))
                      if CUDABackend in meta.supported_backends &&
                         (!(CPUThreadsBackend in meta.supported_backends) ||
                          _solver_option_is_execution(meta)) &&
                         !haskey(contract.inactive, (kind, name)) &&
-                        haskey(alternatives, name)]
+                        haskey(alternatives, name) &&
+                        !((kind, name) in vacuous) &&
+                        !_solver_contract_circular_consumer(meta)]
         if !isempty(cuda_only)
             # Run the baseline TWICE and take the spread as the noise floor.
             # The CUDA grid solvers are not bitwise reproducible run to run --
@@ -4393,23 +4814,23 @@ function _validate_solver_options(contract::SolverOptionEffectivenessContract)
             cuda_baseline, cuda_floor = try
                 a = _solver_contract_cuda_observable(T(; cuda_probe...), base1, base2)
                 b = _solver_contract_cuda_observable(T(; cuda_probe...), base1, base2)
-                # Floor at the tolerance the strong-strong backend-consistency
-                # contracts already use for "the same result" across routes
-                # (rtol = 1e-10); self-calibration can only raise it if the
-                # hardware is noisier than that. A route change reorders float
-                # atomic sums, and the repository's own convention -- quoted
-                # throughout the optimization histories as "bit-parity
-                # (~1e-15)" with coordinate residuals ~1e-12 -- is that such a
-                # difference is not a change. A genuine algorithmic difference
-                # sits seven or more orders above it: green_cache moved the CPU
-                # result by 2e-3 and the spectral method switch by 5e-3.
-                a, max(_solver_contract_spread(a, b) * 100, 1.0e-10)
+                # 100x the repeat spread, floored at the repository's 1e-10
+                # class, or `nothing` for a baseline that is not repeatable
+                # (the derivation is `_solver_contract_cuda_floor`'s).
+                a, _solver_contract_cuda_floor(a, b)
             catch err
                 push!(failures, "$(kind) CUDA baseline threw: " *
                                 first(split(sprint(showerror, err), '\n')))
-                nothing, 0.0
+                nothing, nothing
             end
-            if cuda_baseline !== nothing
+            if cuda_baseline !== nothing && cuda_floor === nothing
+                # A NaN slot the two calibration runs disagree on: no floor can
+                # be calibrated, and judging the options against `Inf` would
+                # pass every one of them (F-110). Failed by name instead.
+                push!(failures, "$(kind) CUDA baseline is not repeatable: its two calibration " *
+                                "runs disagree on a NaN slot, so no noise floor can be calibrated " *
+                                "and its $(length(cuda_only)) device option(s) were not judged")
+            elseif cuda_baseline !== nothing
                 for (name, meta) in cuda_only
                     cuda_alt = _solver_alternative_value(name, alternatives[name])
                     solver = try

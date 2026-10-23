@@ -15505,8 +15505,18 @@ if _lane_gate("Element parameter effectiveness")
     # two units' counts add, measured on the merged tree): twelve exemptions whose structural reasons the six-DOF probe
     # falsifies (the thin kicks' and the thin RF cavity's x/y offsets, the two
     # boosts' y offsets; movements 1e-8 to 2.3e-6 through the pitch and the
-    # tilt) retired and swept.
-    @test r.metrics[:checked] >= 549
+    # tilt) retired and swept. 549 -> 548 on 2026-10-22 (fix batch 4b unit
+    # CT, F-112): the one lowering, and by structural rows, not lost coverage
+    # -- `thin_accelerating_cavity.tilt` (the kick reads z and pz only and
+    # scales px, py by one factor, so a roll about s commutes; measured
+    # 8.7e-19, the conjugation's roundoff) and `marker.misalign_convention`
+    # (the identity map cancels either composition order; 4.3e-19) joined the
+    # inactive table beside the rows that already said the same of their
+    # kinds, while `thin_rf_cavity.ref_tilt` LEFT it: the design roll
+    # composes outside the pitches and turns their longitudinal displacement,
+    # which the cavity reads (measured 2.9e-13, six orders above the marker's
+    # roundoff class) -- a false exemption of F-107's kind. Net -2 +1.
+    @test r.metrics[:checked] >= 548
 
     # What the contract does NOT decide has to be visible, and bounded
     # (2026-08-05_b audit, U4-2). 112 of 501 declared parameters used to be
@@ -15664,6 +15674,79 @@ if _lane_gate("Element parameter effectiveness")
                                                         -3.2e-4, 1.5e-3, 9.0e-4)
         @test all(isfinite, out)
     end
+
+    # The two undecided buckets are NAMED and classified, not counted
+    # (2026-10-18 audit, F-111): a reader of the pass message could not tell a
+    # tracking-method declaration from an enum parameter whose legal values the
+    # schema never declared, and the ratchets above pin the SIZE of the blind
+    # spot, not its membership. The names and the reason each pair could not
+    # be perturbed are in the metrics; the message states them by reason.
+    # A FRESH result under its own name: the `let` blocks above reassign the
+    # testset's `r` to their failing runs (the emptied allowlist, the killing
+    # probe), which is what the first draft of this block read (0.1 s after
+    # the warm-up above; the suite's 25 s on this contract is compile).
+    r0 = validate(ElementParameterEffectivenessContract())
+    @test r0.status === :passed
+    @test sort(r0.metrics[:unperturbable_names]) == sort(collect(keys(r0.metrics[:unperturbable_reasons])))
+    @test length(r0.metrics[:unperturbable_names]) == r0.metrics[:unperturbable]
+    @test sort(r0.metrics[:rejected_names]) == sort(collect(keys(r0.metrics[:rejected_reasons])))
+    @test length(r0.metrics[:rejected_names]) == r0.metrics[:rejected]
+    @test all(in((:tracking_method, :undeclared_alternatives, :rule_or_object_tuple, :no_candidate_for_type)),
+              values(r0.metrics[:unperturbable_reasons]))
+    # the tracking-method declarations, DERIVED: every kind whose schema
+    # carries one and whose row is not exempt (the marker's is)
+    @test count(==(:tracking_method), values(r0.metrics[:unperturbable_reasons])) ==
+          count(T -> (m = Octopus._element_meta_or_nothing(T); m !== nothing &&
+                      haskey(Octopus.parameter_schema(T), :tracking_method) &&
+                      !haskey(Octopus.DEFAULT_INACTIVE_ELEMENT_PARAMS, (m.kind, :tracking_method))),
+                Octopus.registered_element_specs())
+    # the audit's blind spot BY NAME: two Symbol parameters whose `meaning`
+    # lists their legal values and whose ParamMeta declares no `alternatives`,
+    # so the sweep has no road to them. Each leaves this list the day its
+    # owner (src/elements/strong_beam.jl) declares them -- the sweep then
+    # checks it, or an `inactive` row says why not -- and a THIRD name here is
+    # a new undeclared enum, to be declared, never appended.
+    @test r0.metrics[:undeclared_alternatives] ==
+          ["gaussian_strong_beam.slice_method", "thin_strong_beam.virtual_drift"]
+    # every refusal today is the CONSTRUCTOR's, by its message; a candidate
+    # the constructor accepts and the compile or the map then throws on (the
+    # `hvoffset` seam of F-116, refused by name since fix batch 3) would read
+    # "compile_or_map:" here, the seam visible instead of folded into a count
+    @test all(startswith("constructor:"), values(r0.metrics[:rejected_reasons]))
+    @test occursin("undeclared alternatives", r0.message) &&
+          occursin("gaussian_strong_beam.slice_method", r0.message)
+
+    # Every candidate runs and the LARGEST movement is the evidence (2026-10-18
+    # audit, F-112): the loop used to break at the first bit that moved, before
+    # the scale-correct x1.37 candidate was tried, so `thin_rf_cavity.frequency`
+    # (4.008e8 Hz) was credited by +0.13 Hz at 1.2e-16 and `multipole.k5` by
+    # 2.8e-17; and a roll on an ISOTROPIC probe (the strong beams' round
+    # example, the chromaticity kick's xi = (1, 1)) credited `tilt` on the
+    # conjugation's roundoff. The per-parameter evidence is published, and what
+    # moved only below the weak-evidence floor is listed, never silently
+    # credited as if it were physics.
+    @test haskey(r0.metrics, :deviations) && length(r0.metrics[:deviations]) == r0.metrics[:checked]
+    @test all(d -> d > 0.0, values(r0.metrics[:deviations]))          # checked means moved (atol = 0)
+    @test r0.metrics[:weak_evidence_floor] == ElementParameterEffectivenessContract().weak_evidence_floor == 1.0e-12
+    weak = r0.metrics[:weak_evidence]
+    @test weak isa Dict && all(d -> 0.0 < d < r0.metrics[:weak_evidence_floor], values(weak))
+    @test issubset(keys(weak), keys(r0.metrics[:deviations]))
+    @test r0.metrics[:weak_evidence_count] == length(weak)
+    # the pairs the audit listed as credited on roundoff that a scale-correct
+    # candidate or an anisotropic probe makes PHYSICAL (measured at or above
+    # the floor on the fixed tree; the values are in the unit CT report)
+    for name in ("thin_rf_cavity.frequency", "thin_accelerating_cavity.frequency",
+                 "chromaticity_kick.tilt", "thin_strong_beam.tilt", "gaussian_strong_beam.tilt",
+                 "multipole.k4", "multipole.k4s", "thin_multipole.k4l", "thin_multipole.k4sl")
+        @test r0.metrics[:deviations][name] >= r0.metrics[:weak_evidence_floor]
+    end
+    # ... and the aperture's five boundary-relative rows stay weak by
+    # construction (their shifts are O(px dz, theta^2) ~ 1e-5 against margins
+    # of 1.3e-4, as the probe's comment derives) and are therefore LISTED
+    for name in ("aperture.z_offset", "aperture.x_pitch", "aperture.y_pitch")
+        @test haskey(weak, name)
+    end
+    @test isempty(weak) || occursin("weak evidence", r0.message)
 end
 end # _lane_gate("Element parameter effectiveness")
 
@@ -15815,6 +15898,66 @@ end
         narrowed = validate(PTCConsistencyContract(path=truncated))
         @test narrowed.status === :failed
         @test occursin("drift", narrowed.message)
+    end
+end
+
+@testset "PTC rows cannot be lost silently: one dropped row, one malformed row (F-115)" begin
+    # The generator writes every case's particles alike (`PARTICLES`, indices
+    # 1:P, in validation/generate_ptc_reference.jl) and the contract derives
+    # that invariant from the table itself: a case whose particle set is not
+    # exactly 1:P fails by name, a data row that is not 14 tab-separated
+    # numeric fields fails naming its line, and a row naming no declared case
+    # is counted. Until this fix a malformed row was `continue`d and a case kept
+    # its coverage after one surviving row, so a table that lost rows narrowed
+    # the comparison under a passing verdict (2026-10-18 audit, F-115; measured
+    # on the unfixed tree: one `drift` row dropped -> :passed, metrics[:rows]
+    # 304; one tab removed -> :passed, the row skipped).
+    source = Octopus._ptc_reference_path(PTCConsistencyContract())
+    whole = validate(PTCConsistencyContract())
+    @test whole.status === :passed
+    @test whole.metrics[:rows] == whole.metrics[:cases] * whole.metrics[:particles_per_case]
+    @test whole.metrics[:particles_per_case] >= 2      # 1:P with P = 1 would prove little
+    @test whole.metrics[:rows_unmatched] == 0          # every row names a declared case
+    mktempdir() do dir
+        # (i) one row of one case lost: the coverage check needs a case with
+        #     NO rows and cannot see it; the completeness check must.
+        lost = joinpath(dir, "ptc_madx_lost_row.tsv")
+        open(lost, "w") do io
+            for line in eachline(source)
+                startswith(line, "drift\t3\t") && continue
+                println(io, line)
+            end
+        end
+        r1 = validate(PTCConsistencyContract(path=lost))
+        @test r1.status === :failed
+        @test occursin("drift", r1.message) && occursin("[1, 2, 4, 5]", r1.message)
+        # (ii) one tab lost from one row: 13 fields instead of 14, formerly skipped.
+        malformed = joinpath(dir, "ptc_madx_malformed.tsv")
+        nline = 0
+        open(malformed, "w") do io
+            for (i, line) in enumerate(eachline(source))
+                if startswith(line, "drift\t2\t")
+                    nline = i
+                    line = replace(line, "\t" => " "; count=1)
+                end
+                println(io, line)
+            end
+        end
+        @test nline > 0
+        r2 = validate(PTCConsistencyContract(path=malformed))
+        @test r2.status === :failed
+        @test occursin("malformed", r2.message) && occursin("line $(nline)", r2.message)
+        # (iii) one row duplicated: the particle set is not 1:P either.
+        doubled = joinpath(dir, "ptc_madx_doubled.tsv")
+        open(doubled, "w") do io
+            for line in eachline(source)
+                println(io, line)
+                startswith(line, "drift\t4\t") && println(io, line)
+            end
+        end
+        r3 = validate(PTCConsistencyContract(path=doubled))
+        @test r3.status === :failed
+        @test occursin("drift", r3.message) && occursin("twice", r3.message)
     end
 end
 
@@ -16085,16 +16228,94 @@ if _lane_gate("Solver option effectiveness")
     end
 
     # An alternative equal to the probe's own value would compare a solver
-    # against itself and pass vacuously.
+    # against itself and pass vacuously. (The guard judges the BASELINE value
+    # since fix batch 4b, F-109 -- the probe's value here, the schema default
+    # in the testset below -- and names which it was.)
     let alts = copy(Octopus._default_solver_option_alternatives())
         alts[:GaussianPICPoissonSolver] =
             merge(alts[:GaussianPICPoissonSolver], Dict{Symbol,Any}(:deposit_method => :TSC))
         bad = validate(SolverOptionEffectivenessContract(alternatives=alts))
         @test bad.status === :failed
-        @test occursin("equal to its own probe value", bad.message)
+        @test occursin("GaussianPICPoissonSolver.deposit_method declares an alternative equal to its baseline value", bad.message)
+        @test occursin("its own probe value", bad.message)
     end
 end
 end # _lane_gate("Solver option effectiveness")
+
+@testset "Solver option effectiveness: baseline-equal alternatives, NaN slots and the configuration dump (F-109, F-110, F-113)" begin
+    # F-109: the vacuity guard compares a declared alternative with the
+    # BASELINE its half runs against -- the probe's value when the probe sets
+    # the option, the schema default it leaves in place otherwise -- on every
+    # process, CUDA-only options included. Until this fix it compared with the
+    # probe's value only, so an alternative equal to a default the probe did
+    # not set compared the solver against itself and counted as checked
+    # (measured on the unfixed tree with `batch_mode => :wavefront`: no guard
+    # message, the option "checked"). Every other option is given no
+    # alternative here, so the sweep refuses each without a collision and the
+    # four baselines are the only runs.
+    let alts = Dict{Symbol,Any}(nameof(T) => Dict{Symbol,Any}() for T in Octopus._solver_contract_types())
+        @test !haskey(Octopus._default_solver_option_probes()[:PICPoissonSolver], :batch_mode)
+        @test PICPoissonSolver().batch_mode === :wavefront
+        alts[:PICPoissonSolver] = Dict{Symbol,Any}(:batch_mode => :wavefront)
+        bad = validate(SolverOptionEffectivenessContract(n_particles=16, alternatives=alts))
+        @test bad.status === :failed
+        @test occursin("PICPoissonSolver.batch_mode declares an alternative equal to its baseline value", bad.message)
+        @test occursin("schema default", bad.message)
+        # a CUDA-only option is guarded on this process too, device or not
+        @test PICPoissonSolver().cuda_async === true
+        @test !(CPUThreadsBackend in solver_option_schema(PICPoissonSolver).cuda_async.supported_backends)
+        alts[:PICPoissonSolver] = Dict{Symbol,Any}(:cuda_async => true)
+        bad_cuda = validate(SolverOptionEffectivenessContract(n_particles=16, alternatives=alts))
+        @test bad_cuda.status === :failed
+        @test occursin("PICPoissonSolver.cuda_async declares an alternative equal to its baseline value", bad_cuda.message)
+    end
+
+    # F-110: `_solver_contract_spread` propagated NaN through `max`, and the
+    # device half's `spread > cuda_floor` is false for NaN, so an option that
+    # turned a coordinate into NaN passed "must not move" and a NaN in a
+    # calibration baseline made the floor NaN (measured on the unfixed tree:
+    # `NaN false NaN`). The rule is `_probe_deviation`'s (U4-1): a slot where
+    # both sides are NaN is unchanged, a NaN against a finite value is a
+    # definite change (Inf), finite pairs compare as before; a floor that
+    # cannot be calibrated is `nothing`, which the device half fails by name.
+    @test Octopus._solver_contract_spread(([1.0, NaN], [1.0]), ([1.0, 2.0], [1.0])) == Inf
+    @test Octopus._solver_contract_spread(([1.0], [NaN]), ([1.0], [1.0])) == Inf
+    @test Octopus._solver_contract_spread(([NaN, 1.0], [NaN]), ([NaN, 1.0], [NaN])) == 0.0
+    @test Octopus._solver_contract_spread(([1.0, 2.0], [3.0]), ([1.0, 2.0 * (1 + 1e-6)], [3.0])) ≈ 1e-6 rtol=1e-5
+    let a = ([1.0, 2.0], [3.0])
+        @test Octopus._solver_contract_cuda_floor(a, a) == 1.0e-10          # a repeatable baseline floors at the repository's class
+        @test Octopus._solver_contract_cuda_floor(a, ([1.0, 2.0 * (1 + 1e-6)], [3.0])) ≈ 1e-4 rtol=1e-5   # 100x the repeat spread
+        @test Octopus._solver_contract_cuda_floor(a, ([1.0, NaN], [3.0])) === nothing   # a NaN disagreement calibrates nothing
+        @test Octopus._solver_contract_cuda_floor(([NaN, 2.0], [3.0]), ([NaN, 2.0], [3.0])) == 1.0e-10   # both-NaN agrees
+    end
+
+    # F-113: the `:configuration` branch of `_solver_contract_receipt_carries`
+    # read the requested value back out of the `:solver_runtime` receipt -- a
+    # dump of the solver object under test -- a circular acceptance path,
+    # dormant only because no execution option named that consumer. The branch
+    # is gone (measured on the unfixed tree: `true` from a dump), and the
+    # contract refuses by name an execution or performance option whose
+    # declared consumer is `:solver_runtime` unless an `inactive` row covers it.
+    dump = [Octopus.ExecutionAuditReceipt(:solver_runtime, Octopus.CUDABackend,
+                                          (solver=:PICPoissonSolver, configuration=(cuda_async=false,)))]
+    @test !Octopus._solver_contract_receipt_carries(dump, :solver_runtime, :cuda_async, false, Octopus.CUDABackend)
+    direct = [Octopus.ExecutionAuditReceipt(:cuda_pic_algorithm, Octopus.CUDABackend,
+                                            (batch_mode=:wavefront, cuda_async=false))]
+    @test Octopus._solver_contract_receipt_carries(direct, :cuda_pic_algorithm, :cuda_async, false, Octopus.CUDABackend)
+    @test !Octopus._solver_contract_receipt_carries(direct, :cuda_pic_algorithm, :cuda_async, false, CPUThreadsBackend)   # the backend filter (U12-13)
+    exec_meta(; kw...) = Octopus.SolverOptionMeta(Bool, false, "probe"; category=:execution, kw...)
+    @test Octopus._solver_contract_circular_consumer(exec_meta())                         # `consumer` defaults to :solver_runtime
+    @test Octopus._solver_contract_circular_consumer(exec_meta(category=:performance))
+    @test !Octopus._solver_contract_circular_consumer(exec_meta(consumer=:cuda_pic_algorithm))
+    @test !Octopus._solver_contract_circular_consumer(Octopus.SolverOptionMeta(Bool, false, "probe"; category=:numerical))
+    # the schema sweep: no non-exempt execution or performance option of any
+    # concrete solver names the dump as its consumer
+    circular = ["$(nameof(T)).$(name)" for T in Octopus._solver_contract_types()
+                for (name, meta) in pairs(solver_option_schema(T))
+                if Octopus._solver_contract_circular_consumer(meta) &&
+                   !haskey(Octopus.DEFAULT_INACTIVE_SOLVER_OPTIONS, (nameof(T), name))]
+    @test isempty(circular)
+end
 
 @testset "Element parameters carry their own number type" begin
     u = (1.0e-3, 1.0e-4, -0.5e-3, 2.0e-4, 0.0, 1.0e-3)
@@ -36681,6 +36902,10 @@ if _lane_gate("Physics contracts")
     @test wsl.passed
     @test wsl.metrics[:gaussian_proton_max_abs_error] <= 2.0e-14
     @test wsl.metrics[:pic_luminosity_relative_error] <= 0.08
+    # the infinite-energy electron is judged in the PIC half too (2026-10-18
+    # audit, F-114; the mirror script's F-239 since fix batch 2): measured
+    # 5.4e-20 at the defaults, held at the limit's absolute tolerance
+    @test wsl.metrics[:pic_electron_max_abs_change] <= 2.0e-14
 
     # ~1 min: two 1024-turn strong-strong runs. The contract states the
     # Vlasov-band Yokoya physics per solver: PIC must reproduce it, and the
@@ -36768,6 +36993,27 @@ if _lane_gate("Physics contracts")
     # contract's ratio tripped it in the first stage 8 gate attempt (2026-09-15).
 end
 end # _lane_gate("Physics contracts")
+
+@testset "High-energy weak-strong limit: the PIC electron is judged and a failure names its arm (F-114)" begin
+    # At a finite electron energy the limit does not hold and both solvers kick
+    # the electron; the verdict must name the PIC electron among what failed.
+    # Until this fix the PIC half asserted the proton's luminosity and size and
+    # nothing about the electron (the metrics had no PIC electron entry; the
+    # audit measured its change at 5.4e-20, unjudged), and the failure message
+    # named no arm at all. Reduced size: the electron's immunity at 1e100 GeV
+    # and its kick at 10 GeV do not depend on the particle count.
+    small = (n_particles=2000, pic_grid=32)
+    r = validate(HighEnergyWeakStrongLimitContract(; small..., electron_gev=10.0))
+    @test !r.passed
+    @test r.metrics[:pic_electron_max_abs_change] > 2.0e-14
+    @test r.metrics[:gaussian_electron_max_abs_change] > 2.0e-14
+    @test occursin("PIC electron", r.message) && occursin("soft-Gaussian electron", r.message)
+    # and at the limit the PIC electron is a frozen source at the same absolute
+    # tolerance as the soft-Gaussian one
+    ok = validate(HighEnergyWeakStrongLimitContract(; small...))
+    @test ok.metrics[:pic_electron_max_abs_change] <= HighEnergyWeakStrongLimitContract().gaussian_atol
+    @test ok.metrics[:gaussian_electron_max_abs_change] <= HighEnergyWeakStrongLimitContract().gaussian_atol
+end
 
 @testset "Strong-strong physical parameter validation" begin
     rep1 = Phase6DRep([0.0], [0.0], [0.0], [0.0], [0.0], [0.0])
