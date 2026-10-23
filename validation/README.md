@@ -51,7 +51,9 @@ script this section does not list, so the table below cannot drift from the
 derivation. The script's own
 switch for insisting on its CUDA leg is `OCTOPUS_REQUIRE_GPU_CONTRACT=1`
 (`lattice_cells.jl` and `near_round_gaussian_transition.jl` honour it since
-2026-10-20; `tracking_backend_consistency.jl` and the contract runners did).
+2026-10-20, `public_configuration_effectiveness.jl` since 2026-10-22 -- it
+printed `status = skipped` and exited 0 under the flag, audit F-243/U54-4;
+`tracking_backend_consistency.jl` and the other contract runners did).
 
 Reduced sizes and wall times as the testset measured them on 2026-10-20
 (RTX 4500 Ada, the owner's 12 GB kernel resident, `--check-bounds=yes`,
@@ -70,6 +72,7 @@ whole arm:
 | `moment_observer_backend_consistency.jl` | 20000 particles | 13.4 s |
 | `near_round_gaussian_transition.jl` | the full sweep, parity required | 70.6 s |
 | `pic_option_consistency.jl` | GPU, 4 turns, 2000 particles, grid 32, 5 slices, tag `cuda_arm_gate` | 90.2 s |
+| `public_configuration_effectiveness.jl` | the contract's own fixtures, GPU leg required (joined 2026-10-22; measured alone, not under the arm's concurrency) | 209 s |
 | `soft_gaussian_pic_comparison.jl` | 4000 particles, 5 slices, grid 32 | 62.9 s |
 | `strong_strong_diagnostics_benchmark.jl` | 4000 per beam, 12 turns, mode `both` | 91.6 s |
 | `strong_strong_gaussian_backend_consistency.jl` | 1000 particles, 1 turn, GPU leg required | 70.0 s |
@@ -83,7 +86,9 @@ whole arm:
 | `profiling/crab_cavity_noise_backends.jl` | crab harness, 2000 macroparticles, 30 turns, arms `threads:4` and `cuda` | 102.4 s |
 
 The two benchmarks' timings at these sizes are run receipts, not performance
-records.
+records. The arm's total above is the 2026-10-20 measurement of 18 scripts;
+the nineteenth, the effectiveness script, adds its own time and has not been
+re-measured under the arm.
 
 ## Near-Round Gaussian Transition
 
@@ -123,7 +128,18 @@ configuration reaches real runtime consumers. It exercises CPU logical-worker
 counts, fused CUDA thread/block sweeps, CUDA device mismatch rejection, all
 CUDA PIC launch families, optimized wavefront and non-default sequential PIC
 branches, schedules, buffers, inherited/inactive reports, and pre-mutation
-configuration rejection. CUDA-unavailable runs are reported as skipped.
+configuration rejection. CUDA-unavailable runs are reported as skipped, and
+under `OCTOPUS_REQUIRE_GPU_CONTRACT=1` a skip is an error with exit 1 (the
+sibling contract scripts' switch; until 2026-10-22 this script printed
+`status = skipped` and exited 0 under it -- audit F-243/U54-4). Receipt, fix
+batch 4: with CUDA hidden and the flag set, the pre-fix script exits 0 on
+`status = skipped`, the fixed one exits 1 naming the flag; with the device,
+`cuda_status = passed` in 209 s under the gate's flags; of the two "already
+held" counter-RNG warnings the 2026-10-18 audit saw (U54-10, = F-49, fix
+batch 2) one remains in every run's output -- `rng_id 1, claimed explicitly by
+a beam consumer, is already held in this process by a bpm_observer consumer`
+(`src/math/counter_rng.jl:280`), raised by the contract's own fixtures, a
+`src/contracts` matter outside this batch's scripts and reported as a lead.
 
 ```bash
 julia --threads=4 --project=. validation/public_configuration_effectiveness.jl
@@ -918,8 +934,19 @@ julia --threads=4 --project=. validation/strong_strong_observer_plan_consistency
 ## Strong-Strong Diagnostics Consistency
 
 `strong_strong_diagnostics_consistency.jl` verifies that enabling observational
-task diagnostics leaves both beams exactly unchanged and that complete-turn
-timings and the structured diagnostics summary are populated correctly.
+task diagnostics leaves both beams exactly unchanged through a REAL collision
+-- the CPU PIC solver on the Gaussian contract's beams (2048 macroparticles,
+3 slices, a 32x32 grid, two turns) -- and that the diagnostics observed it:
+complete-turn timings populated, the slice-pair Green cache history non-empty,
+the structured summary carrying the configuration. Until 2026-10-22 the solver
+was a no-op (`collide!` returning 0.0), so nothing the diagnostics wrap did
+any work and the equality could not fail on the defect it names (audit
+F-243/U54-8). Receipt, fix batch 4: `coordinates equal across diagnostics on a real CPU PIC collision; turn timings = 2; slice-pair cache history (hits, misses, evictions) = (0, 18, 18)`; a mirror whose
+diagnostics-enabled run perturbs the collision (a 64x64 grid) fails
+`diagnostics changed beam-1 coordinates`, and a mirror on the old no-op solver
+fails the new anti-vacuity guard (`the collision is a no-op and this check is
+vacuous`). The per-phase PIC timing sink is a CUDA diagnostic and stays empty
+on the CPU solver, which the script states rather than counts.
 
 ```bash
 julia --threads=4 --project=. validation/strong_strong_diagnostics_consistency.jl
@@ -938,9 +965,16 @@ julia --project=. validation/strong_strong_pic_extreme_benchmark.jl
 ```
 
 Outputs, under `result/`: `pic_extreme_turn_times.tsv` (per-turn wall times)
-and `pic_extreme_summary.tsv` -- the provenance record carrying the git commit,
-GPU and driver, and the resolved CUDA launch configuration. The second file was
-undocumented (2026-08-05_b audit, U25-8).
+and `pic_extreme_summary.tsv` -- the provenance record carrying the git commit
+(of this script's tree, whatever the working directory), GPU and driver, and
+the resolved CUDA launch configuration. The second file was undocumented
+(2026-08-05_b audit, U25-8). Since 2026-10-22 the summary's `precision`, `grid`
+and `slices_per_beam` rows are read off the solver the run used instead of
+being typed (`Float64`, `128x128`, `15` were string literals; audit
+F-243/U54-5), and `OCTOPUS_USE_GPU=0` or an `OCTOPUS_SOLVER` other than `pic`
+is refused by name before the harness runs: a CPU override used to run the
+whole workload and then die at the summary's `CUDA.name(CUDA.device())`
+(U54-3). Receipt, fix batch 4 at the gate's reduced size: 4000 macroparticles per beam, 20 turns on the RTX 4500 Ada, 130 s wall with the package load under `--check-bounds=yes`, the summary reading `precision Float64`, `grid 128x128`, `slices_per_beam 15` off the solver and the tree's own commit; the pre-fix script under `OCTOPUS_USE_GPU=0` at toy size (2000/1000 macroparticles, 20 turns) printed its steady-state mean and then died with `UndefVarError: CUDA`, as the audit described.
 
 Tracked run-by-run results, commands, validation gates, and decisions are in
 `../docs/history/strong_strong_pic_extreme_benchmark_history.md`. Generated timing TSV files

@@ -8,7 +8,17 @@ last 10 are the primary steady-state sample.
 
 Inputs are the fixed defaults below and may be overridden with the same
 environment variables accepted by `test/examples/strong_strong_tracking.jl`
-(the clean `examples/` counterpart reads no environment variables).
+(the clean `examples/` counterpart reads no environment variables), EXCEPT
+the two that would make this something other than the CUDA PIC benchmark:
+`OCTOPUS_USE_GPU=0` and an `OCTOPUS_SOLVER` other than `pic` are refused by
+name before the harness is included. Until 2026-10-22 a CPU override ran the
+whole production-size workload on CPU threads and then died at the summary's
+`CUDA.name(CUDA.device())` -- the harness binds `CUDA` only under `use_gpu` --
+a failure at the end of a long run (2026-10-18 comprehensive audit,
+F-243/U54-3). The summary's `precision`, `grid` and `slices_per_beam` rows are
+read off the solver the run used (its element type, `grid` and per-beam
+slicing), not typed here (U54-5), and `git_commit` is this script's tree
+whatever the working directory.
 Outputs (2026-08-05_b audit, U25-8 -- the second file was undocumented, and it
 is the one that carries the provenance):
 
@@ -56,6 +66,19 @@ defaults = Dict(
 for (key, value) in defaults
     haskey(ENV, key) || (ENV[key] = value)
 end
+# Refused BEFORE the include, by name (F-243/U54-3): the benchmark measures the
+# CUDA PIC path, and the summary's GPU, driver and launch-family rows exist
+# only there. The harness's own boolean spellings (its `env_bool`).
+let gpu = lowercase(strip(ENV["OCTOPUS_USE_GPU"])), solver_name = lowercase(strip(ENV["OCTOPUS_SOLVER"]))
+    gpu in ("1", "true", "yes", "on") || error(
+        "OCTOPUS_USE_GPU=$(repr(ENV["OCTOPUS_USE_GPU"])): this script is the CUDA PIC reference benchmark and " *
+        "records the device, driver and launch families in its summary; for a CPU run use " *
+        "test/examples/strong_strong_tracking.jl directly.")
+    solver_name == "pic" || error(
+        "OCTOPUS_SOLVER=$(repr(ENV["OCTOPUS_SOLVER"])): this script benchmarks the CUDA PIC path and reads " *
+        "PICPoissonSolver's grid, slicing and launch families; the diagnostics benchmark " *
+        "(validation/strong_strong_diagnostics_benchmark.jl) is the one with a solver switch.")
+end
 
 include(joinpath(@__DIR__, "..", "test", "examples", "strong_strong_tracking.jl"))
 # Assert the harness's published interface BEFORE anything else reads it:
@@ -64,6 +87,8 @@ include(joinpath(@__DIR__, "..", "test", "examples", "strong_strong_tracking.jl"
 # (2026-08-05_b audit, U25-15).
 assert_harness_exports((:input, :task, :solver, :policy))
 
+solver isa PICPoissonSolver || error("the harness built a $(nameof(typeof(solver))); this benchmark reads PICPoissonSolver's fields")
+_solver_eltype(::PICPoissonSolver{T}) where {T} = T
 timings = turn_timings(task)
 length(timings) >= 20 || error("benchmark requires at least 20 turns so the final 10 exclude warm-up")
 steady = timings[(end - 9):end]
@@ -81,21 +106,26 @@ summary_path = get(ENV, "OCTOPUS_BENCHMARK_SUMMARY_PATH",
                    joinpath(@__DIR__, "..", "result", "pic_extreme_summary.tsv"))
 mkpath(dirname(summary_path))
 summary = [
-    "git_commit" => readchomp(`git rev-parse HEAD`),
+    # This script's tree, not the caller's cwd (U54-3; the diagnostics benchmark
+    # made the same change on 2026-10-20).
+    "git_commit" => readchomp(`git -C $(dirname(@__DIR__)) rev-parse HEAD`),
     "julia_version" => string(VERSION),
     "gpu" => string(CUDA.name(CUDA.device())),
     "cuda_driver" => string(CUDA.driver_version()),
     "cuda_runtime" => string(CUDA.runtime_version()),
-    "precision" => "Float64",
+    # Read off the solver the run used, not typed (F-243/U54-5: three string
+    # literals shadowed the harness's values with nothing to notice a change).
+    "precision" => string(_solver_eltype(solver)),
     "turns" => string(length(timings)),
     "n_macro_ele" => ENV["OCTOPUS_N_MACRO_ELE"],
     "n_macro_pro" => ENV["OCTOPUS_N_MACRO_PRO"],
-    "grid" => "128x128",
+    "grid" => join(string.(solver.grid), "x"),
     "deposit_method" => string(input.solver.pic_deposit_method),
     "luminosity_deposit_method" => string(solver.luminosity_deposit_method),
     "resolved_luminosity_deposit_method" => string(
         solver_configuration(solver).resolved_luminosity_deposit_method),
-    "slices_per_beam" => "15",
+    "slices_per_beam" => (solver.slicing1.nslices == solver.slicing2.nslices ? string(solver.slicing1.nslices) :
+                          "$(solver.slicing1.nslices)/$(solver.slicing2.nslices)"),
     "batch_mode" => ENV["OCTOPUS_PIC_BATCH_MODE"],
     "green_cache" => ENV["OCTOPUS_PIC_GREEN_CACHE"],
     "slice_pair_green_min_ratio" => ENV["OCTOPUS_PIC_SLICE_PAIR_GREEN_MIN_RATIO"],
