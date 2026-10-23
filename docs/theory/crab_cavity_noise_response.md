@@ -598,8 +598,10 @@ The script is the campaign's deliverable; this section is its plan, written
 in the present tense. The numbers it produces are recorded in the campaign's
 history record under `docs/history/`, together with the recorded run
 configuration (seeds, `rng_id`s, turns, device, per-turn cost); this note
-carries only the predictions. The detailed plan is kept with the campaign
-record (`plan.md`).
+carries only the predictions. The detailed plan stayed in the untracked `result/`
+tree (owner rule 2026-09-15: plans and probes are not tracked); the campaign record
+under `docs/history/` holds the measurements and the run configuration (stated
+2026-10-23, fix batch 4b, F-209/U40-10).
 
 **Estimators.** The moment observer at the line end (IP optics, $\alpha = 0$)
 records per turn the means `m100000`, `m010000` and the central second

@@ -1421,7 +1421,7 @@ _st6_declaring_kinds() = count(T -> TwissDispersionAnalysis in Octopus.supported
 # (the multiplier-1 residual of c_d8_round_trip is one ulp there, half an ulp in both arms). The pin is therefore
 # one half: more than five times the arms' worst (0.0948), 3.25 times the runner's observed worst (0.154) and half
 # the contract's own threshold, so a row that trips it has lost more than half its H15 headroom. A failure names
-# its row (the let contexts), and the stage 6 testset prints the 57-row table so that a CI log measures the
+# its row (the let contexts), and the stage 6 testset prints the full slug table so that a CI log measures the
 # runner's class row by row. The value lives here ONCE: the run-436 fix (21bce7d) moved the stage 6 testset's two
 # literal 0.1 pins (the worst row and the per-row loop) to 0.5 and left the third literal in "Physics contracts",
 # and CI run 437 (ce43179) was red there at the same 0.1537; `_st6_pin_lines` and the tripwire at the end of the
@@ -1517,7 +1517,7 @@ end
     # The RE-OPEN rule's instrument (the rule's text above `_ST6_PIN`): a row above `_ST6_REOPEN` at its frozen c
     # re-opens that row's measurement before the pin trips. Not a failure (the pin is one half) but LOUD: a warning
     # naming the rows, a GitHub annotation on the runner, and the count in the header line above, so the rule no
-    # longer depends on a human reading the 57-row table (2026-10-18 audit F-151/U28-6). No ratio pin here: the
+    # longer depends on a human reading the full slug table (2026-10-18 audit F-151/U28-6). No ratio pin here: the
     # `_st6_pin_lines` tripwire at the end of this testset counts the pins, and this is not one.
     if !isempty(st6_reopen)
         @warn "stage 6 identity pins: $(length(st6_reopen)) row(s) above the re-open threshold $(_ST6_REOPEN) at the frozen c (the pin is $(_ST6_PIN)); re-open the row's measurement (an H15 third-arm entry or the row's kappa re-examined), never a hand move of c" rows = st6_reopen host = Sys.CPU_NAME
@@ -38401,7 +38401,7 @@ if _lane_gate("Physics contracts")
     # (stage 6): every expected diagnostic fires and the worst identity row at
     # its frozen multiplier stays under the tree-side pin `_ST6_PIN` (one half;
     # the constant and its rule sit above the stage 6 testset, which asserts
-    # it per row, prints the 57-row table and runs the negatives; ~1 s after
+    # it per row, prints the full slug table and runs the negatives; ~1 s after
     # compile). This block kept its own literal one-tenth pin when 21bce7d
     # moved the stage 6 testset's two to one half, and CI run 437 (2026-09-13,
     # the ubuntu runner) was red here at 0.1537, the same worst ratio run 436
