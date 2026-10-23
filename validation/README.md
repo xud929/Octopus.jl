@@ -366,14 +366,18 @@ julia --project=. validation/counter_rng_validation.jl
 ## Strong-Beam Kick Fingerprint
 
 `strong_beam_kick_fingerprint.jl` is a refactor guard for the weak-strong kick
-chain: nine strong-beam configurations (every virtual-drift model, coupled
-moments, nonzero centre/angle/curvature, a 6x6 covariance with crab slope)
-tracked two turns through both loop copies, printing an order-sensitive
-digest of every coordinate and the luminosity. Run it on two checkouts
-(`OCT_ROOT` selects the second) and diff the `BR` lines; equal lines mean no
-bit moved. Same-machine, same-Julia-build comparisons only. Added with
-multi-process step 1 (2026-09-04), where it showed the slice-carrier change
-bit-identical on every branch the production line does not exercise.
+chain: ten strong-beam configurations (every virtual-drift model, coupled
+moments, nonzero centre/angle/curvature, a 6x6 covariance with crab slope,
+and a per-slice `hvoffset`) tracked two turns through both loop copies,
+printing an order-sensitive digest of every coordinate and the luminosity.
+Run it on two checkouts (`OCT_ROOT` selects the second) and diff the `BR`
+lines; equal lines mean no bit moved. Same-machine, same-Julia-build
+comparisons only. Added with multi-process step 1 (2026-09-04), where it
+showed the slice-carrier change bit-identical on every branch the production
+line does not exercise; the `hvoffset` configuration passed a tuple where
+the option takes a Dict and threw on both trees until fix batch 3's unit I
+(2026-10-21, F-122; audit F-243/U54-2), so it is a real line since then: ten
+`BR` lines and no `ERROR` (2026-10-22 on this tree, the tenth line `BR gsb hirata hvoffset ... type GaussianStrongBeam`).
 
 ## Tracking Backend Consistency
 
@@ -2143,7 +2147,18 @@ half-crossing 12.5 mrad without crabs, and the same with ideal crabs.
 Reference model: the continuous Piwinski factor `R = 1/sqrt(1 + phi^2)`, and the
 15-quantile-slice discrete sum, which isolates slicing error from the geometric
 factor. Error metric: relative difference of the measured luminosity ratio
-against each reference.
+against each reference. Verdicts since 2026-10-22 (the numbers were print-only
+and nothing in the repository would have noticed a refactor moving them; audit
+F-243/U54-9): ideal crabs restore the head-on luminosity, `|L_crab/L_headon -
+1| <= 2e-3` (the boost-plus-crab geometry differs from head-on at `O(theta^2)
+= 1.6e-4` and the three runs share one seed), and the code's reduction agrees
+with the discrete reference, `|R_code/R_discrete - 1| <= 2e-2` (measured
+1.0073 at the paper's size, 2026-10-18 audit U54, 1.0069 and 1.0086 at 20000 and
+50000 macroparticles; a regression guard at two to three times that residual,
+not a derived error bar); one machine-readable
+`LUM-ANCHOR ... verdict=PASS|FAIL` line, exit 1 on FAIL.
+`OCTOPUS_LUM_ANCHOR_NMACRO` (200000) and `OCTOPUS_LUM_ANCHOR_OUT` reduce and
+redirect a run; receipt, fix batch 4: `R code crab = 0.99996` (|. - 1| = 3.7e-5) and `code/discrete = 1.0069` at 20000 macroparticles (88 s with the package load), `1.0000026` and `1.0086` at 50000, every verdict PASS.
 
 ```bash
 julia --startup-file=no --project=. validation/crossing_luminosity_anchor.jl
@@ -2155,13 +2170,26 @@ Outputs, under `result/lum_anchor/`: the run artifacts `lum_headon.h5`,
 (https://github.com/xud929/2026_octopus_cpc) is a hand-transcribed copy for
 the paper.
 
-`tune_estimator_calibration.jl` calibrates the coherent-mode tune estimator's
-Hann-window plus parabolic peak interpolation on synthetic two-tone signals
-mimicking sigma/pi dipole spectra, where the true tunes are known by
-construction.
+`tune_estimator_calibration.jl` calibrates the coherent-mode tune estimator --
+the package's `Octopus._coherent_fractional_tune`, the Hann-window plus
+parabolic peak interpolation `CoherentModePhysicsContract` judges with -- on
+synthetic two-tone signals mimicking sigma/pi dipole spectra, where the true
+tunes are known by construction. Until 2026-10-22 the estimator existed as six
+hand copies across `validation/` and this script certified its own; four
+scripts now call the package's function and the two package-free ones (the
+BeamBeam3D post-processor, the standalone Vlasov theory script) keep a copy
+the suite holds to it by evaluation (testset "The standalone theory script's
+constants match the framework's"; audit F-243/U54-7).
 
-Error metric: median, p95 and maximum of `|Q_hat - Q_1|` over 500 trials.
-Writes no files -- the calibration table is the printed output.
+Error metric and verdicts: median and p95 of `|Q_hat - Q_1|` over the trials,
+PASS when `median <= 1e-5` and `p95 <= 2e-5` -- regression bounds with about a
+factor two of margin over the measured `4.8e-6` and `6.5e-6` (500 trials), not
+derived error bars; the maximum is INFO (as the secondary amplitude approaches
+the primary's the estimator locks onto the other tone, so the maximum is the
+tone separation, `0.0078`, with the count of such trials printed).
+`OCTOPUS_TUNE_CAL_TRIALS` (500) sets the trial count; writes no files; one
+`TUNE-CAL ... verdict=PASS|FAIL` line, exit 1 on FAIL. Receipt, fix batch 4:
+`TUNE-CAL n_trials=200 median=4.698e-06 p95=6.514e-06 max=7.776e-03 wrong_peak=7 verdict=PASS`.
 
 ```bash
 julia --startup-file=no --project=. validation/tune_estimator_calibration.jl
@@ -2181,7 +2209,13 @@ write TSVs under `result/`.
   macroparticles/beam, three seeds), round (aspect 1.0) and flat (r = 0.09),
   against the m=1 Vlasov matrix of `coherent_mode_vlasov_theory.jl`. The
   round script sets the aspect and includes the flat one, so they move as a
-  pair.
+  pair. Characterisation with no verdict: the archived converged values
+  (`Lambda_x = 1.197 +- 0.004, Lambda_y = 1.206`, in the paper repository's
+  `data/`) are stated in the round script's header and a reduced run
+  (`OCTOPUS_LFC_TURNS`, `OCTOPUS_LFC_NMACRO`, `OCTOPUS_LFC_SEEDS`) is not
+  converged and is not compared with them. Both scripts carry the
+  `isdefined(Main, :Octopus)` include guard since 2026-10-22 (audit
+  F-243/U54-6) and the tune estimator is the package's.
 - `eic_emittance_benchmark.jl` — the EIC cross-code emittance benchmark
   against BeamBeam3D (Table 3): head-on, crossing angle AND both crab
   families zeroed, 15 slices, 128^2 mesh, damping shortened to 400 turns.
@@ -2194,7 +2228,9 @@ write TSVs under `result/`.
   header verbatim; F-239). The gate's CUDA arm runs it at 2 turns of 2000
   per beam.
 - `emit_xcode.jl` — per-turn geometric emittance at the coherent-mode
-  benchmark point, for overlay on BeamBeam3D `fort.24`.
+  benchmark point, for overlay on BeamBeam3D `fort.24`; raw material with no
+  verdict. `OCTOPUS_EMIT_XCODE_TURNS` (4096) and `OCTOPUS_EMIT_XCODE_NMACRO`
+  (100000) reduce a run; guarded include since 2026-10-22 (U54-6).
 - `noise_floor_meshswap.jl` — plain PIC at 64^2 against the hybrid at 128^2
   at the production 11:1 aspect; also regenerates Table 1
   (`flat_beam_noise_floor.tsv`) bit-for-bit with `picgrid`/`hybgrid` at the

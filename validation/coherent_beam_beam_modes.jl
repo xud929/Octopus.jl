@@ -105,17 +105,11 @@ xi = (npart * r0 * config.beta[1] / (4pi * gamma_rel * config.sigma[1]^2),
 # ---------------------------------------------------------------------------
 # Tune extraction: Hann window + parabolic interpolation of the FFT peak.
 # ---------------------------------------------------------------------------
-function fractional_tune(signal::AbstractVector{<:Real})
-    n = length(signal)
-    w = [0.5 - 0.5 * cospi(2 * (i - 1) / n) for i in 1:n]
-    a = abs.(FFTW.rfft((signal .- mean(signal)) .* w))
-    interior = 2:(length(a) - 1)
-    k = interior[argmax(view(a, interior))]
-    y1, y2, y3 = a[k - 1], a[k], a[k + 1]
-    denom = y1 - 2y2 + y3
-    delta = denom == 0 ? 0.0 : 0.5 * (y1 - y3) / denom
-    return (k - 1 + delta) / n
-end
+# One source: the package's estimator (the one `CoherentModePhysicsContract`
+# judges with). Until 2026-10-22 this was one of six hand copies of the
+# Hann-window plus parabolic-interpolation estimator across `validation/`,
+# bound to nothing (2026-10-18 comprehensive audit, F-243/U54-7).
+fractional_tune(signal) = Octopus._coherent_fractional_tune(signal)
 
 # ---------------------------------------------------------------------------
 # One benchmark run for a given solver kind. Fresh beams each run (same seed)

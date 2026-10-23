@@ -12,11 +12,15 @@ evaluated at aspect ratio 1.0 (round), so the round-beam and flat-beam points
 of Sec. 5.1 come from one identical code path and differ only in the aspect
 ratio.
 
-Result archived in data/lambda_round_converged.tsv:
+Result archived as `data/lambda_round_converged.tsv` in the PAPER repository
+(https://github.com/xud929/2026_octopus_cpc; this tree has no `data/`):
     Lambda_x = 1.197 +- 0.004,  Lambda_y = 1.206 +- 0.000
-against the printed Table 2 values 1.198 +- 0.004 and 1.206 +- 0.003.
+against the printed Table 2 values 1.198 +- 0.004 and 1.206 +- 0.003. The
+script writes `result/lambda_round_converged.tsv` here (git-ignored) and takes
+no verdict: a reduced run (`OCTOPUS_LFC_TURNS`, `OCTOPUS_LFC_NMACRO`) is not
+converged and is not compared with the archived values.
 
-Run:
+Run from the project root:
   julia --threads=8 --startup-file=no --project=. validation/lambda_round_converged.jl
 =#
 

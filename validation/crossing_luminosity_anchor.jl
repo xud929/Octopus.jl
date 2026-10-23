@@ -9,11 +9,31 @@
 # repository (https://github.com/xud929/2026_octopus_cpc) is the
 # hand-transcribed copy.
 #
+# Verdicts (since 2026-10-22; until then every number was print-only and
+# nothing in the repository would have noticed a refactor moving them --
+# comprehensive audit 2026-10-18, F-243/U54-9), each printed with its number:
+#   crab      ideal crabs restore the head-on luminosity: |L_crab/L_headon - 1|
+#             <= TOL_CRAB. The boost-plus-crab geometry differs from head-on at
+#             O(theta^2) = 1.6e-4 and the three runs share their macroparticles
+#             (one seed), so the ratio is 1 to a few 1e-4 at every size.
+#   discrete  the code's crossing reduction against the 15-slice discrete
+#             reference: |(L_crossing/L_headon)/R_discrete - 1| <= TOL_DISCRETE.
+#             Measured 1.0073 at the paper's size (2026-10-18 audit U54), 1.0069
+#             and 1.0086 at 20000 and 50000 macroparticles (fix batch 4); the
+#             bound is a regression guard at two to three times that residual,
+#             not a derived error bar.
+# Prints `LUM-ANCHOR phi=.. R_cont=.. R_disc=.. R_code=.. R_crab=.. code_over_disc=.. verdict=PASS|FAIL`
+# and exits 1 on FAIL.
+#
 # Run from the project root:
 #
 #     julia --startup-file=no --project=. validation/crossing_luminosity_anchor.jl
 #
-# Outputs, under result/lum_anchor/: lum_headon.h5, lum_crossing.h5,
+# Environment (the defaults are the paper's):
+#     OCTOPUS_LUM_ANCHOR_NMACRO=200000       macroparticles per beam
+#     OCTOPUS_LUM_ANCHOR_OUT=result/lum_anchor  the artifacts' directory
+#
+# Outputs, under OCTOPUS_LUM_ANCHOR_OUT: lum_headon.h5, lum_crossing.h5,
 # lum_crab.h5 -- run artifacts whose /luminosity/ip channel this script reads
 # back (outputs undocumented until the 2026-08-05_b audit, U25-12).
 # Guarded like every other script in `validation/`: without it this file
@@ -26,8 +46,10 @@ using .Octopus
 using Statistics
 import SpecialFunctions: erfinv
 
-const OUTDIR = joinpath(@__DIR__, "..", "result", "lum_anchor")
+const OUTDIR = get(ENV, "OCTOPUS_LUM_ANCHOR_OUT", joinpath(@__DIR__, "..", "result", "lum_anchor"))
 mkpath(OUTDIR)
+const TOL_CRAB = 2.0e-3
+const TOL_DISCRETE = 2.0e-2
 
 theta = 12.5e-3                       # half crossing angle
 sig   = (100.0e-6, 100.0e-6, 0.02)
@@ -35,7 +57,7 @@ beta  = (0.5, 0.5, 0.02 / 5.0e-4)
 crab_beta = (150.0, 30.0, beta[3])
 crab_freq = 100.0e6
 tunes = (0.31, 0.32, -0.005)
-nmacro = 200_000
+nmacro = parse(Int, get(ENV, "OCTOPUS_LUM_ANCHOR_NMACRO", "200000"))
 nslices = 15
 energy = 10.0e9
 npart_small = 1.0e8                   # xi ~ 1e-5: geometry test, not dynamics
@@ -105,9 +127,17 @@ centers = [nslices * (exp(-edges[i]^2 / 2) - exp(-edges[i+1]^2 / 2)) / sqrt(2pi)
 Rdisc = sum(exp(-(tan(theta) * (z1 - z2))^2 / (4 * sig[1]^2))
             for z1 in centers, z2 in centers) / nslices^2
 
+println("nmacro per beam = ", nmacro, "   (artifacts under ", OUTDIR, ")")
 println("phi (Piwinski) = ", round(phi; digits = 3))
 println("R continuous   = ", round(Rcont; digits = 5))
 println("R discrete-15  = ", round(Rdisc; digits = 5))
 println("R code no-crab = ", round(Lx / L0; digits = 5))
-println("R code crab    = ", round(Lc / L0; digits = 5))
-println("code/discrete (no-crab) = ", round(Lx / L0 / Rdisc; digits = 4))
+println("R code crab    = ", round(Lc / L0; digits = 5), "   (|. - 1| = ", round(abs(Lc / L0 - 1); sigdigits = 3), ")")
+println("code/discrete (no-crab) = ", round(Lx / L0 / Rdisc; digits = 4), "   (|. - 1| = ", round(abs(Lx / L0 / Rdisc - 1); sigdigits = 3), ")")
+crab_ok = abs(Lc / L0 - 1) <= TOL_CRAB
+disc_ok = abs(Lx / L0 / Rdisc - 1) <= TOL_DISCRETE
+println("verdicts: crab restores head-on within ", TOL_CRAB, ": ", crab_ok ? "PASS" : "FAIL",
+        "; code/discrete within ", TOL_DISCRETE, " of 1: ", disc_ok ? "PASS" : "FAIL")
+println("LUM-ANCHOR phi=", phi, " R_cont=", Rcont, " R_disc=", Rdisc, " R_code=", Lx / L0, " R_crab=", Lc / L0,
+        " code_over_disc=", Lx / L0 / Rdisc, " nmacro=", nmacro, " verdict=", (crab_ok && disc_ok) ? "PASS" : "FAIL")
+(crab_ok && disc_ok) || exit(1)

@@ -26,15 +26,11 @@ const TURNS = parse(Int, get(ENV, "OCTOPUS_CMS_TURNS", "2048"))
 const N_MACRO = parse(Int, get(ENV, "OCTOPUS_CMS_N_MACRO", "20000"))
 const RESULT_DIR = joinpath(@__DIR__, "..", "result")
 
-function fractional_tune(signal)
-    n = length(signal)
-    w = [0.5 - 0.5 * cospi(2 * (i - 1) / n) for i in 1:n]
-    a = abs.(FFTW.rfft((signal .- mean(signal)) .* w))
-    k = argmax(a[2:(end - 1)]) + 1
-    y1, y2, y3 = a[k - 1], a[k], a[k + 1]
-    d = y1 - 2y2 + y3
-    return (k - 1 + (d == 0 ? 0.0 : 0.5 * (y1 - y3) / d)) / n
-end
+# One source: the package's estimator (the one `CoherentModePhysicsContract`
+# judges with). Until 2026-10-22 this was one of six hand copies of the
+# Hann-window plus parabolic-interpolation estimator across `validation/`,
+# bound to nothing (2026-10-18 comprehensive audit, F-243/U54-7).
+fractional_tune(signal) = Octopus._coherent_fractional_tune(signal)
 
 """One symmetric coherent-mode run; returns the x-plane Yokoya factor."""
 function measure_Y(; aspect=1.0, xi_x=0.005, turns=TURNS, n_macro=N_MACRO)

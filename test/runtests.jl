@@ -25917,6 +25917,50 @@ end
     @test literal("RE_M") == Octopus.RE
     @test literal("EMASS") == Octopus.EMASS_EV
     @test literal("PMASS") == Octopus.PMASS_EV
+
+    # Fix batch 4 (2026-10-22, F-243/U54-7): the Hann-window plus parabolic-
+    # interpolation tune estimator had six hand copies across validation/.
+    # Four scripts now call `Octopus._coherent_fractional_tune`; this script
+    # and the BeamBeam3D post-processor load no package and keep a copy each,
+    # held here to the framework's function by EVALUATION: the copy's text is
+    # cut from the script, evaluated in a sandbox (FFTW from the package;
+    # `mean(x) = sum(x)/length(x)`, which is Statistics' definition for a
+    # vector -- that stdlib is not loadable under Pkg.test), and compared on
+    # three two-tone signals. Same algorithm in the same arithmetic: equality
+    # to round-off, stated as a relative bound. The regrowth tripwire: no
+    # other validation script spells the interpolation `0.5 * (y1 - y3)`.
+    estimator_sources = (
+        ("coherent_mode_vlasov_theory.jl", r"^    tune\(sig\) = begin\n.*?^    end$"ms, :tune),
+        ("coherent_beam_beam_modes_beambeam3d.jl",
+         r"^function fractional_tune\(signal::AbstractVector\{<:Real\}\)\n.*?^end$"ms, :fractional_tune),
+    )
+    rng_est = Random.MersenneTwister(20261022)
+    signals = [[cos(2pi * q1 * t + 0.3) + r * cos(2pi * q2 * t + 1.1) + 0.05 * randn(rng_est) for t in 1:4096]
+               for (q1, q2, r) in ((0.31, 0.316, 0.5), (0.33, 0.337, 0.9), (0.305, 0.312, 0.2))]
+    for (file, pattern, fname) in estimator_sources
+        text = read(joinpath(pkgdir(Octopus), "validation", file), String)
+        m = match(pattern, text)
+        @testset let standalone_script = file
+            @test m !== nothing
+            if m !== nothing
+                sandbox = Module(Symbol("EstimatorProbe_", replace(file, "." => "_")))
+                Core.eval(sandbox, :(const FFTW = $(Octopus.FFTW)))
+                Core.eval(sandbox, :(mean(x) = sum(x) / length(x)))
+                Core.eval(sandbox, Meta.parseall(m.match))
+                f = getfield(sandbox, fname)
+                worst = maximum(abs(Base.invokelatest(f, sig) - Octopus._coherent_fractional_tune(sig)) /
+                                abs(Octopus._coherent_fractional_tune(sig)) for sig in signals)
+                @testset let worst_relative = worst
+                    @test worst <= 1.0e-14
+                end
+            end
+        end
+    end
+    spelling = r"0\.5\s*\*\s*\(y1\s*-\s*y3\)"
+    strip_est(text) = replace(replace(text, r"#=.*?=#"s => " "), r"#[^\n]*" => "")
+    carriers = [f for f in readdir(joinpath(pkgdir(Octopus), "validation")) if endswith(f, ".jl") &&
+                occursin(spelling, strip_est(read(joinpath(pkgdir(Octopus), "validation", f), String)))]
+    @test sort(carriers) == ["coherent_beam_beam_modes_beambeam3d.jl", "coherent_mode_vlasov_theory.jl"]
 end
 
 @testset "The near-round Gauss-Legendre reference has not drifted from its twin" begin

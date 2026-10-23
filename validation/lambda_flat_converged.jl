@@ -14,12 +14,29 @@ This driver measures the single most load-bearing point, r = sigma_y/sigma_x =
 Lambda_x is in units of the wide plane's own xi_x; Lambda_y in units of the
 narrow plane's own xi_y = xi_x / r, matching the manuscript's convention.
 
-Run:
+Characterisation, no verdict: the script prints and records (`OCTOPUS_LFC_OUT`)
+the measured Lambda of both planes; the archived converged values are in the
+header of `lambda_round_converged.jl` and in the paper repository, and a run
+at reduced settings (fewer turns, fewer macroparticles) is not converged and
+is not compared with them.
+
+Run from the project root (the defaults are the converged settings; the
+environment variables below reduce them):
   OCTOPUS_LFC_TURNS=8192 OCTOPUS_LFC_NMACRO=100000 \
-  julia --threads=8 --project=. lambda_flat_converged.jl
+  julia --threads=8 --project=. validation/lambda_flat_converged.jl
+
+Environment: OCTOPUS_LFC_TURNS, OCTOPUS_LFC_NMACRO, OCTOPUS_LFC_ASPECT,
+OCTOPUS_LFC_SEEDS (comma-separated), OCTOPUS_LFC_OUT.
 =#
 
-include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+# Guarded like every other script in `validation/` (2026-08-05_b audit,
+# U25-14): until 2026-10-22 this file and emit_xcode.jl re-evaluated the
+# package when included after a sibling in one process, and this one
+# redefined its top-level `const`s (2026-10-18 comprehensive audit,
+# F-243/U54-6).
+if !isdefined(Main, :Octopus)
+    include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+end
 mkpath(joinpath(@__DIR__, "..", "result"))
 using .Octopus
 using Statistics
@@ -33,17 +50,11 @@ const SEEDS = [parse(Int, s) for s in split(get(ENV, "OCTOPUS_LFC_SEEDS",
 const OUT = get(ENV, "OCTOPUS_LFC_OUT",
                 joinpath(@__DIR__, "..", "result", "lambda_flat_converged.tsv"))
 
-# Identical estimator to validation/coherent_mode_scans.jl: Hann window,
-# parabolic interpolation of the peak bin.
-function fractional_tune(signal)
-    n = length(signal)
-    w = [0.5 - 0.5 * cospi(2 * (i - 1) / n) for i in 1:n]
-    a = abs.(FFTW.rfft((signal .- mean(signal)) .* w))
-    k = argmax(a[2:(end - 1)]) + 1
-    y1, y2, y3 = a[k - 1], a[k], a[k + 1]
-    d = y1 - 2y2 + y3
-    return (k - 1 + (d == 0 ? 0.0 : 0.5 * (y1 - y3) / d)) / n
-end
+# One source: the package's estimator (the one `CoherentModePhysicsContract`
+# judges with). Until 2026-10-22 this was one of six hand copies of the
+# Hann-window plus parabolic-interpolation estimator across `validation/`,
+# bound to nothing (2026-10-18 comprehensive audit, F-243/U54-7).
+fractional_tune(signal) = Octopus._coherent_fractional_tune(signal)
 
 """Symmetric coherent-mode run; returns Lambda in BOTH planes."""
 function measure_both(; aspect, xi_x = 0.005, turns = TURNS, n_macro = NMACRO,
