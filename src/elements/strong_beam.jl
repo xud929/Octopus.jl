@@ -64,8 +64,11 @@ _virtual_drift(drift::AbstractVirtualDrift) = drift
 
 Whether a virtual drift model moves `z`: the paraxial Hirata drift and its
 frozen-longitudinal diagnostic twin leave `z` alone (`x += S px`,
-`pz -= S/2 (px^2 + py^2)`); the chromatic and exact-Hamiltonian models advance
-it. Read by the strong beams' cross-backend rounding class.
+`pz -= (px^2 + py^2)/4` -- the drift length `S = (z - zo)/2` depends on `z`,
+so the canonical compensation is `S'(z) (px^2 + py^2)/2` with `S' = 1/2`;
+`docs/theory/beam_beam_longitudinal_kick.md` section 6 and the kernel's
+`oftype(S, 0.25) * (px * px + py * py)`); the chromatic and exact-Hamiltonian
+models advance it. Read by the strong beams' cross-backend rounding class.
 """
 _virtual_drift_writes_z(::AbstractVirtualDrift) = true
 _virtual_drift_writes_z(::HirataParaxialDrift) = false
@@ -266,7 +269,7 @@ function _cross_backend_rounding(op::ThinStrongBeam)
     return _rounding_class(untouched=moves_z ? () : (:z,),
                            ulp=moves_z ? _COORDINATE_NAMES : (:x, :px, :y, :py, :pz),
                            ulp_bound=round_beam ? 8 : 2048,
-        why="the Gaussian kick through `exp` on each backend's libm, the fused virtual-drift updates `x + S px` and the synchro-beam energy term `pz -= S/2 (px^2 + py^2)`; " *
+        why="the Gaussian kick through `exp` on each backend's libm, the fused virtual-drift updates `x + S px` and the synchro-beam energy term `pz -= (px^2 + py^2)/4`; " *
             (round_beam ? "a round beam takes the `(1 - exp(-r^2/2v))/r^2` branch (2 ulps of scale over 3 turns)" :
                           "an elliptic beam's Bassetti-Erskine kick, the difference of two Faddeeva functions, cancels and amplifies the last bit (412 and 331 ulps of px's and py's scale over 2 turns on a 110 by 12 um beam)") *
             "; the $(nameof(typeof(op.virtual_drift))) virtual drift " * (moves_z ? "advances z" : "leaves z alone"))
@@ -1417,10 +1420,17 @@ dispersion or no momentum dispersion, where this builder is unchanged bit for
 bit from the slope form it had until 2026-10-18. `h = 0` is refused by name.
 
 One convention within Octopus (owner decision 2026-10-18): a dispersion
-parameter means what the analysis reports. Xsuite's `dx, dpx, dy, dpy` and
-MAD-X's `deltap` dispersion are the slope `eta / h`, not `eta`: convert them
-by (D8), `h = 1 / (1 + zeta' S_4 slope)`, `eta = h slope`, before passing them
-here. `zeta` is the same in both conventions.
+parameter means what the analysis reports. Xsuite's `dx, dpx, dy, dpy` are the
+slope `eta / h`, not `eta` (gated, C1 and C3 of
+`validation/twiss_xsuite_benchmark.jl`): convert a slope by (D8),
+`h = 1 / (1 + zeta' S_4 slope)`, `eta = h slope`, before passing it here.
+MAD-X's `deltap` dispersion equals that slope on the coasting cells where it
+was compared (U1, U2, K1, K2 of `validation/twiss_madx_benchmark.jl`: no
+cavity, `h = 1`, so (D8) is the identity) and is a forced-4D response, not
+`eta / h`, on a bunched or crab-coupled lattice -- unverified against MAD-X as
+of 2026-10-22, the qualification the theory note's section 8.2 carries (until
+2026-10-22 this paragraph stated the MAD-X clause unconditionally; 2026-10-18
+audit, F-242/U50-6). `zeta` is the same in both conventions.
 
 The builder is generic in the type `T` its inputs promote to: a ForwardDiff
 dual in a dispersion gives a dual covariance (the PSD check runs `eigvals` on
