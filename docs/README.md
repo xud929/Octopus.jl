@@ -632,6 +632,15 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   the cluster mode index matched by eigenvalue, three dead scripts ported
   with a retired-spelling tripwire, the MPI seam child's arms that fail by
   name; two integration joins with their own test; thirteen rows retired.
+- [`comprehensive_audit_fixes_2026_10_23_batch4b.md`](history/comprehensive_audit_fixes_2026_10_23_batch4b.md) —
+  the comprehensive audit's fix batch 4b, the Minor pointer's code, test and
+  script findings through six units by file (sub-agents proposing, the
+  integrator verifying each red on the unfixed base and green on the integrated
+  tree): the strong-strong solvers' guards, receipts and pooled buffers, the
+  contract sweeps' baselines and named refusals, the Twiss contracts' independent
+  references and measured window, the suite's instrument repairs, the track
+  files' dead walker and duplicated kernel, the validation scripts' derived
+  defaults and verdicts; five Float32 class ids stay with the rounding-class row.
 - [`comprehensive_audit_fixes_2026_10_22_batch4a.md`](history/comprehensive_audit_fixes_2026_10_22_batch4a.md) —
   the comprehensive audit's fix batch 4a, the documentation-drift row as a
   markdown-only sweep (a read-only worklist derived from the record, four sweep

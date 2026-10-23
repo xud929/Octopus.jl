@@ -2102,6 +2102,17 @@ row, or it is not written. Its sibling: a count the suite derives (heavyweight s
 rows) is stated by its derivation or dropped -- three hand-copied counts disagreed with the tree by two
 to four, and two had been copied from each other.
 
+## The suite pins documentation text: grep before the sweep, change pin and text together
+
+Batch 4a's fast lane went red once, at a testset of batch 3b's unit H that pins two formula strings of
+the conventions note: a sweep unit had corrected the symbol in exactly those strings (the kernel's field
+`b`, not the curvature `h`), and the pin, written days earlier from the note's own text, still said `h`.
+Fourteen suite sites read a document and `occursin` its sentences. A documentation change is therefore a
+coupled change whenever a pin exists: grep `test/runtests.jl` for every `read(joinpath(` of the file and
+for the strings you touch, and change the pin and the text in one commit (batch 4b's unit TR did, D18).
+The static check that found no second collision -- every pin re-evaluated against the edited tree -- is
+the five-line script a sweep runs before its gate, not after.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.
