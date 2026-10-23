@@ -3646,9 +3646,17 @@ end
     S4 = Octopus._symplectic_form(4)
     @test norm(Mq' * S4 * Mq - S4) <= 16 * _MC_EPS
     rq = _mc_run(Mq)
-    @test !any(rq.real_class) && 1 <= length(rq.clusters) <= 2      # the off-circle pairs are Krein-neutral (kappa = Inf), so they merge
+    # the off-circle pairs are Krein-neutral (kappa = Inf) and MERGE: one cluster, asserted rather than hedged
+    # between one and two (2026-10-18 audit F-152/U29-2: `1 <= length <= 2` accepted both outcomes of the very
+    # decision this comment claims)
+    @test !any(rq.real_class) && length(rq.clusters) == 1
     @test all(c -> c.classification === :unstable && c.reason === :unstable_spectrum, rq.clusters)
-    @test all(c -> abs(minimum(c.unit_circle_departures) - 1e-4) <= 1e-8, rq.clusters)
+    # the departures |rho| - 1 of the quartet are 1e-4 (the (1 + 1e-4) members) and 1e-4 / (1 + 1e-4) (their
+    # inverses), each within the eigenvalue roundoff of a normal 4x4 at |rho| ~ 1: c eps, c = 16 (measured 0.05 eps
+    # and 1.07 eps on both gate arms). The former `|min - 1e-4| <= 1e-8` was the fixture's own second-order term
+    # 1e-8 / (1 + 1e-4), passing with a margin of 1e-12 (F-152/U29-3), not a roundoff budget.
+    @test all(c -> abs(maximum(c.unit_circle_departures) - 1e-4) <= 16 * _MC_EPS, rq.clusters)
+    @test all(c -> abs(minimum(c.unit_circle_departures) - 1e-4 / (1 + 1e-4)) <= 16 * _MC_EPS, rq.clusters)
     @test all(c -> minimum(c.unit_circle_departures) / c.stability_scale > 1e4, rq.clusters)   # measured 1e-4 / 9e-13
     @test rq.degeneracy_status === :unstable
     for (name, M, nreal, expect) in (("diag(2, 1/2, R(1.2))", _mc_bd([2.0 0; 0 0.5], R12), 2, :unstable),
@@ -3797,7 +3805,12 @@ end
     # pair exactly where its own chord exceeds the default and keeps two singletons below it; the ladder must
     # exercise BOTH branches (at the frozen default 1e-3: two singletons down to eps = 1e-10, one cluster at 1e-11;
     # the earlier hard-coded split at 1e-9 / 1e-10 pinned the provisional 1e-4).
-    @test all(e -> ncoll[e] == (qcoll[e] > Octopus._DEFAULT_RESOLUTION_CHORD ? 1 : 2), keys(ncoll))
+    # The flip is pinned WHERE the comment puts it (two singletons down to eps = 1e-10, one cluster at 1e-11 at the
+    # frozen default), by the branch counts alone: the former `ncoll == (qcoll > default ? 1 : 2)` read both the
+    # decision and the deciding chord from the same report and restated the solver's merge rule (2026-10-18 audit
+    # F-153/U29-4). The chord q grows tenfold per decade (2.8e-5, 2.8e-4, 2.8e-3 at eps = 1e-9, 1e-10, 1e-11), so a
+    # solver merging a decade early or late moves the flip.
+    @test ncoll[1e-10] == 2 && ncoll[1e-11] == 1
     @test any(e -> ncoll[e] == 2, keys(ncoll)) && any(e -> ncoll[e] == 1, keys(ncoll))
     ks = sort(collect(keys(qcoll)); rev=true)                                     # eps descending: q grows down the ladder
     @test all(i -> qcoll[ks[i + 1]] > qcoll[ks[i]], 1:length(ks) - 1)
@@ -4003,7 +4016,14 @@ end
     @test abs(cf_probe.kappa_frame - cf.kappa_frame) <= 64 * _AMB_EPS * cf.kappa_frame
     # The N5 projector of the frame against the cluster's Schur spectral projector.
     @test norm(cf.P - determined_value(cf.cluster.projector)) <= 64 * _AMB_EPS * cf.kappa_frame
-    @test norm(cf.G - determined_value(cf.cluster.covariance)) == 0     # G IS the cluster covariance
+    # Two identities of the (E3)-normalized frame that the covariance must satisfy, in place of a line comparing
+    # `cf.G` with the value `_st3_cluster` copies it from (2026-10-18 audit F-153/U29-5, a tautology): with
+    # u_j = a_j + i b_j, a_j^T S b_j = -1 (Im u^* S u = -2, the `_amb_orient` sign) and the modes S-orthogonal,
+    # G = sum (a a^T + b b^T) and P = -Im(U U^*) S give G S G = Im(U U^*) = P S, so (G S)^2 = -P; and P is the
+    # identity on the range of G, so P G = G. Measured 1.4 eps and 2 eps on both gate arms; c = 64 at kappa_frame
+    # (2 on this fixture).
+    @test norm((cf.G * S6)^2 + cf.P) <= 64 * _AMB_EPS * cf.kappa_frame
+    @test norm(cf.P * cf.G - cf.G) <= 64 * _AMB_EPS * cf.kappa_frame
     chk = Octopus._check_cluster_frame(cf.U)
     @test chk.kappa >= 2 - 64 * _AMB_EPS      # an (E3) column has ||u||^2 >= 2, equality on this fixture
     @test chk.normalization <= 64 * _AMB_EPS * 2 * chk.kappa / 10
@@ -4697,10 +4717,13 @@ _st4_wrap(mu) = mod(mu, 2pi)
             @test norm(_st4_val(r.zeta) - f.zeta, Inf) <= c * eps() * kappa
             @test norm(_st4_val(r.eta) - f.eta, Inf) <= c * eps() * kappa
             @test abs(_st4_val(r.h) - f.h) <= c * eps() * kappa
-            # the (I1) floor is the kernel's own (`_kappa_route`, re-derived 2026-09-14) with the route's reported
-            # amplification, on the exact graph (it stands for the route's graph to within the agreement bound): the
-            # suite carries one formula for that floor, and a :none status already implies this bound
-            @test _st4_val(r.invariance_residual).normalized <= Octopus._ROUTE_INVARIANCE_MULTIPLIER * eps() * Octopus._kappa_route(f.M, f.D, r.coefficient_condition)
+            # the (I1) normalized residual against the TEST's own kappa and c (measured 93.3 eps kappa over the 994
+            # :none routes of the 200 maps, both gate arms; c_route = 1024): the former line re-evaluated the kernel's
+            # own acceptance inequality (`_ROUTE_INVARIANCE_MULTIPLIER * eps() * _kappa_route(...)`), which a :none
+            # status already implies, so a moved multiplier or a changed `_kappa_route` moved both sides together
+            # (2026-10-18 audit F-153/U29-6); the kernel's floor is probed at its edge by the 0.99/1.01 g_edge test
+            # and the garbage-graph test below
+            @test _st4_val(r.invariance_residual).normalized <= c_route * eps() * kappa
             @test abs(_st4_val(r.trace_residual)) <= c_route * eps() * kappa
             @test r.converged
             r.route in (:newton, :fixed_point) ? (@test r.iterations >= 1) : (@test r.iterations == 0 && r.halvings == 0)
@@ -5377,7 +5400,14 @@ end
         crab = compile_runtime(ThinCrabCavitySpec{1}(400.0e6; strengthX=(-k,)))     # pitfall 9: the kernel's sign
         M = one_turn_matrix((dba..., rf, crab)).matrix
         @test abs(M[2, 5] - k) <= 16eps()                                              # the theory's +k convention
-        @test abs(tr(M[5:6, 5:6])) < 2 + 0.3 && Octopus._symplectic_defect(M).frobenius <= 16eps()
+        # the stability witness is the 6D spectrum on the unit circle (measured max |abs(rho) - 1| = 0.68 and 0.23
+        # eps ||M|| for the two k, both gate arms; c = 16), not the (z, pz) sub-block's trace: that trace is 2.02 and
+        # 2.20 here (the sub-block is not the synchrotron mode's block in a coupled map) and the former `< 2 + 0.3`
+        # was a bound widened to the data (2026-10-18 audit F-152/U29-1). The cell's z slip, the reason the DBA
+        # replaced the FODO whose M[5, 6] is zero, is asserted as such.
+        @test maximum(abs.(abs.(eigvals(M)) .- 1)) <= 16 * eps() * norm(M)
+        @test abs(M[5, 6]) > 0.01                                                      # R56 = -0.0814: a cell with z slip
+        @test Octopus._symplectic_defect(M).frobenius <= 16eps()
         cl = _st4_clusters(M)
         @test cl.degeneracy_status === :all_resolved
         rep = Octopus._dispersion_routes(M, cl)
@@ -6470,9 +6500,15 @@ end
     @test analysis_option_schema(Octopus.PlaceholderAnalysis) === NamedTuple()
     @test analysis_option_schema(Octopus.PlaceholderAnalysis()) === NamedTuple()
     @test Set(Octopus._ANALYSIS_CONSUMERS) == Set(meta.consumer for meta in values(schema))
-    # every export of the file is documented
-    for name in (:TwissDispersionAnalysis, :TwissDispersionResult, :OpticsAnalysisError, :NormalMode, :ANALYSIS_STATUSES,
-                 :analyze, :analysis_option_schema, :matched_covariance, :normal_mode)
+    # every export of the file is documented: the names are DERIVED from the file's own `export` statement
+    # (2026-10-18 audit F-154/U29-7: a hand-typed list of nine names equal to the export line could not see a tenth
+    # export). The statement runs over its comma-continued lines; the parse is shown to have hit it (`analyze` is in it).
+    tda_src = read(joinpath(pkgdir(Octopus), "src", "analysis", "twiss_dispersion_analysis.jl"), String)
+    tda_export = match(r"^export[ \t]+((?:[^\n]*,[ \t]*\n)*[^\n]*)"m, tda_src)
+    @test tda_export !== nothing
+    tda_exports = [Symbol(strip(n)) for n in split(replace(tda_export.captures[1], '\n' => ' '), ','; keepempty=false)]
+    @test :analyze in tda_exports && length(tda_exports) >= 9
+    for name in tda_exports
         @test name in names(Octopus)
         @test Base.Docs.hasdoc(Octopus, name)
     end
@@ -6560,11 +6596,32 @@ end
     # inputs). The TW-TENTH line (the freezing-set decision of 2026-09-14) counts the rows above 0.1, 0.25, 0.5 and 1
     # with strict inequalities: the fake's a_row at exactly 0.1 is not counted, b_row at 0.2 is, and neither exceeds
     # a quarter. The script is included into a module of its own (it defines constants and functions); it loads Printf,
-    # a test dependency since this testset (Pkg.test runs without @stdlib in the load path).
-    isdefined(Main, :IDENT_DRY_RUN) || Core.eval(Main, :(const IDENT_DRY_RUN = true))
+    # a test dependency since this testset (Pkg.test runs without @stdlib in the load path). The dry-run hook is set
+    # ON THAT MODULE (`IDENT_DRY_RUN_HOOK`), never on `Main`: a `const IDENT_DRY_RUN` in `Main` outlived the testset,
+    # and a later `include` of the script in the same process (the stage runner, a REPL) ran no contract and printed
+    # nothing (2026-10-18 audit F-155/U29-8); the script now also prints a loud line when it is dry.
     dry = Module(:IdentDryRun)
     Core.eval(dry, :(using Octopus))
-    Base.include(dry, joinpath(pkgdir(Octopus), "validation", "twiss_dispersion_identities.jl"))
+    Core.eval(dry, :(const IDENT_DRY_RUN_HOOK = true))
+    @test !isdefined(Main, :IDENT_DRY_RUN)                            # nothing leaks into the process
+    # the include's stdout, captured the way "Loss accounting reports itself" captures (drained on a task)
+    function dry_capture_stdout(f)
+        original = stdout
+        rd, wr = redirect_stdout()
+        reader = @async read(rd, String)
+        try
+            f()
+        finally
+            redirect_stdout(original)
+            close(wr)
+        end
+        return fetch(reader)
+    end
+    dry_out = dry_capture_stdout() do
+        Base.include(dry, joinpath(pkgdir(Octopus), "validation", "twiss_dispersion_identities.jl"))
+    end
+    @test dry.IDENT_DRY_RUN && occursin("IDENT_DRY_RUN", dry_out) && occursin("SKIPPED", dry_out)   # the skip is loud
+    @test !isdefined(Main, :IDENT_DRY_RUN)
     slugs = [:b_row, :a_row]
     mult = Dict(:a_row => 8.0, :b_row => 16.0, :r_u6_reconstruction => 64.0, :r_u6_symplecticity => 32.0)
     m = Dict{Symbol,Any}(:max_a_row => 0.1, :maxval_a_row => 1e-12, :argmax_a_row => "map 1",
