@@ -1217,6 +1217,111 @@ end
     @test occursin("generate_madx_twiss_reference.jl", r.message)
 end
 
+@testset "Stage 8: the MAD-X dispersion rows assert their coasting precondition (F-143)" begin
+    # The TOL-B rows compare the canonical eta with MAD-X's slope beta0 DX without the (D8) factor h, which is right
+    # only because every A1 fixture is coasting with h = 1 exactly, a precondition no row asserted (2026-10-18 audit,
+    # F-143; the xtrack layer has its `coasting_structure_present` rows). Each full MAD-X fixture now carries the
+    # assert row `coasting_structure_present_h_is_1`, which fails on a bunched map, where the slope is not eta.
+    c = TwissExternalReferenceContract()
+    tab = Octopus._extref_read_wide(Octopus._extref_table_path(Octopus._extref_reference_dir(c), "twiss_madx_"))
+    rows = Octopus._ExtRefRow[]; Octopus._extref_madx_rows!(rows, c, tab)
+    pre = [r for r in rows if r.quantity == "coasting_structure_present_h_is_1"]
+    @test length(pre) == length(Octopus._EXTREF_MADX_A1_FIXTURES) && all(r.passed for r in pre)
+    @test Set(r.fixture for r in pre) == Set(Octopus._EXTREF_MADX_A1_FIXTURES)
+    @test all(r.passed for r in rows if startswith(r.quantity, "eta_"))     # the TOL-B rows pass on the committed table
+    # the injected regression: U1's initial map made bunched by a thin RF kick in MAD-X's (T, PT) plane (K[6, 5] =
+    # -1e-3, symplectic): the coasting structure is absent and h != 1, so the precondition row fails by name while
+    # every other fixture's row still passes
+    K = Matrix(1.0I, 6, 6); K[6, 5] = -1e-3
+    rows_b = Dict{String,String}[]
+    for row in tab.rows
+        if row["fixture"] == "U1" && row["file"] == "initial"
+            Mb = Octopus._extref_matrix(row, "re") * K
+            newrow = copy(row)
+            for i in 1:6, j in 1:6
+                newrow["re$(i)$(j)"] = string(Mb[i, j])
+            end
+            push!(rows_b, newrow)
+        else
+            push!(rows_b, row)
+        end
+    end
+    rows2 = Octopus._ExtRefRow[]
+    Octopus._extref_madx_rows!(rows2, c, Octopus._ExtRefTable(tab.path, tab.header, tab.columns, rows_b))
+    pre2 = [r for r in rows2 if r.quantity == "coasting_structure_present_h_is_1"]
+    @test length(pre2) == length(pre) && count(r -> !r.passed, pre2) == 1 && !pre2[findfirst(r -> r.fixture == "U1", pre2)].passed
+    # the PTC 5D rows read the same precondition on their coasting-completed maps
+    ptab = Octopus._extref_read_wide(Octopus._extref_table_path(Octopus._extref_reference_dir(c), "ptc_twiss_madx_"))
+    prow = Octopus._ExtRefRow[]; Octopus._extref_ptc_rows!(prow, c, ptab)
+    ppre = [r for r in prow if r.quantity == "coasting_structure_present_h_is_1"]
+    @test length(ppre) == length(Octopus._extref_select(ptab, "layer", "5d")) && all(r.passed for r in ppre)
+end
+
+@testset "Stage 8: the external-reference tables' versions are read from their headers, and the fixture lists are tripwired against the scripts and the tables (F-144)" begin
+    # (a) the versions the contract certifies are READ from the table headers (recorded in metrics[:version_<code>])
+    # and must equal the version in the newest table's file name; a `twiss_madx_9.99.99.tsv` dropped beside the
+    # current table re-targeted the "exactly one version" claim with no failure before (2026-10-18 audit, F-144).
+    c = TwissExternalReferenceContract(); dir = Octopus._extref_reference_dir(c)
+    r = validate(c)
+    @test r.passed
+    for (code, spec) in pairs(Octopus._EXTREF_TABLES)
+        code === :maps && continue
+        path = Octopus._extref_table_path(dir, spec.prefix)
+        fv = Octopus._extref_filename_version(path, spec.prefix)
+        @test !isempty(fv) && r.metrics[Symbol("version_", code)] == fv
+        @test Octopus._extref_header_version(Octopus._extref_read_wide(path).header, code) == fv
+    end
+    tmp = mktempdir()
+    for f in readdir(dir)
+        cp(joinpath(dir, f), joinpath(tmp, f))
+    end
+    old = basename(Octopus._extref_table_path(dir, "twiss_madx_"))
+    newname = replace(old, Octopus._extref_filename_version(old, "twiss_madx_") => "9.99.99")
+    mv(joinpath(tmp, old), joinpath(tmp, newname))
+    rb = validate(TwissExternalReferenceContract(reference_dir=tmp))
+    @test !rb.passed && occursin("9.99.99", rb.message) && occursin("header", rb.message)
+    # (b) the hand-copied fixture lists are tripwired against the generators' constants, parsed from the scripts
+    # by anchor (the lists are declarations the tables cannot supply: the C1 dimension, the PTC ids a 5D-only abort
+    # table lacks, the A1 cells among the sentinels)
+    script_const(file, name) = begin
+        src = read(joinpath(pkgdir(Octopus), "validation", file), String)
+        i = findfirst("const $(name) = ", src)
+        i === nothing && error("$(file): no `const $(name) = `")
+        ex, _ = Meta.parse(src, last(i) + 1)
+        Core.eval(@__MODULE__, ex)
+    end
+    @test script_const("twiss_xsuite_benchmark.jl", "C1_FIXTURES") == Octopus._EXTREF_XT_C1_FIXTURES
+    @test script_const("twiss_ptc_benchmark.jl", "EXPECTED_IDS") == Octopus._EXTREF_PTC_EXPECTED_IDS
+    @test script_const("twiss_madx_benchmark.jl", "A1_FIXTURES") == Octopus._EXTREF_MADX_A1_FIXTURES
+    # (c) coverage rows (the PTC `layer_rows_present` shape): every C1 (fixture, compile) pair of the xtrack table
+    # is in the list and every list entry in the table; every MAD-X fixture with a periodic row is compared or
+    # named recorded-only. Injected: an unknown C1 pair, an unknown periodic MAD-X fixture.
+    xt = Octopus._extref_read_long(Octopus._extref_table_path(dir, "xsuite_twiss_xtrack_"))
+    maps = Octopus._extref_read_wide(Octopus._extref_table_path(dir, "twiss_benchmark_maps"))
+    rows = Octopus._ExtRefRow[]; Octopus._extref_xtrack_c1!(rows, c, xt, maps)
+    cov = [x for x in rows if x.quantity in ("c1_table_fixtures_known", "c1_list_fixtures_present")]
+    @test length(cov) == 2 && all(x.passed for x in cov) && all(x.octopus == x.external == length(Octopus._EXTREF_XT_C1_FIXTURES) for x in cov)
+    vals2 = copy(xt.values); vals2[("C1", "ZZ_new", "bare", "only_4d_block")] = 1.0
+    rows2 = Octopus._ExtRefRow[]; Octopus._extref_xtrack_c1!(rows2, c, Octopus._ExtRefLongTable(xt.path, xt.header, vals2), maps)
+    known = rows2[findfirst(x -> x.quantity == "c1_table_fixtures_known", rows2)]
+    @test !known.passed && known.octopus == length(Octopus._EXTREF_XT_C1_FIXTURES) && known.external == length(Octopus._EXTREF_XT_C1_FIXTURES) + 1
+    @test rows2[findfirst(x -> x.quantity == "c1_list_fixtures_present", rows2)].passed
+    mtab = Octopus._extref_read_wide(Octopus._extref_table_path(dir, "twiss_madx_"))
+    mrows = Octopus._ExtRefRow[]; Octopus._extref_madx_rows!(mrows, c, mtab)
+    mcov = mrows[findfirst(x -> x.quantity == "periodic_fixtures_known", mrows)]
+    periodic = Set(row["fixture"] for row in mtab.rows if row["file"] == "periodic")
+    @test mcov.passed && mcov.octopus == mcov.external == length(periodic)
+    @test Set(Octopus._EXTREF_MADX_A1_FIXTURES) ⊆ periodic && Set(Octopus._EXTREF_MADX_RECORDED_ONLY) ⊆ periodic
+    rows_zz = copy(mtab.rows)
+    for row in mtab.rows
+        row["fixture"] == "U1" || continue
+        zz = copy(row); zz["fixture"] = "ZZ"; push!(rows_zz, zz)
+    end
+    mrows2 = Octopus._ExtRefRow[]; Octopus._extref_madx_rows!(mrows2, c, Octopus._ExtRefTable(mtab.path, mtab.header, mtab.columns, rows_zz))
+    mcov2 = mrows2[findfirst(x -> x.quantity == "periodic_fixtures_known", mrows2)]
+    @test !mcov2.passed && mcov2.octopus == length(periodic) && mcov2.external == length(periodic) + 1 && occursin("ZZ", mcov2.fixture)
+end
+
 # n5b: a symplectic perturbation x * exp(1e-8 S H) (H symmetric: the analysis's
 # symplecticity gate passes it) applied to the scaling = :none runs only.
 function _st6_perturb_symplectic_none(a::TwissDispersionAnalysis, x)

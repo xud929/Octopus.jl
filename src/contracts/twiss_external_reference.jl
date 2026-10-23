@@ -9,7 +9,7 @@ stage 8 sections of `docs/history/twiss_dispersion_analysis_history.md` and
 the batch record `docs/history/twiss_external_benchmarks_2026_09_15.md`). It
 re-runs, on committed numbers only, every CONVENTION row of the three
 benchmark scripts whose two sides both sit in a committed table: the optics an
-external code printed (MAD-X 5.03.06 `twiss`, PTC `ptc_twiss`, xtrack 0.112.0
+external code printed (MAD-X `twiss`, PTC `ptc_twiss`, xtrack
 `get_linear_normal_form` / `Line.twiss`) against `analyze` applied to a matrix
 read from `validation/reference/` (the external one-turn map converted by the
 stage 8 law, or the Octopus map xtrack was handed). No external tool runs and
@@ -20,7 +20,17 @@ Tables (newest version by numeric fields, the `PTCConsistencyContract` rule):
 `twiss_madx_<v>.tsv`, `ptc_twiss_madx_<v>.tsv`, `xsuite_twiss_xtrack_<v>.tsv`
 and the Octopus maps `twiss_benchmark_maps.tsv`, all under `reference_dir`
 (default `validation/reference/` of this tree). A missing table gives
-`ContractResult(:skipped, ...)` naming the generator that writes it.
+`ContractResult(:skipped, ...)` naming the generator that writes it. The tool
+versions the contract certifies are READ from the table headers (`# MAD-X
+version:`, `# tool: MAD-X`, `# tool: xtrack`; 5.03.06, 5.03.06 and 0.112.0 on
+the 2026-10-22 tables) into `metrics[:version_<code>]`, and each must equal
+the version in its newest table's file name (an `assert` row per table; a
+`twiss_madx_9.99.99.tsv` dropped beside the current table re-targeted the
+claim silently before: 2026-10-18 audit, F-144). The fixture lists the
+contract declares (`_EXTREF_MADX_A1_FIXTURES`, `_EXTREF_PTC_EXPECTED_IDS`,
+`_EXTREF_XT_C1_FIXTURES`) are the scripts' constants, tripwired against them
+by the suite and against the tables by coverage rows (`periodic_fixtures_known`,
+`layer_rows_present`, `c1_table_fixtures_known`, `c1_list_fixtures_present`).
 
 The conversion law (the stage 8 history sections; `convert_map` of
 `validation/twiss_benchmark_cells.jl` is the validation-side copy):
@@ -76,6 +86,12 @@ const _EXTREF_TOL_W1 = 1e-10
 const _EXTREF_BENCH_E_TOTAL_EV = 3.0e9
 const _EXTREF_PTC_INTERNAL_PROTON_MASS_GEV = 0.938272081358
 const _EXTREF_PTC_EXPECTED_IDS = ("S0", "S0_pt", "W1", "U1", "U2", "K2", "B4", "B4K", "G6_2.0MV", "G6_0.2MV")
+# The MAD-X A1 cells (the script's A1_FIXTURES: the full convention rows) and the table fixtures the contract
+# reads for coverage only (the rolled sentinels, the unrolled R_0 anchor and the recorded Rd_1e-6 control);
+# every fixture with a periodic row must be one or the other, or Rd_1e-3 (F-144; the lists are tripwired against
+# the scripts by the suite).
+const _EXTREF_MADX_A1_FIXTURES = ("U1", "U2", "K1", "K2")
+const _EXTREF_MADX_RECORDED_ONLY = ("R_0", "R_0.01", "R_0.1", "R_pi8", "Rd_1e-6")
 
 const _EXTREF_TABLES = (
     madx   = (prefix="twiss_madx_",          generator="validation/generate_madx_twiss_reference.jl"),
@@ -200,6 +216,32 @@ function _extref_table_path(dir::AbstractString, prefix::AbstractString)
     return joinpath(dir, last(sort(files; by=natkey)))
 end
 
+"The version in a table's file name, `<prefix><version>.tsv` (empty when the name carries none, as the maps table's)."
+function _extref_filename_version(path::AbstractString, prefix::AbstractString)
+    name = basename(path)
+    (startswith(name, prefix) && endswith(name, ".tsv")) || return ""
+    return String(chopsuffix(chopprefix(name, prefix), ".tsv"))
+end
+
+"""
+    _extref_header_version(header, code) -> Union{Nothing,String}
+
+The tool version a table's header states: `# MAD-X version: <v>` for `:madx`, `# tool: MAD-X <v> ...` for `:ptc`
+(the PTC library of that binary), `# tool: xtrack <v>, ...` for `:xtrack`; `nothing` when no header line matches.
+"""
+function _extref_header_version(header::AbstractVector{<:AbstractString}, code::Symbol)
+    pat = code === :madx ? r"^#\s*MAD-X version:\s*(\S+)" :
+          code === :ptc ? r"^#\s*tool:\s*MAD-X\s+(\S+)" :
+          code === :xtrack ? r"^#\s*tool:\s*xtrack\s+([^\s,]+)" :
+          throw(ArgumentError("_extref_header_version: code must be :madx, :ptc or :xtrack, got :$(code)"))
+    for line in header
+        m = match(pat, line)
+        m === nothing || return String(m.captures[1])
+    end
+    return nothing
+end
+
+
 "Sh(u): the identity except (5,6) = u."
 function _extref_shear(u::Real)
     S = Matrix{Float64}(I, 6, 6); S[5, 6] = Float64(u)
@@ -287,6 +329,25 @@ function _extref_compare!(rows::Vector{_ExtRefRow}, contract::TwissExternalRefer
     return passed
 end
 
+"""
+    _extref_version_rows!(rows, contract, code, header, path, prefix, versions) -> Nothing
+
+The version row of one table (2026-10-18 audit, F-144): the header must state the tool version and it must equal
+the version in the newest table's file name, so the version the contract certifies is the one it READ; the header
+version (or "missing") is recorded in `versions[code]`, which `validate` writes to `metrics[:version_<code>]`. An
+`assert` row named after both versions fails when they disagree or the header has none.
+"""
+function _extref_version_rows!(rows::Vector{_ExtRefRow}, contract::TwissExternalReferenceContract, code::Symbol,
+                               header::AbstractVector{<:AbstractString}, path::AbstractString, prefix::AbstractString,
+                               versions::Dict{Symbol,String})
+    hv = _extref_header_version(header, code)
+    fv = _extref_filename_version(path, prefix)
+    versions[code] = something(hv, "missing")
+    _extref_compare!(rows, contract, code, "table", "header_version_$(something(hv, "missing"))_equals_file_name_version_$(fv)",
+                     (hv !== nothing && hv == fv) ? 1.0 : 0.0, 1.0, 0.0, "assert"; rel=false)
+    return nothing
+end
+
 "Index of the Octopus mode whose cos(tune) is closest to `c` (matched by eigenvalue, never by label)."
 function _extref_match_mode(tunes::AbstractVector, c::Real)
     best = 1; bestd = Inf
@@ -307,32 +368,48 @@ end
 
 The MAD-X convention rows (benchmark A, layer A1 of
 `validation/twiss_madx_benchmark.jl`, plus the gated detuned control of its
-layer A3): for U1, U2, K1, K2 the optics of the `periodic` row are read against
-`analyze` of the `initial` row's one-turn map converted by
-`_extref_convert(:madx, ...)` with the row's beta0, gamma0, C. Rows, in the
-script's order and classes: the analyze status (class `assert`, tol 0), cos mu
-and sin mu of q1 and q2 (TOL-A absolute, the mode matched by eigenvalue), two
-distinct modes matched (`assert`), the presented Edwards-Teng form 1 on the
-coupled cells K1, K2 (`assert`), ET_betx/ET_alfx of the q1 mode and
-ET_bety/ET_alfy of the q2 mode (TOL-A relative), the form-1 twiss mu against the
-tunes (the script's witness row, 1e-13 absolute, class `witness`), MR_beta_x/MR_beta_y on the uncoupled cells only
-(TOL-A relative), r11..r22 = form-1 R on the coupled cells only (TOL-A
+layer A3): for the A1 cells `_EXTREF_MADX_A1_FIXTURES` (U1, U2, K1, K2) the
+optics of the `periodic` row are read against `analyze` of the `initial`
+row's one-turn map converted by `_extref_convert(:madx, ...)` with the row's
+beta0, gamma0, C. Rows, in the script's order and classes: the analyze status
+(class `assert`, tol 0), cos mu and sin mu of q1 and q2 (TOL-A absolute, the
+mode matched by eigenvalue), two distinct modes matched (`assert`), the
+presented Edwards-Teng form 1 on the coupled cells K1, K2 (`assert`),
+ET_betx/ET_alfx of the q1 mode and ET_bety/ET_alfy of the q2 mode (TOL-A
+relative), the form-1 twiss mu against the tunes (the script's witness row,
+1e-13 absolute, class `witness`), MR_beta_x/MR_beta_y on the uncoupled cells
+only (TOL-A relative), r11..r22 = form-1 R on the coupled cells only (TOL-A
 relative), the form-1 lambda against 1/sqrt(1 + det R_madx) on the coupled
-cells (TOL-A relative), and eta_dx..eta_dpy against beta0 * DX (TOL-B
-relative). Rd_1e-3 contributes its status and cos/sin mu rows at TOL-F. Rows
-the script only records (the rolled sentinels R_0.01, R_0.1, R_pi8, the
-unstable R_pi4, Rd_1e-6, the presented form and R of the uncoupled cells),
-the table-vs-map pin of MAD-X's own lambda, the A3 anchors of the exported
-rolled maps against theory and the Rd_1e-3 periodic-tune-vs-exported-map rows
-(MAD-X-internal, no Octopus side) are not compared.
+cells (TOL-A relative), the precondition of the dispersion rows as an
+`assert` row `coasting_structure_present_h_is_1` (MAD-X's `deltap` dispersion
+is the slope `eta / h` of (D8), equal to the canonical `eta` only on a
+coasting cell with `h = 1`, the 2026-10-18 convention of the theory note; the
+rows assumed it before: 2026-10-18 audit, F-143), and eta_dx..eta_dpy against
+beta0 * DX (TOL-B relative). Rd_1e-3 contributes its status and cos/sin mu
+rows at TOL-F. Rows the script only records (the rolled sentinels R_0.01,
+R_0.1, R_pi8, the unrolled anchor R_0, the unstable R_pi4, Rd_1e-6, the
+presented form and R of the uncoupled cells), the table-vs-map pin of
+MAD-X's own lambda, the A3 anchors of the exported rolled maps against
+theory and the Rd_1e-3 periodic-tune-vs-exported-map rows (MAD-X-internal,
+no Octopus side) are not compared. The coverage row `periodic_fixtures_known`
+(`assert`) counts the table's fixtures with a `periodic` row that are A1,
+Rd_1e-3 or in `_EXTREF_MADX_RECORDED_ONLY` against all of them, naming any
+other in its fixture field: a fixture added to the table is compared or
+named, never silently neither (F-144).
 """
 function _extref_madx_rows!(rows::Vector{_ExtRefRow}, contract::TwissExternalReferenceContract, tab::_ExtRefTable)
-    for fixture in ("U1", "U2", "K1", "K2")
+    for fixture in _EXTREF_MADX_A1_FIXTURES
         _extref_madx_fixture!(rows, contract, tab, fixture; coupled=fixture in ("K1", "K2"),
                               tune_tol=_EXTREF_TOL_A_ABS, tune_class="TOL-A", full=true)
     end
     _extref_madx_fixture!(rows, contract, tab, "Rd_1e-3"; coupled=false,
                           tune_tol=_EXTREF_TOL_F_ABS, tune_class="TOL-F", full=false)
+    # coverage (F-144): every fixture the table carries optics for is compared above or named recorded-only
+    periodic = unique(String[r["fixture"] for r in tab.rows if r["file"] == "periodic"])
+    known = (_EXTREF_MADX_A1_FIXTURES..., "Rd_1e-3", _EXTREF_MADX_RECORDED_ONLY...)
+    unknown = [f for f in periodic if !(f in known)]
+    _extref_compare!(rows, contract, :madx, isempty(unknown) ? "table" : join(unknown, "+"), "periodic_fixtures_known",
+                     Float64(length(periodic) - length(unknown)), Float64(length(periodic)), 0.0, "assert"; rel=false)
     return nothing
 end
 
@@ -408,6 +485,12 @@ function _extref_madx_fixture!(rows::Vector{_ExtRefRow}, contract::TwissExternal
         _extref_compare!(rows, contract, :madx, fixture, "octopus_form1_lambda_vs_madx_lambda", an.lambda, lambda_madx,
                          _EXTREF_TOL_A_REL, "TOL-A")
     end
+    # The TOL-B rows below compare the canonical eta with MAD-X's slope beta0 DX = eta / h, equal only where the (D8)
+    # factor h is 1, i.e. on a coasting cell (theory 8.2, the 2026-10-18 convention): the precondition is asserted
+    # here, as the xtrack layer asserts its coasting structure, never assumed (2026-10-18 audit, F-143). On a bunched
+    # map this row fails by name while the slope rows below compare a slope with a canonical quantity.
+    _extref_madx_assert!(rows, contract, fixture, "coasting_structure_present_h_is_1",
+                         _extref_coasting_holds(an) && an.h !== nothing && an.h == 1.0)
     for (k, name) in enumerate(("dx", "dpx", "dy", "dpy"))
         v = an.eta === nothing ? NaN : an.eta[k]
         _extref_compare!(rows, contract, :madx, fixture, "eta_$(name)_vs_beta0*$(uppercase(name))", v,
@@ -635,6 +718,10 @@ function _extref_ptc_row_5d!(rows::Vector{_ExtRefRow}, contract::TwissExternalRe
         _extref_compare!(rows, contract, :ptc, id, "two_tunes_present", Float64(length(a.tunes)), 2.0, 0.0, "TOL-C"; rel=false)
         return nothing
     end
+    # PTC's DISP of an icase=5 run is the slope eta / h on the coasting-completed map; the completion forces the
+    # structure by construction, and the precondition h = 1 is asserted rather than assumed (F-143, the MAD-X twin)
+    _extref_compare!(rows, contract, :ptc, id, "coasting_structure_present_h_is_1",
+                     (_extref_coasting_holds(a) && a.h !== nothing && a.h == 1.0) ? 1.0 : 0.0, 1.0, 0.0, "assert"; rel=false)
     for k in 1:4
         _extref_compare!(rows, contract, :ptc, id, "DISP$(k)_vs_physical.eta[$(k)]", a.eta[k], _extref_float(row, "DISP$(k)_start"), _EXTREF_TOL_C_REL, "TOL-C")
     end
@@ -728,7 +815,10 @@ function _extref_xtrack_rows!(rows::Vector{_ExtRefRow}, contract::TwissExternalR
     return nothing
 end
 
-# fixture id, maps-table compile, matrix dimension (the script's C1_FIXTURES)
+# fixture id, maps-table compile, matrix dimension: the script's C1_FIXTURES (a declaration the table cannot
+# supply: the D8 rows are 4x4 maps stored as blockdiag(M4, I2), indistinguishable from a coasting 6x6 map with
+# zero dispersion); the suite tripwires it against the script's constant, the coverage rows of `_extref_xtrack_c1!`
+# against the table's C1 layer (F-144)
 const _EXTREF_XT_C1_FIXTURES = (("U1", "bare", 6), ("U2", "bare", 6), ("K1", "bare", 6), ("K2", "bare", 6),
                                 ("R_0.1", "bare", 6), ("R_pi4", "bare", 6), ("Rd_1e-3", "bare", 6), ("Rd_1e-6", "bare", 6),
                                 ("B4", "bare", 6), ("B5", "bare", 6), ("T6", "task", 6),
@@ -880,12 +970,28 @@ function _extref_xtrack_c1_dispersion!(rows, contract, tab, fixture, compile, an
     return nothing
 end
 
-"Whether `analyze` found the coasting structure (the script's `coasting` read: `result.coasting` present and holding)."
-_extref_xtrack_coasting(an) = an.result.coasting !== nothing && an.result.coasting.holds
+"Whether `analyze` found the coasting structure (the scripts' `coasting` read: `result.coasting` present and holding); one predicate for the xtrack, MAD-X and PTC layers."
+_extref_coasting_holds(an) = an.result.coasting !== nothing && an.result.coasting.holds
 
-"Layer C1: every fixture of the script's C1 list on its committed Octopus map."
+"""
+Layer C1: every fixture of the script's C1 list on its committed Octopus map, then the two coverage rows
+(F-144, the PTC `layer_rows_present` shape): `c1_table_fixtures_known` counts the table's C1 (fixture,
+compile) pairs that the list declares against all of them (an unknown pair is named in the fixture field), and
+`c1_list_fixtures_present` counts the list's pairs the table carries against the list (a missing one is named);
+both are `assert` rows at tolerance 0, so a C1 fixture present in the table but absent from the list fails
+instead of going uncompared without a sign.
+"""
 function _extref_xtrack_c1!(rows, contract, tab::_ExtRefLongTable, maps::_ExtRefTable)
+    table_pairs = Set{Tuple{String,String}}((k[2], k[3]) for k in keys(tab.values) if k[1] == "C1")
+    list_pairs = Set{Tuple{String,String}}((f, cmp) for (f, cmp, _) in _EXTREF_XT_C1_FIXTURES)
+    unknown = sort([string(f, "/", cmp) for (f, cmp) in table_pairs if !((f, cmp) in list_pairs)])
+    _extref_compare!(rows, contract, :xtrack, isempty(unknown) ? "table" : join(unknown, "+"), "c1_table_fixtures_known",
+                     Float64(length(table_pairs) - length(unknown)), Float64(length(table_pairs)), 0.0, "assert"; rel=false)
+    absent = sort([string(f, "/", cmp) for (f, cmp) in list_pairs if !((f, cmp) in table_pairs)])
+    _extref_compare!(rows, contract, :xtrack, isempty(absent) ? "table" : join(absent, "+"), "c1_list_fixtures_present",
+                     Float64(length(list_pairs) - length(absent)), Float64(length(list_pairs)), 0.0, "assert"; rel=false)
     for (fixture, compile, dim) in _EXTREF_XT_C1_FIXTURES
+        (fixture, compile) in table_pairs || continue      # named by the coverage row above, not thrown on here
         fixture == "Rd_1e-6" && continue      # recorded only in the script (the (E7) gate refuses the frame)
         M6 = _extref_octopus_map(maps, fixture, compile).M
         M = dim == 4 ? M6[1:4, 1:4] : M6
@@ -911,7 +1017,7 @@ function _extref_xtrack_c1!(rows, contract, tab::_ExtRefLongTable, maps::_ExtRef
         _extref_xtrack_c1_transverse!(rows, contract, tab, fixture, compile, an, W, nmodes, tol_rel, tol_abs, class)
         if dim == 6
             _extref_xtrack_assert!(rows, contract, fixture, "coasting_structure_$(bunched ? "absent" : "present")",
-                                   _extref_xtrack_coasting(an) == !bunched)
+                                   _extref_coasting_holds(an) == !bunched)
             _extref_xtrack_c1_dispersion!(rows, contract, tab, fixture, compile, an, bunched, W, tol_rel, class)
         end
     end
@@ -943,7 +1049,7 @@ function _extref_xtrack_c3!(rows, contract, tab::_ExtRefLongTable, maps::_ExtRef
     k1 = _extref_xtrack_match(an.tunes, lam1); k2 = _extref_xtrack_match(an.tunes, lam2); k3 = _extref_xtrack_match(an.tunes, lam3)
     _extref_xtrack_assert!(rows, contract, f, "T6_analyze_status_not_failed", an.status !== :failed)
     _extref_xtrack_assert!(rows, contract, f, "T6_three_modes_matched_distinct", k1 > 0 && k2 > 0 && k3 > 0 && length(unique((k1, k2, k3))) == 3)
-    _extref_xtrack_assert!(rows, contract, f, "T6_coasting_structure_absent", !_extref_xtrack_coasting(an))
+    _extref_xtrack_assert!(rows, contract, f, "T6_coasting_structure_absent", !_extref_coasting_holds(an))
     row(q, o, e) = _extref_compare!(rows, contract, :xtrack, f, q, o, e, _EXTREF_TOL_D_REL, "TOL-D"; rel=true)
     if an.beta !== nothing && an.alpha !== nothing && k1 > 0 && k2 > 0
         row("MR_betx_vs_tw6_betx", an.beta[k1, 1], cell("tw6_betx"))
@@ -963,10 +1069,13 @@ end
 # ---------------------------------------------------------------------------
 # Folding the rows and validate.
 
-"Folds the rows into a ContractResult: counts per code, worst ratio per class, the failure texts, the no-row-fails rule."
-function _extref_result(rows::Vector{_ExtRefRow}, paths::Dict{Symbol,String})
+"Folds the rows into a ContractResult: counts per code, worst ratio per class, the failure texts, the no-row-fails rule; `versions` (header versions by code, F-144) land in `metrics[:version_<code>]`."
+function _extref_result(rows::Vector{_ExtRefRow}, paths::Dict{Symbol,String}; versions::Dict{Symbol,String}=Dict{Symbol,String}())
     metrics = Dict{Symbol,Any}()
     metrics[:rows] = length(rows)
+    for (code, v) in versions
+        metrics[Symbol("version_", code)] = v
+    end
     metrics[:failed] = count(r -> !r.passed, rows)
     for code in (:madx, :ptc, :xtrack)
         metrics[Symbol("rows_", code)] = count(r -> r.code === code, rows)
@@ -1027,8 +1136,13 @@ function validate(contract::TwissExternalReferenceContract; kwargs...)
     maps = _extref_read_wide(paths[:maps])
     xt = _extref_read_long(paths[:xtrack])
     rows = _ExtRefRow[]
+    # the versions certified are the ones read from the headers, each equal to its file name's (F-144)
+    versions = Dict{Symbol,String}()
+    for (code, header) in ((:madx, madx.header), (:ptc, ptc.header), (:xtrack, xt.header))
+        _extref_version_rows!(rows, contract, code, header, paths[code], _EXTREF_TABLES[code].prefix, versions)
+    end
     _extref_madx_rows!(rows, contract, madx)
     _extref_ptc_rows!(rows, contract, ptc)
     _extref_xtrack_rows!(rows, contract, xt, maps)
-    return _extref_result(rows, paths)
+    return _extref_result(rows, paths; versions=versions)
 end
