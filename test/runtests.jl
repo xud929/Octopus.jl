@@ -27216,6 +27216,54 @@ end
     @test Octopus._reject_undivided_solver(gpic()) === nothing
 end
 
+@testset "The CUDA spectral workspace gives the same mesh-width advisory as the CPU one (F-34)" begin
+    # 2026-10-18 audit F-34 (U7-3): `_spectral_note_grid_size` ran from the CPU
+    # workspace constructor only, with `CPUThreadsBackend` hard-coded into its
+    # receipt; `_SpectralCudaWS` built cuFFT plans of the same logical size
+    # `2(N + 1)` with no note and no receipt, and cuFFT pays the same
+    # non-smooth-size tax (measured 2026-10-18 on an RTX 4500 Ada: a whole
+    # `_cuda_spectral_field!` solve 529 us at (256,256) against 197 us at
+    # (255,255), the dim-1 rfft 78.0 against 19.0 us). The advisory takes its
+    # backend from the constructor that calls it, so the receipt names the
+    # library that will pay.
+    note(f) = begin
+        audit = ExecutionAudit()
+        logs, _ = Test.collect_test_logs() do
+            with_execution_audit(audit) do
+                f()
+            end
+        end
+        rs = [r for r in execution_receipts(audit) if r.consumer === :spectral_grid_transform]
+        (rs, count(l -> occursin("makes the DST slow", string(l.message)), logs))
+    end
+    cpu, ncpu = note(() -> Octopus._spectral_note_grid_size(64, 64))
+    @test length(cpu) == 2 && all(r -> r.backend === CPUThreadsBackend, cpu) && ncpu == 2
+    declared, ndeclared = note(() -> Octopus._spectral_note_grid_size(64, 64, Octopus.CUDABackend))
+    @test length(declared) == 2 && all(r -> r.backend === Octopus.CUDABackend, declared) && ndeclared == 2
+    # One shape across the backends: the same keys and the same numbers; the
+    # message names the library.
+    @test all(keys(a.values) == keys(b.values) && a.values == b.values for (a, b) in zip(cpu, declared))
+    _, lcpu = Test.collect_test_logs(() -> Octopus._spectral_note_grid_size(64, 64)), nothing
+    msgs(backend) = [string(l.message) for l in Test.collect_test_logs(() -> Octopus._spectral_note_grid_size(64, 64, backend))[1]]
+    @test all(occursin("FFTW", m) && !occursin("cuFFT", m) for m in msgs(CPUThreadsBackend))
+    @test all(occursin("cuFFT", m) && !occursin("FFTW", m) for m in msgs(Octopus.CUDABackend))
+    if CUDA_TESTS_ACTIVE
+        # The CUDA constructor itself, at a width whose logical size 130 =
+        # 2*5*13 is not smooth: two receipts (x and y), backend CUDA, suggesting 63.
+        rs, nwarn = note(() -> Octopus._SpectralCudaWS(Float64, 64, 64))
+        @test length(rs) == 2
+        @test all(r -> r.backend === Octopus.CUDABackend, rs)
+        @test all(r -> r.values.suggested == 63 && r.values.largest_prime == 13 && r.values.smooth === false, rs)
+        @test [r.values.axis for r in rs] == [:x, :y]
+        @test nwarn == 2
+        # A smooth width says nothing on CUDA either.
+        rs_ok, nwarn_ok = note(() -> Octopus._SpectralCudaWS(Float64, 63, 63))
+        @test isempty(rs_ok) && nwarn_ok == 0
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 @testset "The spectral mesh width says when it makes the DST slow" begin
     # A DST-I over N interior points has LOGICAL size 2(N+1), and FFTW is fast
     # only when that is smooth. Measured on one thread, RODFT00 on an N x N
@@ -34451,6 +34499,241 @@ end # _lane_gate("CUDA GaussianPIC coupled subtraction matches CPU")
     end
 end
 
+@testset "domain_factor is finite at construction and an overflowed box names it (F-38)" begin
+    # 2026-10-18 audit F-38 (U7-4): the constructor required `domain_factor > 0`
+    # and not finite, so `Inf` was accepted and the collide then threw
+    # `_nonfinite_coordinate_error`'s "DERIVED quantity ... a drifted position
+    # that overflowed ... or a slice moment" text naming beam 2's coordinates
+    # -- two causes, neither the real one -- on both backends; NaN was refused
+    # only because `NaN > 0` is false. Refused by name at construction now, and
+    # the runtime branch that meets a finite `d * sigma_max` overflowing
+    # (`domain_factor = 1e308` on a beam of rms 7 is Inf) names `domain_factor`
+    # rather than the beams, on both backends and both box routes.
+    for d in (Inf, NaN, -Inf)
+        err = try
+            SpectralPoissonSolver(domain_factor=d, grid=(16, 16))
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test err isa ArgumentError && occursin("domain_factor", err.msg) && occursin("finite", err.msg)
+    end
+    @test_throws ArgumentError SpectralPoissonSolver(domain_factor=0.0, grid=(16, 16))
+    @test_throws ArgumentError SpectralPoissonSolver(domain_factor=-1.0, grid=(16, 16))
+    @test SpectralPoissonSolver(domain_factor=1.0e308, grid=(16, 16)).domain_factor == 1.0e308
+    # The runtime overflow: finite coordinates, finite rms, `d * smax` = Inf.
+    s(scale, phase, n) = [scale * sin(0.7 * i + phase) for i in 1:n]
+    x1 = s(10.0, 0.0, 256); y1 = s(10.0, 0.9, 256); x2 = s(10.0, 0.3, 256); y2 = s(10.0, 1.2, 256)
+    rep1 = Phase6DRep(x1, s(1.0e-5, 0.3, 256), y1, s(1.0e-5, 1.2, 256), s(1.0e-2, 2.0, 256), s(1.0e-4, 2.5, 256))
+    rep2 = Phase6DRep(x2, s(1.0e-5, 0.6, 256), y2, s(1.0e-5, 1.5, 256), s(1.0e-2, 2.3, 256), s(1.0e-4, 2.8, 256))
+    big = SpectralPoissonSolver(domain_factor=1.0e308, grid=(16, 16))
+    caught(f) = try
+        f()
+        nothing
+    catch e
+        e
+    end
+    names_factor(e) = e isa ArgumentError && occursin("domain_factor", e.msg) && !occursin("DERIVED", e.msg)
+    @test names_factor(caught(() -> Octopus._spectral_box(big, x1, y1, x2, y2)))
+    @test names_factor(caught(() -> Octopus._spectral_box_drifted(big, rep1, rep2)))
+    # A sane factor on the same beams builds a finite box: the guard is on the
+    # overflow, not on the beams.
+    sane = SpectralPoissonSolver(domain_factor=16.0, grid=(16, 16))
+    @test all(isfinite, Octopus._spectral_box(sane, x1, y1, x2, y2))
+    @test all(isfinite, Octopus._spectral_box_drifted(sane, rep1, rep2))
+    if CUDA_TESTS_ACTIVE
+        cu(rep) = Phase6DRep((Octopus.CUDA.CuArray(a) for a in coordinate_arrays(rep))...)
+        g1 = cu(rep1); g2 = cu(rep2)
+        @test names_factor(caught(() -> Octopus._cuda_spectral_box(big, g1, g2)))
+        @test names_factor(caught(() -> Octopus._cuda_spectral_box_drifted(big, g1, g2)))
+        @test all(isfinite, Octopus._cuda_spectral_box(sane, g1, g2))
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
+@testset "Dropped spectral charge is recorded in a receipt, not only in a warning (F-36)" begin
+    # 2026-10-18 audit F-36 (U7-8): the dropped-charge tripwire's only output
+    # was a `@warn` with `maxlog = 8`, enforced per call site per logger
+    # instance, so under a process-lifetime logger it fell silent for the rest
+    # of the process after two R9 collides on the CPU (four solves clip per
+    # collide) and eight collisions on CUDA; no receipt named dropped charge,
+    # so neither the ExecutionAudit nor a reader of the run could see that
+    # charge was dropped on later turns. The suite never saw the silence
+    # because `Test.collect_test_logs` installs a fresh logger per call
+    # (measured 2026-10-22: five collides under ONE block capture 8 of the 20
+    # warnings). Each clipping event now records a `:spectral_box_coverage`
+    # receipt (`event = :clipped_charge`, `dropped_fraction`, `nsource`,
+    # `scope`, `box`) beside the warning, on both backends; the warning keeps
+    # its budget, the receipts do not stop.
+    strong(n) = begin
+        s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
+        x = s(1.0e-4, 0.0); x[1] = 8.0e-4
+        rep = Phase6DRep(x, s(1.0e-5, 0.3), s(1.0e-4, 0.9), s(1.0e-5, 1.2), s(1.0e-2, 2.0), s(1.0e-4, 2.5))
+        params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0, npart=n)
+        Beam{CPUThreadsBackend,typeof(params),typeof(rep)}(params, rep)
+    end
+    sp64 = SpectralPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0, grid=(64, 64),
+                                 slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
+    audit = ExecutionAudit()
+    logs, _ = Test.collect_test_logs() do
+        with_execution_audit(audit) do
+            for _ in 1:5
+                collide!(sp64, strong(256), strong(256), CPUThreadsBackend)
+            end
+        end
+    end
+    warned = [l for l in logs if occursin("clipped charge at the Dirichlet wall", string(l.message))]
+    clipped = [r for r in execution_receipts(audit)
+               if r.consumer === :spectral_box_coverage && r.values.event === :clipped_charge]
+    @testset let warnings_seen = length(warned), receipts = length(clipped)
+        @test 1 <= length(warned) <= 8               # the budget bites within five collides
+        @test length(clipped) == 20                  # four clipping solves x five collides, every one recorded
+    end
+    @test all(r -> r.backend === CPUThreadsBackend && r.values.scope === :per_solve, clipped)
+    @test all(r -> 0 < r.values.dropped_fraction <= 1 && r.values.nsource == 128, clipped)
+    @test all(r -> r.values.box == clipped[1].values.box && length(r.values.box) == 2, clipped)
+    # The warning's payload and the receipt's are the same numbers.
+    @test all(Dict(l.kwargs)[:dropped_fraction] == r.values.dropped_fraction &&
+              Dict(l.kwargs)[:nsource] == r.values.nsource
+              for (l, r) in zip(warned, clipped[1:length(warned)]))
+    if CUDA_TESTS_ACTIVE
+        strong_cuda(n) = Octopus._strong_strong_contract_beam(strong(n), Octopus.CUDABackend)
+        gaudit = ExecutionAudit()
+        glogs, _ = Test.collect_test_logs() do
+            with_execution_audit(gaudit) do
+                for _ in 1:3
+                    collide!(sp64, strong_cuda(256), strong_cuda(256), Octopus.CUDABackend)
+                end
+            end
+        end
+        gclipped = [r for r in execution_receipts(gaudit)
+                    if r.consumer === :spectral_box_coverage && r.values.event === :clipped_charge]
+        @test length(gclipped) == 3                  # one aggregate per collision
+        @test all(r -> r.backend === Octopus.CUDABackend && r.values.scope === :collision_aggregate, gclipped)
+        @test all(r -> r.values.nsource == 2048 && 0 < r.values.dropped_fraction <= 1, gclipped)
+        @test keys(gclipped[1].values) == keys(clipped[1].values)      # one shape across the backends
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
+@testset "A grid_free field point past the Dirichlet wall gets no mirrored field (F-35)" begin
+    # 2026-10-18 audit F-35 (U7-6): `:grid_free` guarded a SOURCE outside the
+    # Dirichlet box (`_spectral_mode_sum_guard`, R10) and evaluated a FIELD
+    # point outside it through the same odd periodic extension with no guard,
+    # so such a particle silently received the field of the sign-flipped image
+    # beyond the wall: Phi(1.05 L) = -Phi(0.95 L) = -0.130 and Ex(1.05 L) =
+    # +Ex(0.95 L) = +2.63e3, growing to 4.0e3 at 1.5 L, where the `:grid`
+    # route's CIC stencil skips wall and outside nodes and returns 0 there (the
+    # documented approximation). Reachable because the 6D field particles are
+    # evaluated after earlier pairs' kicks. The field side now follows the
+    # `:grid` convention -- Phi = Ex = Ey = 0 past the wall -- and says so: a
+    # warning and a `:spectral_box_coverage` receipt (`event =
+    # :grid_free_field`) per evaluation that masked a point. In-box values are
+    # untouched to the bit.
+    rng = MersenneTwister(5)
+    Lx = Ly = 1.0e-3
+    sx = 1.0e-4 .* randn(rng, 500); sy = 1.0e-4 .* randn(rng, 500)
+    Nx = Ny = 24
+    eval_at(xs) = begin
+        audit = ExecutionAudit()
+        out = Ref{Any}(nothing)        # `with_execution_audit` returns the audit, not the block's value
+        logs, _ = Test.collect_test_logs() do
+            with_execution_audit(audit) do
+                out[] = Octopus._spectral_field_free_potential(sx, sy, xs, zeros(length(xs)), Lx, Ly, Nx, Ny)
+            end
+        end
+        (out[]..., [r for r in execution_receipts(audit) if r.consumer === :spectral_box_coverage],
+         count(l -> occursin("grid_free field", string(l.message)), logs))
+    end
+    Pin, Exin, Eyin, rin, win = eval_at([0.95Lx, 0.5Lx])
+    @test isempty(rin) && win == 0
+    @test Pin[1] > 0 && Exin[1] > 0                      # the interior field the probe measured (+0.1297, +2634)
+    Pout, Exout, Eyout, rout, wout = eval_at([1.05Lx, 0.5Lx])
+    @test Pout[1] == 0.0 && Exout[1] == 0.0 && Eyout[1] == 0.0   # was -Pin[1], +Exin[1]: the mirrored image
+    @test wout == 1
+    @test length(rout) == 1 && rout[1].values.event === :grid_free_field
+    @test rout[1].values.outside == 1 && rout[1].values.box == (Lx, Ly)
+    @test rout[1].values.max_abs_x == 1.05Lx && rout[1].values.max_abs_y == 0.0
+    # The in-box point of a same-size batch is bitwise what it was beside an
+    # in-box neighbour: masking touches only the masked rows.
+    @test Pout[2] === Pin[2] && Exout[2] === Exin[2] && Eyout[2] === Eyin[2]
+    # Several outside points: zero each, ONE receipt counting them.
+    Pmix, Exmix, Eymix, rmix, wmix = eval_at([0.95Lx, 1.05Lx, 1.5Lx])
+    @test Pmix[2:3] == [0.0, 0.0] && Exmix[2:3] == [0.0, 0.0] && Eymix[2:3] == [0.0, 0.0]
+    @test length(rmix) == 1 && rmix[1].values.outside == 2 && wmix == 1
+    @test isapprox(Pmix[1], Pin[1]; rtol=1.0e-12) && isapprox(Exmix[1], Exin[1]; rtol=1.0e-12)
+    # The source guard records too, under its own event, so both wall
+    # crossings are visible to a reader of the run.
+    far = copy(sx); far[1] = 1.2Lx
+    saudit = ExecutionAudit()
+    Test.collect_test_logs() do
+        with_execution_audit(saudit) do
+            Octopus._spectral_field_free_potential(far, sy, [0.0], [0.0], Lx, Ly, Nx, Ny)
+        end
+    end
+    src = [r for r in execution_receipts(saudit) if r.consumer === :spectral_box_coverage]
+    @test length(src) == 1 && src[1].values.event === :grid_free_source && src[1].values.max_abs_x == 1.2Lx
+end
+
+@testset "The CUDA spectral luminosity allocates no per-pair device temporaries (F-40)" begin
+    # 2026-10-18 audit F-40 (U7-7): the CUDA 6D luminosity materialized four
+    # drifted copies of the beam-2 snapshot per slice pair for its extrema
+    # (`minimum(v2x .+ v2px .* s2)` and three siblings) -- `4 * n1 * N2 * 8`
+    # bytes per collide, 19.2 MiB at 40,000 particles and 15 slices -- and
+    # the transverse route allocated two fresh `nx x ny` luminosity grids and
+    # their product per pair (22.1 MiB of a 25.2 MiB collide). The drifts now
+    # land in two pooled snapshot buffers and the transverse grids are the
+    # workspace's `qlum1`/`qlum2`, through the same broadcasts and the same
+    # reductions, so every value is bitwise what it was (pinned 2026-10-22
+    # against the unfixed tree's luminosity and coordinate digests on both
+    # routes at three sizes; probes/SS of fix batch 4). Measured here as the
+    # growth that discriminates: particle count on the 6D route, pair count
+    # on the transverse one (unfixed 2026-10-22: 1,348,560 and 3,049,716
+    # bytes for the two differences below).
+    if CUDA_TESTS_ACTIVE
+        gauss(n, seed) = begin
+            r = MersenneTwister(seed)
+            arrs = (1.0e-4 .* randn(r, n), 1.0e-5 .* randn(r, n), 0.5e-4 .* randn(r, n),
+                    0.5e-5 .* randn(r, n), 1.0e-2 .* randn(r, n), 1.0e-4 .* randn(r, n))
+            rep = Phase6DRep((Octopus.CUDA.CuArray(a) for a in arrs)...)
+            params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0, npart=n)
+            Beam{Octopus.CUDABackend,typeof(params),typeof(rep)}(params, rep)
+        end
+        gpu_bytes(n, nsl, lk) = begin
+            s = SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(64, 64),
+                                      longitudinal_kick=lk,
+                                      slicing=LongitudinalSlicing(nslices=nsl, method=:equal_count))
+            collide!(s, gauss(n, 1), gauss(n, 2), Octopus.CUDABackend)   # compile; cache and grow the workspace
+            Octopus.CUDA.synchronize()
+            b1 = gauss(n, 1); b2 = gauss(n, 2)
+            Octopus.CUDA.synchronize()
+            Octopus.CUDA.@allocated collide!(s, b1, b2, Octopus.CUDABackend)
+        end
+        # 6D: 4,000 -> 16,000 particles at 3 slices. Unfixed, four drifted
+        # copies of every beam-2 slice per pair: 4 * 3 * 12,000 * 8 = 1.15 MB
+        # more; fixed, only the reductions' partials grow with N. The bound is
+        # ONE copy's worth.
+        d6 = gpu_bytes(16000, 3, true) - gpu_bytes(4000, 3, true)
+        @testset let six_d_growth_bytes = d6
+            @test d6 < 3 * 12000 * 8
+        end
+        # Transverse: 3 -> 6 slices (9 -> 36 pairs) at 4,000 particles.
+        # Unfixed, 27 more pairs x 3 grids x 64 x 64 x 8 = 2.65 MB more plus
+        # the per-slice solves; fixed, only those solves grow (the R12 hoist
+        # keeps two mesh copies per extra slice, 6 x 2 x 32 KiB = 393 KiB).
+        # The bound is one grid per extra pair.
+        dt = gpu_bytes(4000, 6, false) - gpu_bytes(4000, 3, false)
+        @testset let transverse_growth_bytes = dt
+            @test dt < 27 * 64 * 64 * 8
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 @testset "Spectral 6D Dirichlet box contains the drifted source" begin
     # The 6D path deposits each source slice DRIFTED to the field-slice
     # boundaries, and _spectral_field_grid! silently drops particles outside the
@@ -35106,6 +35389,83 @@ end
             @test receipts[1].batch_mode === expected(mode)
             @test receipts[1].pairs == 9
             @test (receipts[1].batch_mode === :wavefront) == (receipts[1].batches > 0)
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
+@testset "The spectral pair-schedule receipt has one shape on every route and backend (F-39)" begin
+    # 2026-10-18 audit F-39 (U7-5): the CPU spectral routes recorded eight keys
+    # (`ranks`, `exchange`, `schedule` beside the five every solver shares) and
+    # the two CUDA routes five, under a comment promising "one receipt shape
+    # across the routes ... so a test reads the same key whichever ran": a
+    # reader keyed on `exchange` or `schedule` saw nothing on CUDA. The shape
+    # is ONE function now, `_spectral_pair_schedule_receipt`, that every site
+    # builds through; the source half derives the sites from the three
+    # spectral files, the route half reads the key set back on both backends.
+    shape = keys(Octopus._spectral_pair_schedule_receipt(
+        batch_mode=:sequential, requested=:sequential, pairs=1, batches=0, widest_batch=0,
+        ranks=1, exchange=:none, schedule=:none))
+    @test shape == (:batch_mode, :requested, :pairs, :batches, :widest_batch, :ranks, :exchange, :schedule)
+    # (1) SOURCE: no site in the spectral files hands `_record_execution!` a
+    #     literal pair-schedule tuple; every one goes through the builder.
+    builder_sites = 0
+    literal_sites = String[]
+    for file in ("spectral.jl", "spectral_sliced.jl", "spectral_cuda.jl")
+        lines = readlines(joinpath(pkgdir(Octopus), "src", "tasks", "strongstrong", file))
+        for (i, line) in enumerate(lines)
+            occursin("_record_execution!(:spectral_pair_schedule", line) || continue
+            window = join(lines[i:min(i + 3, end)], " ")
+            if occursin("_spectral_pair_schedule_receipt(", window)
+                builder_sites += 1
+            else
+                push!(literal_sites, "$(file):$(i)")
+            end
+        end
+    end
+    @test builder_sites >= 5           # CPU transverse, CPU 6D, sliced, CUDA transverse, CUDA 6D
+    @testset let literal_sites = literal_sites
+        @test isempty(literal_sites)
+    end
+    # (2) The CPU routes, read back: transverse and 6D undivided carry the
+    #     full shape with the undivided values.
+    s(scale, phase, n) = [scale * sin(0.7 * i + phase) for i in 1:n]
+    mkb(n) = begin
+        z = [2.0e-2 * sin(0.7 * i + 2.0) + 1.0e-3 * sin(3.1 * i) for i in 1:n]
+        rep = Phase6DRep(s(1.0e-4, 0.0, n), s(1.0e-5, 0.3, n), s(1.0e-4, 0.9, n),
+                         s(1.0e-5, 1.2, n), z, s(1.0e-4, 2.5, n))
+        params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0e-9, npart=n)
+        Beam{CPUThreadsBackend,typeof(params),typeof(rep)}(params, rep)
+    end
+    slc = LongitudinalSlicing(nslices=3, method=:equal_count)
+    receipt(solver, backend, b1, b2) = begin
+        audit = Octopus.ExecutionAudit()
+        Octopus.with_execution_audit(audit) do
+            collide!(solver, b1, b2, backend)
+        end
+        rs = [r.values for r in Octopus.execution_receipts(audit)
+              if r.consumer === :spectral_pair_schedule && r.backend === backend]
+        @test length(rs) == 1
+        isempty(rs) ? nothing : rs[1]
+    end
+    for lk in (true, false)
+        sp = SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(32, 32),
+                                   slicing=slc, longitudinal_kick=lk)
+        v = receipt(sp, CPUThreadsBackend, mkb(3000), mkb(3000))
+        @test v !== nothing && keys(v) == shape
+        v === nothing || @test v.exchange === :none && v.schedule === :none && v.ranks == 1
+    end
+    # (3) DEVICE: the same key set on CUDA, with the values the device can
+    #     honestly give -- one rank, no exchange, no loop to choose.
+    if CUDA_TESTS_ACTIVE
+        to_cuda(b) = Octopus._strong_strong_contract_beam(b, Octopus.CUDABackend)
+        for lk in (true, false)
+            sp = SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(32, 32),
+                                       slicing=slc, longitudinal_kick=lk)
+            v = receipt(sp, Octopus.CUDABackend, to_cuda(mkb(3000)), to_cuda(mkb(3000)))
+            @test v !== nothing && keys(v) == shape
+            v === nothing || @test v.exchange === :none && v.schedule === :none && v.ranks == 1
         end
     else
         @test_skip "CUDA device not available"
