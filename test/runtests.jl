@@ -10995,14 +10995,16 @@ end
     # few ulp of their scale, for every kernel over the sweep (measured 2026-10-17:
     # curved drift z <= 4.7, bend z <= 15.6 except the weak bend's 52.6, solenoid
     # 0.5, curved solenoid 2.1; transverse <= 10 everywhere).
-    function worst(f64, fbig, through)
+    # `scale(u, i)`: an extra floor of the transverse error's scale for coordinate i (the solenoids' kinetic
+    # momentum below); the default adds nothing
+    function worst(f64, fbig, through; scale=(u, i) -> 0.0)
         wz = 0.0; wt = 0.0
         for u in kparts
             r64 = f64(u); rb = fbig(big.(u))
             wz = max(wz, kulps(r64[5], rb[5], u[5]))
             for i in (1, 2, 3, 4)
                 i in through && continue
-                wt = max(wt, cerr(r64[i], rb[i], max(abs(Float64(rb[i])), abs(u[i]))))
+                wt = max(wt, cerr(r64[i], rb[i], max(abs(Float64(rb[i])), abs(u[i]), scale(u, i))))
             end
             @test all(i -> r64[i] === u[i], through)   # the coordinates the map leaves alone
         end
@@ -11032,15 +11034,31 @@ end
     let r = O._lattice_bend(0.3, 0.3, 0.5, 0.0, 0.0, 0.0, 0.0, 2.0e-3, 0.0)
         @test r[2] === 0.0 && r[5] === 2.0e-3
     end
+    # The solenoids' transverse outputs round at the KINETIC momentum, not at the coordinate they land in: the
+    # body rotates (P_x, P_y) = (p_x + k y, p_y - k x) (`_solenoid_edge`, k = ks/2) and the exit edge subtracts
+    # k y again, so an output p_x of 2e-5 carries the roundings of a |P| of 2e-3, and the displacement (P/p_s) C1
+    # is of order |P| L. The transverse error's scale is therefore max(|out|, |in|, |P_in|) for the momenta and
+    # max(|out|, |in|, |P_in| L) for the positions. Under the coordinate's own scale the straight solenoid read
+    # 110 (seed 3, p_x) and 215 (seed 6, y) ulps of a CORRECT result for other seeds of this very sweep, and the
+    # curved one 11.8 against its 16 (2026-10-18 audit, D11/U48-8: the pin held for seed 2026 alone). Under the
+    # kinetic scale the worst over 13 seeds (2026 and 1..12, 101 particles each) is 3.4 ulps for the straight
+    # solenoid and 3.3 for the curved one (fix batch 4b, probes/TS/logs/measure_native.log and measure_J.log,
+    # section J), so the bound is 16, the sibling rows' class.
+    solenoid_scale(ks, L) = (u, i) -> begin
+        P = hypot(O._solenoid_edge(ks / 2, u[1], u[3], u[2], u[4])...)
+        i in (2, 4) ? P : P * L
+    end
     for (ks, L, zb) in ((1.7, 1.3, 2), (0.2, 0.5, 2))
-        wz, wt = worst(u -> O._solenoid_map(ks, L, u...), u -> O._solenoid_map(big(ks), big(L), u...), (6,))
+        wz, wt = worst(u -> O._solenoid_map(ks, L, u...), u -> O._solenoid_map(big(ks), big(L), u...), (6,);
+                       scale=solenoid_scale(ks, L))
         @testset let kernel = "solenoid", ks = ks, L = L, z_ulps = wz, transverse_ulps = wt
             @test z_ulps <= zb
-            @test transverse_ulps <= 64
+            @test transverse_ulps <= 16
         end
     end
     for (h, ks, L, nst, zb) in ((0.18, 1.7, 1.3, 16, 8), (0.01, 0.2, 0.5, 4, 8))
-        wz, wt = worst(u -> O._solenoid_curved_map(h, ks, L, nst, u...), u -> O._solenoid_curved_map(big(h), big(ks), big(L), nst, u...), (6,))
+        wz, wt = worst(u -> O._solenoid_curved_map(h, ks, L, nst, u...), u -> O._solenoid_curved_map(big(h), big(ks), big(L), nst, u...), (6,);
+                       scale=solenoid_scale(ks, L))
         @testset let kernel = "curved solenoid", h = h, ks = ks, L = L, z_ulps = wz, transverse_ulps = wt
             @test z_ulps <= zb
             @test transverse_ulps <= 16
@@ -32784,10 +32802,34 @@ end
     @test collect(sol(1.0e-12, 1.3)(u0...)) ≈ drift atol=1e-14
     @test collect(sol(0.0, 1.3)(u0...)) ≈ collect(compile_runtime(DriftSpec(L=1.3))(u0...)) atol=1e-15
 
-    # Zero length is the identity for any strength: the two edge conversions are
-    # evaluated at the same x,y and cancel term by term. Not the same thing as a
-    # MAD-X thin solenoid, which holds ks*L fixed instead.
-    @test collect(sol(1.7, 0.0)(u0...)) == collect(u0)
+    # Zero length is the identity for any strength, stated as what it IS (2026-10-18
+    # audit, D12/U48-9: a bitwise pin on one particle held for 44 % of random
+    # particles at these amplitudes). The body at L = 0 multiplies by sin(0) = 0 and
+    # cos(0) = 1 exactly (`_curv_sin(kappa/2, 0) = 0`), so x, y, z and pz come back
+    # BIT FOR BIT; the momenta go through the two edges, fl(fl(p_x + k y) - k y):
+    # two roundings at max(|p_x|, |P_x|), the same rounded product k y cancelling,
+    # so |p_x' - p_x| <= eps(max(|p_x|, |P_x|)), the analytical bound, attained
+    # (measured worst exactly 1.0 over 30 000 random particles at three amplitude
+    # regimes; bitwise for 67 % at |p| ~ |x| ~ 1e-3, 98 % at |p| ~ 0.1, 4 % at
+    # |p| ~ 1e-4; fix batch 4b, probes/TS/logs/measure_native.log, section K). Not
+    # the same thing as a MAD-X thin solenoid, which holds ks*L fixed instead.
+    let sol0 = sol(1.7, 0.0), k = 1.7 / 2, rng0 = MersenneTwister(20261022),
+        exact_rest = true, worst_px = 0.0, worst_py = 0.0, n_rounded = 0
+        for u in Iterators.flatten(((u0,), (1.0e-3 .* ntuple(_ -> randn(rng0), 6) for _ in 1:1000)))
+            out = sol0(u...)
+            exact_rest &= out[1] === u[1] && out[3] === u[3] && out[5] === u[5] && out[6] === u[6]
+            Px, Py = Octopus._solenoid_edge(k, u[1], u[3], u[2], u[4])
+            worst_px = max(worst_px, abs(out[2] - u[2]) / eps(max(abs(u[2]), abs(Px))))
+            worst_py = max(worst_py, abs(out[4] - u[4]) / eps(max(abs(u[4]), abs(Py))))
+            (out[2] === u[2] && out[4] === u[4]) || (n_rounded += 1)
+        end
+        @test exact_rest
+        @test worst_px <= 1.0 && worst_py <= 1.0
+        # the sweep sees the rounding it tolerates: about a third of the particles
+        # are not bitwise in the momenta (zero here would be a fixture that cannot
+        # fail on a wrong edge)
+        @test n_rounded > 100
+    end
 
     # The closed form must solve Hamilton's equations, not merely look like it.
     # RK4 on the equations of motion from the theory note, Section 4.1.
