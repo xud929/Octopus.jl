@@ -106,17 +106,31 @@ into a complex pair of size sqrt(roundoff)), rejected extreme 33.6 at `R(1e-6)
 (+) R(1.2)` (the detuned FODO controls and the crab ladder sit at 1e6 and
 above), window [0.204, 3.36]; A1's provisional `4` lay outside it and was moved
 to `1`. Re-measured 2026-09-16 under the corrected form
-(stage9/verify/orch_major_v3.jl: the two argmax rows, then rotated +1 Jordan
-pairs of three drift families x conjugation strengths 0.2 .. 1.5 x 8 seeds,
-`||M||_2` up to 673): accepted extreme 0.0541 on the table's argmax row and
-0.387 on the extended family (seed 5, strength 1.5, `||M||_2 = 673`: under the
-sharp form a rotated Jordan pair sits at a norm-free fraction of the floor,
-the landed form let it fall as `1 / sqrt(||M||_2)`), no Jordan pair rejected;
-rejected extreme 33.6 unchanged (`||M||_2 = 1`). Window by the one-tenth / ten
-rule: [0.541, 3.36] on the table's rows (1 inside; margins 18.5 accepted, 33.6
-rejected), and [3.87, 3.36], EMPTY on the accepted side by the margin 2.6, once
-the extended family counts. The constant stays 1 until the owner decides from
-that measurement (an acceptance constant is frozen by the window rule).
+(a stage 9 verify driver that is NOT in the tree: the two argmax rows, then
+rotated +1 Jordan pairs of three drift families x conjugation strengths 0.2
+.. 1.5 x 8 seeds, `||M||_2` up to 673): accepted extreme 0.0541 on the
+table's argmax row and 0.387 on the extended family (seed 5, strength 1.5,
+`||M||_2 = 673`: under the sharp form a rotated Jordan pair sits at a
+norm-free fraction of the floor, the landed form let it fall as `1 /
+sqrt(||M||_2)`), no Jordan pair rejected; rejected extreme 33.6 unchanged
+(`||M||_2 = 1`). Window by the one-tenth / ten rule: [0.541, 3.36] on the
+table's rows (1 inside; margins 18.5 accepted, 33.6 rejected), and [3.87,
+3.36], EMPTY on the accepted side by the margin 2.6, once the extended family
+counts. The COMMITTED re-measurement is the suite testset "Mode clusters:
+the real-class floor's window is measured from the tree: rotated Jordan
+pairs stay real-class, the smallest complex pair stays complex (F-193)",
+which runs 96 rotated Jordan pairs (`L` in 1, 3, 10, 100; strengths 0.2 ..
+3.0; four seeds) and the `R(1e-6) (+) R(1.2)` pair every suite run and
+prints the window: 2026-10-22 accepted extreme 0.295 (`L = 10`, strength
+3.0, `||M||_2 = 24.6`), rejected 33.6, window [2.95, 3.36]; the 2026-10-18
+audit's 384-case probe (strengths to 3.0, 16 seeds) reached 0.46 with no
+Jordan pair misclassified. Every measurement puts the accepted margin of
+the constant 1 between 2 and 3.4, below the rule's ten. The constant stays 1
+until the owner decides from these measurements (the open owner item of the
+Twiss row in docs/todo.md; an acceptance constant is frozen by the window
+rule, never by a hand move); the testset pins the VERDICTS (a Jordan pair is
+never a complex pair, the small complex pair never real-class), so a move of
+the constant re-measures them.
 """
 const _REAL_CLASS_MULTIPLIER = 1.0
 

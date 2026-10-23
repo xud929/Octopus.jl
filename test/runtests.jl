@@ -1160,6 +1160,31 @@ end
     @test_throws ArgumentError validate(TwissDispersionIdentityContract(); bogus=1)
 end
 
+@testset "Stage 6: _identity_contract_record! fails a row by name when its kappa is not finite (F-141)" begin
+    # kappa = Inf made the tolerance Inf and the ratio 0 (an unconditional pass recorded as max 0.0 for a value of
+    # 1.0); kappa = NaN made every comparison false (a pass that recorded no maximum while count_ advanced). The
+    # kappas are products of cond(U), cond(U_ls), cond(M_cal), ||T|| ||T^-1|| and 1 / |h|, and `cond` of an exactly
+    # singular matrix returns Inf (2026-10-18 audit, F-141). Each case is a failed row naming the fixture and kappa.
+    c = TwissDispersionIdentityContract()
+    slug = :c_caller_symplecticity
+    for kappa in (Inf, NaN, -Inf)
+        m = Dict{Symbol,Any}()
+        @test !Octopus._identity_contract_record!(m, slug, 1.0, kappa, "probe fixture", c)
+        @test m[Symbol("max_", slug)] == Inf && m[Symbol("maxval_", slug)] == 1.0 && m[Symbol("argmax_", slug)] == "probe fixture"
+        @test get(m, Symbol("count_", slug), 0) == 1
+        @test length(m[:failure_texts]) == 1 && occursin("kappa", m[:failure_texts][1]) &&
+              occursin("not finite", m[:failure_texts][1]) && occursin("probe fixture", m[:failure_texts][1])
+    end
+    # a finite kappa records the ratio value / (c eps max(1, kappa)) as before, and a value within it passes
+    m = Dict{Symbol,Any}()
+    @test Octopus._identity_contract_record!(m, slug, 1e-16, 0.5, "probe fixture", c)
+    @test m[Symbol("max_", slug)] == 1e-16 / (c.multipliers[slug] * eps()) && isempty(m[:failure_texts])
+    # a non-finite VALUE at a finite kappa is still the value's failure text, not the kappa's
+    m = Dict{Symbol,Any}()
+    @test !Octopus._identity_contract_record!(m, slug, NaN, 1.0, "probe fixture", c)
+    @test length(m[:failure_texts]) == 1 && occursin("value NaN is not finite", m[:failure_texts][1])
+end
+
 # Stage 8 registration of the light suite contract on the committed external
 # twiss tables (src/contracts/twiss_external_reference.jl, design "Staging"
 # item 8). Mirrors the stage 6 form above; the real validate on the committed
@@ -1190,6 +1215,111 @@ end
     r = validate(TwissExternalReferenceContract(reference_dir=mktempdir()))
     @test r.status == :skipped
     @test occursin("generate_madx_twiss_reference.jl", r.message)
+end
+
+@testset "Stage 8: the MAD-X dispersion rows assert their coasting precondition (F-143)" begin
+    # The TOL-B rows compare the canonical eta with MAD-X's slope beta0 DX without the (D8) factor h, which is right
+    # only because every A1 fixture is coasting with h = 1 exactly, a precondition no row asserted (2026-10-18 audit,
+    # F-143; the xtrack layer has its `coasting_structure_present` rows). Each full MAD-X fixture now carries the
+    # assert row `coasting_structure_present_h_is_1`, which fails on a bunched map, where the slope is not eta.
+    c = TwissExternalReferenceContract()
+    tab = Octopus._extref_read_wide(Octopus._extref_table_path(Octopus._extref_reference_dir(c), "twiss_madx_"))
+    rows = Octopus._ExtRefRow[]; Octopus._extref_madx_rows!(rows, c, tab)
+    pre = [r for r in rows if r.quantity == "coasting_structure_present_h_is_1"]
+    @test length(pre) == length(Octopus._EXTREF_MADX_A1_FIXTURES) && all(r.passed for r in pre)
+    @test Set(r.fixture for r in pre) == Set(Octopus._EXTREF_MADX_A1_FIXTURES)
+    @test all(r.passed for r in rows if startswith(r.quantity, "eta_"))     # the TOL-B rows pass on the committed table
+    # the injected regression: U1's initial map made bunched by a thin RF kick in MAD-X's (T, PT) plane (K[6, 5] =
+    # -1e-3, symplectic): the coasting structure is absent and h != 1, so the precondition row fails by name while
+    # every other fixture's row still passes
+    K = Matrix(1.0I, 6, 6); K[6, 5] = -1e-3
+    rows_b = Dict{String,String}[]
+    for row in tab.rows
+        if row["fixture"] == "U1" && row["file"] == "initial"
+            Mb = Octopus._extref_matrix(row, "re") * K
+            newrow = copy(row)
+            for i in 1:6, j in 1:6
+                newrow["re$(i)$(j)"] = string(Mb[i, j])
+            end
+            push!(rows_b, newrow)
+        else
+            push!(rows_b, row)
+        end
+    end
+    rows2 = Octopus._ExtRefRow[]
+    Octopus._extref_madx_rows!(rows2, c, Octopus._ExtRefTable(tab.path, tab.header, tab.columns, rows_b))
+    pre2 = [r for r in rows2 if r.quantity == "coasting_structure_present_h_is_1"]
+    @test length(pre2) == length(pre) && count(r -> !r.passed, pre2) == 1 && !pre2[findfirst(r -> r.fixture == "U1", pre2)].passed
+    # the PTC 5D rows read the same precondition on their coasting-completed maps
+    ptab = Octopus._extref_read_wide(Octopus._extref_table_path(Octopus._extref_reference_dir(c), "ptc_twiss_madx_"))
+    prow = Octopus._ExtRefRow[]; Octopus._extref_ptc_rows!(prow, c, ptab)
+    ppre = [r for r in prow if r.quantity == "coasting_structure_present_h_is_1"]
+    @test length(ppre) == length(Octopus._extref_select(ptab, "layer", "5d")) && all(r.passed for r in ppre)
+end
+
+@testset "Stage 8: the external-reference tables' versions are read from their headers, and the fixture lists are tripwired against the scripts and the tables (F-144)" begin
+    # (a) the versions the contract certifies are READ from the table headers (recorded in metrics[:version_<code>])
+    # and must equal the version in the newest table's file name; a `twiss_madx_9.99.99.tsv` dropped beside the
+    # current table re-targeted the "exactly one version" claim with no failure before (2026-10-18 audit, F-144).
+    c = TwissExternalReferenceContract(); dir = Octopus._extref_reference_dir(c)
+    r = validate(c)
+    @test r.passed
+    for (code, spec) in pairs(Octopus._EXTREF_TABLES)
+        code === :maps && continue
+        path = Octopus._extref_table_path(dir, spec.prefix)
+        fv = Octopus._extref_filename_version(path, spec.prefix)
+        @test !isempty(fv) && r.metrics[Symbol("version_", code)] == fv
+        @test Octopus._extref_header_version(Octopus._extref_read_wide(path).header, code) == fv
+    end
+    tmp = mktempdir()
+    for f in readdir(dir)
+        cp(joinpath(dir, f), joinpath(tmp, f))
+    end
+    old = basename(Octopus._extref_table_path(dir, "twiss_madx_"))
+    newname = replace(old, Octopus._extref_filename_version(old, "twiss_madx_") => "9.99.99")
+    mv(joinpath(tmp, old), joinpath(tmp, newname))
+    rb = validate(TwissExternalReferenceContract(reference_dir=tmp))
+    @test !rb.passed && occursin("9.99.99", rb.message) && occursin("header", rb.message)
+    # (b) the hand-copied fixture lists are tripwired against the generators' constants, parsed from the scripts
+    # by anchor (the lists are declarations the tables cannot supply: the C1 dimension, the PTC ids a 5D-only abort
+    # table lacks, the A1 cells among the sentinels)
+    script_const(file, name) = begin
+        src = read(joinpath(pkgdir(Octopus), "validation", file), String)
+        i = findfirst("const $(name) = ", src)
+        i === nothing && error("$(file): no `const $(name) = `")
+        ex, _ = Meta.parse(src, last(i) + 1)
+        Core.eval(@__MODULE__, ex)
+    end
+    @test script_const("twiss_xsuite_benchmark.jl", "C1_FIXTURES") == Octopus._EXTREF_XT_C1_FIXTURES
+    @test script_const("twiss_ptc_benchmark.jl", "EXPECTED_IDS") == Octopus._EXTREF_PTC_EXPECTED_IDS
+    @test script_const("twiss_madx_benchmark.jl", "A1_FIXTURES") == Octopus._EXTREF_MADX_A1_FIXTURES
+    # (c) coverage rows (the PTC `layer_rows_present` shape): every C1 (fixture, compile) pair of the xtrack table
+    # is in the list and every list entry in the table; every MAD-X fixture with a periodic row is compared or
+    # named recorded-only. Injected: an unknown C1 pair, an unknown periodic MAD-X fixture.
+    xt = Octopus._extref_read_long(Octopus._extref_table_path(dir, "xsuite_twiss_xtrack_"))
+    maps = Octopus._extref_read_wide(Octopus._extref_table_path(dir, "twiss_benchmark_maps"))
+    rows = Octopus._ExtRefRow[]; Octopus._extref_xtrack_c1!(rows, c, xt, maps)
+    cov = [x for x in rows if x.quantity in ("c1_table_fixtures_known", "c1_list_fixtures_present")]
+    @test length(cov) == 2 && all(x.passed for x in cov) && all(x.octopus == x.external == length(Octopus._EXTREF_XT_C1_FIXTURES) for x in cov)
+    vals2 = copy(xt.values); vals2[("C1", "ZZ_new", "bare", "only_4d_block")] = 1.0
+    rows2 = Octopus._ExtRefRow[]; Octopus._extref_xtrack_c1!(rows2, c, Octopus._ExtRefLongTable(xt.path, xt.header, vals2), maps)
+    known = rows2[findfirst(x -> x.quantity == "c1_table_fixtures_known", rows2)]
+    @test !known.passed && known.octopus == length(Octopus._EXTREF_XT_C1_FIXTURES) && known.external == length(Octopus._EXTREF_XT_C1_FIXTURES) + 1
+    @test rows2[findfirst(x -> x.quantity == "c1_list_fixtures_present", rows2)].passed
+    mtab = Octopus._extref_read_wide(Octopus._extref_table_path(dir, "twiss_madx_"))
+    mrows = Octopus._ExtRefRow[]; Octopus._extref_madx_rows!(mrows, c, mtab)
+    mcov = mrows[findfirst(x -> x.quantity == "periodic_fixtures_known", mrows)]
+    periodic = Set(row["fixture"] for row in mtab.rows if row["file"] == "periodic")
+    @test mcov.passed && mcov.octopus == mcov.external == length(periodic)
+    @test Set(Octopus._EXTREF_MADX_A1_FIXTURES) ⊆ periodic && Set(Octopus._EXTREF_MADX_RECORDED_ONLY) ⊆ periodic
+    rows_zz = copy(mtab.rows)
+    for row in mtab.rows
+        row["fixture"] == "U1" || continue
+        zz = copy(row); zz["fixture"] = "ZZ"; push!(rows_zz, zz)
+    end
+    mrows2 = Octopus._ExtRefRow[]; Octopus._extref_madx_rows!(mrows2, c, Octopus._ExtRefTable(mtab.path, mtab.header, mtab.columns, rows_zz))
+    mcov2 = mrows2[findfirst(x -> x.quantity == "periodic_fixtures_known", mrows2)]
+    @test !mcov2.passed && mcov2.octopus == length(periodic) && mcov2.external == length(periodic) + 1 && occursin("ZZ", mcov2.fixture)
 end
 
 # n5b: a symplectic perturbation x * exp(1e-8 S H) (H symmetric: the analysis's
@@ -1456,6 +1586,77 @@ end
     @testset let st6_pinned = _st6_pin_lines(readlines(joinpath(pkgdir(Octopus), "test", "runtests.jl")))
         @test length(st6_pinned) == 3 && all(occursin("_ST6_PIN", l) for l in st6_pinned)
     end
+end
+
+@testset "Stage 6: the Layer 3 rows judge the physical tunes, Twiss functions and the covariance accessor against independent references, and the V1 re-derivation sees a doctored verdict (F-142)" begin
+    # Two Layer 3 rows were circular (2026-10-18 audit, F-142 = U24-4): c_normal_mode_tunes compared
+    # normal_mode(result, j).tune with physical.tunes[j], the same numbers (0 exactly on every fixture), and
+    # c_matched_covariance_accessor re-ran the kernel the result's covariance came from (0 exactly); physical
+    # beta/alpha/gamma were tied to nothing; c_tune_consistency read the analysis's own eigensolve. The rows now
+    # compare with eigvals(result.matrix), with the (K10) construction U diag(eps) U' from the physical normalizer
+    # for a distinct-valued tuple, and the new c_m1_twiss_from_normalizer row re-derives (M1) in the caller's
+    # coordinates. U24-5: the V1 verdict re-derivation had only ever compared empty with empty; it is fed doctored
+    # verdicts here in both directions.
+    c = TwissDispersionIdentityContract()
+    fx = Octopus._identity_contract_fixtures(c)
+    f6 = fx[findfirst(f -> f.name == "F6a dense 6x6 map 1", fx)]
+    r, err, index = Octopus._identity_contract_certified(analyze, f6.analysis, f6.input)
+    @test err === nothing && r isa TwissDispersionResult && index != 0 && r.status !== :failed
+    copyres(res; kw...) = TwissDispersionResult((haskey(kw, f) ? kw[f] : getfield(res, f) for f in fieldnames(TwissDispersionResult))...)
+    copyph(ph; kw...) = Octopus.PhysicalOptics((haskey(kw, f) ? kw[f] : getfield(ph, f) for f in fieldnames(Octopus.PhysicalOptics))...)
+    rows!(res, label) = begin
+        m = Dict{Symbol,Any}(); fails = String[]; m[:failure_texts] = fails
+        Octopus._identity_contract_recomputed_rows!(res, label, m, c, fails)
+        (m, fails)
+    end
+    # the tree: every Layer 3 row of the fixture inside its multiplier, the three re-derived rows measuring a
+    # genuine comparison (a finite, positive ratio where the circular rows recorded 0.0 exactly)
+    m0, f0 = rows!(r, "dense map 1")
+    @test isempty(f0)
+    for slug in (:c_normal_mode_tunes, :c_tune_consistency, :c_matched_covariance_accessor, :c_m1_twiss_from_normalizer)
+        @test haskey(m0, Symbol("max_", slug)) && 0 < m0[Symbol("max_", slug)] <= 1
+    end
+    # (a) the tune rows against eigvals(result.matrix): a doctored caller matrix (the x plane rotated by 0.3 rad,
+    # still symplectic) is caught by both; the unfixed rows saw only the result's own numbers
+    rot(mu) = [cos(mu) sin(mu); -sin(mu) cos(mu)]
+    Mdoc = r.matrix * Octopus._identity_contract_blockdiag(rot(0.3), Matrix(1.0I, 2, 2), Matrix(1.0I, 2, 2))
+    md, fd = rows!(copyres(r; matrix=Mdoc), "doctored matrix")
+    @test md[:max_c_normal_mode_tunes] > 1 && md[:max_c_tune_consistency] > 1
+    @test any(t -> occursin("c_normal_mode_tunes", t), fd) && any(t -> occursin("c_tune_consistency", t), fd)
+    # (b) the (M1) Twiss row: physical.beta doubled and physical.gamma halved keeps beta gamma - alpha^2, so the
+    # invariant row c_normal_mode_kappa cannot see it (a wrong unscaling factor a^2 has this shape); the new row does
+    ph = r.physical
+    phd = copyph(ph; beta=Octopus.Determined(2 .* determined_value(ph.beta)), gamma=Octopus.Determined(determined_value(ph.gamma) ./ 2))
+    mb, fb = rows!(copyres(r; physical=phd), "doctored twiss")
+    @test mb[:max_c_normal_mode_kappa] <= 1
+    @test mb[:max_c_m1_twiss_from_normalizer] > 1 && any(t -> occursin("c_m1_twiss_from_normalizer", t), fb)
+    # (c) the accessor row against U diag(eps) U' of the physical normalizer: a doctored normalizer (2 U) is caught;
+    # the unfixed row compared the accessor with physical.covariance, both untouched by this doctoring
+    phn = copyph(ph; normalizer=Octopus.Determined(2 .* determined_value(ph.normalizer)))
+    mn, fn = rows!(copyres(r; physical=phn), "doctored normalizer")
+    @test mn[:max_c_matched_covariance_accessor] > 1 && any(t -> occursin("c_matched_covariance_accessor", t), fn)
+    # (d) V1 fed known defects (U24-5): a status and failure list that disagree with the residual triples count as
+    # inconsistent and name the fixture, in both directions; a consistent doctoring stays consistent
+    v1!(res) = begin
+        m = Dict{Symbol,Any}(:verdicts_consistent => 0, :verdicts_inconsistent => 0,
+                             :normalizer_ratio_u6_reconstruction => 0.0, :normalizer_ratio_u6_symplecticity => 0.0)
+        fails = String[]; m[:failure_texts] = fails
+        Octopus._identity_contract_reported_rows!(res, "doctored verdict", m, c, fails)
+        (m, fails)
+    end
+    mv, fv = v1!(r)
+    @test mv[:verdicts_consistent] == 1 && mv[:verdicts_inconsistent] == 0 && isempty(fv)
+    lie = "frame reconstruction (I1) residual 1.0 exceeds its acceptance 1e-12"
+    mf, ff = v1!(copyres(r; status=:failed, failures=[lie]))                       # :failed with no failing triple
+    @test mf[:verdicts_inconsistent] == 1 && mf[:verdicts_consistent] == 0
+    @test any(t -> startswith(t, "verdict on doctored verdict") && occursin("frame reconstruction (I1)", t) && occursin("status failed", t), ff)
+    diag = r.diagnostics
+    residuals2 = [(n == "frame reconstruction (I1)" ? (n, 2 * t, t) : (n, v, t)) for (n, v, t) in diag.residuals]
+    diag2 = Octopus.AnalysisDiagnostics((f === :residuals ? residuals2 : getfield(diag, f) for f in fieldnames(Octopus.AnalysisDiagnostics))...)
+    mp, fp = v1!(copyres(r; diagnostics=diag2))                                      # a failing triple with :passed
+    @test mp[:verdicts_inconsistent] == 1 && any(t -> occursin("recomputed failing residuals", t) && occursin("frame reconstruction (I1)", t), fp)
+    mc, fc = v1!(copyres(r; diagnostics=diag2, status=:failed, failures=[lie]))      # the two agree: consistent
+    @test mc[:verdicts_consistent] == 1 && mc[:verdicts_inconsistent] == 0 && !any(startswith("verdict on"), fc)
 end
 
 # Twiss analysis stage 2, Part A: the 4D eigenmode route
@@ -2236,6 +2437,44 @@ end
     @test_throws ArgumentError Octopus._mais_ripken(Matrix(1.0I, 4, 4); projection_rtol=-1.0)
     @test_throws ArgumentError Octopus._mais_ripken_normalizer(zeros(2, 2), zeros(2, 2), 0.0, (cos=1.0, sin=0.0), (cos=1.0, sin=0.0))
     @test_throws ArgumentError Octopus._normalizer_to_vectors(zeros(4, 3))
+end
+
+@testset "Mais-Ripken: the (M7) rephasing is the frame's one phase convention, floor included (F-193)" begin
+    # Theory 6.2's position convention (u_1x > 0, u_2y > 0 real) was implemented twice: `_rephase_mode` for the
+    # frame (floor `_PHASE_REFERENCE_FLOOR = sqrt(eps)` relative; below it the (E14) pivot, the largest component,
+    # fixes the phase) and `_mais_ripken`'s own (M7) multiplier on the primary component down to `64 eps ||u||`, so
+    # between the two floors `MaisRipkenSet.vectors` and `NormalModeFrame4D.vectors` were two conventions for one
+    # quantity, differing by an O(1) phase (2026-10-18 audit, F-193 = U23-3). One function now: `_mais_ripken`
+    # rephases through `_rephase_mode`, and `projection_rtol` decides the (M6) phase flags alone.
+    # (i) a primary component between the two floors: 1e-10 ||u|| relative
+    u1 = ComplexF64[1e-10 * exp(0.7im), -im, 1.0 + 0.2im, -0.3im]
+    u2 = ComplexF64[0.4, 0.1im, 1.0 + 0.5im, -im]
+    @test 64 * eps() * norm(u1) < abs(u1[1]) < Octopus._PHASE_REFERENCE_FLOOR * norm(u1)
+    mr = Octopus._mais_ripken(u1, u2)
+    @test mr.vectors[1] == Octopus._rephase_mode(u1, 1)          # bitwise: the same function on the same input
+    @test mr.vectors[2] == Octopus._rephase_mode(u2, 3)
+    v1 = mr.vectors[1]; piv = argmax(abs.(v1))
+    # the pivot, not the tiny primary, is made real and positive (to the roundoff of the unit multiplier: the
+    # multiplier conj(ref) / |ref| is formed first, so the pivot's imaginary part is a rounding residue, not 0)
+    @test piv != 1 && real(v1[piv]) > 0 && abs(imag(v1[piv])) <= 8 * eps() * norm(v1)
+    @test abs(abs(v1[1]) - abs(u1[1])) <= 4 * eps() * abs(u1[1])  # a unit multiplier: moduli unchanged
+    # (M1) is phase-independent: the set of the rephased vectors is the set of the inputs to roundoff
+    mr2 = Octopus._mais_ripken(mr.vectors...)
+    nU = norm(u1)^2 + norm(u2)^2
+    @test norm(mr2.beta - mr.beta) <= 64 * eps() * nU && norm(mr2.alpha - mr.alpha) <= 64 * eps() * nU && norm(mr2.kappa - mr.kappa) <= 64 * eps() * nU
+    # (ii) above both floors: the set of a frame carries the frame's own vectors (one convention, applied twice,
+    # moves a component by the roundoff of a unit multiplier at most; measured 2 eps ||u|| on these maps)
+    for M in _PB_MAPS[1:20]
+        fr = _pb_frame(M).frame
+        mrf = Octopus._mais_ripken(fr)
+        for j in 1:2
+            @test norm(mrf.vectors[j] - fr.vectors[j]) <= 8 * eps() * norm(fr.vectors[j])
+            @test mrf.vectors[j] == Octopus._rephase_mode(fr.vectors[j], j == 1 ? 1 : 3)
+        end
+    end
+    # (iii) the zero-projection limit of the existing pins is unchanged: an exactly real primary is kept
+    mr0 = Octopus._mais_ripken(Matrix(1.0I, 4, 4))
+    @test mr0.vectors == Octopus._normalizer_to_vectors(Matrix(1.0I, 4, 4))
 end
 
 @testset "Mais-Ripken covariance: (M9)-(M16) agree, close under the map, and refuse a zero projection" begin
@@ -3798,6 +4037,39 @@ end
     @test rm.matrix == Mrm && rm.matrix !== Mrm   # a copy of the matrix actually passed, not of an unrelated one (stage 9, R2-2-1)
     @test rm.rho_M1 >= rm.rho_M0 && rm.schur_backward_error <= 64 * _MC_EPS * norm(rm.matrix)
     @test rm.tau_real == Octopus._REAL_CLASS_MULTIPLIER * sqrt(max(rm.rho_M0, rm.schur_backward_error) * max(1, opnorm(rm.matrix)))   # one root over the product (stage 9)
+end
+
+@testset "Mode clusters: the real-class floor's window is measured from the tree: rotated Jordan pairs stay real-class, the smallest complex pair stays complex (F-193)" begin
+    # The `_REAL_CLASS_MULTIPLIER` docstring cited a re-measurement driver that is not in the tree
+    # (stage9/verify/orch_major_v3.jl; 2026-10-18 audit, F-193 = U23-2). This testset IS the committed driver: the
+    # accepted side, every rotated +1 Jordan pair of the drift families L in (1, 3, 10, 100) under symplectic
+    # conjugations of strength 0.2 .. 3.0 (four seeds each; the audit's probe 5 ran 384 of them), and the rejected
+    # side, the smallest genuine complex pair of the fixture table, R(1e-6) (+) R(1.2); both measured as
+    # |Im rho| / tau_real and printed, so the window the docstring quotes is re-derived by every suite run. The
+    # VERDICTS are pinned (a Jordan pair is never a complex pair, the small complex pair is never real-class); the
+    # constant itself, and the window's empty accepted side, are the owner's item (docs/todo.md, the Twiss row).
+    worst = 0.0; worst_at = ""; n = 0
+    for L in (1.0, 3.0, 10.0, 100.0), strength in (0.2, 0.5, 1.0, 1.5, 2.0, 3.0), seed in 1:4
+        W = Octopus._manufactured_symplectic_map(MersenneTwister(_MC_SEED + 1000 * seed + round(Int, 10 * strength)), 4; scale=strength).M
+        M = W * _mc_bd([1.0 L; 0.0 1.0], _mc_R(1.2)) * inv(W)
+        r = _mc_run(M)
+        idx = sortperm(abs.(r.eigenvalues .- 1))[1:2]          # the Jordan pair: the two eigenvalues nearest +1
+        @test all(r.real_class[idx]) && r.degeneracy_status === :unit_eigenvalue
+        @test count(c -> c.classification === :definite && c.resolved, r.clusters) == 1   # the R(1.2) pair survives
+        ratio = maximum(abs.(imag.(r.eigenvalues[idx]))) / r.tau_real
+        n += 1
+        ratio > worst && (worst = ratio; worst_at = "L = $(L), strength = $(strength), seed = $(seed), ||M||_2 = $(round(opnorm(M); sigdigits=3))")
+    end
+    @test n == 96 && 0 < worst < 1
+    # the rejected side: the table's smallest complex pair stays complex-class with the ten rule's margin
+    rc = _mc_run(_mc_bd(_mc_R(1e-6), _mc_R(1.2)))
+    @test !any(rc.real_class) && all(c -> c.classification === :definite, rc.clusters)
+    ratio_c = minimum(abs(imag(rho)) for rho in rc.eigenvalues) / rc.tau_real
+    @test ratio_c >= 10
+    c_real = Octopus._REAL_CLASS_MULTIPLIER
+    println("real-class floor (F-193): accepted extreme |Im rho| / tau_real = $(round(worst; sigdigits=3)) at $(worst_at) over $(n) rotated Jordan pairs; ",
+            "rejected extreme $(round(ratio_c; sigdigits=3)) on R(1e-6) (+) R(1.2); at multiplier 1 the one-tenth / ten window is ",
+            "[$(round(10 * worst * c_real; sigdigits=3)), $(round(ratio_c * c_real / 10; sigdigits=3))] (c_real = $(c_real))")
 end
 
 @testset "Mode clusters: a capped-chord tie merges the smallest gap first, so an isolated pair is not absorbed by a repeated one (fix batch 3 N, F-195)" begin
@@ -5544,6 +5816,37 @@ end
     @test lb.signed_areas[3, 3] == -1.0 && lb.longitudinal != 3
 end
 
+@testset "Dispersion routes: a coasting map refuses a bad longitudinal index before its early return (F-178)" begin
+    # The coasting branch returned a normal report (longitudinal = 0) for longitudinal = 99, 0, -3, 7, although the
+    # docstring promises an ArgumentError for a bad `longitudinal`: the range check lived in `_longitudinal_candidate`,
+    # which the branch never reached (2026-10-18 audit, F-178). The index is checked before the coasting test now; a
+    # VALID index on a coasting map stays accepted and unused (the public option is declared inactive there).
+    fc = _st4_coasting(0.7); clc = _st4_clusters(fc.M)
+    @test Octopus._coasting_structure(fc.M; rho_M1=clc.rho_M1).holds
+    n = length(clc.eigenvalues)
+    for bad in (99, 0, -3, n + 1)
+        err = try; Octopus._dispersion_routes(fc.M, clc; longitudinal=bad); nothing; catch e; e; end
+        @test err isa ArgumentError && occursin("longitudinal = $(bad)", err.msg) && occursin("1:$(n)", err.msg)
+    end
+    # the dense control: the same ArgumentError, the same text, on the bunched path
+    fd = _st4_dense(3); cld = _st4_clusters(fd.M)
+    errd = try; Octopus._dispersion_routes(fd.M, cld; longitudinal=99); nothing; catch e; e; end
+    @test errd isa ArgumentError && occursin("longitudinal = 99", errd.msg) && occursin("1:$(length(cld.eigenvalues))", errd.msg)
+    # a valid index on a coasting map: accepted, not used; the report equals the index-free one
+    rep0 = Octopus._dispersion_routes(fc.M, clc)
+    for idx in 1:n
+        rep = Octopus._dispersion_routes(fc.M, clc; longitudinal=idx)
+        @test rep.coasting.holds && rep.longitudinal == 0 && rep.longitudinal_cluster == 0 && isempty(rep.executed)
+        @test all(r -> r.status === :coasting_structure, rep.routes) && !Octopus.is_determined(rep.labels)
+        @test Octopus.determined_value(rep.eta) == Octopus.determined_value(rep0.eta) && Octopus.determined_value(rep.h) == 1.0
+    end
+    # through `analyze` the declared-inactive option on a coasting map is accepted as before (the effectiveness
+    # contract's exemption (:coasting, :longitudinal_mode)) and the report says so
+    r = analyze(TwissDispersionAnalysis(longitudinal_mode=3, strict=false), fc.M)
+    @test r.coasting !== nothing && r.coasting.holds && r.dispersion.longitudinal == 0
+    @test r.configuration[findfirst(e -> e.name === :longitudinal_mode, r.configuration)].status === :inactive_dependency
+end
+
 @testset "Canonical separation: (D3) block form, (K2) inverse and (K1) for every h" begin
     rng = MersenneTwister(_ST4_SEED)
     for trial in 1:40
@@ -6253,10 +6556,16 @@ Mimics `analyze`'s receipts and configuration report from the options alone.
 failed result instead of throwing), `:index_dropped` (an explicit
 `longitudinal_mode` index is reported as honoured -- receipt and selection
 flags explicit and certified, `selected` the request -- while the result
-keeps the heuristic's selection and its dispersion; 2026-10-18 audit, F-140).
+keeps the heuristic's selection and its dispersion; 2026-10-18 audit, F-140),
+`:emittances_doubled` (the covariance is built from twice the requested tuple
+while the receipt records the tuple: the value defect of F-145).
 The result carries `dispersion.longitudinal` and an `eta` that depend on the
-selection the verb actually made, as `analyze`'s do.
+selection the verb actually made, as `analyze`'s do, and a covariance whose
+eigen-emittances are the tuple the verb actually used (`_st4b_b_covariance`).
 """
+# the matched covariance the fake run reports for a tuple: U = I, Sigma = diag(eps_j, eps_j), whose
+# eigen-emittances ARE the tuple (times `scale` for the :emittances_doubled defect)
+_st4b_b_covariance(d, em, scale) = Matrix(Diagonal(repeat(scale .* collect(Float64, em)[1:div(d, 2)], inner=2)))
 function _st4b_b_fake_run(a::TwissDispersionAnalysis, input; defect::Symbol=:none)
     M = input isa Octopus.LinearizedMap ? input.matrix : input
     d = size(M, 1)
@@ -6319,7 +6628,7 @@ function _st4b_b_fake_run(a::TwissDispersionAnalysis, input; defect::Symbol=:non
     eta = actual_sel == 2 ? [0.0, 0.5, 0.0, 0.0] : [0.1 * actual_sel, 0.2, 0.0, 0.0]
     physical = (zeta=D(zeta), eta=D(eta), h=D(0.5), tunes=[0.47, 1.6, 0.87])
     covariance = a.emittances === nothing ? Octopus.Determined{Matrix{Float64}}(:unavailable, nothing, nothing, :not_requested, "") :
-        D(ones(d, d))
+        D(_st4b_b_covariance(d, a.emittances, defect === :emittances_doubled ? 2.0 : 1.0))
     groups = a.clusters === :auto ? (d == 6 ? [[1, 6], [2, 5], [3, 4]] : [[1, 4], [2, 3]]) : a.clusters
     clusters = (partition_source=(a.clusters === :auto ? :auto : :explicit),
                 clusters=[(members=g, forced=isinf(a.resolution_chord)) for g in groups])
@@ -7811,6 +8120,11 @@ end
     # this lie was indistinguishable from the truth)
     r = probe((a, x) -> _st4b_b_fake_run(a, x; defect=:index_dropped))
     @test !r.passed && occursin("longitudinal_mode", r.message) && occursin("did NOT move", r.message)
+    # the emittances tuple's VALUE is observable: a run that reads the tuple, records it honestly in its receipt and
+    # builds the matched covariance from a DOUBLED tuple (eigen-emittances 2 eps_j) fails the observable; the
+    # presence-only test (covariance :unique against the default's :not_requested) passed it (2026-10-18 audit, F-145)
+    r = probe((a, x) -> _st4b_b_fake_run(a, x; defect=:emittances_doubled))
+    @test !r.passed && occursin("emittances", r.message) && occursin("eigen-emittances", r.message)
     # a run that throws where a result is expected is a FAILED probe carrying the message
     r = probe((a, x) -> error("scratch verb exploded"))
     @test !r.passed && r.status === :failed && occursin("scratch verb exploded", r.message)

@@ -55,7 +55,11 @@ route reports `:singular_longitudinal_projection` and retains the mode.
 PROVISIONAL; measured (stage 4a Part A, report_A.md): accepted extreme
 `sigma_min(U_ls) / (rho_M1 max(1, ||U_s||_2)) = 3.2e14` over the 200 dense
 maps; rejected extreme `0.26` on the `zeta = e_x, eta = e_px` (h = 0)
-fixture; the multiplier 64 sits inside the gap by twelve decades either way.
+fixture. The one-tenth / ten window is `[10 * 0.26, 3.2e14 / 10] = [2.6,
+3.2e13]`, and 64 sits inside it 12.7 decades below the accepted extreme
+(`log10(3.2e14 / 64) = 12.70`) and 2.4 decades above the rejected one
+(`log10(64 / 0.26) = 2.39`); the earlier "twelve decades either way" counted
+the accepted side only (2026-10-18 audit, U22-5; fix batch 4b).
 """
 const _GRAPH_SINGULARITY_MULTIPLIER = 64.0
 
@@ -453,7 +457,20 @@ otherwise); `longitudinal`
 (the canonical eigenvalue index of the selected longitudinal pair's member
 with positive imaginary part, the cluster half's member, whichever member of
 the pair was named; 0 when none was selected) and `longitudinal_cluster` (its cluster's
-position in `clusters.clusters`); `tau_s` (`2 cos mu_s`), `tunes` (the
+position in `clusters.clusters`); `tau_s`, the selected longitudinal
+CANDIDATE's trace: `2 cos mu_s` of the selected mode on the normal path (a
+resolved elliptic mode), the common trace `Re(rho + 1 / rho)` of a definite
+unresolved candidate's first eigenvalue ([`_cluster_trace`](@ref), the value
+the polynomial and projector routes are formed with), and for a candidate
+that blocks every route (indefinite, defective, unit-eigenvalue or unstable:
+`labels`, `graph`, `zeta`, `eta`, `h` all unavailable with its reason) the
+same first-eigenvalue trace `Re(rho + 1 / rho)`, which is `rho + 1 / rho`
+for a real hyperbolic pair (2.5 on the suite's E9 fixture, the synchrotron
+pair `diag(2, 1/2)` conjugated by a random symplectic `W`; 2 on its
+unit-eigenvalue shear pair) and the shared real part of a Krein quartet's
+`rho + 1 / rho` -- a diagnostic reported beside the blocking reason, not
+the trace `2 cos mu_s` of a mode (no mode exists there; 2026-10-18 audit,
+U22-8); unavailable with `:coasting_structure` on a coasting map; `tunes` (the
 three oriented tunes in label order when labelled); `trace_cubic_roots` (the
 three roots of (D17) from the trace identities) and `trace_cubic_residual`
 (their largest distance to a mode trace `2 cos mu_j`: one per recovered mode
@@ -811,6 +828,20 @@ floor the direct routes' (they call with the default `converged = true`). In eve
 `zeta`, `eta`, `h` are unavailable with the status's reason and the graph stays reported.
 With `check_branch` (the iterative routes) a CONVERGED graph whose `trace_residual` exceeds
 `inv_floor * max(1, ||M||_F)` is `:not_invariant` too: it is an invariant plane of another mode (theory 8.6).
+Derivation of that floor (re-derived for the 2026-10-18 audit, U22-7, fix batch 4b): the trace residual
+`t(D) = tr(M_lr D + M_ll) - tau_s` vanishes on the selected mode's exact graph `D*`, so for a converged iterate
+`D = D* + dD` it is `|tr(M_lr dD)| <= ||M_lr||_F ||dD||_F <= ||M||_F ||dD||_F`; the (I1) acceptance admits a
+graph error of the order of its own floor `inv_floor = c_inv eps kappa_route` (`kappa_route` carries the route's
+amplification `gamma` into the graph), so the branch floor is that admitted graph error times the trace's
+Lipschitz constant `||M||_F`, and `max(1, .)` keeps it at least `inv_floor` where `||M||_F < 1` (there the direct
+roundoff of the trace, `eps ||M|| (1 + ||D||)`, is below `eps kappa_route`). What the floor must admit is the trace
+residual of the exact graph (roundoff), what it must reject is another branch's `|tau_k - tau_s|`, a mode-trace
+separation. Measured on the 20 dense maps of `MersenneTwister(20260911)` (probe `d3_branch_floor.jl`, fix batch 4b):
+on map 1 (the 4b contract's fixture) Newton's trace residual is 2.2e-16 against the (I1) floor 5.6e-12 and the
+branch floor 1.6e-11 (`||M||_F = 2.82`), the mode traces 1.3311, 1.9506 (selected), 1.9868, separations 0.62 and
+0.036; over the 20 maps and both iterative routes the largest admitted `|t(D)| / floor` is 1.8e-3 and the smallest
+other-branch separation is 7.9 decades above its floor (map 7: 0.0117 against 1.4e-10), so the floor sits more
+than two decades above what it admits and more than seven below what it rejects.
 Before any of these, a CONVERGED graph whose floor is at or above `_INVARIANCE_RESIDUAL_CAP` (3, the normalized
 residual's triangle-inequality cap) is `:singular_coefficient` with the graph reported and zeta, eta, h
 unavailable: such a floor accepts every graph, so it certifies none (stage 9, S2b-1, 2026-09-16); an unconverged
@@ -1245,6 +1276,23 @@ function _cluster_trace(c::ModeCluster)
 end
 
 """
+    _check_longitudinal_index(clusters, longitudinal) -> Int
+
+The range check of an explicit `longitudinal` (a canonical eigenvalue index into `clusters.eigenvalues`):
+the `Int` index, or an `ArgumentError` naming it and the range. ONE check for the two sites that read the
+index, `_dispersion_routes` (before its coasting branch) and `_longitudinal_candidate` (the normal path):
+the check lived in the candidate rule alone, which the coasting branch returned before reaching, so on a
+coasting map `longitudinal = 99` was accepted silently against the documented refusal (2026-10-18 audit,
+F-178).
+"""
+function _check_longitudinal_index(clusters::ModeClusters, longitudinal)
+    idx = Int(longitudinal)
+    1 <= idx <= length(clusters.eigenvalues) || throw(ArgumentError(
+        "_dispersion_routes: longitudinal = $(idx) is not a canonical eigenvalue index in 1:$(length(clusters.eigenvalues))"))
+    return idx
+end
+
+"""
     _longitudinal_candidate(clusters, longitudinal) -> (cluster, mode, index)
 
 Dossier E9: the longitudinal candidate cluster (position in `clusters.clusters`), the selected
@@ -1266,9 +1314,7 @@ containing it or its conjugate partner, and its oriented mode.
 function _longitudinal_candidate(clusters::ModeClusters, longitudinal)
     cs = clusters.clusters
     if longitudinal !== nothing
-        idx = Int(longitudinal)
-        1 <= idx <= length(clusters.eigenvalues) || throw(ArgumentError(
-            "_dispersion_routes: longitudinal = $(idx) is not a canonical eigenvalue index in 1:$(length(clusters.eigenvalues))"))
+        idx = _check_longitudinal_index(clusters, longitudinal)
         ci = findfirst(c -> idx in c.members, cs)
         ci === nothing && throw(ArgumentError("_dispersion_routes: canonical index $(idx) belongs to no cluster"))
         c = cs[ci]
@@ -1345,7 +1391,12 @@ cluster is the candidate when the z-content the complex-class clusters leave
 is the largest, see [`_longitudinal_candidate`](@ref), or by the explicit
 index). Argument
 errors: size, non-finite entries, a `clusters` report of a different matrix,
-an empty or repeated `routes` tuple, an unknown route, a bad `longitudinal`.
+an empty or repeated `routes` tuple, an unknown route, a bad `longitudinal`
+(an index outside `1:length(clusters.eigenvalues)`, refused on EVERY path by
+[`_check_longitudinal_index`](@ref) before the coasting test; a valid index
+on a coasting map is accepted and not used: the coasting branch supplies the
+report with `longitudinal = 0`, and the public option is declared inactive
+there; 2026-10-18 audit, F-178).
 The fixed point is linearly convergent (theory 8.6) and gets its own cap
 `fixed_point_max_iterations` (>= 1; the dense fixtures need up to 139 steps where Newton needs 5).
 """
@@ -1364,6 +1415,8 @@ function _dispersion_routes(M::AbstractMatrix{<:Real}, clusters::ModeClusters; l
     length(unique(routes)) == length(routes) || throw(ArgumentError("_dispersion_routes: repeated route in $(routes)"))
     newton_max_iterations >= 1 || throw(ArgumentError("_dispersion_routes: newton_max_iterations must be >= 1, got $(newton_max_iterations)"))
     fixed_point_max_iterations >= 1 || throw(ArgumentError("_dispersion_routes: fixed_point_max_iterations must be >= 1, got $(fixed_point_max_iterations)"))
+    # a bad explicit index is refused before the coasting branch can return without reading it (F-178)
+    longitudinal === nothing || _check_longitudinal_index(clusters, longitudinal)
     rho_M1 = clusters.rho_M1
     # Design step 3: the coasting test before any spectral classification (E1, E2).
     coasting = _coasting_structure(Mf; rho_M1=rho_M1)

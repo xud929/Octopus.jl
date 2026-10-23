@@ -118,7 +118,8 @@ receipt of the option's consumer must carry the alternative under the
 option's own name, an `:execution` option must leave `zeta`, `eta`, `h` and
 the tunes fixed within `c eps kappa`, a `:physics` or `:numerical` option
 must move what it controls (the presented form, the executed routes, the
-covariance presence, the failed-versus-thrown outcome, the forced
+covariance's eigen-emittances (the requested tuple itself, F-145), the
+failed-versus-thrown outcome, the forced
 resolution of the repeated-betatron input, the partition the clusters
 report groups by, the binding Newton cap, ...), and the report status must
 be `:resolved`. Options whose alternative fires on no form of the dense map
@@ -254,6 +255,62 @@ cell) is 1.93e14, so the one-tenth / ten window is [884, 1.9e13]; 1024 sits
 inside it (Part B's 64 was below the window).
 """
 const _ANALYSIS_CONTRACT_FIXED_MULTIPLIER = 1024.0
+
+"""
+    _analysis_contract_eigen_emittances(Sigma, emittances) -> (found, defect, kappa)
+
+The symplectic invariants of a matched covariance against the requested rms
+mode emittances (2026-10-18 audit, F-145: the `emittances` observable was
+presence-only, so an implementation that read the tuple, recorded it and
+built the covariance from unit or doubled emittances passed it). With `Sigma
+= U E U'`, `U` symplectic and `E = diag(eps_1, eps_1, ...)`, `S Sigma = (S U)
+(E S) (S U)^-1` is similar to `E S`, whose eigenvalues are `+- i eps_j`
+(Williamson), so the pair means of the sorted `|Im eigvals(S Sigma)|` are the
+sorted emittances and the real parts vanish. `found` are those pair means;
+`defect = max(max_k |found_k - eps_(k)|, max |Re lambda|) / min eps`; `kappa =
+(||Sigma||_2 / min eps)^2 * (max eps / min eps)` is the derived conditioning
+of that defect: the eigenvalue error of `S Sigma` is at most `eps_mach
+cond(S U) ||S Sigma||_2` with `cond(S U) = cond(U) = ||U||_2^2` (a symplectic
+`U` has `||U^-1||_2 = ||U||_2`), `||U||_2^2 <= ||Sigma||_2 / min eps` (`Sigma -
+min(eps) U U'` is positive semidefinite) and `||Sigma||_2 <= ||U||_2^2 max
+eps`, so the absolute error is at most `eps_mach (||Sigma||_2 / min eps)^2
+max eps`, and over `min eps` it is `eps_mach kappa`. A square `Sigma` of even
+size `2n` and `n` positive finite emittances are required (`ArgumentError`
+otherwise).
+"""
+function _analysis_contract_eigen_emittances(Sigma::AbstractMatrix{<:Real}, emittances)
+    d = size(Sigma, 1)
+    (size(Sigma, 2) == d && iseven(d) && d >= 2) || throw(ArgumentError(
+        "_analysis_contract_eigen_emittances: Sigma must be square of even size, got $(size(Sigma))"))
+    e = sort(Float64[Float64(x) for x in emittances])
+    (length(e) == div(d, 2) && all(x -> isfinite(x) && x > 0, e)) || throw(ArgumentError(
+        "_analysis_contract_eigen_emittances: $(div(d, 2)) positive finite emittances are needed for a $(d)x$(d) covariance, got $(emittances)"))
+    Sf = Matrix{Float64}(Sigma)
+    lam = eigvals(_symplectic_form(d) * Sf)
+    ims = sort(abs.(imag.(lam)))
+    found = [(ims[2k - 1] + ims[2k]) / 2 for k in 1:div(d, 2)]
+    defect = max(maximum(abs.(found .- e)), maximum(abs.(real.(lam)))) / e[1]
+    kappa = (opnorm(Sf, 2) / e[1])^2 * (e[end] / e[1])
+    return (found=found, defect=defect, kappa=kappa)
+end
+
+"""
+    _ANALYSIS_CONTRACT_EMITTANCE_MULTIPLIER
+
+PROVISIONAL `c` of the floor `c eps kappa` under which the `emittances`
+observable accepts the alternative run's eigen-emittances
+([`_analysis_contract_eigen_emittances`](@ref), kappa derived there). Measured
+2026-10-22 in both CPU arms (native, and `OPENBLAS_CORETYPE=Haswell julia -C
+haswell`) on the dense 6D fixture at the alternative `(1e-6, 2e-6, 3e-6)`
+(fix batch 4b, unit TW, `probes/TW/f145_measure.jl`): the multiplier-1 ratio
+defect / (eps kappa) is 5.869e-02 native | 5.031e-02 haswell with `kappa =
+227.5` (defect 2.96e-15 | 2.54e-15 of `min eps`), so the H15 rule `max(8,
+2^ceil(log2(10 max)))` gives 8; the rejected extreme, the doubled tuple
+(eigen-emittances `2 eps_j`, the suite's `:emittances_doubled` defect), sits at
+a defect of 3 of `min eps`, ratio 1.48e13 in both arms. Window by the
+one-tenth / ten rule `[0.587, 1.5e12]`; 8 inside.
+"""
+const _ANALYSIS_CONTRACT_EMITTANCE_MULTIPLIER = 8.0
 
 """
     _analysis_contract_types() -> Tuple
@@ -486,7 +543,18 @@ function _analysis_contract_observable(name::Symbol, meta::ConfigurationOptionMe
          isequal(field(ap, :newton_max_iterations), alternative) && ua isa Integer && ud isa Integer &&
             ua <= alternative && ud > alternative && !isequal(field(dp, :newton_max_iterations), alternative))
     elseif name === :emittances
-        ap[1].covariance.status === :unique && dp[1].covariance.status !== :unique
+        # the covariance's VALUE, not its presence (F-145): the alternative run's matched covariance must carry
+        # the requested tuple as its symplectic invariants within the derived floor; a run that reads the tuple,
+        # records it honestly and builds the covariance from another tuple fails here, where the presence test
+        # (:unique against the default's :not_requested) passed it
+        (ap[1].covariance.status === :unique && dp[1].covariance.status !== :unique) || return (false, :moved,
+            "$(name): the covariance is $(ap[1].covariance.status) with the alternative and $(dp[1].covariance.status) by default; expected :unique and not :unique")
+        ee = _analysis_contract_eigen_emittances(determined_value(ap[1].covariance), alternative)
+        efloor = _ANALYSIS_CONTRACT_EMITTANCE_MULTIPLIER * eps(Float64) * ee.kappa
+        ee.defect <= efloor || return (false, :moved,
+            "$(name): the alternative run's covariance has eigen-emittances $(ee.found), not the requested $(alternative) " *
+            "(defect $(ee.defect) of min eps against the floor $(efloor), kappa $(ee.kappa))")
+        true
     else
         return (false, :none, "$(name): no observable is known to the analysis contract; add one")
     end
