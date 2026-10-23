@@ -5,8 +5,9 @@
 # development-checkpoint lane, which skips the sections registered below via
 # `_lane_gate`, printing one loud LANE SKIP line per section and an accounting
 # banner at the end. The fast lane is a checkpoint, never a finish line: the
-# full-suite gate at CI settings remains the bar before any commit, and the
-# design note's matrix lists the change classes for which the full gate (with
+# full-suite gate at CI settings remains the bar before any PUSH (owner
+# decision 2026-09-04, AGENTS.md "Definition of Done"; it was before any
+# commit until then), and the design note's matrix lists the change classes for which the full gate (with
 # CUDA active) is mandatory. An unknown lane name is an error, never a silent
 # fallback to full -- a typo must not produce a vacuous verdict.
 # ---------------------------------------------------------------------------
@@ -126,12 +127,28 @@ if Octopus._HAS_CUDA
     # draws make a zero here impossible unless the sweep itself regressed.
     @test discriminating > 100
 end
-
+else
+    # The shape the header's own rule asks for (2026-10-18 audit F-150/U28-5): a
+    # CUDA.jl that fails to import must leave a Broken row, not silence.
+    @testset "TSC weights are bit-identical across backends (U2-3): CUDA.jl absent, skipped" begin
+        @test_skip "CUDA.jl did not import (Octopus._HAS_CUDA is false): the host-side TSC weight pin was not run"
+    end
 end
 
 const CUDA_TESTS_ACTIVE = Octopus._HAS_CUDA && Octopus.CUDA.functional()
 
 @testset "CUDA coverage status" begin
+    # The files carrying CUDABackend code, DERIVED from the tree for the banner
+    # below (2026-10-18 audit F-146/U28-1: the hand list said "Twelve" while
+    # thirteen did, `Tasks.jl` missing; the list before it named only the
+    # three *_cuda.jl solvers, 2026-08-05_b audit U17b-6). The scan is shown
+    # to see the tree: every `*_cuda.jl` file is in it, in both branches.
+    cuda_src_root = joinpath(pkgdir(Octopus), "src")
+    cuda_src_files = [relpath(joinpath(root, f), cuda_src_root) for (root, _, files) in walkdir(cuda_src_root)
+                      for f in files if endswith(f, ".jl")]
+    cuda_files = sort!(filter(f -> occursin("CUDABackend", read(joinpath(cuda_src_root, f), String)), cuda_src_files))
+    @test !isempty(cuda_files)
+    @test all(f -> f in cuda_files, filter(endswith("_cuda.jl"), cuda_src_files))
     if CUDA_TESTS_ACTIVE
         # Implied by the branch: `CUDA_TESTS_ACTIVE` IS
         # `_HAS_CUDA && CUDA.functional()` (2026-08-05_b audit, U17b-5). It
@@ -149,12 +166,10 @@ const CUDA_TESTS_ACTIVE = Octopus._HAS_CUDA && Octopus.CUDA.functional()
         NO CUDA DEVICE: the GPU half of this suite did NOT run.
         Every CUDA-gated testset was skipped, including all CPU/CUDA parity
         checks; each reports itself as Broken/skipped in the summary below.
-        A green run here says nothing about ANY CUDA path. Twelve source files
-        carry CUDABackend code -- the three *_cuda.jl solvers plus Beam.jl,
-        phase6d_track.jl, strong_beam_track.jl, radiation_track.jl,
-        Contracts.jl, interface.jl, spectral.jl, Policies.jl and Octopus.jl --
-        and none of it ran. The banner used to name only the first three, which
-        read as the full list (2026-08-05_b audit, U17b-6).
+        A green run here says nothing about ANY CUDA path. $(length(cuda_files)) source
+        files carry CUDABackend code (derived from the tree, not a hand list):
+        $(join(cuda_files, ", "))
+        -- and none of it ran.
         Run on a GPU host before trusting a CUDA change."""
         @test_skip "CUDA device not available -- GPU half of the suite skipped"
     end
@@ -220,17 +235,34 @@ end
         for d in sort!(collect(wholesale))
             isdir(joinpath(docs, d)) || push!(stale, d)
         end
+        # Every FILE of every type, matched by its WHOLE relative path against
+        # the index's link targets, never by basename (2026-10-18 audit
+        # F-149/U28-4, U52-13): `endswith(f, ".md") || continue` left the two
+        # history records that are not markdown (a `.txt` capture, a `.tsv`
+        # benchmark table) outside the rule, and `occursin(f, index)` waved a
+        # file through whenever any link named ANOTHER file of the same
+        # basename -- 27 basenames are duplicated across the audit bundles,
+        # four files passed only through someone else's link, and a newcomer
+        # `U1_report.md` in a fresh directory would have passed the same way.
+        # A wholesale marker covers its directory and the directories nested
+        # in it (the bundles carry `bin/` subdirectories of probe scripts).
+        targets = Set{String}(replace(String(split(String(m.captures[1]), '#')[1]), r"^\./" => "") for m in
+            eachmatch(r"\]\(([^)\s]+)\)", index))
+        covered(dir) = any(w -> dir == w || startswith(dir, w * "/"), wholesale)
         for (root, dirs, files) in walkdir(docs)
             filter!(d -> !startswith(d, "."), dirs)
             for f in files
-                endswith(f, ".md") || continue
                 f == "README.md" && root == docs && continue
-                (occursin(f, index) || relpath(root, docs) in wholesale) ||
-                    push!(unindexed, relpath(joinpath(root, f), docs))
+                rel = relpath(joinpath(root, f), docs)
+                (rel in targets || covered(relpath(root, docs))) || push!(unindexed, rel)
             end
         end
         @test isempty(unindexed)
         isempty(unindexed) || @info "documents missing from docs/README.md" unindexed
+        # and the other direction: no link target names a file that is not there
+        dangling = sort!([t for t in targets if !startswith(t, "http") && !ispath(joinpath(docs, t))])
+        @test isempty(dangling)
+        isempty(dangling) || @info "docs/README.md links naming no file" dangling
         @test isempty(stale)
         isempty(stale) || @info "indexed-wholesale markers naming no directory" stale
         # The exemption is narrow: it must not have swallowed `history/` again.
@@ -239,20 +271,27 @@ end
 
         # The rule shown failing, on a synthetic index rather than by writing
         # into docs/: an index that merely LINKS files inside a directory must
-        # not thereby exempt that directory. This is the old rule's hole, and it
-        # is the whole difference between the two clauses.
-        let fake = "see [`history/a.md`](history/a.md) and (`history/`)\n",
+        # not thereby exempt that directory (the old directory clause's hole),
+        # and a link to ANOTHER file of the same basename must not index this
+        # one (the old name clause's hole, F-149). Both holes of the old rule
+        # are shown open and both closed by the path rule.
+        let fake = "see [`a.md`](history/a.md) and [`U1_report.md`](bundle_a/U1_report.md) (`history/`)\n" *
+                   "<!-- indexed-wholesale: bundle_a -->\n",
             old_rule(f, dir, idx) = occursin(f, idx) || occursin(dir * "/", idx),
             marks(idx) = Set{String}(String(m.captures[1]) for m in
                 eachmatch(r"<!--\s*indexed-wholesale:\s*(\S+?)/?\s*-->", idx)),
-            new_rule(f, dir, idx) = occursin(f, idx) || dir in marks(idx)
-            @test old_rule("b.md", "history", fake)        # waved through
-            @test !new_rule("b.md", "history", fake)       # caught
-            @test new_rule("a.md", "history", fake)        # named files still pass
-            # and a declared directory is still exempt, which is what the two
-            # audit bundles rely on
-            @test new_rule("b.md", "bundle",
-                           fake * "<!-- indexed-wholesale: bundle -->\n")
+            links(idx) = Set{String}(String(m.captures[1]) for m in eachmatch(r"\]\(([^)\s]+)\)", idx)),
+            path_rule(rel, dir, idx) = rel in links(idx) || any(w -> dir == w || startswith(dir, w * "/"), marks(idx))
+            @test old_rule("b.md", "history", fake)                  # the directory hole: waved through
+            @test !path_rule("history/b.md", "history", fake)         # caught
+            @test path_rule("history/a.md", "history", fake)          # named files still pass
+            @test old_rule("U1_report.md", "fresh", fake)             # the basename hole: another directory's file of the same name
+            @test !path_rule("fresh/U1_report.md", "fresh", fake)     # caught by the whole path
+            @test path_rule("bundle_a/U1_report.md", "bundle_a", fake)
+            # a declared directory is exempt, its nested directories with it
+            # (what the audit bundles rely on), and an undeclared one is not
+            @test path_rule("bundle_a/bin/x.jl", "bundle_a/bin", fake)
+            @test !path_rule("bundle_b/x.jl", "bundle_b", fake)
         end
     end
 
@@ -1149,12 +1188,16 @@ end
     @test occursin("TwissDispersionIdentityContract", md)
     # the snapshot on disk differs from the live one at most in lines naming
     # the contract (the integrator regenerates it on main; the 4b-B shape)
-    root = dirname(dirname(dirname(String(first(methods(Octopus.validate_configuration_metadata)).file))))
-    ondisk = joinpath(dirname(root), "docs", "registry_snapshot.md")
+    # by the package root, not by counting directories above one method's file
+    # (2026-10-18 audit F-148/U28-3, U30-10: three `dirname`s encoded where
+    # `validate_configuration_metadata` happens to live, and a miss was silent)
+    ondisk = joinpath(pkgdir(Octopus), "docs", "registry_snapshot.md")
     if isfile(ondisk)
         live = Set(split(md, '\n')); disk = Set(split(read(ondisk, String), '\n'))
         changed = union(setdiff(live, disk), setdiff(disk, live))
         @test all(l -> occursin("TwissDispersionIdentityContract", l), changed)
+    else
+        @test_skip "registry snapshot not on disk at $(ondisk): the on-disk comparison was not run"
     end
     # the contract rejects unknown keywords (the real validate is T2's)
     @test_throws ArgumentError validate(TwissDispersionIdentityContract(); bogus=1)
@@ -1177,12 +1220,16 @@ end
     @test occursin("TwissExternalReferenceContract", md)
     # the snapshot on disk differs from the live one at most in lines naming
     # the contract (the integrator regenerates it on main; the 4b-B shape)
-    root = dirname(dirname(dirname(String(first(methods(Octopus.validate_configuration_metadata)).file))))
-    ondisk = joinpath(dirname(root), "docs", "registry_snapshot.md")
+    # by the package root, not by counting directories above one method's file
+    # (2026-10-18 audit F-148/U28-3, U30-10: three `dirname`s encoded where
+    # `validate_configuration_metadata` happens to live, and a miss was silent)
+    ondisk = joinpath(pkgdir(Octopus), "docs", "registry_snapshot.md")
     if isfile(ondisk)
         live = Set(split(md, '\n')); disk = Set(split(read(ondisk, String), '\n'))
         changed = union(setdiff(live, disk), setdiff(disk, live))
         @test all(l -> occursin("TwissExternalReferenceContract", l), changed)
+    else
+        @test_skip "registry snapshot not on disk at $(ondisk): the on-disk comparison was not run"
     end
     # the contract rejects unknown keywords (the real validate is in "Physics contracts")
     @test_throws ArgumentError validate(TwissExternalReferenceContract(); bogus=1)
@@ -7836,13 +7883,17 @@ end
     md = Octopus.registry_snapshot_markdown()
     @test occursin("AnalysisOptionEffectivenessContract", md) && occursin("TwissDispersionAnalysis", md)
     # the snapshot on disk differs from the live one at most in the Analyses and Contracts lines
-    root = dirname(dirname(dirname(String(first(methods(Octopus.validate_configuration_metadata)).file))))
-    ondisk = joinpath(dirname(root), "docs", "registry_snapshot.md")
+    # by the package root, not by counting directories above one method's file
+    # (2026-10-18 audit F-148/U28-3, U30-10: three `dirname`s encoded where
+    # `validate_configuration_metadata` happens to live, and a miss was silent)
+    ondisk = joinpath(pkgdir(Octopus), "docs", "registry_snapshot.md")
     if isfile(ondisk)
         live = Set(split(md, '\n')); disk = Set(split(read(ondisk, String), '\n'))
         changed = union(setdiff(live, disk), setdiff(disk, live))
         @test all(l -> occursin("TwissDispersionAnalysis", l) || occursin("AnalysisOptionEffectivenessContract", l) ||
                        occursin("PlaceholderAnalysis", l) || occursin("Analyses", l) || occursin("Contracts", l), changed)
+    else
+        @test_skip "registry snapshot not on disk at $(ondisk): the on-disk comparison was not run"
     end
     # the contract rejects unknown keywords and never throws for a failed probe
     c = AnalysisOptionEffectivenessContract()
@@ -38654,5 +38705,5 @@ if !_lane_full()
         println("  skipped: ", name)
     end
     printstyled("This lane is a development checkpoint, not a finish line: the full-suite\n" *
-                "gate at CI settings is still owed before any commit.\n"; color=:yellow)
+                "gate at CI settings is still owed before any push (owner decision 2026-09-04).\n"; color=:yellow)
 end
