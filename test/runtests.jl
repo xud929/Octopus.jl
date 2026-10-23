@@ -15274,9 +15274,13 @@ end
     # factor-free form parts by 8e-8). The note states the code's pair and the
     # kernel still forms it that way: two textual tripwires, one each.
     note = read(joinpath(pkgdir(Octopus), "docs", "theory", "lattice_hamiltonian_and_conventions.md"), String)
-    @test occursin("\\frac{h^2y^3}{18\\,FG\\,(1+\\delta)}", note)
-    @test occursin("\\frac{h^2y^4}{72\\,FG\\,(1+\\delta)^2}", note)
-    @test !occursin("\\Delta z=+\\frac{h^2y^4}{72\\,FG}\\cdot\\frac{1+\\delta}{(1+\\delta)^2}", note)
+    @test occursin("\\frac{b^2y^3}{18\\,FG\\,(1+\\delta)}", note)
+    @test occursin("\\frac{b^2y^4}{72\\,FG\\,(1+\\delta)^2}", note)
+    @test !occursin("\\Delta z=+\\frac{b^2y^4}{72\\,FG}\\cdot\\frac{1+\\delta}{(1+\\delta)^2}", note)
+    # and the field is the dipole strength `b` (`b = σ b1` in `_fringe_dipole_exact`), not the
+    # frame curvature `h`, which the note wrote in all three formulas until 2026-10-22 against
+    # its own parenthesis and the kernel (fix batch 4a lead D18; 2026-10-18 audit F-241/U48-5)
+    @test !occursin("\\frac{h^2y^3}", note) && !occursin("\\frac{h^2y^4}", note)
     src = read(joinpath(pkgdir(Octopus), "src", "elements", "lattice_magnets.jl"), String)
     @test occursin("c3 = b * b / (72 * fg) / p", src) && occursin("py -= 4 * c3 * y^3", src) && occursin("z -= c3 * y^4 / p", src)
     # And the kick IS that of V: at the exit face with fint*hgap != 0, the cubic's
