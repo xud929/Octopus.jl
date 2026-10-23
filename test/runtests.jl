@@ -1305,6 +1305,26 @@ _st6_declaring_kinds() = count(T -> TwissDispersionAnalysis in Octopus.supported
 # measured arms' maxima (c = max(8, 2^ceil(log2(10 max)))); the re-open rule reads the ratios at the frozen c and
 # says when a row must be measured again. The ::notice chunks in the stage 6 testset carry the runner's table.
 const _ST6_PIN = 0.5
+# The re-open threshold of the rule above: rows above it are WARNED, by name, in the stage 6 testset (2026-10-18 audit
+# F-151/U28-6: the rule had no instrument, a row drifting into (0.25, 0.5] was silently green).
+const _ST6_REOPEN = 0.25
+# The element registry's containers, snapshotted and restored as ONE set (2026-10-18 audit F-147/U28-2): the stage 6
+# negatives register scratch kinds, and a restore that hand-listed three of the four containers
+# `register_element_meta!` writes left a `friendly_constructor` entry behind, invisible to both validators. The
+# testset derives the set from the registering functions' own source, so a fifth container cannot join unrestored.
+const _ST6_REGISTRY_CONTAINERS = (:REGISTERED_ELEMENT_SPECS, :ELEMENT_META_BY_SPEC_TYPE, :ELEMENT_META_BY_FRIENDLY_TYPE,
+                                  :ELEMENT_META_BY_KIND)
+_st6_registry_state() = NamedTuple{_ST6_REGISTRY_CONTAINERS}(map(c -> copy(getfield(Octopus, c)), _ST6_REGISTRY_CONTAINERS))
+function _st6_restore_registry!(saved)
+    for c in _ST6_REGISTRY_CONTAINERS
+        live = getfield(Octopus, c)
+        empty!(live)
+        live isa AbstractVector ? append!(live, saved[c]) : merge!(live, saved[c])
+    end
+    return nothing
+end
+"A scratch friendly type for the n3 liar: the fourth container is written, so the restore is exercised on it."
+struct _St6LiarFriendly end
 function _st6_pin_lines(src::Vector{String})
     # a block runs from its column-0 title line to the first bare `end` after it (a column-0 `end` inside either
     # testset would truncate the scan); a title found other than once, or no bare `end`, contributes no lines, and
@@ -1335,8 +1355,10 @@ end
     @test m[:worst_identity] in keys(c.multipliers)
     st6_slugs = sort!(collect(keys(c.multipliers)); by = s -> -get(m, Symbol("max_", s), Inf))
     st6_ct = Base.JLOptions().cpu_target
+    st6_reopen = [string(slug) for slug in st6_slugs if get(m, Symbol("max_", slug), NaN) > _ST6_REOPEN]
     println("stage 6 identity pins: ratio at the frozen c | c | argmax fixture (host ", Sys.CPU_NAME, ", cpu_target ",
-            st6_ct == C_NULL ? "native" : unsafe_string(st6_ct), ", OPENBLAS_CORETYPE ", get(ENV, "OPENBLAS_CORETYPE", "auto"), ")")
+            st6_ct == C_NULL ? "native" : unsafe_string(st6_ct), ", OPENBLAS_CORETYPE ", get(ENV, "OPENBLAS_CORETYPE", "auto"),
+            "; rows above the re-open threshold ", _ST6_REOPEN, ": ", length(st6_reopen), ")")
     # the rows' cells (slug, ratio, c, argmax) built once: the plain table below prints the same text as before (local
     # logs do not change) and the ::notice chunks under GITHUB_ACTIONS read the same strings
     st6_cells = [(string(slug), string(round(get(m, Symbol("max_", slug), NaN); sigdigits=4)), string(round(Int, c.multipliers[slug])),
@@ -1361,6 +1383,15 @@ end
         @testset let slug = slug, ratio = get(m, Symbol("max_", slug), NaN)
             @test ratio <= _ST6_PIN
         end
+    end
+    # The RE-OPEN rule's instrument (the rule's text above `_ST6_PIN`): a row above `_ST6_REOPEN` at its frozen c
+    # re-opens that row's measurement before the pin trips. Not a failure (the pin is one half) but LOUD: a warning
+    # naming the rows, a GitHub annotation on the runner, and the count in the header line above, so the rule no
+    # longer depends on a human reading the 57-row table (2026-10-18 audit F-151/U28-6). No ratio pin here: the
+    # `_st6_pin_lines` tripwire at the end of this testset counts the pins, and this is not one.
+    if !isempty(st6_reopen)
+        @warn "stage 6 identity pins: $(length(st6_reopen)) row(s) above the re-open threshold $(_ST6_REOPEN) at the frozen c (the pin is $(_ST6_PIN)); re-open the row's measurement (an H15 third-arm entry or the row's kappa re-examined), never a hand move of c" rows = st6_reopen host = Sys.CPU_NAME
+        haskey(ENV, "GITHUB_ACTIONS") && println("::warning title=stage 6 identity pins above the re-open threshold ", _ST6_REOPEN, " (", Sys.CPU_NAME, ")::", join(st6_reopen, ", "))
     end
     @test m[:identities] == length(c.multipliers)
     # the silent-diagnostic table: every expected diagnostic fired
@@ -1405,21 +1436,36 @@ end
     fewer = copy(c.multipliers); delete!(fewer, slug2)
     r2 = Octopus._identity_contract_probe(TwissDispersionIdentityContract(multipliers=fewer), fx, analyze)
     @test !r2.passed && occursin(string(slug2), r2.message) && occursin("no multiplier", r2.message)
+    # The registry is restored as the WHOLE set of containers the registering functions write, derived from
+    # their source, and the state is compared after the restore (2026-10-18 audit F-147/U28-2: the hand-listed
+    # restore deleted from three of the four containers; a liar with a friendly constructor left its entry in
+    # `ELEMENT_META_BY_FRIENDLY_TYPE` for every later testset, and `validate(c).passed` could not see it).
+    let ksrc = read(joinpath(pkgdir(Octopus), "src", "knowledge", "Knowledge.jl"), String),
+        body(name) = match(Regex("^function " * name * "\\(.*?^end", "ms"), ksrc).match,
+        written = Set(Symbol(w.match) for f in ("register_element_meta!", "register_element_spec!")
+                      for w in eachmatch(r"\b(REGISTERED_ELEMENT_SPECS|ELEMENT_META_BY_[A-Z_]+)\b", body(f)))
+        @test written == Set(_ST6_REGISTRY_CONTAINERS)
+        # and every registry container the module defines is in the set: a fifth table cannot join unrestored
+        @test Set(n for n in names(Octopus; all=true) if startswith(string(n), "ELEMENT_META_BY_") || n === :REGISTERED_ELEMENT_SPECS) ==
+              Set(_ST6_REGISTRY_CONTAINERS)
+    end
+    st6_saved = _st6_registry_state()
     # n3: the liar kind declares the analysis with an example `analyze` cannot take
-    # (a 2x2 matrix); the sweep must fail the contract by name and count it.
+    # (a 2x2 matrix); the sweep must fail the contract by name and count it. It
+    # carries a friendly constructor so the fourth container is written too.
     try
         Octopus.register_element_meta!(Octopus.ElementMeta(;
-            kind=:idc_liar, spec_type=ElementSpec{:idc_liar}, tracking_methods=[Symplectic6DMap],
-            analyses=[TwissDispersionAnalysis], example=[1.0 0.0; 0.0 1.0]))
+            kind=:idc_liar, spec_type=ElementSpec{:idc_liar}, friendly_constructor=_St6LiarFriendly,
+            tracking_methods=[Symplectic6DMap], analyses=[TwissDispersionAnalysis], example=[1.0 0.0; 0.0 1.0]))
+        @test haskey(Octopus.ELEMENT_META_BY_FRIENDLY_TYPE, _St6LiarFriendly)     # the fourth container IS written
         r3 = Octopus._identity_contract_probe(c, fx, analyze)
         @test !r3.passed && occursin("idc_liar", r3.message)
         @test r3.metrics[:kinds_declaring_without_result] == 1
         @test r3.metrics[:kinds_declaring] == m[:kinds_declaring] + 1
     finally
-        delete!(Octopus.ELEMENT_META_BY_KIND, :idc_liar)
-        delete!(Octopus.ELEMENT_META_BY_SPEC_TYPE, ElementSpec{:idc_liar})
-        filter!(t -> t !== ElementSpec{:idc_liar}, Octopus.REGISTERED_ELEMENT_SPECS)
+        _st6_restore_registry!(st6_saved)
     end
+    @test _st6_registry_state() == st6_saved                                  # every container, not three of four
     # n3b: a declaring kind with NO metadata example is uncovered, never silently skipped: counted
     # in kinds_without_example and failed by name (the SymplecticityContract twin's rule).
     try
@@ -1431,11 +1477,10 @@ end
         @test r3b.metrics[:kinds_without_example] == 1
         @test r3b.metrics[:kinds_analyzed] + r3b.metrics[:kinds_refused] + r3b.metrics[:kinds_without_example] == r3b.metrics[:kinds_declaring]
     finally
-        delete!(Octopus.ELEMENT_META_BY_KIND, :idc_noexample)
-        delete!(Octopus.ELEMENT_META_BY_SPEC_TYPE, ElementSpec{:idc_noexample})
-        filter!(t -> t !== ElementSpec{:idc_noexample}, Octopus.REGISTERED_ELEMENT_SPECS)
+        _st6_restore_registry!(st6_saved)
     end
-    @test validate(c).passed        # registry restored
+    @test _st6_registry_state() == st6_saved
+    @test validate(c).passed        # registry restored (the validate is implied by the state equality; kept as the contract's own word)
     # n4: a verb that certifies every bunched run silently -> D9's expected
     # :degraded (the uncertified heuristic) never fires -> the row is named in
     # the silent list and the message names a silent row (the first in table
@@ -2496,11 +2541,19 @@ end
     by, ay, muy = 1.5, -0.4, 2pi * 0.31
     bz, muz = 10.0, 2pi * 0.05
     Rs = ((0.5, 0.5, 1.5, 0.5), (0.4, 0.2, 0.6, 0.3), (0.5, 0.2, -0.1, 0.56), (0.8, 0.3, -0.6, 1.025))
-    @test maximum(abs.([r[1] * r[4] - r[2] * r[3] for r in Rs] .- [-0.5, 0.0, 0.3, 1.0])) <= 2 * eps()
+    dets_design = (-0.5, 0.0, 0.3, 1.0)
+    @test maximum(abs.([r[1] * r[4] - r[2] * r[3] for r in Rs] .- collect(dets_design))) <= 2 * eps()
+    # The zero-weight row's admissibility branch below is keyed on the DESIGN determinant, not on the computed
+    # one (2026-10-18 audit F-151/U28-7: `d == 0` on `det(Rm)` was exact only because 0.4 * 0.3 and 0.2 * 0.6
+    # round to the same double, and the `else` arm's tolerances scale as 1 / (w d)^2, vacuous at a one-ulp d).
+    # The exactness that branch rests on is a stated PRECONDITION: the design-zero row's literals multiply to an
+    # exactly zero determinant; a row admitted only to 2 eps would fail here, loudly, instead of taking the
+    # wrong arm.
+    @test det([Rs[2][1] Rs[2][2]; Rs[2][3] Rs[2][4]]) == 0
     m0 = compile_runtime(Linear6DSpec(beta1=(bx, by, bz), alpha1=(ax, ay, 0.0), dmu=(mux, muy, muz)))
     M0 = one_turn_matrix((m0,)).matrix[1:4, 1:4]
     @test norm(M0 - _pb_blockdiag(Octopus._twiss_block(bx, ax, mux), Octopus._twiss_block(by, ay, muy))) <= 64 * eps() * norm(M0)
-    for (mode, form) in ((XY_MODEA, 1), (XY_MODEB, 2)), r in Rs
+    for (mode, form) in ((XY_MODEA, 1), (XY_MODEB, 2)), (r, d_design) in zip(Rs, dets_design)
         Rm = [r[1] r[2]; r[3] r[4]]; d = det(Rm)
         W = compile_runtime(XYCouplingSpec(r1=r[1], r2=r[2], r3=r[3], r4=r[4], mode=mode))
         Winv = form == 1 ? compile_runtime(XYCouplingSpec(r1=-r[1], r2=-r[2], r3=-r[3], r4=-r[4], mode=mode)) :
@@ -2542,11 +2595,11 @@ end
             # and weight 1 - w, admissible iff det R > 0.
             uexp = form == 1 ? d / (1 + d) : 1 / (1 + d)
             @test abs(_pb_val(et.u) - uexp) <= c * eps() * kq * nU
-            @test other.admissible == (d > 0)
-            if d == 0
+            @test other.admissible == (d_design > 0)      # the kernel's own floor refuses a form whose det is at rounding level
+            if d_design == 0
                 @test !is_determined(other.R) && other.R.reason === :form_inadmissible   # zero weight: no finite R
                 @test other.det_R.reason === :form_inadmissible
-            elseif d < 0
+            elseif d_design < 0
                 @test is_determined(other.R) && 1 + _pb_val(other.det_R) < 0                # det = 1/d < -1
                 @test other.lambda.reason === :form_inadmissible && other.twiss.reason === :form_inadmissible
             else
