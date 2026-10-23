@@ -54,7 +54,7 @@ const _IDENTITY_CONTRACT_SLUGS = (
     :c_projector_sum, :c_projector_idempotence, :c_covariance_symmetry_caller, :c_d14_graph_invariance,
     :c_d8_round_trip, :c_d3_symplecticity, :c_d3_determinant, :c_k4_block_diagonality,
     :c_x2_graph_readout, :c_matched_covariance_accessor, :c_covariance_closure_caller,
-    :c_normal_mode_kappa, :c_normal_mode_tunes, :c_tune_consistency, :c_line_equals_matrix,
+    :c_normal_mode_kappa, :c_normal_mode_tunes, :c_m1_twiss_from_normalizer, :c_tune_consistency, :c_line_equals_matrix,
     :c_scaling_invariance, :c_d24_coasting_caller,
 )
 
@@ -144,11 +144,12 @@ function _default_identity_multipliers()
         :c_d3_determinant => 8,  # 3.523e-03 | 3.701e-03 | F6a dense 6x6 map 13
         :c_k4_block_diagonality => 512,  # 2.644e+01 | 2.768e+01 | F6a dense 6x6 map 17
         :c_x2_graph_readout => 8,  # 1.120e-01 | 9.286e-02 | F6a dense 6x6 map 14
-        :c_matched_covariance_accessor => 8,  # 0.000e+00 | 0.000e+00 | F4 DBA + RF
+        :c_matched_covariance_accessor => 8,  # 3.498e-02 | 3.331e-02 | F6a dense 6x6 map 20 | F6b dense 4x4 map 4 (re-measured 2026-10-22, fix batch 4b, F-142: the accessor for (1, 2, 3) .* eps against U diag(eps) U' of the physical normalizer, kappa ||U||^2 cond(U); was 0 | 0 against physical.covariance, the same kernel call)
         :c_covariance_closure_caller => 64,  # 4.988e+00 | 4.839e+00 | F6a dense 6x6 map 19
         :c_normal_mode_kappa => 8,  # 9.670e-02 | 6.580e-02 | F8 coasting map
-        :c_normal_mode_tunes => 8,  # 0.000e+00 | 0.000e+00 | F1 DBA cell (tuple)
-        :c_tune_consistency => 32,  # 2.199e+00 | 2.080e+00 | F6a dense 6x6 map 19
+        :c_normal_mode_tunes => 16,  # 1.327e+00 | 1.373e+00 | F6a dense 6x6 map 19 (re-measured 2026-10-22, fix batch 4b, F-142: normal_mode(result, j).tune against eigvals(result.matrix), kappa ||M|| cond(U); was 0 | 0 at c = 8 against physical.tunes[j], the same number)
+        :c_m1_twiss_from_normalizer => 8,  # 7.699e-01 | 7.699e-01 | F3 detuned FODO (new 2026-10-22, fix batch 4b, F-142: (M1) of the physical normalizer against physical.beta/alpha/gamma, kappa ||U||^2)
+        :c_tune_consistency => 16,  # 1.318e+00 | 1.372e+00 | F6a dense 6x6 map 19 (re-measured 2026-10-22, fix batch 4b, F-142: physical.tunes against eigvals(result.matrix), kappa max(||U||^2, ||M|| cond(U)); was 32 at 2.199e+00 | 2.080e+00 against the analysis's own clusters.eigenvalues)
         :c_line_equals_matrix => 8,  # 0.000e+00 | 0.000e+00 | F2 DBA cell (BeamLine)
         :c_scaling_invariance => 8,  # 5.973e-01 | 5.028e-01 | F6b dense 4x4 map 1 (re-measured: kappa amax^2 ||U||^2 cond(U))
         :c_d24_coasting_caller => 8,  # 1.176e-01 | 1.276e-01 | F1 DBA cell (tuple) (re-measured: no condition number on the residual)
@@ -905,10 +906,19 @@ normalizer; the (E8) reconstruction with `R(mu) = [cos sin; -sin cos]`
 (D14) graph invariance in the (I1) normalization on the caller's blocks; the
 (D8) round trip; the (D3) transformation's symplecticity, determinant and
 (K4) block diagonality; the (X2) readout from the physical normalizer; the
-`matched_covariance` accessor against `physical.covariance` and the closure
-in caller coordinates; `normal_mode` against `physical` (the scaling
-invariant `beta gamma - alpha^2` per plane, and the tunes); tune consistency
-with the spectrum; (D24) on coasting fixtures.
+`matched_covariance` accessor for a distinct-valued tuple against the (K10)
+construction `U diag(eps) U'` of the physical normalizer, and the closure of
+`physical.covariance` in caller coordinates; `normal_mode` against
+`physical` (the scaling invariant `beta gamma - alpha^2` per plane) and
+against the caller's spectrum (its tune's chord to the nearest
+`eigvals(result.matrix)`); the (M1) Twiss functions of the physical
+normalizer against `physical.beta/alpha/gamma`; the reported tunes against
+`eigvals(result.matrix)` and the result's other tune lists; (D24) on
+coasting fixtures. Until fix batch 4b (2026-10-18 audit, F-142) the accessor
+row re-ran the kernel the result's covariance came from and the normal-mode
+tune row compared the same number with itself (both 0 exactly on every
+fixture), the Twiss functions were tied to nothing, and the spectrum was the
+analysis's own `clusters.eigenvalues`.
 """
 function _identity_contract_recomputed_rows!(result::TwissDispersionResult, name::AbstractString, metrics::Dict{Symbol,Any},
                                              contract::TwissDispersionIdentityContract, failures::Vector{String})
@@ -970,27 +980,57 @@ function _identity_contract_recomputed_rows!(result::TwissDispersionResult, name
             rec(:c_x2_graph_readout, norm(U[1:4, 5:6] * inv(Uls) - D), norm(U)^2 * cond(Uls))
         end
     end
+    # LinearAlgebra's own eigensolve of the CALLER's matrix: the independent spectrum the two tune rows compare with
+    # (the analysis's `clusters.eigenvalues` are its own Schur of the scaled matrix; 2026-10-18 audit, F-142).
+    # Bauer-Fike bounds the eigenvalue error of a diagonalizable matrix by cond(U) ||E|| with ||E|| ~ eps ||M||.
+    lam = eigvals(M)
+    kappa_lambda = nM * cU
     if is_determined(ph.covariance) && result.analysis.emittances !== nothing
         Sigma = determined_value(ph.covariance); nS = max(1.0, norm(Sigma))
-        rec(:c_matched_covariance_accessor, norm(matched_covariance(result, result.analysis.emittances) - Sigma), nS)
+        if U !== nothing && size(U, 1) == size(Sigma, 1)
+            # (K10) in the caller's coordinates (F-142): the accessor's covariance for a tuple with DISTINCT entries
+            # (k eps_k, so an accessor that ignores the values is caught) against U diag(eps) U' of the PHYSICAL
+            # normalizer, which the kernel never sees (it builds from the scaled U_6 and unscales the product); the row
+            # compared the accessor with physical.covariance, both from one kernel call, and measured 0 exactly.
+            # Quadratic in U, relative to ||Sigma_ref||: cond(U) covers the ratio of the extreme column norms.
+            probe = Tuple(k * Float64(e) for (k, e) in enumerate(result.analysis.emittances))
+            Sref = U * Diagonal(vcat([[e, e] for e in probe]...)) * transpose(U)
+            rec(:c_matched_covariance_accessor, norm(matched_covariance(result, probe) - Sref) / max(1.0, norm(Sref)), nU2 * cU)
+        end
         MS = size(Sigma, 1) == d ? M : M[1:size(Sigma, 1), 1:size(Sigma, 1)]
         rec(:c_covariance_closure_caller, norm(MS * Sigma * transpose(MS) - Sigma), nM^2 * nS)
     end
     if !isempty(ph.tunes) && is_determined(ph.beta) && is_determined(ph.alpha) && is_determined(ph.gamma)
-        bga = determined_value(ph.beta) .* determined_value(ph.gamma) .- determined_value(ph.alpha) .^ 2
+        B = determined_value(ph.beta); A = determined_value(ph.alpha); G = determined_value(ph.gamma)
+        bga = B .* G .- A .^ 2
         kmax = 0.0; tmax = 0.0
         for j in 1:min(length(ph.tunes), size(bga, 1))
             nm = try normal_mode(result, j) catch e; e isa UndeterminedQuantityError ? nothing : rethrow() end
             nm === nothing && continue
             kmax = max(kmax, maximum(abs.(nm.beta .* nm.gamma .- nm.alpha .^ 2 .- bga[j, :])))
-            tmax = max(tmax, abs(nm.tune - ph.tunes[j]))
+            # the accessor's tune against the caller's spectrum: the chord from exp(-i mu) to the nearest eigenvalue
+            # of M (F-142: the row compared it with physical.tunes[j], the same number, 0 exactly on every fixture)
+            tmax = max(tmax, minimum(abs(exp(-im * nm.tune) - l) for l in lam))
         end
-        rec(:c_normal_mode_kappa, kmax, nU2^2); rec(:c_normal_mode_tunes, tmax, 1.0)
+        rec(:c_normal_mode_kappa, kmax, nU2^2); rec(:c_normal_mode_tunes, tmax, kappa_lambda)
+        # (M1) in the caller's coordinates (F-142): beta_ja = |u_ja|^2, alpha_ja = -Re(conj(u_ja) u_jpa), gamma_ja =
+        # |u_jpa|^2 read off the PHYSICAL normalizer's columns [Re u_j, -Im u_j] (E6) against the unscaled
+        # physical.beta/alpha/gamma: the one row that ties the Twiss functions to the normalizer that the (E8) and
+        # symplecticity rows tie to the matrix (quadratic in U). The scale invariant bga above cannot see a wrong
+        # unscaling factor (a^2 on beta, 1/a^2 on gamma); this row does.
+        if U !== nothing && size(U, 2) == 2 * size(B, 1) && size(U, 1) == 2 * size(B, 2)
+            dev = 0.0
+            for j in 1:size(B, 1), a in 1:size(B, 2)
+                q1 = U[2a - 1, 2j - 1]; q2 = U[2a - 1, 2j]; p1 = U[2a, 2j - 1]; p2 = U[2a, 2j]
+                dev = max(dev, abs(q1^2 + q2^2 - B[j, a]), abs(-(q1 * p1 + q2 * p2) - A[j, a]), abs(p1^2 + p2^2 - G[j, a]))
+            end
+            rec(:c_m1_twiss_from_normalizer, dev, nU2)
+        end
     end
     if !isempty(ph.tunes)
         wrap(a, b) = abs(rem(a - b, 2pi, RoundNearest))
-        ev = result.clusters.eigenvalues
-        tc = maximum(minimum(wrap(t, mod(-angle(l), 2pi)) for l in ev) for t in ph.tunes)
+        # the reported tunes against the caller's spectrum (F-142: `result.clusters.eigenvalues` was the analysis's own)
+        tc = maximum(minimum(wrap(t, mod(-angle(l), 2pi)) for l in lam) for t in ph.tunes)
         # dispersion.tunes are in the LABEL order of ModeLabels6D (a heuristic that can differ from the frame's
         # mode order: measured on the dense map 10, where modes 1 and 2 are swapped), so they are compared as a set.
         if d == 6 && result.dispersion !== nothing && length(result.dispersion.tunes) == length(ph.tunes)
@@ -999,7 +1039,7 @@ function _identity_contract_recomputed_rows!(result::TwissDispersionResult, name
         if d == 6 && result.projected_optics !== nothing && is_determined(result.projected_optics) && length(ph.tunes) == 3
             tc = max(tc, maximum(wrap(ph.tunes[j], determined_value(result.projected_optics).tunes[j]) for j in 1:3))
         end
-        rec(:c_tune_consistency, tc, nU2)
+        rec(:c_tune_consistency, tc, max(nU2, kappa_lambda))
     end
     if d == 6 && result.coasting !== nothing && result.coasting.holds && is_determined(ph.eta)
         eta = determined_value(ph.eta); A = I(4) - M[1:4, 1:4]

@@ -1483,6 +1483,77 @@ end
     end
 end
 
+@testset "Stage 6: the Layer 3 rows judge the physical tunes, Twiss functions and the covariance accessor against independent references, and the V1 re-derivation sees a doctored verdict (F-142)" begin
+    # Two Layer 3 rows were circular (2026-10-18 audit, F-142 = U24-4): c_normal_mode_tunes compared
+    # normal_mode(result, j).tune with physical.tunes[j], the same numbers (0 exactly on every fixture), and
+    # c_matched_covariance_accessor re-ran the kernel the result's covariance came from (0 exactly); physical
+    # beta/alpha/gamma were tied to nothing; c_tune_consistency read the analysis's own eigensolve. The rows now
+    # compare with eigvals(result.matrix), with the (K10) construction U diag(eps) U' from the physical normalizer
+    # for a distinct-valued tuple, and the new c_m1_twiss_from_normalizer row re-derives (M1) in the caller's
+    # coordinates. U24-5: the V1 verdict re-derivation had only ever compared empty with empty; it is fed doctored
+    # verdicts here in both directions.
+    c = TwissDispersionIdentityContract()
+    fx = Octopus._identity_contract_fixtures(c)
+    f6 = fx[findfirst(f -> f.name == "F6a dense 6x6 map 1", fx)]
+    r, err, index = Octopus._identity_contract_certified(analyze, f6.analysis, f6.input)
+    @test err === nothing && r isa TwissDispersionResult && index != 0 && r.status !== :failed
+    copyres(res; kw...) = TwissDispersionResult((haskey(kw, f) ? kw[f] : getfield(res, f) for f in fieldnames(TwissDispersionResult))...)
+    copyph(ph; kw...) = Octopus.PhysicalOptics((haskey(kw, f) ? kw[f] : getfield(ph, f) for f in fieldnames(Octopus.PhysicalOptics))...)
+    rows!(res, label) = begin
+        m = Dict{Symbol,Any}(); fails = String[]; m[:failure_texts] = fails
+        Octopus._identity_contract_recomputed_rows!(res, label, m, c, fails)
+        (m, fails)
+    end
+    # the tree: every Layer 3 row of the fixture inside its multiplier, the three re-derived rows measuring a
+    # genuine comparison (a finite, positive ratio where the circular rows recorded 0.0 exactly)
+    m0, f0 = rows!(r, "dense map 1")
+    @test isempty(f0)
+    for slug in (:c_normal_mode_tunes, :c_tune_consistency, :c_matched_covariance_accessor, :c_m1_twiss_from_normalizer)
+        @test haskey(m0, Symbol("max_", slug)) && 0 < m0[Symbol("max_", slug)] <= 1
+    end
+    # (a) the tune rows against eigvals(result.matrix): a doctored caller matrix (the x plane rotated by 0.3 rad,
+    # still symplectic) is caught by both; the unfixed rows saw only the result's own numbers
+    rot(mu) = [cos(mu) sin(mu); -sin(mu) cos(mu)]
+    Mdoc = r.matrix * Octopus._identity_contract_blockdiag(rot(0.3), Matrix(1.0I, 2, 2), Matrix(1.0I, 2, 2))
+    md, fd = rows!(copyres(r; matrix=Mdoc), "doctored matrix")
+    @test md[:max_c_normal_mode_tunes] > 1 && md[:max_c_tune_consistency] > 1
+    @test any(t -> occursin("c_normal_mode_tunes", t), fd) && any(t -> occursin("c_tune_consistency", t), fd)
+    # (b) the (M1) Twiss row: physical.beta doubled and physical.gamma halved keeps beta gamma - alpha^2, so the
+    # invariant row c_normal_mode_kappa cannot see it (a wrong unscaling factor a^2 has this shape); the new row does
+    ph = r.physical
+    phd = copyph(ph; beta=Octopus.Determined(2 .* determined_value(ph.beta)), gamma=Octopus.Determined(determined_value(ph.gamma) ./ 2))
+    mb, fb = rows!(copyres(r; physical=phd), "doctored twiss")
+    @test mb[:max_c_normal_mode_kappa] <= 1
+    @test mb[:max_c_m1_twiss_from_normalizer] > 1 && any(t -> occursin("c_m1_twiss_from_normalizer", t), fb)
+    # (c) the accessor row against U diag(eps) U' of the physical normalizer: a doctored normalizer (2 U) is caught;
+    # the unfixed row compared the accessor with physical.covariance, both untouched by this doctoring
+    phn = copyph(ph; normalizer=Octopus.Determined(2 .* determined_value(ph.normalizer)))
+    mn, fn = rows!(copyres(r; physical=phn), "doctored normalizer")
+    @test mn[:max_c_matched_covariance_accessor] > 1 && any(t -> occursin("c_matched_covariance_accessor", t), fn)
+    # (d) V1 fed known defects (U24-5): a status and failure list that disagree with the residual triples count as
+    # inconsistent and name the fixture, in both directions; a consistent doctoring stays consistent
+    v1!(res) = begin
+        m = Dict{Symbol,Any}(:verdicts_consistent => 0, :verdicts_inconsistent => 0,
+                             :normalizer_ratio_u6_reconstruction => 0.0, :normalizer_ratio_u6_symplecticity => 0.0)
+        fails = String[]; m[:failure_texts] = fails
+        Octopus._identity_contract_reported_rows!(res, "doctored verdict", m, c, fails)
+        (m, fails)
+    end
+    mv, fv = v1!(r)
+    @test mv[:verdicts_consistent] == 1 && mv[:verdicts_inconsistent] == 0 && isempty(fv)
+    lie = "frame reconstruction (I1) residual 1.0 exceeds its acceptance 1e-12"
+    mf, ff = v1!(copyres(r; status=:failed, failures=[lie]))                       # :failed with no failing triple
+    @test mf[:verdicts_inconsistent] == 1 && mf[:verdicts_consistent] == 0
+    @test any(t -> startswith(t, "verdict on doctored verdict") && occursin("frame reconstruction (I1)", t) && occursin("status failed", t), ff)
+    diag = r.diagnostics
+    residuals2 = [(n == "frame reconstruction (I1)" ? (n, 2 * t, t) : (n, v, t)) for (n, v, t) in diag.residuals]
+    diag2 = Octopus.AnalysisDiagnostics((f === :residuals ? residuals2 : getfield(diag, f) for f in fieldnames(Octopus.AnalysisDiagnostics))...)
+    mp, fp = v1!(copyres(r; diagnostics=diag2))                                      # a failing triple with :passed
+    @test mp[:verdicts_inconsistent] == 1 && any(t -> occursin("recomputed failing residuals", t) && occursin("frame reconstruction (I1)", t), fp)
+    mc, fc = v1!(copyres(r; diagnostics=diag2, status=:failed, failures=[lie]))      # the two agree: consistent
+    @test mc[:verdicts_consistent] == 1 && mc[:verdicts_inconsistent] == 0 && !any(startswith("verdict on"), fc)
+end
+
 # Twiss analysis stage 2, Part A: the 4D eigenmode route
 # (src/analysis/eigenmodes_4d.jl). Placed right after the stage 1 kernel
 # testsets. Uses only the file-level `using Test, Octopus, LinearAlgebra,
