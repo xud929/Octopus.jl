@@ -889,11 +889,13 @@ Two details worth copying verbatim:
   precision as $B\to0$ — the same removable-singularity trap as Section 5.2.
 - There is a **cubic term with no counterpart in most codes**, present in both
   the exact and expanded branches:
-  $$\Delta p_y=-\frac{h^2y^3}{18\,FG\,(1+\delta)},\qquad
-    \Delta z=-\frac{h^2y^4}{72\,FG\,(1+\delta)^2} ,$$
-  the exact kick of the potential $V=\dfrac{h^2y^4}{72\,FG\,(1+\delta)}$
-  (with $b$ the dipole strength of Section 6.3.1 — `b = σ b1` in
-  `_fringe_dipole_exact` — not the frame curvature $h$)
+  $$\Delta p_y=-\frac{b^2y^3}{18\,FG\,(1+\delta)},\qquad
+    \Delta z=-\frac{b^2y^4}{72\,FG\,(1+\delta)^2} ,$$
+  the exact kick of the potential $V=\dfrac{b^2y^4}{72\,FG\,(1+\delta)}$
+  (with $b$ the dipole strength of this section — `b = σ b1` in
+  `_fringe_dipole_exact` — not the frame curvature $h$, which this note wrote
+  in the three formulas until 2026-10-22 against its own parenthesis and the
+  kernel's `c3 = b * b / (72 * fg) / p`; 2026-10-18 audit, F-241/U48-5)
   ($\Delta p_y=-\partial V/\partial y$, $\Delta z=+\partial V/\partial\delta$ in
   the $z=s-l$ convention, whose longitudinal sign is the negative of PTC's), as
   the code forms it (`c3 = b^2/(72 fg)/p`, `py -= 4 c3 y^3`, `z -= c3 y^4/p`).

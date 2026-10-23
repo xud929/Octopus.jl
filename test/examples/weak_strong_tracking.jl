@@ -174,7 +174,11 @@ end
 # PACKAGE, which the default `include` of src/Octopus.jl into `Main` is not.
 # Measured on this tree 2026-09-06: `Base.get_extension(Main.Octopus,
 # :OctopusMPIExt)` is `nothing` under the include and `OctopusMPIExt` under
-# `using Octopus`. Without the extension every process is its own communicator
+# `using Octopus` followed by `using MPI` -- a `[weakdeps]` extension attaches
+# only once both the package and the weak dependency are loaded, so `using
+# Octopus` alone also gives `nothing` (this comment said "under `using
+# Octopus`" until 2026-10-22; the 2026-10-18 audit's U55-4 probe measured the
+# distinction). Without the extension every process is its own communicator
 # of one, which `ranks = :auto` accepts. The library's `_launcher_rank_count`
 # tripwire already throws under the six launcher variables it knows; the
 # assertion below fires earlier (at load, not after the run), names the cause

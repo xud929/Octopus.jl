@@ -64,11 +64,13 @@ if available
     gpu_metrics = Octopus._contract_coordinate_metrics(gpu_explicit, gpu_auto, 0.0, 0.0)
     gpu_metrics[:max_abs_error] == 0.0 || error("CUDA launch geometry changed radiation RNG")
     for audit in (explicit_audit, auto_audit)
+        # The fused launch is the one CUDA route a radiation element has: the
+        # per-element compatibility launch this loop used to refuse by its
+        # receipt (`:cuda_radiation_compatibility_launch`) was retired on
+        # 2026-10-22 with the kernel behind it (2026-10-18 audit, F-104), so
+        # the positive check is the whole check.
         any(r -> r.consumer === :cuda_fused_launch, execution_receipts(audit)) ||
             error("radiation did not reach fused CUDA tracking")
-        any(r -> r.consumer === :cuda_radiation_compatibility_launch,
-            execution_receipts(audit)) &&
-            error("TrackingTask incorrectly used legacy CUDA radiation tracking")
     end
     cross_metrics = Octopus._contract_coordinate_metrics(cpu_fast, gpu_auto, 1e-10, 1e-10)
     cross_metrics[:passed_tolerance] || error("CPU/CUDA radiation mismatch")

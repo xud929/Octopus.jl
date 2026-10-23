@@ -25,7 +25,7 @@ reports it (owner decision 2026-10-18): composing the maps as the elements do
 strong-beam builder, because a convention stated once is not stated at every
 consumer (2026-10-18 audit, F-99; the lesson of the same day).
 """
-const _CANONICAL_DISPERSION_NOTE = "Convention: the CANONICAL dispersion of docs/theory/twiss_dispersion.md (D6)-(D8), as TwissDispersionAnalysis reports it; the map realises (D6) exactly, r = zeta z + eta pz with pz scaled by h = 1 - zeta' S4 eta. Xsuite's dx, dpx, dy, dpy and MAD-X's deltap dispersion are the slope eta/h: equal to the canonical eta when no crab dispersion acts beside it (h = 1), otherwise to be converted by (D8), eta = h slope, before being passed here; zeta is the same in both conventions"
+const _CANONICAL_DISPERSION_NOTE = "Convention: the CANONICAL dispersion of docs/theory/twiss_dispersion.md (D6)-(D8), as TwissDispersionAnalysis reports it; the map realises (D6) exactly, r = zeta z + eta pz with pz scaled by h = 1 - zeta' S4 eta. Xsuite's dx, dpx, dy, dpy are the slope eta/h: equal to the canonical eta when no crab dispersion acts beside it (h = 1), otherwise to be converted by (D8), eta = h slope, before being passed here. MAD-X's deltap dispersion equals that slope on the coasting cells where it was compared (h = 1) and is a forced-4D response, not eta/h, on a bunched or crab-coupled lattice (unverified against MAD-X as of 2026-10-22; the theory note's section 8.2 carries the same qualification). zeta is the same in both conventions"
 
 # The named parameters in `numeric_type(spec)`, the one rule of every kind: the
 # stored type of a `Spec{T}` form, else the Float64-floor promotion of the

@@ -339,9 +339,12 @@ A separate element kind, not a flag, for the reason in §3. It needs:
 > and `phase = 0` is on crest with a `cos` body — the "different zero" §3
 > promised. Model boundaries as recorded on the element: thin, relative
 > time with no autoscale, no velocity-slip term, single-pass. §8's items
-> 1–2 are suite testsets; item 3 is pinned as `det J = ρ³` (ForwardDiff) only
-> — the symplecticity of the map after undoing the rescale is not checked
-> (2026-10-22); item 4 (ν_s) belongs to the ring cavity and is pinned there;
+> 1–2 are suite testsets; item 3 is pinned twice, `det J = ρ³` (ForwardDiff)
+> and, since 2026-10-22 (the 2026-10-18 audit's fix batch 4b, lead D8), the
+> symplecticity of the thin map after undoing the rescale in the exit pair's
+> canonical coordinates, `C_out ∘ S_{1/ρ} ∘ C_out⁻¹ ∘ M` (symplectic defect
+> 5.2e-17 against the suite's 64 eps bound; the un-undone map reads 1.0e-2);
+> item 4 (ν_s) belongs to the ring cavity and is pinned there;
 > item 5 (a PTC reference case for THIS kind) has no `todo.md` row and is
 > recorded as not planned (2026-10-22, the 2026-10-18 audit's fix batch 4a).
 

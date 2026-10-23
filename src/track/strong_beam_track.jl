@@ -595,10 +595,11 @@ end
 
 function track!(rep, elem::ThinStrongBeam, turns, policy::ResolvedCUDAExecutionPolicy;
 				stream=nothing)
-	blocks = policy.blocks isa Int ? policy.blocks : min(cld(length(rep), policy.threads), 256)
+	blocks = _cuda_resolve_coverage_blocks(policy, length(rep))
 	blocks == 0 && return nothing
 	_record_execution!(:cuda_weak_strong_launch, CUDABackend,
 		(threads=policy.threads, blocks=blocks, requested_blocks=policy.blocks,
+		 resolved_by=_cuda_blocks_resolved_by(policy),
 		 element=:thin, stream=stream === nothing ? :default : :explicit))
 	return track!(rep, elem, turns, CUDABackend;
 		threads=policy.threads, blocks=blocks, stream=stream)
@@ -650,10 +651,11 @@ end
 
 function track!(rep, elem::GaussianStrongBeam, turns, policy::ResolvedCUDAExecutionPolicy;
 				stream=nothing)
-	blocks = policy.blocks isa Int ? policy.blocks : min(cld(length(rep), policy.threads), 256)
+	blocks = _cuda_resolve_coverage_blocks(policy, length(rep))
 	blocks == 0 && return nothing
 	_record_execution!(:cuda_weak_strong_launch, CUDABackend,
 		(threads=policy.threads, blocks=blocks, requested_blocks=policy.blocks,
+		 resolved_by=_cuda_blocks_resolved_by(policy),
 		 element=:gaussian, stream=stream === nothing ? :default : :explicit))
 	return track!(rep, elem, turns, CUDABackend;
 		threads=policy.threads, blocks=blocks, stream=stream)
@@ -691,7 +693,7 @@ function _track_cuda_wrapped_strong_beam!(rep, w, policy::ResolvedCUDAExecutionP
 	_HAS_CUDA || error("CUDABackend requires CUDA.jl to be available.")
 	N = length(rep)
 	T = eltype(rep.x)
-	blocks = policy.blocks isa Int ? policy.blocks : min(cld(N, policy.threads), 256)
+	blocks = _cuda_resolve_coverage_blocks(policy, N)
 	blocks == 0 && return nothing
 	beams = _collect_strong_beams!(Any[], w)
 	isempty(beams) && throw(ArgumentError(
@@ -704,6 +706,7 @@ function _track_cuda_wrapped_strong_beam!(rep, w, policy::ResolvedCUDAExecutionP
 	mask = active_live_mask()
 	_record_execution!(:cuda_weak_strong_launch, CUDABackend,
 		(threads=policy.threads, blocks=blocks, requested_blocks=policy.blocks,
+		 resolved_by=_cuda_blocks_resolved_by(policy),
 		 element=:wrapped, wrapper=Symbol(nameof(typeof(w))), strong_beams=length(beams),
 		 stream=stream === nothing ? :default : :explicit))
 	if stream === nothing

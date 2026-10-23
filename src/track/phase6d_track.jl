@@ -133,81 +133,32 @@ _requires_cuda_elementwise(c::CompositeLine) = _requires_cuda_elementwise(c.ops)
 _requires_cuda_elementwise(c::CompositeLine, ctx::TrackingContext) =
 	_requires_cuda_elementwise(c.ops, ctx)
 
-function _track_line_elementwise!(rep, elems::Tuple, backend)
-	fused = Any[]
-	_track_line_elementwise!(rep, elems, backend, fused)
-	_flush_cuda_fused_segment!(rep, fused, backend)
-	return nothing
-end
+# The ONE elementwise walker over a CUDA line is `_track_cuda_policy_elementwise!`
+# in the CUDA block below. A second, uncalled walker (`_track_line_elementwise!`
+# and `_flush_cuda_fused_segment!`, eleven methods over the deprecated backend-tag
+# `track!`, 0 call sites) lived here until 2026-10-22; it dropped the context for
+# a lifted element and flattened a nested tuple without a flush, so a routing fix
+# could land on the wrong function (2026-10-18 audit, F-102). The suite pins the
+# symbols absent.
 
-function _track_line_elementwise!(rep, elems::Tuple, backend, ctx::TrackingContext)
-	fused = Any[]
-	_track_line_elementwise!(rep, elems, backend, fused, ctx)
-	_flush_cuda_fused_segment!(rep, fused, backend, ctx)
-	return nothing
+# The per-element launches of the lifted strong beams (src/track/strong_beam_track.jl)
+# resolve `blocks=:auto` by PARTICLE COVERAGE capped at `_CUDA_COVERAGE_BLOCK_CAP`
+# grid-stride blocks, the rule `_active_cuda_launch` (src/policies/Policies.jl) applies
+# to the strong-strong kernels, where the fused launch below reads the occupancy API
+# (`_cuda_fused_occupancy_blocks`). One function and one constant: until 2026-10-22
+# the rule was spelled by hand at four launch sites, the radiation compatibility
+# launch among them, and nothing tied the copies together (2026-10-18 audit, F-104).
+# An explicit block count passes through untouched; `_cuda_blocks_resolved_by` names
+# the rule that ran for the launch receipt, as the strong-strong receipt does. Defined
+# outside the CUDA block, as the launch sites are, so a CPU-only machine sees the
+# methods and the suite's tripwire reads the rule.
+const _CUDA_COVERAGE_BLOCK_CAP = 256
+function _cuda_resolve_coverage_blocks(policy::ResolvedCUDAExecutionPolicy, nitems::Integer)
+	policy.blocks isa Int && return policy.blocks
+	return min(cld(Int(nitems), policy.threads), _CUDA_COVERAGE_BLOCK_CAP)
 end
-
-function _track_line_elementwise!(rep, elems::Tuple, backend, fused)
-	for elem in elems
-		_track_line_elementwise!(rep, elem, backend, fused)
-	end
-	return nothing
-end
-
-function _track_line_elementwise!(rep, elem, backend, fused)
-	if _requires_cuda_elementwise(elem)
-		_flush_cuda_fused_segment!(rep, fused, backend)
-		track!(rep, elem, 1, backend)
-	else
-		push!(fused, elem)
-	end
-	return nothing
-end
-
-function _track_line_elementwise!(rep, elems::Tuple, backend, fused, ctx::TrackingContext)
-	for elem in elems
-		_track_line_elementwise!(rep, elem, backend, fused, ctx)
-	end
-	return nothing
-end
-
-function _track_line_elementwise!(rep, elem, backend, fused, ctx::TrackingContext)
-	if _requires_cuda_elementwise(elem, ctx)
-		_flush_cuda_fused_segment!(rep, fused, backend, ctx)
-		track!(rep, elem, 1, backend)
-	else
-		push!(fused, elem)
-	end
-	return nothing
-end
-
-function _flush_cuda_fused_segment!(rep, fused, backend)
-	isempty(fused) && return nothing
-	track!(rep, Tuple(fused), 1, backend)
-	empty!(fused)
-	return nothing
-end
-
-function _flush_cuda_fused_segment!(rep, fused, backend, ctx::TrackingContext)
-	isempty(fused) && return nothing
-	track!(rep, Tuple(fused), 1, backend, ctx)
-	empty!(fused)
-	return nothing
-end
-
-function _track_line_elementwise!(rep, elem, backend)
-	track!(rep, elem, 1, backend)
-	return nothing
-end
-
-function _track_line_elementwise!(rep, elem, backend, ctx::TrackingContext)
-	if _requires_cuda_elementwise(elem, ctx)
-		track!(rep, elem, 1, backend)
-	else
-		track!(rep, elem, 1, backend, ctx)
-	end
-	return nothing
-end
+_cuda_blocks_resolved_by(policy::ResolvedCUDAExecutionPolicy) =
+	policy.blocks isa Int ? :explicit : :particle_coverage
 
 if _HAS_ADAPT
 	@eval begin
