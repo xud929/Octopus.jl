@@ -2044,6 +2044,45 @@ path, where the hook entries are already resolved. The rule: a change to a funct
 a cost or allocation pin measures re-runs that pin before the gate, and the pins are found
 by grepping `test/` for the function's name, not by reading the function's file.
 
+## A declared default is read from the one place it is declared
+
+Five runtime constructors restated their parameters' defaults beside a `getparam`
+fallback, or read a defaulted key with a bare `spec.params[key]`, so a raw
+`ElementSpec{:crab_dispersion}(; zeta1=0.1)` was refused for the keys it was allowed to
+omit while the schema said otherwise (F-93, after batch 1's by-name refusal had reached
+past the required keys). `_declared_param(spec, key)` reads the schema's default when the
+spec carries no value and refuses by name only a key the schema requires; the same rule
+made `bend_fringe` a per-kind declaration (PTC's BEND_FRINGE, on for the bend, off for the
+straight kinds) instead of one switch carrying two meanings (F-160). The batch-2 validator
+compares every declared default on two bases, so a constructor that restates a default
+wrongly is caught; one that reads it from the declaration cannot restate it at all.
+
+## An unphysical particle is a dead particle, not an exception
+
+A radicand `(1 + pz)^2 - px^2 - py^2` below zero -- an over-momentum particle in a drift,
+a bend or a solenoid -- went to `sqrt` unguarded in eight lattice sites and aborted the
+whole run with a `DomainError` on CPU or a kernel exception on CUDA (F-163, F-167), where
+the loss design marks a dead particle by a non-finite coordinate and the aperture, the
+observers and the loss summary already handle one. `_ps_or_dead` and `_asin_or_dead`
+return NaN instead, the six coordinates die together, and `execute!`'s loss summary
+reports the death on both backends; a geometry that cannot be tracked at all (a curved
+drift turning a quarter turn or more per step) is refused by name at compile, where it is
+a configuration error, not a particle's fate.
+
+## A bitwise cross-backend agreement is only as explained as its last accident
+
+The straight drift was bitwise across CPU and CUDA at L = 0.5, and its class text said
+why: scaling by a power of two is exact. It was also bitwise because the device happened
+not to contract `(1 + pz)^2` into the radicand's first subtraction in that kernel --
+unmeasured, and gone the moment the F-167 guard changed the kernel around it (gate b3b2
+of batch 3b: one ulp in x for 52 of 478 recorded losses, 1165 of 20000 particles through
+one drift; a standalone kernel of the same plain shape contracts it on either tree).
+Which product the device fuses is the compiler's choice in the surrounding kernel, so an
+agreement that must hold is spelled on both sides: `_ps_radicand` is one `fma`, as
+`_pt2_fused` already was, and the aperture-identity test rests on construction, not
+luck. When a test asserts bitwise agreement across backends, name every operation whose
+rounding it depends on and spell each one the compiler cannot change.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

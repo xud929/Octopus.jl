@@ -621,7 +621,8 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   with a retired-spelling tripwire, the MPI seam child's arms that fail by
   name; two integration joins with their own test; thirteen rows retired.
 - [`comprehensive_audit_fixes_2026_10_21_batch3.md`](history/comprehensive_audit_fixes_2026_10_21_batch3.md) —
-  the comprehensive audit's fix batch 3, the runtime rows through eight units
+  the comprehensive audit's fix batch 3, the runtime rows through nine units
+  (unit H landing as batch 3b, in the record's addendum)
   (sub-agents proposing, the integrator verifying each red on the unfixed base and
   green on the integrated tree, two cross-unit changes made on the merged tree):
   the strong-strong stack's conventions and dead twins, the task walkers and the
