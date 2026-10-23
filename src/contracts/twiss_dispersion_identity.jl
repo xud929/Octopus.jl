@@ -645,10 +645,17 @@ Returns `false` when the ratio exceeds 1 (the failure text "identity <slug>
 on <name>: value <v> exceeds c eps kappa = <tol>" is pushed to
 `metrics[:failure_texts]`, the probe's failure vector, created with `get!`
 when the caller's Dict lacks it), when `value` is not
-finite, or when `slug` has no multiplier (the failure text names the slug:
-"no multiplier"). `metrics[Symbol("count_", slug)]` counts the fixtures the
-row ran on. A slug that is not one of
-`_IDENTITY_CONTRACT_SLUGS` is a programming error and throws.
+finite, when `kappa` is not finite (an `Inf` kappa made the tolerance `Inf`
+and the ratio 0, an unconditional pass recorded as a maximum of 0; a `NaN`
+kappa made every comparison false, a pass that recorded no maximum while
+`count_` advanced; the kappas are products of `cond(U)`, `cond(U_ls)`,
+`cond(M_cal)`, `||T|| ||T^-1||` and `1 / |h|`, and `cond` of an exactly
+singular matrix returns `Inf`; 2026-10-18 audit, F-141: the row is failed by
+name with ratio `Inf` and the failure text names the kappa), or when `slug`
+has no multiplier (the failure text names the slug: "no multiplier").
+`metrics[Symbol("count_", slug)]` counts the fixtures the row ran on. A slug
+that is not one of `_IDENTITY_CONTRACT_SLUGS` is a programming error and
+throws.
 """
 function _identity_contract_record!(metrics::Dict{Symbol,Any}, slug::Symbol, value::Real, kappa::Real,
                                     name::AbstractString, contract::TwissDispersionIdentityContract)
@@ -664,16 +671,21 @@ function _identity_contract_record!(metrics::Dict{Symbol,Any}, slug::Symbol, val
         return false
     end
     c = contract.multipliers[slug]
-    tol = c * eps() * max(1.0, Float64(kappa))
-    v = Float64(value)
-    ratio = isfinite(v) ? v / tol : Inf
+    v = Float64(value); k = Float64(kappa)
+    # a non-finite kappa judges nothing (Inf: ratio 0 for every value; NaN: every comparison false), so the
+    # tolerance is formed only from a finite one and the row fails by name otherwise (F-141)
+    tol = isfinite(k) ? c * eps() * max(1.0, k) : NaN
+    ratio = (isfinite(k) && isfinite(v)) ? v / tol : Inf
     metrics[Symbol("count_", slug)] = get(metrics, Symbol("count_", slug), 0) + 1
     if ratio > get(metrics, maxkey, -Inf)
         metrics[maxkey] = ratio
         metrics[valkey] = v
         metrics[argkey] = String(name)
     end
-    if !isfinite(v)
+    if !isfinite(k)
+        push!(texts, "identity $(slug) on $(name): kappa $(k) is not finite, so the tolerance c eps kappa judges nothing (an Inf passes every value at ratio 0, a NaN compares false and records no maximum); the row is failed by name")
+        ok = false
+    elseif !isfinite(v)
         push!(texts, "identity $(slug) on $(name): value $(v) is not finite")
         ok = false
     elseif ratio > 1

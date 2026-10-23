@@ -1160,6 +1160,31 @@ end
     @test_throws ArgumentError validate(TwissDispersionIdentityContract(); bogus=1)
 end
 
+@testset "Stage 6: _identity_contract_record! fails a row by name when its kappa is not finite (F-141)" begin
+    # kappa = Inf made the tolerance Inf and the ratio 0 (an unconditional pass recorded as max 0.0 for a value of
+    # 1.0); kappa = NaN made every comparison false (a pass that recorded no maximum while count_ advanced). The
+    # kappas are products of cond(U), cond(U_ls), cond(M_cal), ||T|| ||T^-1|| and 1 / |h|, and `cond` of an exactly
+    # singular matrix returns Inf (2026-10-18 audit, F-141). Each case is a failed row naming the fixture and kappa.
+    c = TwissDispersionIdentityContract()
+    slug = :c_caller_symplecticity
+    for kappa in (Inf, NaN, -Inf)
+        m = Dict{Symbol,Any}()
+        @test !Octopus._identity_contract_record!(m, slug, 1.0, kappa, "probe fixture", c)
+        @test m[Symbol("max_", slug)] == Inf && m[Symbol("maxval_", slug)] == 1.0 && m[Symbol("argmax_", slug)] == "probe fixture"
+        @test get(m, Symbol("count_", slug), 0) == 1
+        @test length(m[:failure_texts]) == 1 && occursin("kappa", m[:failure_texts][1]) &&
+              occursin("not finite", m[:failure_texts][1]) && occursin("probe fixture", m[:failure_texts][1])
+    end
+    # a finite kappa records the ratio value / (c eps max(1, kappa)) as before, and a value within it passes
+    m = Dict{Symbol,Any}()
+    @test Octopus._identity_contract_record!(m, slug, 1e-16, 0.5, "probe fixture", c)
+    @test m[Symbol("max_", slug)] == 1e-16 / (c.multipliers[slug] * eps()) && isempty(m[:failure_texts])
+    # a non-finite VALUE at a finite kappa is still the value's failure text, not the kappa's
+    m = Dict{Symbol,Any}()
+    @test !Octopus._identity_contract_record!(m, slug, NaN, 1.0, "probe fixture", c)
+    @test length(m[:failure_texts]) == 1 && occursin("value NaN is not finite", m[:failure_texts][1])
+end
+
 # Stage 8 registration of the light suite contract on the committed external
 # twiss tables (src/contracts/twiss_external_reference.jl, design "Staging"
 # item 8). Mirrors the stage 6 form above; the real validate on the committed
