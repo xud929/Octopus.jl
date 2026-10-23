@@ -5569,6 +5569,37 @@ end
     @test lb.signed_areas[3, 3] == -1.0 && lb.longitudinal != 3
 end
 
+@testset "Dispersion routes: a coasting map refuses a bad longitudinal index before its early return (F-178)" begin
+    # The coasting branch returned a normal report (longitudinal = 0) for longitudinal = 99, 0, -3, 7, although the
+    # docstring promises an ArgumentError for a bad `longitudinal`: the range check lived in `_longitudinal_candidate`,
+    # which the branch never reached (2026-10-18 audit, F-178). The index is checked before the coasting test now; a
+    # VALID index on a coasting map stays accepted and unused (the public option is declared inactive there).
+    fc = _st4_coasting(0.7); clc = _st4_clusters(fc.M)
+    @test Octopus._coasting_structure(fc.M; rho_M1=clc.rho_M1).holds
+    n = length(clc.eigenvalues)
+    for bad in (99, 0, -3, n + 1)
+        err = try; Octopus._dispersion_routes(fc.M, clc; longitudinal=bad); nothing; catch e; e; end
+        @test err isa ArgumentError && occursin("longitudinal = $(bad)", err.msg) && occursin("1:$(n)", err.msg)
+    end
+    # the dense control: the same ArgumentError, the same text, on the bunched path
+    fd = _st4_dense(3); cld = _st4_clusters(fd.M)
+    errd = try; Octopus._dispersion_routes(fd.M, cld; longitudinal=99); nothing; catch e; e; end
+    @test errd isa ArgumentError && occursin("longitudinal = 99", errd.msg) && occursin("1:$(length(cld.eigenvalues))", errd.msg)
+    # a valid index on a coasting map: accepted, not used; the report equals the index-free one
+    rep0 = Octopus._dispersion_routes(fc.M, clc)
+    for idx in 1:n
+        rep = Octopus._dispersion_routes(fc.M, clc; longitudinal=idx)
+        @test rep.coasting.holds && rep.longitudinal == 0 && rep.longitudinal_cluster == 0 && isempty(rep.executed)
+        @test all(r -> r.status === :coasting_structure, rep.routes) && !Octopus.is_determined(rep.labels)
+        @test Octopus.determined_value(rep.eta) == Octopus.determined_value(rep0.eta) && Octopus.determined_value(rep.h) == 1.0
+    end
+    # through `analyze` the declared-inactive option on a coasting map is accepted as before (the effectiveness
+    # contract's exemption (:coasting, :longitudinal_mode)) and the report says so
+    r = analyze(TwissDispersionAnalysis(longitudinal_mode=3, strict=false), fc.M)
+    @test r.coasting !== nothing && r.coasting.holds && r.dispersion.longitudinal == 0
+    @test r.configuration[findfirst(e -> e.name === :longitudinal_mode, r.configuration)].status === :inactive_dependency
+end
+
 @testset "Canonical separation: (D3) block form, (K2) inverse and (K1) for every h" begin
     rng = MersenneTwister(_ST4_SEED)
     for trial in 1:40

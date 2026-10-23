@@ -1245,6 +1245,23 @@ function _cluster_trace(c::ModeCluster)
 end
 
 """
+    _check_longitudinal_index(clusters, longitudinal) -> Int
+
+The range check of an explicit `longitudinal` (a canonical eigenvalue index into `clusters.eigenvalues`):
+the `Int` index, or an `ArgumentError` naming it and the range. ONE check for the two sites that read the
+index, `_dispersion_routes` (before its coasting branch) and `_longitudinal_candidate` (the normal path):
+the check lived in the candidate rule alone, which the coasting branch returned before reaching, so on a
+coasting map `longitudinal = 99` was accepted silently against the documented refusal (2026-10-18 audit,
+F-178).
+"""
+function _check_longitudinal_index(clusters::ModeClusters, longitudinal)
+    idx = Int(longitudinal)
+    1 <= idx <= length(clusters.eigenvalues) || throw(ArgumentError(
+        "_dispersion_routes: longitudinal = $(idx) is not a canonical eigenvalue index in 1:$(length(clusters.eigenvalues))"))
+    return idx
+end
+
+"""
     _longitudinal_candidate(clusters, longitudinal) -> (cluster, mode, index)
 
 Dossier E9: the longitudinal candidate cluster (position in `clusters.clusters`), the selected
@@ -1345,7 +1362,12 @@ cluster is the candidate when the z-content the complex-class clusters leave
 is the largest, see [`_longitudinal_candidate`](@ref), or by the explicit
 index). Argument
 errors: size, non-finite entries, a `clusters` report of a different matrix,
-an empty or repeated `routes` tuple, an unknown route, a bad `longitudinal`.
+an empty or repeated `routes` tuple, an unknown route, a bad `longitudinal`
+(an index outside `1:length(clusters.eigenvalues)`, refused on EVERY path by
+[`_check_longitudinal_index`](@ref) before the coasting test; a valid index
+on a coasting map is accepted and not used: the coasting branch supplies the
+report with `longitudinal = 0`, and the public option is declared inactive
+there; 2026-10-18 audit, F-178).
 The fixed point is linearly convergent (theory 8.6) and gets its own cap
 `fixed_point_max_iterations` (>= 1; the dense fixtures need up to 139 steps where Newton needs 5).
 """
@@ -1364,6 +1386,8 @@ function _dispersion_routes(M::AbstractMatrix{<:Real}, clusters::ModeClusters; l
     length(unique(routes)) == length(routes) || throw(ArgumentError("_dispersion_routes: repeated route in $(routes)"))
     newton_max_iterations >= 1 || throw(ArgumentError("_dispersion_routes: newton_max_iterations must be >= 1, got $(newton_max_iterations)"))
     fixed_point_max_iterations >= 1 || throw(ArgumentError("_dispersion_routes: fixed_point_max_iterations must be >= 1, got $(fixed_point_max_iterations)"))
+    # a bad explicit index is refused before the coasting branch can return without reading it (F-178)
+    longitudinal === nothing || _check_longitudinal_index(clusters, longitudinal)
     rho_M1 = clusters.rho_M1
     # Design step 3: the coasting test before any spectral classification (E1, E2).
     coasting = _coasting_structure(Mf; rho_M1=rho_M1)
