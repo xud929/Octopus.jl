@@ -1314,9 +1314,7 @@ containing it or its conjugate partner, and its oriented mode.
 function _longitudinal_candidate(clusters::ModeClusters, longitudinal)
     cs = clusters.clusters
     if longitudinal !== nothing
-        idx = Int(longitudinal)
-        1 <= idx <= length(clusters.eigenvalues) || throw(ArgumentError(
-            "_dispersion_routes: longitudinal = $(idx) is not a canonical eigenvalue index in 1:$(length(clusters.eigenvalues))"))
+        idx = _check_longitudinal_index(clusters, longitudinal)
         ci = findfirst(c -> idx in c.members, cs)
         ci === nothing && throw(ArgumentError("_dispersion_routes: canonical index $(idx) belongs to no cluster"))
         c = cs[ci]
