@@ -3,8 +3,8 @@ export PatchSpec, Patch
 # ---------------------------------------------------------------------------
 # Patch: a deliberate change of reference frame.
 #
-# Design: `docs/theory/misalignment_and_patch_maps.md` Section 7.5. Reference
-# implementation: Bmad's `track_a_patch`.
+# Design: `docs/theory/misalignment_and_patch_maps.md` section 7 ("Recommended
+# design for Octopus"), item 5. Reference implementation: Bmad's `track_a_patch`.
 #
 # A patch is NOT a misalignment, and the difference is intent rather than
 # arithmetic. A misalignment says a magnet is not where it was meant to be, is
@@ -300,5 +300,5 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = PatchSpec(angle_x=12.5e-3)
-    construction_help = "Friendly constructor: PatchSpec(; dx=0, dy=0, dz=0, angle_x=0, angle_y=0, angle_s=0, t_offset=0, convention=:bmad, tracking_method=NonSymplectic6DMap()). A DELIBERATE frame change -- a crossing angle, a beamline junction, a spectrometer arm -- not a misalignment: the new frame persists downstream instead of being restored. The map is exact in delta and amplitude because it is geometry; composing a patch with its exact inverse restores the transverse coordinates and momenta, while z shifts by the two reference particles' path constant (see the docstring). Derivation: docs/theory/misalignment_and_patch_maps.md Section 7.5. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form PatchSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "Friendly constructor: PatchSpec(; dx=0, dy=0, dz=0, angle_x=0, angle_y=0, angle_s=0, t_offset=0, convention=:bmad, tracking_method=NonSymplectic6DMap()). A DELIBERATE frame change -- a crossing angle, a beamline junction, a spectrometer arm -- not a misalignment: the new frame persists downstream instead of being restored. The map is exact in delta and amplitude because it is geometry; composing a patch with its exact inverse restores the transverse coordinates and momenta, while z shifts by the two reference particles' path constant (see the docstring). Derivation: docs/theory/misalignment_and_patch_maps.md section 7 (Recommended design for Octopus), item 5. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form PatchSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
