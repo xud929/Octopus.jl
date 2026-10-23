@@ -36681,6 +36681,10 @@ if _lane_gate("Physics contracts")
     @test wsl.passed
     @test wsl.metrics[:gaussian_proton_max_abs_error] <= 2.0e-14
     @test wsl.metrics[:pic_luminosity_relative_error] <= 0.08
+    # the infinite-energy electron is judged in the PIC half too (2026-10-18
+    # audit, F-114; the mirror script's F-239 since fix batch 2): measured
+    # 5.4e-20 at the defaults, held at the limit's absolute tolerance
+    @test wsl.metrics[:pic_electron_max_abs_change] <= 2.0e-14
 
     # ~1 min: two 1024-turn strong-strong runs. The contract states the
     # Vlasov-band Yokoya physics per solver: PIC must reproduce it, and the
@@ -36768,6 +36772,27 @@ if _lane_gate("Physics contracts")
     # contract's ratio tripped it in the first stage 8 gate attempt (2026-09-15).
 end
 end # _lane_gate("Physics contracts")
+
+@testset "High-energy weak-strong limit: the PIC electron is judged and a failure names its arm (F-114)" begin
+    # At a finite electron energy the limit does not hold and both solvers kick
+    # the electron; the verdict must name the PIC electron among what failed.
+    # Until this fix the PIC half asserted the proton's luminosity and size and
+    # nothing about the electron (the metrics had no PIC electron entry; the
+    # audit measured its change at 5.4e-20, unjudged), and the failure message
+    # named no arm at all. Reduced size: the electron's immunity at 1e100 GeV
+    # and its kick at 10 GeV do not depend on the particle count.
+    small = (n_particles=2000, pic_grid=32)
+    r = validate(HighEnergyWeakStrongLimitContract(; small..., electron_gev=10.0))
+    @test !r.passed
+    @test r.metrics[:pic_electron_max_abs_change] > 2.0e-14
+    @test r.metrics[:gaussian_electron_max_abs_change] > 2.0e-14
+    @test occursin("PIC electron", r.message) && occursin("soft-Gaussian electron", r.message)
+    # and at the limit the PIC electron is a frozen source at the same absolute
+    # tolerance as the soft-Gaussian one
+    ok = validate(HighEnergyWeakStrongLimitContract(; small...))
+    @test ok.metrics[:pic_electron_max_abs_change] <= HighEnergyWeakStrongLimitContract().gaussian_atol
+    @test ok.metrics[:gaussian_electron_max_abs_change] <= HighEnergyWeakStrongLimitContract().gaussian_atol
+end
 
 @testset "Strong-strong physical parameter validation" begin
     rep1 = Phase6DRep([0.0], [0.0], [0.0], [0.0], [0.0], [0.0])

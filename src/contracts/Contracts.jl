@@ -2373,6 +2373,16 @@ against the soft-Gaussian construction -- and its 8% tolerance is where this
 contract's independent evidence about the kick actually lives. The spectral
 solvers' high-energy limit remains covered by
 `validation/high_energy_weakstrong_limit.jl`, which this contract mirrors.
+
+Both halves judge the electron. At infinite energy the electron is a frozen
+source whatever the solver, so the PIC electron's `max |change|` is held at
+`gaussian_atol` beside the soft-Gaussian one (metric
+`pic_electron_max_abs_change`; measured 5.4e-20 at the defaults, the slice
+drift's roundoff) -- until the 2026-10-22 fix batch the PIC half asserted the
+proton's luminosity and size and nothing about the electron (2026-10-18 audit,
+F-114; the validation script gained the same assertion as F-239 in fix batch
+2). A failure names every arm that broke, by its measured value and its
+tolerance.
 """
 Base.@kwdef struct HighEnergyWeakStrongLimitContract <: AbstractPhysicsContract
     n_particles::Int = 20000
@@ -2474,6 +2484,15 @@ function validate(contract::HighEnergyWeakStrongLimitContract; kwargs...)
 
         gaussian_proton_error = _wsl_max_abs(gaussian_proton.rep, reference_proton.rep)
         gaussian_electron_change = _wsl_max_abs(gaussian_electron.rep, electron.rep)
+        # The infinite-energy electron must come out of the PIC collision as it
+        # went in, too: the limit is "the electron is a frozen source" for
+        # every solver, and until the 2026-10-22 fix batch this half asserted
+        # the proton's luminosity and size and nothing about the electron
+        # (2026-10-18 audit, F-114; the mirror script's F-239). The same
+        # absolute tolerance as the soft-Gaussian electron, because the
+        # electron's immunity is the energy's, not the solver's (measured
+        # 5.4e-20 at the defaults, the slice drift's roundoff).
+        pic_electron_change = _wsl_max_abs(pic_electron.rep, electron.rep)
         gaussian_lum_rel = abs(gaussian_luminosity - reference_luminosity) /
             max(abs(reference_luminosity), eps(Float64))
         reference_rms = _wsl_centered_rms(reference_proton.rep)
@@ -2487,17 +2506,32 @@ function validate(contract::HighEnergyWeakStrongLimitContract; kwargs...)
         metrics[:gaussian_luminosity_relative_error] = gaussian_lum_rel
         metrics[:pic_luminosity_relative_error] = pic_lum_rel
         metrics[:pic_proton_size_relative_error] = pic_size_rel
+        metrics[:pic_electron_max_abs_change] = pic_electron_change
         metrics[:n_particles] = contract.n_particles
 
-        gaussian_passed = gaussian_proton_error <= contract.gaussian_atol &&
-                          gaussian_electron_change <= contract.gaussian_atol &&
-                          gaussian_lum_rel <= contract.gaussian_luminosity_rtol
-        pic_passed = pic_lum_rel <= contract.pic_luminosity_rtol &&
-                     pic_size_rel <= contract.pic_size_rtol
-        passed = gaussian_passed && pic_passed
+        # Each arm is judged by name, so a failure says WHICH claim broke; the
+        # message used to read "soft-Gaussian exactness or PIC model
+        # tolerance" and named no arm (F-114).
+        failures = String[]
+        gaussian_proton_error <= contract.gaussian_atol || push!(failures,
+            "soft-Gaussian proton deviates from the frozen-source reference by " *
+            "$(gaussian_proton_error) > $(contract.gaussian_atol)")
+        gaussian_electron_change <= contract.gaussian_atol || push!(failures,
+            "soft-Gaussian electron moved by $(gaussian_electron_change) > $(contract.gaussian_atol)")
+        gaussian_lum_rel <= contract.gaussian_luminosity_rtol || push!(failures,
+            "soft-Gaussian luminosity off by $(gaussian_lum_rel) relative > " *
+            "$(contract.gaussian_luminosity_rtol)")
+        pic_lum_rel <= contract.pic_luminosity_rtol || push!(failures,
+            "PIC luminosity off by $(pic_lum_rel) relative > $(contract.pic_luminosity_rtol)")
+        pic_size_rel <= contract.pic_size_rtol || push!(failures,
+            "PIC proton size off by $(pic_size_rel) relative > $(contract.pic_size_rtol)")
+        pic_electron_change <= contract.gaussian_atol || push!(failures,
+            "PIC electron moved by $(pic_electron_change) > $(contract.gaussian_atol) " *
+            "(the infinite-energy electron is a frozen source for every solver)")
+        passed = isempty(failures)
         message = passed ?
-            "Strong-strong collisions reduce to the frozen-source weak-strong kick at infinite source energy (soft-Gaussian exact; PIC within model tolerance)." :
-            "The high-energy weak-strong limit failed (soft-Gaussian exactness or PIC model tolerance)."
+            "Strong-strong collisions reduce to the frozen-source weak-strong kick at infinite source energy (soft-Gaussian exact and both electrons unmoved; PIC within model tolerance)." :
+            "The high-energy weak-strong limit failed: " * join(failures, "; ")
         return ContractResult(passed, message;
                               residual=max(gaussian_proton_error, pic_lum_rel),
                               metrics=metrics)
