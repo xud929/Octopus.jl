@@ -12655,6 +12655,48 @@ struct _FixGSubjectOp{E} <: Octopus.AbstractTrackOp; subject::E; end
     @test harness_has == map(_ -> true, harness_has)
     @test validation_has == map(_ -> true, validation_has)
 
+    # (4b) Fix batch 4 (2026-10-22; D13, F-209/U40-12): the crab script's
+    # reference numbers are declared once (`REPORT_REFERENCE_DEFAULTS`) and the
+    # script holds its own header to them at load, but CI never runs the
+    # script, so the suite holds the declaration to the theory note's text --
+    # section 6's production-point rates and section 5.2's tune-band pink
+    # ratios, parsed from the note's own table and sentence -- and the header's
+    # default `cases=` list to the sweep table's rows (every id but the
+    # optional C3, in the table's order), the derivation spelled as the script
+    # spells it.
+    note = read(joinpath(root, "docs", "theory", "crab_cavity_noise_response.md"), String)
+    defaults_block = match(r"const REPORT_REFERENCE_DEFAULTS = \((.*?)\n\)"s, validation)
+    @test defaults_block !== nothing
+    script_ref(key) = (m = defaults_block === nothing ? nothing :
+                           match(Regex(key * "\\s*=\\s*([0-9.eE+-]+)"), defaults_block.captures[1]);
+                       m === nothing ? nothing : parse(Float64, m.captures[1]))
+    note_rate(row) = (m = match(row, note);
+                      m === nothing ? nothing : parse(Float64, m.captures[1]) * 10.0^parse(Int, m.captures[2]))
+    note_ratio(plane) = (m = match(Regex("\\\\bar\\\\rho_" * plane * " \\\\approx ([0-9.]+)"), note);
+                         m === nothing ? nothing : parse(Float64, m.captures[1]))
+    crab_refs = (ref_phase_white_x = (script_ref("ref_phase_white_x"),
+                                      note_rate(r"\| phase, [^|\n]*\| white \| \$x\$ \| \$([0-9.]+)\\times10\^\{(-?\d+)\}\$")),
+                 ref_amp_white_x = (script_ref("ref_amp_white_x"),
+                                    note_rate(r"\| amplitude, [^|\n]*\| white \| \$x\$ \| \$([0-9.]+)\\times10\^\{(-?\d+)\}\$")),
+                 ref_pink_ratio_x = (script_ref("ref_pink_ratio_x"), note_ratio("x")),
+                 ref_pink_ratio_y = (script_ref("ref_pink_ratio_y"), note_ratio("y")))
+    for (name, (code, doc)) in pairs(crab_refs)
+        @testset let reference = name, script_value = code, note_value = doc
+            @test script_value !== nothing && note_value !== nothing
+            @test script_value !== nothing && note_value !== nothing &&
+                  isapprox(script_value, note_value; rtol=1e-9)
+        end
+    end
+    sweep_block = match(r"const SWEEP_CASES = \((.*?)\n\)"s, validation)
+    header_cases = match(r"sweep\s+tag=<tag> \[cases=([A-Za-z0-9,]+) ", validation)
+    @test sweep_block !== nothing && header_cases !== nothing
+    if sweep_block !== nothing && header_cases !== nothing
+        ids = [String(m.captures[1]) for m in eachmatch(r"\(id = \"([A-Za-z0-9]+)\"", sweep_block.captures[1])]
+        @test length(ids) >= 17 && "C3" in ids          # the note's sweep table and its optional row
+        @test header_cases.captures[1] == join(filter(!=("C3"), ids), ",")
+        @test occursin("const SWEEP_DEFAULT_ORDER = join([c.id for c in SWEEP_CASES if c.id != \"C3\"], \",\")", validation)
+    end
+
     # (5) U6-6: the default seed is one constant per MPI-capable harness,
     # derived by the MPI testset from the harness's text; the suite's own
     # text no longer carries the copy.
@@ -13788,10 +13830,16 @@ end
     # (seed 42, rng_id 7, slot 1: 0.8799 at this size, which only a re-keying
     # can move, and the keying is pinned bitwise in (b)), not a tolerance. The
     # expectation of rms^2 is exactly 1 at any length, but its scatter at
-    # 16384 turns is wide and skewed: Var[rms^2] = (2/(K^2 N)) sum_k 2^k
-    # (2K - 1 - 2k) = 0.0937 (std 0.306; one sigma of the rms 13.8 %, Monte
-    # Carlo 13.4 % over 2048 streams), with a heavy upper tail from the slow
-    # generators. The script's [0.8, 1.25] at 65536 turns (one sigma 7.6 %)
+    # 16384 turns is wide and skewed: Var[rms^2] = (2/(K^2 N)) sum_k min(2^k, N)
+    # (2K - 1 - 2k) = 0.0860 (std 0.293; half of it, the one sigma of the rms,
+    # 14.7 %; Monte Carlo 13.3 % over 8192 streams, the rms distribution being
+    # skewed so half the sd of rms^2 overstates it), with a heavy upper tail
+    # from the slow generators. The `min` is because generators 14 and 15 hold
+    # for the whole run here: the form with 2^k alone is valid while 2^(K-1)
+    # <= N, gives 0.0937 (15.3 %) at this size, and "13.8 %" -- the value of
+    # neither -- stood in this comment, the script's header and the README
+    # until 2026-10-22 (audit F-209/U40-8). The script's [0.8, 1.25] at 65536
+    # turns (one sigma 7.6 %, where every 2^k < N)
     # misses 5.9 % of streams at THIS size (120 of 2048, binomial SE 0.5 %), so
     # a re-keying would have gone red 1 time in 17 for no defect (2026-10-13
     # neighbour audit, U7-4). [0.75, 1.6] lies below the measured 0.1 %
@@ -26840,6 +26888,50 @@ end
     @test literal("RE_M") == Octopus.RE
     @test literal("EMASS") == Octopus.EMASS_EV
     @test literal("PMASS") == Octopus.PMASS_EV
+
+    # Fix batch 4 (2026-10-22, F-243/U54-7): the Hann-window plus parabolic-
+    # interpolation tune estimator had six hand copies across validation/.
+    # Four scripts now call `Octopus._coherent_fractional_tune`; this script
+    # and the BeamBeam3D post-processor load no package and keep a copy each,
+    # held here to the framework's function by EVALUATION: the copy's text is
+    # cut from the script, evaluated in a sandbox (FFTW from the package;
+    # `mean(x) = sum(x)/length(x)`, which is Statistics' definition for a
+    # vector -- that stdlib is not loadable under Pkg.test), and compared on
+    # three two-tone signals. Same algorithm in the same arithmetic: equality
+    # to round-off, stated as a relative bound. The regrowth tripwire: no
+    # other validation script spells the interpolation `0.5 * (y1 - y3)`.
+    estimator_sources = (
+        ("coherent_mode_vlasov_theory.jl", r"^    tune\(sig\) = begin\n.*?^    end$"ms, :tune),
+        ("coherent_beam_beam_modes_beambeam3d.jl",
+         r"^function fractional_tune\(signal::AbstractVector\{<:Real\}\)\n.*?^end$"ms, :fractional_tune),
+    )
+    rng_est = Random.MersenneTwister(20261022)
+    signals = [[cos(2pi * q1 * t + 0.3) + r * cos(2pi * q2 * t + 1.1) + 0.05 * randn(rng_est) for t in 1:4096]
+               for (q1, q2, r) in ((0.31, 0.316, 0.5), (0.33, 0.337, 0.9), (0.305, 0.312, 0.2))]
+    for (file, pattern, fname) in estimator_sources
+        text = read(joinpath(pkgdir(Octopus), "validation", file), String)
+        m = match(pattern, text)
+        @testset let standalone_script = file
+            @test m !== nothing
+            if m !== nothing
+                sandbox = Module(Symbol("EstimatorProbe_", replace(file, "." => "_")))
+                Core.eval(sandbox, :(const FFTW = $(Octopus.FFTW)))
+                Core.eval(sandbox, :(mean(x) = sum(x) / length(x)))
+                Core.eval(sandbox, Meta.parseall(m.match))
+                f = getfield(sandbox, fname)
+                worst = maximum(abs(Base.invokelatest(f, sig) - Octopus._coherent_fractional_tune(sig)) /
+                                abs(Octopus._coherent_fractional_tune(sig)) for sig in signals)
+                @testset let worst_relative = worst
+                    @test worst <= 1.0e-14
+                end
+            end
+        end
+    end
+    spelling = r"0\.5\s*\*\s*\(y1\s*-\s*y3\)"
+    strip_est(text) = replace(replace(text, r"#=.*?=#"s => " "), r"#[^\n]*" => "")
+    carriers = [f for f in readdir(joinpath(pkgdir(Octopus), "validation")) if endswith(f, ".jl") &&
+                occursin(spelling, strip_est(read(joinpath(pkgdir(Octopus), "validation", f), String)))]
+    @test sort(carriers) == ["coherent_beam_beam_modes_beambeam3d.jl", "coherent_mode_vlasov_theory.jl"]
 end
 
 @testset "The near-round Gauss-Legendre reference has not drifted from its twin" begin

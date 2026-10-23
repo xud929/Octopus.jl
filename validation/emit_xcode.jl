@@ -3,10 +3,22 @@
 # per-turn geometric emittance of beam 1 so eps(turn) can be overlaid on
 # BeamBeam3D's fort.24 columns 7-8 (the decks and outputs are archived in
 # the paper repository, https://github.com/xud929/2026_octopus_cpc).
-# Writes emit_xcode_<tag>.tsv under result/. Run from the project root:
+# Writes emit_xcode_<tag>.tsv under result/ and takes no verdict: it is the raw
+# material for the overlay, with no in-repository reference. Run from the
+# project root:
 #
 #   julia --startup-file=no --project=. validation/emit_xcode.jl
-include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+#
+# Environment (the defaults are the benchmark's sizes; set both for a short run):
+#   OCTOPUS_EMIT_XCODE_TURNS=4096     turns per aspect
+#   OCTOPUS_EMIT_XCODE_NMACRO=100000  macroparticles per beam
+#
+# Guarded like every other script in `validation/` (2026-08-05_b audit,
+# U25-14): until 2026-10-22 it re-evaluated the package when included after a
+# sibling in one process (2026-10-18 comprehensive audit, F-243/U54-6).
+if !isdefined(Main, :Octopus)
+    include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+end
 mkpath(joinpath(@__DIR__, "..", "result"))
 using .Octopus
 using Statistics
@@ -62,5 +74,7 @@ function emit_series(; aspect, turns, n_macro, xi, seed, offset)
     println("done aspect=", aspect)
 end
 
-emit_series(aspect=1.0,  turns=4096, n_macro=100_000, xi=0.005, seed=1, offset=0.1)
-emit_series(aspect=1/11, turns=4096, n_macro=100_000, xi=0.005, seed=1, offset=0.1)
+const EMIT_TURNS = parse(Int, get(ENV, "OCTOPUS_EMIT_XCODE_TURNS", "4096"))
+const EMIT_NMACRO = parse(Int, get(ENV, "OCTOPUS_EMIT_XCODE_NMACRO", "100000"))
+emit_series(aspect=1.0,  turns=EMIT_TURNS, n_macro=EMIT_NMACRO, xi=0.005, seed=1, offset=0.1)
+emit_series(aspect=1/11, turns=EMIT_TURNS, n_macro=EMIT_NMACRO, xi=0.005, seed=1, offset=0.1)

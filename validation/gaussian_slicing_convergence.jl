@@ -68,7 +68,18 @@ Inputs
 ------
 Beam parameters are the EIC values already used by
 `validation/slice_longitudinal_zscan.jl` (275 GeV proton, 10 GeV electron).
-Edit the `config` block below.
+Edit the `config` block below. Two sizes can be set from the environment for
+a reduced run (the production values are the defaults):
+
+    OCTOPUS_SLICING_N_PARTICLES=4000   the test bunch
+    OCTOPUS_SLICING_NS_REFERENCE=601   the `:sqrt_density` reference (solved at
+                                       ns/2, ns and 2 ns for its own residual)
+
+The `ns_list` holds every column of the theory note's Section 7.1 hadron-side
+table, N_s = 1, 3, 4, 5, 7, 9, 11, 15, 21, 31, 45 (and 61): the N_s = 1, 4 and
+11 cells came from a one-off run with an edited list and were unreproduced
+until 2026-10-22 (comprehensive audit 2026-10-18, F-231/U46-7; fix batch 4,
+D17).
 
 Outputs (under `result/`)
 -------------------------
@@ -95,9 +106,9 @@ using Printf
 const O = Octopus
 
 config = (
-    n_particles    = 4000,
-    ns_list        = [3, 5, 7, 9, 15, 21, 31, 45, 61],
-    ns_reference   = 601,
+    n_particles    = parse(Int, get(ENV, "OCTOPUS_SLICING_N_PARTICLES", "4000")),
+    ns_list        = [1, 3, 4, 5, 7, 9, 11, 15, 21, 31, 45, 61],
+    ns_reference   = parse(Int, get(ENV, "OCTOPUS_SLICING_NS_REFERENCE", "601")),
     rules          = collect(O.SLICE_METHODS),
     # :equal_width has TWO convergence parameters. Its bin width is tied here to
     # Furman #1's growing half-span 1+(ns-3)/12 so that ns alone drives it; at a
