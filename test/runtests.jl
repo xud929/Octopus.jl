@@ -6292,6 +6292,16 @@ end
 _st4b_a_dense6() = Octopus._manufactured_symplectic_map(MersenneTwister(_ST4B_SEED), 6; stable=true)[1]
 "The dense stable 4x4 map (row 5)."
 _st4b_a_dense4() = Octopus._manufactured_symplectic_map(MersenneTwister(_ST4B_SEED), 4; stable=true)[1]
+"""
+Three pairs of which one rotates in the OPPOSITE sense (tunes 0.73, -1.41, -0.94), conjugated by a random
+symplectic W (scale 0.1): the auto partition is three definite singletons, and the explicit union of a
+same-sense pair with the opposite one is :indefinite (Gram signs [-1, 1]), which no union of the dense stable
+6D map's pairs is (2026-10-18 audit F-157/U30-2).
+"""
+function _st4b_a_opposite6()
+    W = Octopus._manufactured_symplectic_map(MersenneTwister(_ST4B_SEED + 77), 6; scale=0.1).M
+    return W * _st4b_a_blockrot(0.73, -1.41, -0.94) * Octopus._symplectic_inverse(W)
+end
 "Coasting map (row 6, stage 4a builder): zeta = 0, random eta, stable random 4D block, shear s."
 function _st4b_a_coasting(s::Real; seed=_ST4B_SEED)
     rng = MersenneTwister(seed); eta = 0.2 * randn(rng, 4)
@@ -6958,8 +6968,16 @@ end
     # a generous explicit atol accepts the displaced point
     ra = analyze(TwissDispersionAnalysis(closed_orbit_atol=1.0), lms)
     @test ra.status === :passed && Octopus.is_determined(ra.closed_orbit)
-    # the default atol: c eps max(1, max|point|), a fixed point at the origin has residual exactly zero
-    @test Octopus._CLOSED_ORBIT_ATOL_MULTIPLIER * eps() * 1.0 > 0
+    # the default atol rule at its consumer, on THIS fixture (2026-10-18 audit F-158/U30-3: the line here was
+    # `_CLOSED_ORBIT_ATOL_MULTIPLIER * eps() * 1.0 > 0`, true for any positive constant): the :warn run's diagnostic
+    # carries the tolerance it applied, its source :default, and the rule c eps max(1, max|C point|) in the SCALED
+    # coordinates (the displaced point's max|C p| = 6.4e-4 here, so the floor 1 is the active factor); the residual
+    # exceeds it, which is why the run warned
+    co_default = _st4b_a_val(rw.diagnostics.closed_orbit)
+    @test co_default.tolerance_source === :default && co_default.action === :warned
+    @test co_default.tolerance == Octopus._CLOSED_ORBIT_ATOL_MULTIPLIER * eps() *
+                                  max(1.0, maximum(abs, Octopus._scaling_matrix(rw.scaling) * collect(lms.provenance.point)))
+    @test co_default.residual == res && co_default.residual > co_default.tolerance
     # finite differences: the truncation error is not roundoff, so a number is required
     lfd = one_turn_matrix(fodo; method=FiniteDifferenceLinearization(1e-6))
     @test lfd.provenance.method isa FiniteDifferenceLinearization
@@ -7032,7 +7050,10 @@ end
     r = analyze(TwissDispersionAnalysis(), cst.M)
     S = _st4b_a_val(r.separation)
     kappa = max(1, norm(cst.M)) * norm(S.transformation) * norm(S.inverse)
-    @test norm(_st4b_a_val(r.physical.eta) - cst.eta) <= 256 * eps() * kappa     # c measured 116 (report_4b_A.md)
+    # c by the one-tenth rule of the Scaling testset above: measured 115.9 natively and 36.5 on the Haswell arm (fix
+    # batch 4b, probes/TS/logs/measure_*.log), so c >= 1159, 2048; the former 256 sat 2.2x above the native value
+    # inside the window that rule forbids (2026-10-18 audit F-159/U30-6)
+    @test norm(_st4b_a_val(r.physical.eta) - cst.eta) <= 2048 * eps() * kappa
 end
 
 @testset "Prescribed h = 0.05: the heuristic is uncertified and degraded, the tune certifies and recovers the analytic triple (F4 amendment, row 7)" begin
@@ -7077,11 +7098,12 @@ end
     @test _st4b_a_val(ri.physical.h) == _st4b_a_val(rc.physical.h)
     # an index outside the spectrum is refused at the boundary
     @test_throws ArgumentError analyze(TwissDispersionAnalysis(longitudinal_mode=7), p.M)
-    # the iterative routes on the heuristic's mode: "another branch" degradations name the route (record item 2)
+    # the iterative routes on the heuristic's mode: neither lands on another branch here (the set is EMPTY on this
+    # fixture, asserted; 2026-10-18 audit F-157/U30-5: the loop below iterated nothing and the comment promised a
+    # check the data does not provide), so the heuristic run carries no "another invariant plane" degradation at
+    # all; the route-naming rule (record item 2) is pinned non-vacuously on the certified run, `other_c` below
     other = [x.route for x in r.dispersion.routes if x.route in (:newton, :fixed_point) && x.status === :not_invariant && occursin("another branch", x.detail)]
-    for route in other
-        @test any(s -> occursin("another invariant plane", s) && occursin(":$(route)", s), r.degradations)
-    end
+    @test isempty(other) && !any(s -> occursin("another invariant plane", s), r.degradations)
     # a route that simply did not converge is NOT an "another branch" degradation
     nonconv = [x.route for x in r.dispersion.routes if x.status === :not_invariant && !occursin("another branch", x.detail)]
     for route in nonconv
@@ -7153,12 +7175,17 @@ end
     @test occursin("NEVER certified on its own", doc) && occursin("not the `normal_mode` number", doc)
 end
 
-@testset "Reason table: one fixture per reason the pipeline can emit, the set seen equals the set the docstrings claim (F13)" begin
-    claimed = Set([:not_requested, :cluster_unresolved, :indefinite_cluster, :unstable_spectrum, :unit_eigenvalue,
-                   :coasting_structure, :form_inadmissible, :singular_coefficient, :not_invariant, :route_not_selected,
-                   :singular_longitudinal_projection, :unresolved_defective])
-    # the other three members of DETERMINATION_REASONS (:graph_isotropic, :zero_projection, :not_derived_for_cluster) have
-    # no analyze-level fixture in this table; their kernels are tested where they are emitted (stage 9, U11b-2-3)
+@testset "Reason table: one fixture per reason the pipeline can emit, the set seen equals DETERMINATION_REASONS minus :none and the three kernel-level reasons (F13)" begin
+    # DERIVED from the constant (2026-10-18 audit F-158/U30-9: a hand-written 12-member literal under a title that
+    # said "the set the docstrings claim"; the docstring tie is the `documented(:DETERMINATION_REASONS)` pin of the
+    # vocabulary testset): every reason the constant declares must be seen here, except :none and the three
+    # kernel-level reasons (:graph_isotropic, :zero_projection, :not_derived_for_cluster) that have no
+    # analyze-level fixture in this table; their kernels are tested where they are emitted (stage 9, U11b-2-3). A
+    # reason added to the constant without a fixture here fails this testset by name.
+    kernel_only = Set([:graph_isotropic, :zero_projection, :not_derived_for_cluster])
+    @test all(in(Octopus.DETERMINATION_REASONS), kernel_only)
+    claimed = setdiff(Set(Octopus.DETERMINATION_REASONS), kernel_only, Set([:none]))
+    @test length(claimed) == 12                                     # the twelve analyze-level reasons of 2026-10-18
     seen = Set{Symbol}()
     function collect!(r)
         for f in (r.closed_orbit, r.transverse, r.separation, r.projected_optics, r.ohmi, r.covariance_6d, r.covariance,
@@ -7443,14 +7470,26 @@ end
     @test _st4b_a_val(rp.physical.h) == _st4b_a_val(r0.physical.h)
     # a partition that is not closed under conjugation is the kernel's ArgumentError, thrown through analyze
     @test_throws ArgumentError analyze(TwissDispersionAnalysis(clusters=[[1, 2], [3, 4], [5, 6]], strict=false), M6)
-    # a union of two conjugate pairs: the classification is still COMPUTED (stage 3), the grouping is promised
+    # a union of two conjugate pairs: the classification is still COMPUTED (stage 3), the grouping is promised.
+    # Both outcomes are ASSERTED on fixtures of their own rather than selected from the artifact (2026-10-18 audit
+    # F-157/U30-2: the `if classification in (:indefinite, :unresolved)` guard was false on the dense map, so the
+    # degradation-naming assertion never ran). (i) The dense stable map: every pairwise union is :definite (same
+    # Krein sense) and no degradation names the cluster.
     union = [vcat(part[1], part[2]), part[3]]
     ru = analyze(TwissDispersionAnalysis(clusters=union, strict=false), M6)
     @test [sort(c.members) for c in ru.clusters.clusters] == [sort(g) for g in union]
-    @test ru.clusters.clusters[1].classification in Octopus.CLUSTER_CLASSIFICATIONS
-    if ru.clusters.clusters[1].classification in (:indefinite, :unresolved)
-        @test ru.status === :degraded && any(s -> occursin("cluster 1", s), ru.degradations)
-    end
+    @test ru.clusters.clusters[1].classification === :definite
+    @test !any(s -> occursin("cluster 1", s) && occursin("indefinite", s), ru.degradations)   # (the heuristic's own degradation names "(cluster 1; signed z-area ...)")
+    # (ii) a same-sense pair forced together with the opposite-sense one: the union is :indefinite, the result is
+    # :degraded and the degradation names "cluster 1" (the `clusters` option's docstring: "an explicit union of
+    # far-apart pairs with a mixed Gram is :indefinite")
+    Mo6 = _st4b_a_opposite6()
+    ro = analyze(TwissDispersionAnalysis(strict=false), Mo6)
+    parto = [c.members for c in ro.clusters.clusters]
+    @test length(parto) == 3 && all(c.classification === :definite for c in ro.clusters.clusters)
+    ruo = analyze(TwissDispersionAnalysis(clusters=[vcat(parto[1], parto[2]), parto[3]], strict=false), Mo6)
+    @test ruo.clusters.clusters[1].classification === :indefinite
+    @test ruo.status === :degraded && count(s -> occursin("cluster 1", s) && occursin("indefinite", s), ruo.degradations) == 1
     # 4x4: the explicit union blocks the frame exactly when _frame_availability of the explicit report returns a reason
     M4 = _st4b_a_dense4()
     r4 = analyze(TwissDispersionAnalysis(strict=false), M4)
@@ -7758,14 +7797,11 @@ end
     @test derived == Set([TwissDispersionAnalysis, PlaceholderAnalysis])
     @test all(T -> parentmodule(T) === Octopus && isconcretetype(T), derived)
     @test analysis_option_schema(PlaceholderAnalysis) === NamedTuple()
-    # the guard's message form, on a scratch type outside the hand list
-    hand = (TwissDispersionAnalysis, PlaceholderAnalysis)
-    msgs = String[]
-    for T in (derived..., Nothing)
-        T in hand || push!(msgs, "$(T) is a concrete Octopus analysis with no block in " *
-            "validate_configuration_metadata; add one (see the policy tree guard)")
-    end
-    @test msgs == ["Nothing is a concrete Octopus analysis with no block in validate_configuration_metadata; add one (see the policy tree guard)"]
+    # The tree guard's refusal has NO executed negative control here, and this testset no longer pretends to one
+    # (2026-10-18 audit F-158/U30-4: a loop the test wrote itself over its own `hand` tuple was asserted against the
+    # literal it pushed). A concrete subtype of AbstractAnalysis defined in this process would be permanent (a type
+    # cannot be undefined) and would break the derived-set pin above and the real `validate` later in the file; the
+    # guard's loop is READ in the source below, exactly as the policy tree guard it mirrors is.
     # the block text is in the source
     src = read(String(first(methods(Octopus.validate_configuration_metadata)).file), String)
     @test occursin("_concrete_octopus_subtypes(AbstractAnalysis)", src)
@@ -8950,8 +8986,11 @@ end
         g1 = gdev(); g2 = gdev()
         track!(g1, elem, 3, Octopus.CUDABackend); Octopus.CUDA.synchronize()
         track!(g2, elem, 3, Octopus.CUDABackend); Octopus.CUDA.synchronize()
-        @test Array(g1.x) == Array(g2.x) && Array(g1.px) == Array(g2.px)
-        @test Array(g1.pz) == Array(g2.pz)
+        # every coordinate: each plane draws its own counter component (2026-10-18 audit F-159/U30-8: x, px and pz
+        # were compared, y, py and z never)
+        for f in (:x, :px, :y, :py, :z, :pz)
+            @test Array(getproperty(g1, f)) == Array(getproperty(g2, f))
+        end
         # And it matches the host context-path reference — the same draws by
         # construction (the counter is integer-exact across backends), the
         # kick arithmetic to within GPU/CPU FMA-contraction ulps (measured
@@ -8965,8 +9004,12 @@ end
                     elem.method, elem, ctx, i, ref[i]...)
             end
         end
-        @test maximum(abs.(Array(g1.x) .- ref.x)) <= 1.0e-16
-        @test maximum(abs.(Array(g1.px) .- ref.px)) <= 1.0e-16
+        # all six coordinates against the host reference (measured <= 8.7e-19 on every one, 2026-10-18 audit U30-8)
+        for f in (:x, :px, :y, :py, :z, :pz)
+            @testset let coordinate = f
+                @test maximum(abs.(Array(getproperty(g1, f)) .- getproperty(ref, f))) <= 1.0e-16
+            end
+        end
         # Statistical sanity retained from the row's measurement: pure
         # diffusion variance grows as turns * exc^2.
         spec_d = LumpedRadSpec(damping_turns=(1e18, 1e18, 1e18), beta=(1.0, 1.0, 1.0),
@@ -9036,6 +9079,14 @@ end
          0.0012000000040669255, 0.00020002747050993912),
     )
     q = (4.0e-4, 1.0e-4, -2.0e-4, -1.5e-4, 1.2e-3, 2.0e-4)
+    # The pins hold at a STATED tolerance, 8 ulps of each component (2026-10-18 audit F-159/U30-7: `==` against
+    # 17-digit literals rested on every operation's order and contraction). The maps are deterministic IEEE
+    # arithmetic (measured 0 ulps on both gate arms); a legitimate re-association moves a result by O(1) ulps per
+    # reordered operation, which 8 covers, while the five selectors stay told apart: every two differ by at least
+    # 3620 ulps on some component (pz for the paraxial-frozen/Hirata pair, which share every other coordinate by
+    # construction; x for the rest), asserted below at 1000, 125x the tolerance.
+    drift_ulps = 8
+    outputs = Vector{Float64}[]
     for (selector, drift_type, reference) in zip(selectors, types, expected)
         element = ThinStrongBeam(ThinStrongBeamSpec(;
             kbb=1.0e-7, beta=(0.8, 1.2), alpha=(0.3, -0.2),
@@ -9043,7 +9094,14 @@ end
             angle=(3.0e-4, -2.0e-4, 0.0),
             curvature=(2.0e-3, -1.0e-3, 0.0), virtual_drift=selector))
         @test element.virtual_drift isa drift_type
-        @test element(q...) == reference
+        out = collect(element(q...))
+        @testset let selector = selector, worst_ulps = maximum(abs(out[c] - reference[c]) / eps(abs(reference[c])) for c in 1:6)
+            @test worst_ulps <= drift_ulps
+        end
+        push!(outputs, out)
+    end
+    for i in 1:length(outputs), j in (i + 1):length(outputs)
+        @test maximum(abs(outputs[i][c] - outputs[j][c]) / eps(abs(outputs[i][c])) for c in 1:6) >= 1000
     end
     direct = ThinStrongBeam(ThinStrongBeamSpec(;
         kbb=1.0e-7, beta=(1.0, 1.0), sigma=(1.0e-3, 1.0e-3),
