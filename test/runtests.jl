@@ -31692,6 +31692,48 @@ end
     @test_throws ArgumentError Octopus.longitudinal_slices(rep, bogus)
 end
 
+@testset "Specified slicing positions are finite at construction, and the clamp is documented (F-72)" begin
+    # 2026-10-18 audit F-72 (U8-4): `LongitudinalSlicing(method=:specified)`
+    # accepted a NaN or Inf position; the NaN reached `_finish_longitudinal_slices`
+    # and was diagnosed as a non-finite DERIVED beam quantity ("all 500 beam
+    # macroparticle coordinates (z) are finite ... inspect the slice separation
+    # and the slice moments"), a message written for drift overflow, two calls
+    # after the configuration that caused it. A non-finite position is refused
+    # BY NAME at construction, before any beam is sliced (the "nothing is
+    # accepted for its shape alone" rule of the 2026-10-20 fix batch).
+    for pos in ([NaN, 0.0, 0.5, 1.0], [-Inf, 0.0, 0.5, Inf], [0.0, 0.5, NaN, 1.0])
+        err = try
+            LongitudinalSlicing(nslices=5, method=:specified, positions=pos)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test err isa ArgumentError && occursin("positions", err.msg) && occursin("finite", err.msg)
+    end
+    # Finite positions still construct, in any order (they are sorted at use),
+    # and a non-`:specified` method ignores the vector as before.
+    @test LongitudinalSlicing(nslices=4, method=:specified, positions=[0.6, -0.6, 0.0]).positions == [0.6, -0.6, 0.0]
+    @test LongitudinalSlicing(nslices=4, method=:equal_area, positions=[NaN]).positions == [NaN] ||
+          LongitudinalSlicing(nslices=4, method=:equal_area).positions == Float64[]
+    # The clamp the docstring now states: a position past the live beam's
+    # extent is clamped to the extremum, so the slices beyond it are empty
+    # except for the extremum particle, which `searchsortedlast` files into the
+    # LAST slice (the audit's probe: positions [-0.5, 0.5, 100, 200] on 500
+    # particles gave counts [163, 182, 154, 0, 1]). Documented, not changed:
+    # the membership convention is the one every boundary-based method shares.
+    set_global_rng!(seed=778, method=:philox)
+    rep = Beam(500, CPUThreadsExecutionPolicy(threads=1), Float64; rng_id=1, beta=(1.0, 1.0, 1.0),
+               emit=(1.0e-9, 1.0e-9, 1.0e-6), npart=1.0e11).rep
+    s = Octopus.longitudinal_slices(rep, LongitudinalSlicing(nslices=5, method=:specified,
+                                                             positions=[-0.5, 0.5, 100.0, 200.0]))
+    zmax = maximum(rep.z)
+    @test s.boundary[4] == s.boundary[5] == s.boundary[6] == zmax
+    @test length(s.indices[4]) == 0 && length(s.indices[5]) == 1
+    @test rep.z[only(s.indices[5])] == zmax
+    @test sum(length, s.indices) == 500
+end
+
 @testset "Lost-particle masking agrees between CPU and CUDA" begin
     if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         n = 500

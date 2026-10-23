@@ -529,6 +529,11 @@ function _longitudinal_slices_specified(rep::Phase6DRep, slicing::LongitudinalSl
     stats = _live_z_stats(z, flags, _mp_current_shard(rep))
     μ = stats.mean
     σ = stats.sigma
+    # The positions are finite by construction (`LongitudinalSlicing` refuses
+    # NaN and Inf by name, F-72); a finite position past the live extent is
+    # clamped to it below, which the `LongitudinalSlicing` docstring states
+    # with the counts it produces (an empty slice, or the extremum particle
+    # alone in the last one).
     internal = sort([T(μ + p * σ) for p in slicing.positions])
     boundaries = Vector{T}(undef, length(internal) + 2)
     boundaries[1] = stats.zmin

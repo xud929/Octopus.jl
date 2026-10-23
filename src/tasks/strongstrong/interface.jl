@@ -816,7 +816,16 @@ Supported methods:
   controlled by `center_position`, and slice weights come from the
   macroparticle counts in each slice.
 - `:specified`: use `positions` as internal boundaries in units of beam
-  longitudinal rms around the beam mean.
+  longitudinal rms around the beam mean. The positions must be finite (refused
+  by name at construction) and are sorted at use. A position beyond the live
+  beam's extent is CLAMPED to that extremum, so the slices past it are empty
+  except for the extremum particle itself, which lands alone in the last
+  slice (measured: positions `[-0.5, 0.5, 100, 200]` on 500 particles give
+  counts `[163, 182, 154, 0, 1]`); a one-particle slice has zero transverse
+  spread and, under the soft-Gaussian solver, delivers no kick for its share
+  of the charge. The clamp is the convention every boundary-based method
+  shares (`:normal_quantile` clamps the same way on a beam whose sample
+  extremum lies inside an outer quantile); choose positions inside the beam.
 
 Three further values are accepted as ALIASES, and were undeclared until the
 2026-08-05_b audit (U5-12) -- behaviour keyed off something no docstring or
@@ -885,6 +894,15 @@ function LongitudinalSlicing(; nslices::Integer=1, method::Symbol=:equal_area,
     values = Float64.(positions)
     method === :specified && length(values) != nslices - 1 && throw(ArgumentError(
         "specified slicing requires nslices-1 internal positions"))
+    # A non-finite position used to be accepted here and diagnosed two calls
+    # later, at `_finish_longitudinal_slices`, as a non-finite DERIVED beam
+    # quantity ("all ... coordinates (z) are finite ... inspect the slice
+    # separation and the slice moments") -- a message written for drift
+    # overflow -- while `-Inf`/`Inf` clamped to the extrema and ran. Refused by
+    # name where it is configured (2026-10-18 audit, F-72; fix batch 4b).
+    method === :specified && !all(isfinite, values) && throw(ArgumentError(
+        "specified slicing positions must be finite (in units of the longitudinal rms " *
+        "about the mean); got positions = $(values)"))
     return LongitudinalSlicing(Int(nslices), method, Int(resolution), center_position, values)
 end
 
