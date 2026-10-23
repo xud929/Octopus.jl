@@ -1457,6 +1457,11 @@ node placement or the splitting.
 
 Both collision directions are run; the governing hourglass ratio
 `sigma_z,strong / beta*_weak` differs by an order of magnitude between them.
+The `ns` list holds every column of the theory note's Section 7.1 hadron-side
+table, `1, 3, 4, 5, 7, 9, 11, 15, 21, 31, 45` (and 61): the `N_s = 1`, 4 and
+11 cells came from a one-off run with an edited list until 2026-10-22 (audit
+F-231/U46-7; fix batch 4, D17). `OCTOPUS_SLICING_N_PARTICLES` (4000) and
+`OCTOPUS_SLICING_NS_REFERENCE` (601) reduce a run; at 500 particles and `ns_reference = 61` the run takes 17 s wall with the package load and prints every column for every rule (fix batch 4); the three added columns enlarge only the rules' part of a production run that the 300-, 601- and 1202-slice reference solves dominate.
 
 ```bash
 julia --project=. validation/gaussian_slicing_convergence.jl
