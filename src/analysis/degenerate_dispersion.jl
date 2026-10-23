@@ -54,12 +54,18 @@ of order `eps ||U_c||_2^2` (each entry of `U_c' S U_c` sums `6` products of
 size `||U_c||^2`), so the tolerance is the shared `c eps kappa` form with
 `kappa = ||U_c||_2^2`. Measured in Part B on the 30 conjugated copies of
 `diag(R(0.73), R(1.41), R(0.73))`, the three-mode fixture, the exact FODO
-embedding and the isospectral limit and split maps: the largest accepted
-residual / tolerance is 0.043 (conjugated pair 11 of seed 20260911), so the
-window's lower edge is 27; rejected: a column rescaled by 1 + 1e-6 gives
-1.2e7 times the tolerance, the N15 indefinite frame 1.7e13, a conjugate
-partner as second column 7.0e12 (window upper edge 7.5e8 for the smallest
-rejected). Recorded in report_B.md.
+embedding and the isospectral limit and split maps, as ratios residual /
+tolerance AT THIS MULTIPLIER (64): the largest accepted ratio is 0.043
+(conjugated pair 11 of seed 20260911), i.e. `0.043 * 64 = 2.75` at
+multiplier 1, so the one-tenth rule puts the window's lower edge at `10 *
+2.75 = 27.5`; rejected: a column rescaled by 1 + 1e-6 gives 1.2e7 times the
+tolerance (`1.2e7 * 64 = 7.7e8` at multiplier 1), the N15 indefinite frame
+1.7e13, a conjugate partner as second column 7.0e12, so the ten rule puts
+the upper edge at one tenth of the smallest rejected, `7.7e8 / 10 = 7.7e7`.
+Window `[27.5, 7.7e7]`; 64 lies inside it (2.3 times the lower edge). The
+earlier text quoted the upper edge as "7.5e8", the rejected extreme itself
+without its factor ten (2026-10-18 audit, U22-6; fix batch 4b). Recorded in
+report_B.md.
 """
 const _CLUSTER_FRAME_N4_MULTIPLIER = 64.0
 
