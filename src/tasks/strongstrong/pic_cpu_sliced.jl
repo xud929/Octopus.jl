@@ -160,12 +160,62 @@ mutable struct _PICMigrationScratch{T}
     senders::Vector{Int}
     counts::Matrix{Float64}
     states::Dict{Int,NamedTuple{(:x, :px, :y, :py, :z, :pz),NTuple{6,Vector{T}}}}
+    # This beam's bucket (the columns it received, slice-major) and the
+    # histogram of the pair migration's two stable key sorts. Both were
+    # allocated per collide -- the bucket `push!`-grown from `Int[]`, and the
+    # sorts were `sortperm!(...; alg=MergeSort)`, whose n/2-Int scratch is
+    # allocated per call (MergeSort is a legacy-interface algorithm in Julia
+    # 1.12 and the `scratch` keyword does not reach it; measured: one Int per
+    # column survived with the keyword) -- 1.17 MB per collide at 20,000
+    # particles per beam and 4.80 MB at 80,000, 72 % of it the two buckets,
+    # against the intent stated above (2026-10-18 audit, F-32; fix batch 4b).
+    # The keys are small integers (the destination rank, then the beam-major
+    # slice), so `_pic_mig_stable_perm!` sorts them by counting: the same
+    # stable order, nothing allocated.
+    beam_bucket::Vector{Int}
+    sort_counts::Vector{Int}
+end
+
+"""
+    _pic_mig_stable_perm!(perm, key, n, kmax, counts) -> perm
+
+The stable permutation of `1:n` that orders `key[1:n]` ascending, for integer
+keys in `0:kmax` -- exactly the permutation `sortperm!(perm, key; alg=MergeSort)`
+returns (a stable sort's order is unique), by counting into the pooled
+`counts` instead of allocating a merge scratch. `counts` is resized to
+`kmax + 1`.
+"""
+function _pic_mig_stable_perm!(perm::Vector{Int}, key::AbstractVector{Int}, n::Int,
+                               kmax::Int, counts::Vector{Int})
+    length(perm) >= n || throw(ArgumentError("perm holds $(length(perm)) slots for $(n) keys"))
+    length(key) >= n || throw(ArgumentError("key holds $(length(key)) entries for $(n) keys"))
+    resize!(counts, kmax + 1)
+    fill!(counts, 0)
+    @inbounds for i in 1:n
+        k = key[i]
+        0 <= k <= kmax || throw(ArgumentError("migration sort key $(k) outside 0:$(kmax)"))
+        counts[k + 1] += 1
+    end
+    # Exclusive prefix sums: counts[k + 1] becomes the number of keys below k,
+    # the slot before the first of key k.
+    running = 0
+    @inbounds for k in 1:(kmax + 1)
+        c = counts[k]
+        counts[k] = running
+        running += c
+    end
+    @inbounds for i in 1:n
+        slot = counts[key[i] + 1] += 1
+        perm[slot] = i
+    end
+    return perm
 end
 _PICMigrationScratch{T}() where {T} =
     _PICMigrationScratch{T}(T[], T[], Int[], Int[], Int[], Int[], Int[], Int[], Int[],
                             Int[], Int[],
                             zeros(Float64, 0, 0),
-                            Dict{Int,NamedTuple{(:x, :px, :y, :py, :z, :pz),NTuple{6,Vector{T}}}}())
+                            Dict{Int,NamedTuple{(:x, :px, :y, :py, :z, :pz),NTuple{6,Vector{T}}}}(),
+                            Int[], Int[])
 
 """The two beams' migration scratch for this collide label."""
 function _pic_migration_scratch(::Type{T}, holder::Base.RefValue{Any}) where {T}
@@ -272,7 +322,7 @@ function _pic_sliced_migrate_pair_in(rep1::Phase6DRep, slices1, layout1::_PICSli
         end
     end
     order = _pic_mig_ints!(sc.order, ncols)     # the stable order the exchange applies
-    sortperm!(order, dest; alg=MergeSort, initialized=false)
+    _pic_mig_stable_perm!(order, dest, ncols, P - 1, sc.sort_counts)
     received, from_counts = _mp_exchange_columns(cols, dest)
     m = size(received, 2)
     slice_of = _pic_mig_ints!(sc.slice_of, m)
@@ -289,7 +339,8 @@ function _pic_sliced_migrate_pair_in(rep1::Phase6DRep, slices1, layout1::_PICSli
         end
     end
     allbucket = _pic_mig_ints!(sc.bucket, m)
-    sortperm!(allbucket, key; alg=MergeSort, initialized=false)
+    # Keys run 1:(2 * (maxns + 1)); beam 1's slices sit below beam 2's.
+    _pic_mig_stable_perm!(allbucket, key, m, 2 * (maxns + 1), sc.sort_counts)
     senders = _pic_mig_ints!(sc.senders, m)
     j = 0
     for (q, n) in enumerate(from_counts), _ in 1:n
@@ -303,7 +354,12 @@ function _pic_sliced_migrate_pair_in(rep1::Phase6DRep, slices1, layout1::_PICSli
         states = Dict{Int,NamedTuple{(:x, :px, :y, :py, :z, :pz),NTuple{6,Vector{T}}}}()
         starts = Dict{Int,Int}()
         mine = _pic_sliced_mine(layout, rank)
-        bucket = Int[]
+        # Beam is the major key of `allbucket`, so this beam's columns are one
+        # contiguous run of it starting at `b0`, slice by slice in `mine`'s
+        # order: the per-beam bucket is a COPY of that run into this beam's
+        # pooled vector, not a `push!`-grown fresh one (F-32). Same values in
+        # the same order, so nothing downstream sees a different sequence.
+        bstart = b0
         for (s, _) in mine
             n = 0
             while b0 + n <= m && beam_of[allbucket[b0 + n]] == b &&
@@ -318,14 +374,16 @@ function _pic_sliced_migrate_pair_in(rep1::Phase6DRep, slices1, layout1::_PICSli
                     st.y[o] = received[3, col]; st.py[o] = received[4, col]
                     st.z[o] = received[5, col]; st.pz[o] = received[6, col]
                 end
-                push!(bucket, col)
             end
             states[s] = st
-            starts[s] = length(bucket) - n + 1
+            starts[s] = b0 - bstart + 1
             b0 += n
         end
+        nb = b0 - bstart
+        bucket = _pic_mig_ints!(states_sc.beam_bucket, nb)
+        copyto!(bucket, 1, allbucket, bstart, nb)
         beams[b] = _PICSlicedBeam{T}(layout, mine, states, bucket, starts, senders,
-                                     home, order, ncols_b, length(bucket))
+                                     home, order, ncols_b, nb)
     end
     b0 - 1 == m || error(
         "received $(m) columns but bucketed $(b0 - 1): a column of a slice or beam this rank does not hold")
@@ -464,6 +522,28 @@ const _PIC_SLICED_REDUCED = 64
 
 @inline _pic_sliced_role_offset(as_source::Bool) = as_source ? 0 : 10
 
+# The reduced record's layout, read through names rather than slot literals.
+# `_pic_sliced_reduce` below is the one writer; these are what its readers --
+# `_pic_sliced_extents`, `_pic_sliced_pair_bad` and the Gaussian-PIC owner in
+# gaussian_pic.jl -- consult, so a slot that moves moves once. The gpic copy
+# used to repeat `red[61]`, `red[o + 9]` and `red[o + 21..24]` by hand with
+# nothing tying it to this file: a moved verdict slot would have read zero and
+# let a non-finite pair proceed, a moved origin block would have anchored the
+# moments on the wrong point inside the residual grid (2026-10-18 audit, F-43;
+# fix batch 4b). Direction `d` (1 or 2) selects the thirty-slot block.
+const _PIC_SLICED_VERDICT_SLOT = 61
+@inline _pic_sliced_direction_offset(d::Int) = d == 1 ? 0 : 30
+"""The source's record count of direction `d`: `2 * nsource` (both drifted planes)."""
+@inline _pic_sliced_reduced_source_count(red, d::Int) =
+    Int(red[_pic_sliced_direction_offset(d) + 9])
+"""The source's first member of direction `d`: `(x, px, y, py)`, the moments' shift origin."""
+@inline function _pic_sliced_reduced_source_origin(red, d::Int)
+    o = _pic_sliced_direction_offset(d)
+    @inbounds return (red[o + 21], red[o + 22], red[o + 23], red[o + 24])
+end
+"""The coordinator's non-finite verdict on the record bounds."""
+@inline _pic_sliced_reduced_bad(red) = red[_PIC_SLICED_VERDICT_SLOT] > 0
+
 """
 This rank's record for pair `(i, j)` from its part of one slice: the extents
 and sums of the part as the source of one direction (drifted to the field
@@ -585,7 +665,7 @@ function _pic_sliced_reduce(red::Vector{T}, solver::PICPoissonSolver, recs1, rec
     isempty(recs2) || copyto!(red, 51, recs2[1], 21, 5)   # d2 source origin
     isempty(recs1) || copyto!(red, 56, recs1[1], 21, 5)   # d2 field origin
     bad = red[10] > 0 || red[20] > 0 || red[40] > 0 || red[50] > 0
-    red[61] = bad ? one(T) : zero(T)
+    red[_PIC_SLICED_VERDICT_SLOT] = bad ? one(T) : zero(T)
     return red
 end
 
@@ -596,19 +676,20 @@ The grids of one direction from the reduced record (`d = 1`: offsets 0 and
 """
 function _pic_sliced_extents(solver::PICPoissonSolver, ::Type{T}, red, d::Int,
                             param_source, param_field) where {T}
-    o = d == 1 ? 0 : 30
+    o = _pic_sliced_direction_offset(d)
     ge = Symbol(solver.grid_extent)
     kext = T(solver.grid_extent_sigma)
     sL = T(0.5) * (T(param_source.center) - T(param_field.lb))
+    ns = _pic_sliced_reduced_source_count(red, d)
+    ox, opx, oy, opy = _pic_sliced_reduced_source_origin(red, d)
     @inbounds begin
         sxmin = -red[o + 1]; sxmax = red[o + 2]; symin = -red[o + 3]; symax = red[o + 4]
         sxs = red[o + 5]; sxs2 = red[o + 6]; sys = red[o + 7]; sys2 = red[o + 8]
-        ns = Int(red[o + 9])
         fxmin = -red[o + 11]; fxmax = red[o + 12]; fymin = -red[o + 13]; fymax = red[o + 14]
         fxs = red[o + 15]; fxs2 = red[o + 16]; fys = red[o + 17]; fys2 = red[o + 18]
         nf = Int(red[o + 19])
-        sx0 = T(red[o + 21]) + T(red[o + 22]) * sL
-        sy0 = T(red[o + 23]) + T(red[o + 24]) * sL
+        sx0 = T(ox) + T(opx) * sL
+        sy0 = T(oy) + T(opy) * sL
         s0 = T(0.5) * (T(red[o + 30]) - T(param_source.center))
         fx0 = T(red[o + 26]) + s0 * T(red[o + 27])
         fy0 = T(red[o + 28]) + s0 * T(red[o + 29])
@@ -909,7 +990,7 @@ sent -- a deadlock where the design promises the agreed throw (2026-10-18
 audit, F-11; the trigger needs |px| ~ 1e22 in Float32, priced latent).
 """
 function _pic_sliced_pair_bad(solver::PICPoissonSolver, ::Type{T}, red, param1, param2) where {T}
-    red[61] > 0 && return true
+    _pic_sliced_reduced_bad(red) && return true
     _pic_sliced_extents(solver, T, red, 1, param1, param2) === nothing && return true
     _pic_sliced_extents(solver, T, red, 2, param2, param1) === nothing && return true
     return false

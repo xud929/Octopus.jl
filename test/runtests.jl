@@ -25956,6 +25956,61 @@ end
     @test seen_spectral_kick == Set(spectral_kick)        # the exemption names live launches
 end
 
+@testset "Every kernel launched through the thread cap is grid-strided (F-42)" begin
+    # 2026-10-18 audit F-42 (U9-2): `_cuda_launch_capped!` rescales `blocks`
+    # when it lowers `threads`, and its comment calls that "a partition change,
+    # not a coverage requirement" because "every kernel routed here is
+    # grid-strided" -- while the two gpic indexed kick kernels it launched
+    # computed one `index` and ran two `if index <= length(...)` bodies with no
+    # stride loop, so for them the rescale WAS the coverage guarantee (the
+    # longitudinal one is capped 1024 -> 256 on every launch under
+    # `kick_threads = 1024`, measured 2026-10-18). A later cap policy that
+    # bounded blocks would have skipped three quarters of the kicked particles
+    # on the hybrid alone. DERIVED from the source: every kernel named in a
+    # `_cuda_launch_capped!(` call in the CUDA solver files carries the stride
+    # idiom in its body; the device half is the CUDA Gaussian-PIC parity
+    # testset, which compiles and runs both indexed kernels against the CPU.
+    files = ("pic_cuda.jl", "gaussian_pic_cuda.jl", "spectral_cuda.jl")
+    text = Dict(f => readlines(joinpath(pkgdir(Octopus), "src", "tasks", "strongstrong", f)) for f in files)
+    routed = Set{Symbol}()
+    for f in files, line in text[f]
+        m = match(r"_cuda_launch_capped!\(\s*(_cuda_[A-Za-z0-9_]+!)", line)
+        m === nothing || push!(routed, Symbol(m.captures[1]))
+    end
+    @test length(routed) >= 12         # the PIC, Gaussian and gpic kick, moment and bounds kernels
+    kernel_body(name) = begin
+        for f in files
+            lines = text[f]
+            s = findfirst(l -> occursin(Regex("function\\s+" * string(name) * "\\("), l), lines)
+            s === nothing && continue
+            indent = length(lines[s]) - length(lstrip(lines[s]))
+            e = findnext(==(" "^indent * "end"), lines, s)
+            return "$(f):$(s)", join(lines[s:e], "\n")
+        end
+        return nothing, ""
+    end
+    # The idiom: `stride = CUDA.gridDim().x * <block width>` where the block
+    # width is `CUDA.blockDim().x` itself or a local bound to it (the fused
+    # Gaussian kick kernel writes `threads = CUDA.blockDim().x` first), and a
+    # `while <index> <= ...` loop stepping by `stride`.
+    strided(body) = begin
+        m = match(r"stride\s*=\s*CUDA\.gridDim\(\)\.x\s*\*\s*([A-Za-z_][A-Za-z0-9_.()]*)", body)
+        m === nothing && return false
+        width = m.captures[1]
+        width == "CUDA.blockDim().x" ||
+            occursin(Regex("\\b" * replace(width, "." => "\\.") * "\\s*=\\s*CUDA\\.blockDim\\(\\)\\.x"), body) ||
+            return false
+        return occursin(r"while\s+\w+\s*<=", body) && occursin(r"\+=\s*stride", body)
+    end
+    for name in sort!(collect(routed); by=string)
+        site, body = kernel_body(name)
+        @testset let kernel = name, defined_at = site
+            @test site !== nothing
+            @test strided(body)
+        end
+    end
+end
+
 @testset "Every raw CUDA PIC launch site is pinned and its kernel fits the device thread ceiling" begin
     # 2026-10-18 comprehensive audit, F-2 / F-12 / F-45. The testset above
     # requires zero raw KICK launches and nothing watched the other sixty
@@ -27144,6 +27199,201 @@ end
     @test Octopus._reject_undivided_solver(pic()) === nothing
 end
 
+@testset "The pair migration allocates nothing proportional to the particle count (F-32)" begin
+    # 2026-10-18 audit F-32 (U5-2): `_pic_sliced_migrate_pair_in` kept the
+    # merged permutation in the pooled `sc.bucket` but built each beam's
+    # `bucket` fresh (`Int[]`, one `push!` per received column) every collide,
+    # and its two `MergeSort` `sortperm!` calls allocated an n/2 scratch each
+    # -- 1.17 MB per collide at 20,000 particles per beam, 4.80 MB at 80,000,
+    # 72 % of it the two buckets, against the intent stated on the scratch
+    # struct ("rebuilding them per collide was pure garbage"). Each beam's
+    # bucket is a contiguous run of the merged permutation, now copied into a
+    # pooled vector, and the sorts take a pooled scratch. Steady state (third
+    # call) at two particle counts: the bytes must not grow with N.
+    setup(N, ns) = begin
+        set_global_rng!(seed=4242, method=:philox)
+        pol = CPUThreadsExecutionPolicy(threads=1)
+        b1 = Beam(N, pol, Float64; rng_id=1, beta=(1.0, 1.0, 1.0), emit=(1.0e-9, 1.0e-9, 1.0e-6), npart=1.0e11)
+        b2 = Beam(N, pol, Float64; rng_id=2, beta=(1.0, 1.0, 1.0), emit=(1.0e-9, 1.0e-9, 1.0e-6), npart=1.0e11)
+        slc = LongitudinalSlicing(nslices=ns, method=:equal_area)
+        s1 = Octopus.longitudinal_slices(b1.rep, slc); s2 = Octopus.longitudinal_slices(b2.rep, slc)
+        l1 = Octopus._pic_sliced_layout([length(i) for i in s1.indices], 1)
+        l2 = Octopus._pic_sliced_layout([length(i) for i in s2.indices], 1)
+        (b1, b2, s1, s2, l1, l2, Octopus._PICMigrationScratch{Float64}(), Octopus._PICMigrationScratch{Float64}())
+    end
+    roundtrip(st) = begin
+        b1, b2, s1, s2, l1, l2, sc1, sc2 = st
+        sb1, sb2 = Octopus._pic_sliced_migrate_pair_in(b1.rep, s1, l1, b2.rep, s2, l2, sc1, sc2, Float64)
+        Octopus._pic_sliced_migrate_pair_out!(b1.rep, sb1, b2.rep, sb2, sc1)
+        sb1.migrated_in + sb2.migrated_in
+    end
+    bytes = Dict{Int,Int}()
+    for N in (4000, 16000)
+        st = setup(N, 5)
+        roundtrip(st); roundtrip(st)
+        bytes[N] = @allocated roundtrip(st)
+    end
+    @testset let steady_state_bytes = bytes
+        # Unfixed: about 58 B per particle over the two beams, 1.4 MB more at
+        # 16,000 than at 4,000. Fixed: the per-collide Dicts and prefix
+        # vectors of five slices, the same at both counts.
+        @test bytes[16000] <= bytes[4000] + 4096
+        @test bytes[16000] < 64 * 1024
+    end
+    # At one rank the migration is the identity on the coordinates (every
+    # particle comes home to its slot), so the pooling cannot have moved a bit.
+    st = setup(4000, 5)
+    before = (map(copy, coordinate_arrays(st[1].rep)), map(copy, coordinate_arrays(st[2].rep)))
+    @test roundtrip(st) == 2 * 4000
+    @test all(a == b for (a, b) in zip(before[1], coordinate_arrays(st[1].rep)))
+    @test all(a == b for (a, b) in zip(before[2], coordinate_arrays(st[2].rep)))
+end
+
+@testset "The reduced record is read through its accessors, not slot literals (F-43)" begin
+    # 2026-10-18 audit F-43 (U9-3): `_sliced_owner_grids!` in gaussian_pic.jl
+    # read the coordinator's reduced record through bare literals (`red[61]`,
+    # `red[o + 9]`, `red[o + 21]`..`red[o + 24]`, `o = d == 1 ? 0 : 30`) copied
+    # from pic_cpu_sliced.jl, with nothing tying the copy to the layout's
+    # owner: a moved verdict slot would read zero and let a non-finite pair
+    # proceed; a moved origin block would anchor the moments on the wrong
+    # point, silently, inside the residual grid. The layout is owned by
+    # `_pic_sliced_reduce` and read through named accessors now; the source
+    # half forbids the literals outside the owner file, the round trip pins
+    # what the accessors mean against a record built from a known part.
+    for file in ("gaussian_pic.jl", "spectral_sliced.jl")
+        lines = readlines(joinpath(pkgdir(Octopus), "src", "tasks", "strongstrong", file))
+        hits = ["$(file):$(i)" for (i, l) in enumerate(lines)
+                if !startswith(lstrip(l), "#") && occursin(r"red\[(61|o \+ 9|o \+ 2[1-4])\]", l)]
+        @testset let file = file, slot_literals = hits
+            @test isempty(hits)
+        end
+    end
+    T = Float64
+    solver = PICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(16, 16),
+                              green_cache=:slice_pair, slicing=LongitudinalSlicing(nslices=3, method=:equal_area))
+    s(scale, phase, n) = [scale * sin(0.7 * i + phase) for i in 1:n]
+    part1 = (x=s(1.0e-4, 0.0, 40), px=s(1.0e-5, 0.3, 40), y=s(1.0e-4, 0.9, 40), py=s(1.0e-5, 1.2, 40),
+             z=s(1.0e-3, 2.0, 40), pz=s(1.0e-4, 2.5, 40))
+    part2 = (x=s(1.0e-4, 0.4, 24), px=s(1.0e-5, 0.7, 24), y=s(1.0e-4, 1.3, 24), py=s(1.0e-5, 1.6, 24),
+             z=s(1.0e-3, 2.4, 24), pz=s(1.0e-4, 2.9, 24))
+    param1 = (weight=T(0.5), lb=T(-1.0e-2), center=T(0.0), rb=T(1.0e-2))
+    param2 = (weight=T(0.5), lb=T(1.0e-2), center=T(2.0e-2), rb=T(3.0e-2))
+    record(part, own, other) =
+        Octopus._pic_sliced_record(zeros(T, Octopus._sliced_record_len(solver)), solver, part, own, other, nothing)
+    reduce(r1, r2) =
+        Octopus._pic_sliced_reduce(zeros(T, Octopus._sliced_reduced_len(solver)), solver, [r1], [r2])
+    red = reduce(record(part1, param1, param2), record(part2, param2, param1))
+    # Direction 1: group 1 is the source; direction 2: group 2 is. PIC's
+    # record carries 2 * nsource (both drifted planes), and the origin is the
+    # source group's first member.
+    @test Octopus._pic_sliced_reduced_source_count(red, 1) == 2 * 40
+    @test Octopus._pic_sliced_reduced_source_count(red, 2) == 2 * 24
+    @test Octopus._pic_sliced_reduced_source_origin(red, 1) == (part1.x[1], part1.px[1], part1.y[1], part1.py[1])
+    @test Octopus._pic_sliced_reduced_source_origin(red, 2) == (part2.x[1], part2.px[1], part2.y[1], part2.py[1])
+    @test Octopus._pic_sliced_reduced_bad(red) == false
+    @test Octopus._pic_sliced_direction_offset(1) == 0 && Octopus._pic_sliced_direction_offset(2) == 30
+    bad_part = (x=[T(NaN), 1.0e-4], px=zeros(T, 2), y=zeros(T, 2), py=zeros(T, 2), z=zeros(T, 2), pz=zeros(T, 2))
+    redb = reduce(record(part1, param1, param2), record(bad_part, param2, param1))
+    @test Octopus._pic_sliced_reduced_bad(redb) == true
+    @test Octopus._pic_sliced_pair_bad(solver, T, redb, param1, param2)
+    # The owner file's own readers go through the same accessors, so the
+    # extents agree with the round trip on the count.
+    ext = Octopus._pic_sliced_extents(solver, T, red, 1, param1, param2)
+    @test ext !== nothing && all(isfinite, ext)
+end
+
+@testset "The hybrid's inert PIC options are one table its refusals and its report both read (F-44)" begin
+    # 2026-10-18 audit F-44 (U9-4): `_GPIC_INERT_PIC_OPTIONS` -- the seven PIC
+    # options `configuration_report` marks `:inactive_dependency` for
+    # `GaussianPICPoissonSolver` -- was a hand copy of two rejection sites
+    # (`_require_linear_slice_interpolation`, the CUDA entry loop) with no
+    # tripwire and no test: a rejection added at either site re-opened U10-1
+    # silently, a rejection removed left the report calling a live option
+    # inactive. One table now, `_GPIC_INERT_PIC_RULES` (option => the one
+    # value the hybrid runs, where it is refused, and why); the refusals
+    # iterate it, the report derives its inert set from it, and the table is
+    # held here against the embedded PIC schema and against what `collide!`
+    # refuses at its boundary.
+    rules = Octopus._GPIC_INERT_PIC_RULES
+    inert = Octopus._GPIC_INERT_PIC_OPTIONS
+    @test Tuple(keys(rules)) == inert
+    pic_schema = solver_option_schema(PICPoissonSolver)
+    @test all(haskey(pic_schema, name) for name in inert)       # every rule names a PIC option
+    for (name, rule) in pairs(rules)
+        @test rule.backend in (:any, :cuda)
+        @test rule.required === nothing || rule.required == pic_schema[name].default   # the hybrid runs PIC's default only
+        @test !isempty(rule.reason)
+    end
+    # The report: every inert option is `:inactive_dependency` with the shared
+    # reason prefix, at the default and at a non-default value, and nothing
+    # else of PIC's is downgraded that way.
+    # (PIC's own constructor refuses `grid_extent = :sigma` under
+    # `interaction_grid = :node`, so the non-default values are spread over
+    # constructions PIC accepts.)
+    for g in (GaussianPICPoissonSolver(grid=(16, 16)),
+              GaussianPICPoissonSolver(grid=(16, 16), grid_extent=:sigma, grid_extent_sigma=3.0,
+                                       slice_interpolation=:quadratic),
+              GaussianPICPoissonSolver(grid=(16, 16), interaction_grid=:node, cuda_async=false,
+                                       cuda_batch_fft=false, cuda_wavefront_fft=false))
+        report = configuration_report(g)
+        by = Dict(e.name => e for e in report)
+        for name in inert
+            @test by[name].status === :inactive_dependency
+            @test startswith(by[name].reason, "not read by GaussianPICPoissonSolver")
+        end
+        downgraded = Set(e.name for e in report if startswith(e.reason, "not read by GaussianPICPoissonSolver"))
+        @test downgraded == Set(inert)
+    end
+    # The refusals, at the consumer boundary: each option the table says both
+    # backends refuse is refused BY NAME by `collide!` at a non-default value,
+    # before any kick lands.
+    s(scale, phase, n) = [scale * sin(0.7 * i + phase) for i in 1:n]
+    mkb(n) = begin
+        rep = Phase6DRep(s(1.0e-4, 0.0, n), s(1.0e-5, 0.3, n), s(1.0e-4, 0.9, n), s(1.0e-5, 1.2, n),
+                         s(1.0e-2, 2.0, n), s(1.0e-4, 2.5, n))
+        params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0e-9, npart=n)
+        Beam{CPUThreadsBackend,typeof(params),typeof(rep)}(params, rep)
+    end
+    slc = LongitudinalSlicing(nslices=2, method=:equal_count)
+    gpic(; kw...) = GaussianPICPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(16, 16),
+                                             green_cache=:none, slicing=slc; kw...)
+    both = [name for (name, rule) in pairs(rules) if rule.backend === :any && rule.required !== nothing]
+    @test Set(both) == Set([:slice_interpolation, :interaction_grid, :grid_extent])
+    nondefault = (slice_interpolation=:quadratic, interaction_grid=:node, grid_extent=:sigma)
+    for name in both
+        b1, b2 = mkb(200), mkb(200)
+        before = map(copy, coordinate_arrays(b1.rep))
+        err = try
+            collide!(gpic(; name => nondefault[name]), b1, b2, CPUThreadsBackend)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin(string(name), err.msg)
+        @test all(a == b for (a, b) in zip(before, coordinate_arrays(b1.rep)))   # refused before any kick
+    end
+    @test isfinite(collide!(gpic(), mkb(200), mkb(200), CPUThreadsBackend))       # the default runs
+    dependent = [name for (name, rule) in pairs(rules) if rule.required === nothing]
+    @test dependent == [:grid_extent_sigma]
+    cuda_only = [name for (name, rule) in pairs(rules) if rule.backend === :cuda]
+    @test Set(cuda_only) == Set([:cuda_async, :cuda_batch_fft, :cuda_wavefront_fft])
+    if CUDA_TESTS_ACTIVE
+        for name in cuda_only
+            b1 = Octopus._strong_strong_contract_beam(mkb(200), Octopus.CUDABackend)
+            b2 = Octopus._strong_strong_contract_beam(mkb(200), Octopus.CUDABackend)
+            err = try
+                collide!(gpic(; name => false), b1, b2, Octopus.CUDABackend)
+                nothing
+            catch e
+                e
+            end
+            @test err isa ArgumentError && occursin(string(name), err.msg)
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 @testset "The sliced pair's non-finite verdict is joint across its two directions" begin
     # 2026-10-18 audit F-11 (U5-1, latent): on the slice-aligned route the
     # coordinator's folded record carries one non-finite flag for the record
@@ -27329,6 +27579,54 @@ end
         end
     end
     @test Octopus._reject_undivided_solver(gpic()) === nothing
+end
+
+@testset "The CUDA spectral workspace gives the same mesh-width advisory as the CPU one (F-34)" begin
+    # 2026-10-18 audit F-34 (U7-3): `_spectral_note_grid_size` ran from the CPU
+    # workspace constructor only, with `CPUThreadsBackend` hard-coded into its
+    # receipt; `_SpectralCudaWS` built cuFFT plans of the same logical size
+    # `2(N + 1)` with no note and no receipt, and cuFFT pays the same
+    # non-smooth-size tax (measured 2026-10-18 on an RTX 4500 Ada: a whole
+    # `_cuda_spectral_field!` solve 529 us at (256,256) against 197 us at
+    # (255,255), the dim-1 rfft 78.0 against 19.0 us). The advisory takes its
+    # backend from the constructor that calls it, so the receipt names the
+    # library that will pay.
+    note(f) = begin
+        audit = ExecutionAudit()
+        logs, _ = Test.collect_test_logs() do
+            with_execution_audit(audit) do
+                f()
+            end
+        end
+        rs = [r for r in execution_receipts(audit) if r.consumer === :spectral_grid_transform]
+        (rs, count(l -> occursin("makes the DST slow", string(l.message)), logs))
+    end
+    cpu, ncpu = note(() -> Octopus._spectral_note_grid_size(64, 64))
+    @test length(cpu) == 2 && all(r -> r.backend === CPUThreadsBackend, cpu) && ncpu == 2
+    declared, ndeclared = note(() -> Octopus._spectral_note_grid_size(64, 64, Octopus.CUDABackend))
+    @test length(declared) == 2 && all(r -> r.backend === Octopus.CUDABackend, declared) && ndeclared == 2
+    # One shape across the backends: the same keys and the same numbers; the
+    # message names the library.
+    @test all(keys(a.values) == keys(b.values) && a.values == b.values for (a, b) in zip(cpu, declared))
+    _, lcpu = Test.collect_test_logs(() -> Octopus._spectral_note_grid_size(64, 64)), nothing
+    msgs(backend) = [string(l.message) for l in Test.collect_test_logs(() -> Octopus._spectral_note_grid_size(64, 64, backend))[1]]
+    @test all(occursin("FFTW", m) && !occursin("cuFFT", m) for m in msgs(CPUThreadsBackend))
+    @test all(occursin("cuFFT", m) && !occursin("FFTW", m) for m in msgs(Octopus.CUDABackend))
+    if CUDA_TESTS_ACTIVE
+        # The CUDA constructor itself, at a width whose logical size 130 =
+        # 2*5*13 is not smooth: two receipts (x and y), backend CUDA, suggesting 63.
+        rs, nwarn = note(() -> Octopus._SpectralCudaWS(Float64, 64, 64))
+        @test length(rs) == 2
+        @test all(r -> r.backend === Octopus.CUDABackend, rs)
+        @test all(r -> r.values.suggested == 63 && r.values.largest_prime == 13 && r.values.smooth === false, rs)
+        @test [r.values.axis for r in rs] == [:x, :y]
+        @test nwarn == 2
+        # A smooth width says nothing on CUDA either.
+        rs_ok, nwarn_ok = note(() -> Octopus._SpectralCudaWS(Float64, 63, 63))
+        @test isempty(rs_ok) && nwarn_ok == 0
+    else
+        @test_skip "CUDA device not available"
+    end
 end
 
 @testset "The spectral mesh width says when it makes the DST slow" begin
@@ -31759,6 +32057,48 @@ end
     @test_throws ArgumentError Octopus.longitudinal_slices(rep, bogus)
 end
 
+@testset "Specified slicing positions are finite at construction, and the clamp is documented (F-72)" begin
+    # 2026-10-18 audit F-72 (U8-4): `LongitudinalSlicing(method=:specified)`
+    # accepted a NaN or Inf position; the NaN reached `_finish_longitudinal_slices`
+    # and was diagnosed as a non-finite DERIVED beam quantity ("all 500 beam
+    # macroparticle coordinates (z) are finite ... inspect the slice separation
+    # and the slice moments"), a message written for drift overflow, two calls
+    # after the configuration that caused it. A non-finite position is refused
+    # BY NAME at construction, before any beam is sliced (the "nothing is
+    # accepted for its shape alone" rule of the 2026-10-20 fix batch).
+    for pos in ([NaN, 0.0, 0.5, 1.0], [-Inf, 0.0, 0.5, Inf], [0.0, 0.5, NaN, 1.0])
+        err = try
+            LongitudinalSlicing(nslices=5, method=:specified, positions=pos)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test err isa ArgumentError && occursin("positions", err.msg) && occursin("finite", err.msg)
+    end
+    # Finite positions still construct, in any order (they are sorted at use),
+    # and a non-`:specified` method ignores the vector as before.
+    @test LongitudinalSlicing(nslices=4, method=:specified, positions=[0.6, -0.6, 0.0]).positions == [0.6, -0.6, 0.0]
+    @test LongitudinalSlicing(nslices=4, method=:equal_area, positions=[NaN]).positions == [NaN] ||
+          LongitudinalSlicing(nslices=4, method=:equal_area).positions == Float64[]
+    # The clamp the docstring now states: a position past the live beam's
+    # extent is clamped to the extremum, so the slices beyond it are empty
+    # except for the extremum particle, which `searchsortedlast` files into the
+    # LAST slice (the audit's probe: positions [-0.5, 0.5, 100, 200] on 500
+    # particles gave counts [163, 182, 154, 0, 1]). Documented, not changed:
+    # the membership convention is the one every boundary-based method shares.
+    set_global_rng!(seed=778, method=:philox)
+    rep = Beam(500, CPUThreadsExecutionPolicy(threads=1), Float64; rng_id=1, beta=(1.0, 1.0, 1.0),
+               emit=(1.0e-9, 1.0e-9, 1.0e-6), npart=1.0e11).rep
+    s = Octopus.longitudinal_slices(rep, LongitudinalSlicing(nslices=5, method=:specified,
+                                                             positions=[-0.5, 0.5, 100.0, 200.0]))
+    zmax = maximum(rep.z)
+    @test s.boundary[4] == s.boundary[5] == s.boundary[6] == zmax
+    @test length(s.indices[4]) == 0 && length(s.indices[5]) == 1
+    @test rep.z[only(s.indices[5])] == zmax
+    @test sum(length, s.indices) == 500
+end
+
 @testset "Lost-particle masking agrees between CPU and CUDA" begin
     if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         n = 500
@@ -34566,6 +34906,241 @@ end # _lane_gate("CUDA GaussianPIC coupled subtraction matches CPU")
     end
 end
 
+@testset "domain_factor is finite at construction and an overflowed box names it (F-38)" begin
+    # 2026-10-18 audit F-38 (U7-4): the constructor required `domain_factor > 0`
+    # and not finite, so `Inf` was accepted and the collide then threw
+    # `_nonfinite_coordinate_error`'s "DERIVED quantity ... a drifted position
+    # that overflowed ... or a slice moment" text naming beam 2's coordinates
+    # -- two causes, neither the real one -- on both backends; NaN was refused
+    # only because `NaN > 0` is false. Refused by name at construction now, and
+    # the runtime branch that meets a finite `d * sigma_max` overflowing
+    # (`domain_factor = 1e308` on a beam of rms 7 is Inf) names `domain_factor`
+    # rather than the beams, on both backends and both box routes.
+    for d in (Inf, NaN, -Inf)
+        err = try
+            SpectralPoissonSolver(domain_factor=d, grid=(16, 16))
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test err isa ArgumentError && occursin("domain_factor", err.msg) && occursin("finite", err.msg)
+    end
+    @test_throws ArgumentError SpectralPoissonSolver(domain_factor=0.0, grid=(16, 16))
+    @test_throws ArgumentError SpectralPoissonSolver(domain_factor=-1.0, grid=(16, 16))
+    @test SpectralPoissonSolver(domain_factor=1.0e308, grid=(16, 16)).domain_factor == 1.0e308
+    # The runtime overflow: finite coordinates, finite rms, `d * smax` = Inf.
+    s(scale, phase, n) = [scale * sin(0.7 * i + phase) for i in 1:n]
+    x1 = s(10.0, 0.0, 256); y1 = s(10.0, 0.9, 256); x2 = s(10.0, 0.3, 256); y2 = s(10.0, 1.2, 256)
+    rep1 = Phase6DRep(x1, s(1.0e-5, 0.3, 256), y1, s(1.0e-5, 1.2, 256), s(1.0e-2, 2.0, 256), s(1.0e-4, 2.5, 256))
+    rep2 = Phase6DRep(x2, s(1.0e-5, 0.6, 256), y2, s(1.0e-5, 1.5, 256), s(1.0e-2, 2.3, 256), s(1.0e-4, 2.8, 256))
+    big = SpectralPoissonSolver(domain_factor=1.0e308, grid=(16, 16))
+    caught(f) = try
+        f()
+        nothing
+    catch e
+        e
+    end
+    names_factor(e) = e isa ArgumentError && occursin("domain_factor", e.msg) && !occursin("DERIVED", e.msg)
+    @test names_factor(caught(() -> Octopus._spectral_box(big, x1, y1, x2, y2)))
+    @test names_factor(caught(() -> Octopus._spectral_box_drifted(big, rep1, rep2)))
+    # A sane factor on the same beams builds a finite box: the guard is on the
+    # overflow, not on the beams.
+    sane = SpectralPoissonSolver(domain_factor=16.0, grid=(16, 16))
+    @test all(isfinite, Octopus._spectral_box(sane, x1, y1, x2, y2))
+    @test all(isfinite, Octopus._spectral_box_drifted(sane, rep1, rep2))
+    if CUDA_TESTS_ACTIVE
+        cu(rep) = Phase6DRep((Octopus.CUDA.CuArray(a) for a in coordinate_arrays(rep))...)
+        g1 = cu(rep1); g2 = cu(rep2)
+        @test names_factor(caught(() -> Octopus._cuda_spectral_box(big, g1, g2)))
+        @test names_factor(caught(() -> Octopus._cuda_spectral_box_drifted(big, g1, g2)))
+        @test all(isfinite, Octopus._cuda_spectral_box(sane, g1, g2))
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
+@testset "Dropped spectral charge is recorded in a receipt, not only in a warning (F-36)" begin
+    # 2026-10-18 audit F-36 (U7-8): the dropped-charge tripwire's only output
+    # was a `@warn` with `maxlog = 8`, enforced per call site per logger
+    # instance, so under a process-lifetime logger it fell silent for the rest
+    # of the process after two R9 collides on the CPU (four solves clip per
+    # collide) and eight collisions on CUDA; no receipt named dropped charge,
+    # so neither the ExecutionAudit nor a reader of the run could see that
+    # charge was dropped on later turns. The suite never saw the silence
+    # because `Test.collect_test_logs` installs a fresh logger per call
+    # (measured 2026-10-22: five collides under ONE block capture 8 of the 20
+    # warnings). Each clipping event now records a `:spectral_box_coverage`
+    # receipt (`event = :clipped_charge`, `dropped_fraction`, `nsource`,
+    # `scope`, `box`) beside the warning, on both backends; the warning keeps
+    # its budget, the receipts do not stop.
+    strong(n) = begin
+        s(scale, phase) = [scale * sin(0.7 * i + phase) for i in 1:n]
+        x = s(1.0e-4, 0.0); x[1] = 8.0e-4
+        rep = Phase6DRep(x, s(1.0e-5, 0.3), s(1.0e-4, 0.9), s(1.0e-5, 1.2), s(1.0e-2, 2.0), s(1.0e-4, 2.5))
+        params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0, npart=n)
+        Beam{CPUThreadsBackend,typeof(params),typeof(rep)}(params, rep)
+    end
+    sp64 = SpectralPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0, grid=(64, 64),
+                                 slicing=LongitudinalSlicing(nslices=2, method=:equal_count))
+    audit = ExecutionAudit()
+    logs, _ = Test.collect_test_logs() do
+        with_execution_audit(audit) do
+            for _ in 1:5
+                collide!(sp64, strong(256), strong(256), CPUThreadsBackend)
+            end
+        end
+    end
+    warned = [l for l in logs if occursin("clipped charge at the Dirichlet wall", string(l.message))]
+    clipped = [r for r in execution_receipts(audit)
+               if r.consumer === :spectral_box_coverage && r.values.event === :clipped_charge]
+    @testset let warnings_seen = length(warned), receipts = length(clipped)
+        @test 1 <= length(warned) <= 8               # the budget bites within five collides
+        @test length(clipped) == 20                  # four clipping solves x five collides, every one recorded
+    end
+    @test all(r -> r.backend === CPUThreadsBackend && r.values.scope === :per_solve, clipped)
+    @test all(r -> 0 < r.values.dropped_fraction <= 1 && r.values.nsource == 128, clipped)
+    @test all(r -> r.values.box == clipped[1].values.box && length(r.values.box) == 2, clipped)
+    # The warning's payload and the receipt's are the same numbers.
+    @test all(Dict(l.kwargs)[:dropped_fraction] == r.values.dropped_fraction &&
+              Dict(l.kwargs)[:nsource] == r.values.nsource
+              for (l, r) in zip(warned, clipped[1:length(warned)]))
+    if CUDA_TESTS_ACTIVE
+        strong_cuda(n) = Octopus._strong_strong_contract_beam(strong(n), Octopus.CUDABackend)
+        gaudit = ExecutionAudit()
+        glogs, _ = Test.collect_test_logs() do
+            with_execution_audit(gaudit) do
+                for _ in 1:3
+                    collide!(sp64, strong_cuda(256), strong_cuda(256), Octopus.CUDABackend)
+                end
+            end
+        end
+        gclipped = [r for r in execution_receipts(gaudit)
+                    if r.consumer === :spectral_box_coverage && r.values.event === :clipped_charge]
+        @test length(gclipped) == 3                  # one aggregate per collision
+        @test all(r -> r.backend === Octopus.CUDABackend && r.values.scope === :collision_aggregate, gclipped)
+        @test all(r -> r.values.nsource == 2048 && 0 < r.values.dropped_fraction <= 1, gclipped)
+        @test keys(gclipped[1].values) == keys(clipped[1].values)      # one shape across the backends
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
+@testset "A grid_free field point past the Dirichlet wall gets no mirrored field (F-35)" begin
+    # 2026-10-18 audit F-35 (U7-6): `:grid_free` guarded a SOURCE outside the
+    # Dirichlet box (`_spectral_mode_sum_guard`, R10) and evaluated a FIELD
+    # point outside it through the same odd periodic extension with no guard,
+    # so such a particle silently received the field of the sign-flipped image
+    # beyond the wall: Phi(1.05 L) = -Phi(0.95 L) = -0.130 and Ex(1.05 L) =
+    # +Ex(0.95 L) = +2.63e3, growing to 4.0e3 at 1.5 L, where the `:grid`
+    # route's CIC stencil skips wall and outside nodes and returns 0 there (the
+    # documented approximation). Reachable because the 6D field particles are
+    # evaluated after earlier pairs' kicks. The field side now follows the
+    # `:grid` convention -- Phi = Ex = Ey = 0 past the wall -- and says so: a
+    # warning and a `:spectral_box_coverage` receipt (`event =
+    # :grid_free_field`) per evaluation that masked a point. In-box values are
+    # untouched to the bit.
+    rng = MersenneTwister(5)
+    Lx = Ly = 1.0e-3
+    sx = 1.0e-4 .* randn(rng, 500); sy = 1.0e-4 .* randn(rng, 500)
+    Nx = Ny = 24
+    eval_at(xs) = begin
+        audit = ExecutionAudit()
+        out = Ref{Any}(nothing)        # `with_execution_audit` returns the audit, not the block's value
+        logs, _ = Test.collect_test_logs() do
+            with_execution_audit(audit) do
+                out[] = Octopus._spectral_field_free_potential(sx, sy, xs, zeros(length(xs)), Lx, Ly, Nx, Ny)
+            end
+        end
+        (out[]..., [r for r in execution_receipts(audit) if r.consumer === :spectral_box_coverage],
+         count(l -> occursin("grid_free field", string(l.message)), logs))
+    end
+    Pin, Exin, Eyin, rin, win = eval_at([0.95Lx, 0.5Lx])
+    @test isempty(rin) && win == 0
+    @test Pin[1] > 0 && Exin[1] > 0                      # the interior field the probe measured (+0.1297, +2634)
+    Pout, Exout, Eyout, rout, wout = eval_at([1.05Lx, 0.5Lx])
+    @test Pout[1] == 0.0 && Exout[1] == 0.0 && Eyout[1] == 0.0   # was -Pin[1], +Exin[1]: the mirrored image
+    @test wout == 1
+    @test length(rout) == 1 && rout[1].values.event === :grid_free_field
+    @test rout[1].values.outside == 1 && rout[1].values.box == (Lx, Ly)
+    @test rout[1].values.max_abs_x == 1.05Lx && rout[1].values.max_abs_y == 0.0
+    # The in-box point of a same-size batch is bitwise what it was beside an
+    # in-box neighbour: masking touches only the masked rows.
+    @test Pout[2] === Pin[2] && Exout[2] === Exin[2] && Eyout[2] === Eyin[2]
+    # Several outside points: zero each, ONE receipt counting them.
+    Pmix, Exmix, Eymix, rmix, wmix = eval_at([0.95Lx, 1.05Lx, 1.5Lx])
+    @test Pmix[2:3] == [0.0, 0.0] && Exmix[2:3] == [0.0, 0.0] && Eymix[2:3] == [0.0, 0.0]
+    @test length(rmix) == 1 && rmix[1].values.outside == 2 && wmix == 1
+    @test isapprox(Pmix[1], Pin[1]; rtol=1.0e-12) && isapprox(Exmix[1], Exin[1]; rtol=1.0e-12)
+    # The source guard records too, under its own event, so both wall
+    # crossings are visible to a reader of the run.
+    far = copy(sx); far[1] = 1.2Lx
+    saudit = ExecutionAudit()
+    Test.collect_test_logs() do
+        with_execution_audit(saudit) do
+            Octopus._spectral_field_free_potential(far, sy, [0.0], [0.0], Lx, Ly, Nx, Ny)
+        end
+    end
+    src = [r for r in execution_receipts(saudit) if r.consumer === :spectral_box_coverage]
+    @test length(src) == 1 && src[1].values.event === :grid_free_source && src[1].values.max_abs_x == 1.2Lx
+end
+
+@testset "The CUDA spectral luminosity allocates no per-pair device temporaries (F-40)" begin
+    # 2026-10-18 audit F-40 (U7-7): the CUDA 6D luminosity materialized four
+    # drifted copies of the beam-2 snapshot per slice pair for its extrema
+    # (`minimum(v2x .+ v2px .* s2)` and three siblings) -- `4 * n1 * N2 * 8`
+    # bytes per collide, 19.2 MiB at 40,000 particles and 15 slices -- and
+    # the transverse route allocated two fresh `nx x ny` luminosity grids and
+    # their product per pair (22.1 MiB of a 25.2 MiB collide). The drifts now
+    # land in two pooled snapshot buffers and the transverse grids are the
+    # workspace's `qlum1`/`qlum2`, through the same broadcasts and the same
+    # reductions, so every value is bitwise what it was (pinned 2026-10-22
+    # against the unfixed tree's luminosity and coordinate digests on both
+    # routes at three sizes; probes/SS of fix batch 4). Measured here as the
+    # growth that discriminates: particle count on the 6D route, pair count
+    # on the transverse one (unfixed 2026-10-22: 1,348,560 and 3,049,716
+    # bytes for the two differences below).
+    if CUDA_TESTS_ACTIVE
+        gauss(n, seed) = begin
+            r = MersenneTwister(seed)
+            arrs = (1.0e-4 .* randn(r, n), 1.0e-5 .* randn(r, n), 0.5e-4 .* randn(r, n),
+                    0.5e-5 .* randn(r, n), 1.0e-2 .* randn(r, n), 1.0e-4 .* randn(r, n))
+            rep = Phase6DRep((Octopus.CUDA.CuArray(a) for a in arrs)...)
+            params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0, npart=n)
+            Beam{Octopus.CUDABackend,typeof(params),typeof(rep)}(params, rep)
+        end
+        gpu_bytes(n, nsl, lk) = begin
+            s = SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(64, 64),
+                                      longitudinal_kick=lk,
+                                      slicing=LongitudinalSlicing(nslices=nsl, method=:equal_count))
+            collide!(s, gauss(n, 1), gauss(n, 2), Octopus.CUDABackend)   # compile; cache and grow the workspace
+            Octopus.CUDA.synchronize()
+            b1 = gauss(n, 1); b2 = gauss(n, 2)
+            Octopus.CUDA.synchronize()
+            Octopus.CUDA.@allocated collide!(s, b1, b2, Octopus.CUDABackend)
+        end
+        # 6D: 4,000 -> 16,000 particles at 3 slices. Unfixed, four drifted
+        # copies of every beam-2 slice per pair: 4 * 3 * 12,000 * 8 = 1.15 MB
+        # more; fixed, only the reductions' partials grow with N. The bound is
+        # ONE copy's worth.
+        d6 = gpu_bytes(16000, 3, true) - gpu_bytes(4000, 3, true)
+        @testset let six_d_growth_bytes = d6
+            @test d6 < 3 * 12000 * 8
+        end
+        # Transverse: 3 -> 6 slices (9 -> 36 pairs) at 4,000 particles.
+        # Unfixed, 27 more pairs x 3 grids x 64 x 64 x 8 = 2.65 MB more plus
+        # the per-slice solves; fixed, only those solves grow (the R12 hoist
+        # keeps two mesh copies per extra slice, 6 x 2 x 32 KiB = 393 KiB).
+        # The bound is one grid per extra pair.
+        dt = gpu_bytes(4000, 6, false) - gpu_bytes(4000, 3, false)
+        @testset let transverse_growth_bytes = dt
+            @test dt < 27 * 64 * 64 * 8
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
 @testset "Spectral 6D Dirichlet box contains the drifted source" begin
     # The 6D path deposits each source slice DRIFTED to the field-slice
     # boundaries, and _spectral_field_grid! silently drops particles outside the
@@ -35221,6 +35796,83 @@ end
             @test receipts[1].batch_mode === expected(mode)
             @test receipts[1].pairs == 9
             @test (receipts[1].batch_mode === :wavefront) == (receipts[1].batches > 0)
+        end
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
+@testset "The spectral pair-schedule receipt has one shape on every route and backend (F-39)" begin
+    # 2026-10-18 audit F-39 (U7-5): the CPU spectral routes recorded eight keys
+    # (`ranks`, `exchange`, `schedule` beside the five every solver shares) and
+    # the two CUDA routes five, under a comment promising "one receipt shape
+    # across the routes ... so a test reads the same key whichever ran": a
+    # reader keyed on `exchange` or `schedule` saw nothing on CUDA. The shape
+    # is ONE function now, `_spectral_pair_schedule_receipt`, that every site
+    # builds through; the source half derives the sites from the three
+    # spectral files, the route half reads the key set back on both backends.
+    shape = keys(Octopus._spectral_pair_schedule_receipt(
+        batch_mode=:sequential, requested=:sequential, pairs=1, batches=0, widest_batch=0,
+        ranks=1, exchange=:none, schedule=:none))
+    @test shape == (:batch_mode, :requested, :pairs, :batches, :widest_batch, :ranks, :exchange, :schedule)
+    # (1) SOURCE: no site in the spectral files hands `_record_execution!` a
+    #     literal pair-schedule tuple; every one goes through the builder.
+    builder_sites = 0
+    literal_sites = String[]
+    for file in ("spectral.jl", "spectral_sliced.jl", "spectral_cuda.jl")
+        lines = readlines(joinpath(pkgdir(Octopus), "src", "tasks", "strongstrong", file))
+        for (i, line) in enumerate(lines)
+            occursin("_record_execution!(:spectral_pair_schedule", line) || continue
+            window = join(lines[i:min(i + 3, end)], " ")
+            if occursin("_spectral_pair_schedule_receipt(", window)
+                builder_sites += 1
+            else
+                push!(literal_sites, "$(file):$(i)")
+            end
+        end
+    end
+    @test builder_sites >= 5           # CPU transverse, CPU 6D, sliced, CUDA transverse, CUDA 6D
+    @testset let literal_sites = literal_sites
+        @test isempty(literal_sites)
+    end
+    # (2) The CPU routes, read back: transverse and 6D undivided carry the
+    #     full shape with the undivided values.
+    s(scale, phase, n) = [scale * sin(0.7 * i + phase) for i in 1:n]
+    mkb(n) = begin
+        z = [2.0e-2 * sin(0.7 * i + 2.0) + 1.0e-3 * sin(3.1 * i) for i in 1:n]
+        rep = Phase6DRep(s(1.0e-4, 0.0, n), s(1.0e-5, 0.3, n), s(1.0e-4, 0.9, n),
+                         s(1.0e-5, 1.2, n), z, s(1.0e-4, 2.5, n))
+        params = BeamParams{Float64}(charge=1.0, mc2=1.0, E0=1.0, r0=1.0e-9, npart=n)
+        Beam{CPUThreadsBackend,typeof(params),typeof(rep)}(params, rep)
+    end
+    slc = LongitudinalSlicing(nslices=3, method=:equal_count)
+    receipt(solver, backend, b1, b2) = begin
+        audit = Octopus.ExecutionAudit()
+        Octopus.with_execution_audit(audit) do
+            collide!(solver, b1, b2, backend)
+        end
+        rs = [r.values for r in Octopus.execution_receipts(audit)
+              if r.consumer === :spectral_pair_schedule && r.backend === backend]
+        @test length(rs) == 1
+        isempty(rs) ? nothing : rs[1]
+    end
+    for lk in (true, false)
+        sp = SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(32, 32),
+                                   slicing=slc, longitudinal_kick=lk)
+        v = receipt(sp, CPUThreadsBackend, mkb(3000), mkb(3000))
+        @test v !== nothing && keys(v) == shape
+        v === nothing || @test v.exchange === :none && v.schedule === :none && v.ranks == 1
+    end
+    # (3) DEVICE: the same key set on CUDA, with the values the device can
+    #     honestly give -- one rank, no exchange, no loop to choose.
+    if CUDA_TESTS_ACTIVE
+        to_cuda(b) = Octopus._strong_strong_contract_beam(b, Octopus.CUDABackend)
+        for lk in (true, false)
+            sp = SpectralPoissonSolver(kbb1=1.0e-6, kbb2=1.0e-6, luminosity_scale=1.0, grid=(32, 32),
+                                       slicing=slc, longitudinal_kick=lk)
+            v = receipt(sp, Octopus.CUDABackend, to_cuda(mkb(3000)), to_cuda(mkb(3000)))
+            @test v !== nothing && keys(v) == shape
+            v === nothing || @test v.exchange === :none && v.schedule === :none && v.ranks == 1
         end
     else
         @test_skip "CUDA device not available"
@@ -38286,6 +38938,64 @@ end
             g1, g2 = mkpair()
             @test collide!(s, g1, g2, Octopus.CUDABackend) isa Float64
         end
+    else
+        @test_skip "CUDA device not available"
+    end
+end
+
+@testset "The wavefront Gaussian route applies the solver's min_sigma, not the beam's rounding of it (F-29)" begin
+    # 2026-10-18 audit F-29 (U3-3): the wavefront CUDA Gaussian route handed
+    # `_cuda_gaussian_build_moments_kernel!` `T(solver.min_sigma)` with `T` the
+    # BEAM's element type, while the sequential route and the CPU twin pass the
+    # solver's own scalar and square it at the working precision MT, so for a
+    # Float32 beam under a Float64 solver the floors differed by
+    # `Float64(Float32(m))^2 / m^2 - 1`: 5.1e-8 at m = 1e-5, 7.1e-8 at 3e-6,
+    # 2.3e-8 at 1e-7; inert at the default 0 and for Float64 beams. The
+    # luminosity is MT = Float64 on both routes and scales with 1/(sx*sy), so a
+    # binding floor shows there -- measured 2026-10-22 on the unfixed tree with
+    # 1e-6 rms beams: sequential against wavefront 6.0e-8 relative at m = 1e-5
+    # and 6.5e-8 at 3e-6, 0 at m = 0, and 2e-16 or 0 for Float64 beams. The
+    # kernel now receives `MT(solver.min_sigma)`, the number the sequential
+    # route and the CPU square.
+    if CUDA_TESTS_ACTIVE
+        pair(T, n) = begin
+            set_global_rng!(seed=4242, method=:philox)
+            e = Beam(n, CPUThreadsBackend, T; beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0),
+                     sigma=(1.0e-6, 1.0e-6, 1.0e-2), cutoff=5.0, rng_id=1, charge=-1.0,
+                     mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            p = Beam(n, CPUThreadsBackend, T; beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0),
+                     sigma=(1.0e-6, 1.0e-6, 1.0e-2), cutoff=5.0, rng_id=2, charge=1.0,
+                     mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=1.7e11)
+            (Octopus._strong_strong_contract_beam(e, Octopus.CUDABackend),
+             Octopus._strong_strong_contract_beam(p, Octopus.CUDABackend))
+        end
+        sl = LongitudinalSlicing(nslices=3, method=:normal_quantile)
+        lum(T, ms, mode) = begin
+            s = GaussianPoissonSolver(kbb1=1.0e-4, kbb2=1.0e-4, luminosity_scale=1.0,
+                                      min_sigma=ms, slicing=sl, batch_mode=mode)
+            e, p = pair(T, 4000)
+            l = collide!(s, e, p, Octopus.CUDABackend)
+            Octopus.CUDA.synchronize()
+            l
+        end
+        rel(a, b) = abs(a - b) / max(abs(a), abs(b))
+        # A Float32 beam under a BINDING Float64 floor: the two routes agree as
+        # closely as they do for a Float64 beam (their reduction shapes differ,
+        # the floor no longer does). 1e-14 sits two orders above the Float64
+        # beams' measured 2e-16 and six below the defect's 6e-8.
+        for ms in (1.0e-5, 3.0e-6)
+            seq32 = lum(Float32, ms, :sequential); wf32 = lum(Float32, ms, :wavefront)
+            @test seq32 isa Float64 && wf32 isa Float64
+            @testset let min_sigma = ms, rel_seq_wf_float32 = rel(seq32, wf32)
+                @test rel_seq_wf_float32 <= 1.0e-14
+            end
+            seq64 = lum(Float64, ms, :sequential); wf64 = lum(Float64, ms, :wavefront)
+            @testset let min_sigma = ms, rel_seq_wf_float64 = rel(seq64, wf64)
+                @test rel_seq_wf_float64 <= 1.0e-14
+            end
+        end
+        # Inert at the default floor, as before.
+        @test lum(Float32, 0.0, :sequential) == lum(Float32, 0.0, :wavefront)
     else
         @test_skip "CUDA device not available"
     end

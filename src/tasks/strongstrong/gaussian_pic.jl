@@ -141,34 +141,95 @@ function solver_configuration(solver::GaussianPICPoissonSolver)
 end
 
 """
-PIC options the hybrid neither reads nor accepts a non-default value for.
+PIC options the hybrid neither reads nor accepts a non-default value for: ONE
+table, read by the refusals and by the report.
 
-Listed once here and consumed by `configuration_report` so the user-facing
-"what will actually happen" surface cannot claim a setting is resolved when
-`collide!` throws on it (2026-08-05_b audit, U10-1).
+Each row names the embedded `PICPoissonSolver` option, the only value the hybrid
+runs (`required`; `nothing` for an option that is inert because the option it
+depends on is forced), where the refusal lives (`backend = :any`: both backends,
+through `_require_linear_slice_interpolation`; `:cuda`: the CUDA entry), the
+reason the hybrid cannot honour another value, and the remedy the refusal
+names. `_require_linear_slice_interpolation` (pic_cpu.jl) and the CUDA entry
+(gaussian_pic_cuda.jl) iterate this table; `configuration_report` derives the
+inert set `_GPIC_INERT_PIC_OPTIONS` from it, so the user-facing "what will
+actually happen" surface cannot claim a setting is resolved when `collide!`
+throws on it (2026-08-05_b audit, U10-1). The list used to be a hand copy of
+the two rejection sites with no tripwire and no test, so a rejection added at
+either site re-opened U10-1 silently and one removed left the report calling a
+live option inactive (2026-10-18 audit, F-44; fix batch 4b). The suite holds
+every `required` to PIC's declared default and every refusal to its row.
 """
-const _GPIC_INERT_PIC_OPTIONS = (:slice_interpolation, :interaction_grid,
-                                 :grid_extent, :grid_extent_sigma,
-                                 :cuda_async, :cuda_batch_fft,
-                                 :cuda_wavefront_fft)
+const _GPIC_INERT_PIC_RULES = (
+    slice_interpolation = (required=:linear, backend=:any,
+        reason="only the CPU PICPoissonSolver path supports :quadratic",
+        remedy="Select the CPU backend with PICPoissonSolver, or set slice_interpolation = :linear"),
+    interaction_grid = (required=:slice_pair, backend=:any,
+        reason="only the CPU PICPoissonSolver path supports :source_slice and :node",
+        remedy="Select the CPU backend with PICPoissonSolver, or set interaction_grid = :slice_pair"),
+    # The Gaussian-subtracted path sizes its own adaptive box from margin_sigma
+    # and the reference Gaussian's moments; it never consults the mesh-extent
+    # estimator, so a non-default value here was accepted and dropped. Measured
+    # identical results for :extrema and :sigma at margin_sigma 5.0 and 0.0.
+    grid_extent = (required=:extrema, backend=:any,
+        reason="it sizes its interaction box from margin_sigma and the subtracted Gaussian's " *
+               "moments and applies no extent estimator, so a non-default value would be " *
+               "silently ignored",
+        remedy="Use PICPoissonSolver, or set grid_extent = :extrema"),
+    grid_extent_sigma = (required=nothing, backend=:any,
+        reason="read only under grid_extent = :sigma, which the hybrid refuses",
+        remedy=""),
+    # cuda_async, cuda_batch_fft and cuda_wavefront_fft steer the plain PIC
+    # CUDA routes and are never read by the hybrid's, which selects on
+    # batch_mode and cuda_indexed_wavefront only, so a non-default value was
+    # accepted and dropped.
+    cuda_async = (required=true, backend=:cuda,
+        reason="its route is chosen by batch_mode and cuda_indexed_wavefront alone, so a " *
+               "non-default value would be silently ignored",
+        remedy="Use PICPoissonSolver, or leave cuda_async at true"),
+    cuda_batch_fft = (required=true, backend=:cuda,
+        reason="its route is chosen by batch_mode and cuda_indexed_wavefront alone, so a " *
+               "non-default value would be silently ignored",
+        remedy="Use PICPoissonSolver, or leave cuda_batch_fft at true"),
+    cuda_wavefront_fft = (required=true, backend=:cuda,
+        reason="its route is chosen by batch_mode and cuda_indexed_wavefront alone, so a " *
+               "non-default value would be silently ignored",
+        remedy="Use PICPoissonSolver, or leave cuda_wavefront_fft at true"),
+)
+const _GPIC_INERT_PIC_OPTIONS = keys(_GPIC_INERT_PIC_RULES)
+
+"""
+Refuse, by name, every option of `pic` whose `_GPIC_INERT_PIC_RULES` row names
+`backend` (or `:any`) and whose value is not the one the hybrid runs. `path`
+names the route in the message.
+"""
+function _gpic_refuse_inert_options(pic::PICPoissonSolver, path::AbstractString, backend::Symbol)
+    for (name, rule) in pairs(_GPIC_INERT_PIC_RULES)
+        rule.required === nothing && continue
+        (rule.backend === :any || rule.backend === backend) || continue
+        value = getproperty(pic, name)
+        value === rule.required || throw(ArgumentError(
+            "$(name) = $(repr(value)) is not implemented by $(path); $(rule.reason). " *
+            "$(rule.remedy)."))
+    end
+    return nothing
+end
 
 function configuration_report(solver::GaussianPICPoissonSolver;
                               policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
                               backend=nothing)
     pic_entries = configuration_report(solver.pic; policy=policy, backend=backend)
-    # Seven of the embedded PIC solver's entries are NOT resolved for the
-    # hybrid, and forwarding them unmodified told the user a setting was in
-    # force for values that hard-error (2026-08-05_b audit, U10-1).
-    # `_require_linear_slice_interpolation` throws on a non-default
-    # `slice_interpolation`, `interaction_grid` or `grid_extent`, and the CUDA
-    # route throws on `cuda_async`/`cuda_batch_fft`/`cuda_wavefront_fft = false`.
-    # Even at their defaults the hybrid does not read them: it hardcodes the
-    # slice-pair box, sizes its extent from `margin_sigma`, and picks its CUDA
-    # route from `batch_mode` and `cuda_indexed_wavefront` alone. The
-    # `coupling_tol` entry below is the pattern -- report the dependency, do not
-    # claim resolution. "Ignored configuration must warn, throw, or be
-    # documented as inert, never vanish", applied to the report rather than to
-    # the run: the throw is loud and the report contradicted it.
+    # The embedded PIC solver's entries named by `_GPIC_INERT_PIC_RULES` are
+    # NOT resolved for the hybrid, and forwarding them unmodified told the user
+    # a setting was in force for values that hard-error (2026-08-05_b audit,
+    # U10-1). The refusals read the same table (`_gpic_refuse_inert_options`,
+    # F-44), so the set reported inactive IS the set `collide!` refuses or
+    # never reads. Even at their defaults the hybrid does not read them: it
+    # hardcodes the slice-pair box, sizes its extent from `margin_sigma`, and
+    # picks its CUDA route from `batch_mode` and `cuda_indexed_wavefront`
+    # alone. The `coupling_tol` entry below is the pattern -- report the
+    # dependency, do not claim resolution. "Ignored configuration must warn,
+    # throw, or be documented as inert, never vanish", applied to the report
+    # rather than to the run: the throw is loud and the report contradicted it.
     pic_entries = map(pic_entries) do e
         e.name in _GPIC_INERT_PIC_OPTIONS || return e
         ConfigurationEntry(e.name, e.requested, e.resolved, :inactive_dependency,
@@ -1360,9 +1421,10 @@ function _sliced_owner_grids!(gmsg, g::GaussianPICPoissonSolver, ::Type{T}, red,
     end
     param_source = d == 1 ? param1 : param2
     param_field = d == 1 ? param2 : param1
-    o = d == 1 ? 0 : 30
-    ns = Int(red[o + 9]) ÷ 2          # PIC's record carries 2 * nsource
-    origin = (red[o + 21], red[o + 22], red[o + 23], red[o + 24])
+    # Through the layout's own accessors (pic_cpu_sliced.jl), not slot
+    # literals copied from it (2026-10-18 audit, F-43; fix batch 4b).
+    ns = _pic_sliced_reduced_source_count(red, d) ÷ 2    # PIC's record carries 2 * nsource
+    origin = _pic_sliced_reduced_source_origin(red, d)
     coupled_gate = _gpic_coupled_gate(g, T)
     sumat = _gpic_sliced_sum_at(d)
     sL = T(0.5) * (T(param_source.center) - T(param_field.lb))

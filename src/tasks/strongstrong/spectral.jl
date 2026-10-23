@@ -105,7 +105,12 @@ on that square half-width, in the same length units as the particle coordinates.
 Its default `0` leaves every nonzero domain data-derived. A beam collapsed at the
 origin has no inferable physical scale and is rejected unless this bound is
 positive. `method` is `:grid` (DST/DCT, the fast path, and the only CUDA-supported
-variant) or `:grid_free` (mode sums straight from particles; CPU only).
+variant) or `:grid_free` (mode sums straight from particles; CPU only). Past the
+Dirichlet wall both methods return zero field: the `:grid` CIC stencil skips wall
+and outside nodes, and `:grid_free` zeroes the field points outside the box
+rather than evaluate the odd extension's mirrored image there (fix batch 4b,
+F-35). Either way the event is reported -- a warning and a
+`:spectral_box_coverage` receipt -- as is charge a deposit clips at the wall.
 `kbb1`/`kbb2` are the physical kick scales, same convention as
 `GaussianPoissonSolver` and `PICPoissonSolver`.
 
@@ -168,7 +173,15 @@ function SpectralPoissonSolver{T}(; kbb1=nothing, kbb2=nothing,
     s2 = slicing2 === nothing ? slicing : slicing2
     gx, gy = Int(grid[1]), Int(grid[2])
     (gx >= 8 && gy >= 8) || throw(ArgumentError("SpectralPoissonSolver grid dimensions must be at least 8; got $(grid)"))
-    domain_factor > 0 || throw(ArgumentError("domain_factor must be positive; got $(domain_factor)"))
+    # Finite as well as positive: `Inf` passed `> 0`, built an infinite box and
+    # failed at the first collide with `_nonfinite_coordinate_error`'s
+    # "DERIVED quantity ... a drifted position that overflowed ... or a slice
+    # moment" text naming beam 2's coordinates -- two causes, neither the real
+    # one (2026-10-18 audit, F-38; fix batch 4b). NaN was refused only because
+    # `NaN > 0` is false. A finite factor whose `d * sigma_max` overflows at
+    # run time is named by `_spectral_domain_overflow_check` on both backends.
+    isfinite(domain_factor) && domain_factor > 0 || throw(ArgumentError(
+        "domain_factor must be finite and positive; got $(domain_factor)"))
     min_halfwidth = T(min_domain_halfwidth)
     isfinite(min_halfwidth) && min_halfwidth >= zero(T) || throw(ArgumentError(
         "min_domain_halfwidth must be finite and nonnegative; got $(min_domain_halfwidth)."))
@@ -197,7 +210,7 @@ const _SPECTRAL_SOLVER_OPTION_SCHEMA = (
     grid = SolverOptionMeta(Tuple{Int,Int}, (128, 128),
         "Transverse shape (Nx, Ny): grid nodes and modes for :grid, modes only for :grid_free."),
     domain_factor = SolverOptionMeta(Real, 16.0,
-        "Box half-width as a multiple of the larger transverse rms."; category=:accuracy_performance),
+        "Box half-width as a multiple of the larger transverse rms; finite and positive."; category=:accuracy_performance),
     min_domain_halfwidth = SolverOptionMeta(Real, 0.0,
         "Optional physical lower bound on the square Dirichlet-domain half-width in particle-coordinate length units; 0 keeps nonzero domains data-derived.";
         category=:numerical),
@@ -410,7 +423,10 @@ function _spectral_smooth_grid(N::Int, span::Int=6)
 end
 
 """
-Say so when the mesh width makes the transform slow.
+    _spectral_note_grid_size(Nx, Ny, backend=CPUThreadsBackend)
+
+Say so when the mesh width makes the transform slow, on the backend whose
+workspace is being built.
 
 A DST-I over `N` interior points has LOGICAL size `2(N + 1)`, and FFTW is fast
 only when that number is smooth. Measured on one thread, `RODFT00` on an
@@ -419,6 +435,16 @@ only when that number is smooth. Measured on one thread, `RODFT00` on an
 663.2 us; N=255 (logical 512) 634.0 us against N=256 (logical 514 = 2*257)
 5602.7 us. The solve is roughly 70% of a 6D spectral collide, so at 256 that
 is an 8.8x tax on the dominant term.
+
+cuFFT pays the same tax on the same logical sizes, and the CUDA workspace
+(`_SpectralCudaWS`) used to build its plans with no note and no receipt
+(2026-10-18 audit, F-34). Measured on an RTX 4500 Ada (CUDA.jl 6.3.1, Float64):
+the dim-1 `rfft` of the real extension 19.0 us at N=255 against 78.0 us at
+N=256 (4.1x), 8.0 against 16.1 us at N=127/128 (2.0x); a whole
+`_cuda_spectral_field!` solve 198.2 us at (255,255) against 530.1 us at
+(256,256) (2.7x), 106.3 against 146.3 us at (127,127)/(128,128). Both
+constructors call this, each with its own `backend`, so the receipt names the
+library that will pay and a test reads the same keys whichever ran.
 
 `2(2^k + 1)` is twice a Fermat-ish number -- 17, 43, 97, 193, 257 -- so every
 power-of-two mesh is one of the slow ones, and a power of two is exactly what a
@@ -430,21 +456,93 @@ The criterion is the largest prime factor, not the power of two: N=48 (logical
 Below 48 points the absolute cost is small enough that the note would be noise,
 so it starts there.
 """
-function _spectral_note_grid_size(Nx::Int, Ny::Int)
+function _spectral_note_grid_size(Nx::Int, Ny::Int, backend=CPUThreadsBackend)
+    library = backend === CPUThreadsBackend ? "FFTW" : "cuFFT"
     for (N, axis) in ((Nx, :x), (Ny, :y))
         N >= 48 || continue
         L = 2 * (N + 1)
         q = _spectral_max_prime(L)
         q <= 7 && continue
         best = _spectral_smooth_grid(N)
-        _record_execution!(:spectral_grid_transform, CPUThreadsBackend,
+        _record_execution!(:spectral_grid_transform, backend,
                            (axis=axis, points=N, logical=L, largest_prime=q,
                             smooth=false, suggested=best))
         @warn "spectral mesh width makes the DST slow: a transform of $(N) interior \
                points has logical size $(L), whose largest prime factor is $(q), and \
-               FFTW has no fast algorithm for it. A nearby width whose logical size is \
+               $(library) has no fast algorithm for it. A nearby width whose logical size is \
                smooth runs several times faster per solve, and the solve is most of a \
                6D spectral collide." axis = axis grid_points = N logical_size = L largest_prime = q suggested_points = best maxlog = 4
+    end
+    return nothing
+end
+
+"""
+    _spectral_pair_schedule_receipt(; batch_mode, requested, pairs, batches,
+                                     widest_batch, ranks, exchange, schedule)
+
+The ONE shape of the `:spectral_pair_schedule` receipt, built here by every
+route on both backends: the five keys every solver's pair-schedule receipt
+shares (`batch_mode` is what RAN, `requested` the field), then the
+multi-process layer -- `ranks`, the `exchange` the collide ran (`:sliced`,
+`:home`, or `:none` undivided) and the `schedule` loop it chose (`:batched`,
+`:dataflow`, or `:none`). The CPU routes used to spell the eight keys out by
+hand and the two CUDA routes the five, under a comment promising one shape, so
+a reader keyed on `exchange` or `schedule` saw nothing on CUDA (2026-10-18
+audit, F-39; fix batch 4b). A CUDA run records `ranks = _mp_nranks()`,
+`exchange = :none`, `schedule = :none`: one rank, nothing exchanged, no loop
+to choose.
+"""
+@inline _spectral_pair_schedule_receipt(; batch_mode::Symbol, requested::Symbol,
+                                        pairs::Integer, batches::Integer,
+                                        widest_batch::Integer, ranks::Integer,
+                                        exchange::Symbol, schedule::Symbol) =
+    (batch_mode=batch_mode, requested=requested, pairs=Int(pairs), batches=Int(batches),
+     widest_batch=Int(widest_batch), ranks=Int(ranks), exchange=exchange, schedule=schedule)
+
+"""
+    _spectral_box_coverage_event!(backend, event; kwargs...)
+
+The ONE place a Dirichlet-box coverage failure is reported: a
+`:spectral_box_coverage` receipt (`event` and the event's numbers) and the
+event's warning. Three events, each the same correctness class -- charge or
+field that the box was sized to cover and did not:
+
+- `:clipped_charge` (both backends): a CIC deposit clipped at the wall;
+  `dropped_fraction`, `nsource`, `scope` (`:per_solve` on the CPU, which warns
+  per solve with that solve's source count; `:collision_aggregate` on CUDA,
+  one flush per collision over every clipping deposit), `box`.
+- `:grid_free_source` (CPU, `:grid_free`): a source outside the box, which the
+  odd periodic extension mirrors back inside with the sign flipped;
+  `max_abs_x`, `max_abs_y`, `outside`, `box`.
+- `:grid_free_field` (CPU, `:grid_free`): a field point outside the box, whose
+  mode sum would be the image's field; it is zeroed instead (the `:grid`
+  route's convention) and counted; `max_abs_x`, `max_abs_y`, `outside`, `box`.
+
+The receipt is what a reader of the run consults: the warnings keep a
+`maxlog = 8` budget per call site and logger, so under a process-lifetime
+logger they fall silent after the first turns (measured 2026-10-18: 4, 4, 0,
+0, 0 warnings over five identical clipping collides) while the audit kept no
+record at all (F-36). Recording is opt-in through `with_execution_audit` and
+costs nothing otherwise.
+"""
+function _spectral_box_coverage_event!(backend, event::Symbol; kwargs...)
+    values = (; event=event, kwargs...)
+    _record_execution!(:spectral_box_coverage, backend, values)
+    if event === :clipped_charge
+        # The message text and the keys are deliberately identical across the
+        # backends so one grep finds both; `scope` says which question the
+        # number answers (2026-08-05_b audit, U11-3).
+        @warn "spectral deposit clipped charge at the Dirichlet wall; the box \
+               no longer covers the whole beam" dropped_fraction = values.dropped_fraction nsource = values.nsource scope = values.scope box = values.box maxlog = 8
+    elseif event === :grid_free_source
+        @warn "spectral :grid_free source outside the Dirichlet box; the odd \
+               periodic extension mirrors it back with the sign flipped" max_abs_x = values.max_abs_x max_abs_y = values.max_abs_y outside = values.outside box = values.box maxlog = 8
+    elseif event === :grid_free_field
+        @warn "spectral :grid_free field point outside the Dirichlet box; the mode sum \
+               there is the mirrored image's field, so the field is set to zero as on \
+               the :grid route" max_abs_x = values.max_abs_x max_abs_y = values.max_abs_y outside = values.outside box = values.box maxlog = 8
+    else
+        throw(ArgumentError("unknown spectral box coverage event $(repr(event))"))
     end
     return nothing
 end
@@ -559,18 +657,19 @@ than one cell and an extreme particle's stencil brushes the wall.
 
 The CUDA twin counts the clipped weight inside the deposit kernels (a grid
 total per solve would synchronize the stream) and flushes one aggregate
-warning per collision through `_cuda_spectral_deposit_tripwire_flush!`.
+event per collision through `_cuda_spectral_deposit_tripwire_flush!`. Both
+report through `_spectral_box_coverage_event!`: a receipt per event beside the
+budgeted warning (F-36).
 """
 function _spectral_deposit_tripwire(rho, ns, Lx, Ly)
     ns > 0 || return nothing
     deficit = ns - sum(rho)
     if deficit > 1.0e-9 * ns
         # `scope` distinguishes this per-solve number from the CUDA twin's
-        # per-collision aggregate; the message text and the other keys are
-        # deliberately identical so one grep finds both (2026-08-05_b audit,
-        # U11-3).
-        @warn "spectral deposit clipped charge at the Dirichlet wall; the box \
-               no longer covers the whole beam" dropped_fraction = deficit / ns nsource = ns scope = :per_solve box = (Lx, Ly) maxlog = 8
+        # per-collision aggregate (2026-08-05_b audit, U11-3).
+        _spectral_box_coverage_event!(CPUThreadsBackend, :clipped_charge;
+                                      dropped_fraction=deficit / ns, nsource=ns,
+                                      scope=:per_solve, box=(Lx, Ly))
     end
     return nothing
 end
@@ -860,9 +959,39 @@ function _spectral_mode_sum_guard(sx, sy, Lx, Ly)
     mx = maximum(abs, sx)
     my = maximum(abs, sy)
     if mx > Lx || my > Ly
-        @warn "spectral :grid_free source outside the Dirichlet box; the odd \
-               periodic extension mirrors it back with the sign flipped" max_abs_x = mx max_abs_y = my box = (Lx, Ly) maxlog = 8
+        outside = count(p -> abs(sx[p]) > Lx || abs(sy[p]) > Ly, eachindex(sx))
+        _spectral_box_coverage_event!(CPUThreadsBackend, :grid_free_source;
+                                      max_abs_x=mx, max_abs_y=my, outside=outside, box=(Lx, Ly))
     end
+    return nothing
+end
+
+"""
+The field side of `_spectral_mode_sum_guard` (2026-10-18 audit, F-35). The
+sine series continues past the wall as the odd periodic extension, so a FIELD
+point at `x > L` would receive the field of a sign-flipped mirror source at
+`2L - x`: measured `Phi(L + d) = -Phi(L - d)` exactly and `Ex(L + d) = +Ex(L -
+d)`, 2.6e3 at 1.05 L growing to 4.0e3 at 1.5 L, with no warning -- where the
+`:grid` route's CIC stencil skips wall and outside nodes and returns 0 there
+(the documented approximation). Reachable the same way the source guard is: the
+box covers every pre-collision drifted coordinate, but the 6D field particles
+are evaluated after earlier pairs' kicks. Zero `Phi`, `Ex`, `Ey` at every field
+point outside the box, the `:grid` convention, and report once per evaluation
+through `_spectral_box_coverage_event!`. In-box rows are not touched.
+"""
+function _spectral_free_field_wall_mask!(Phi, Ex, Ey, fx, fy, Lx, Ly)
+    outside = 0
+    mx = zero(Float64); my = zero(Float64)
+    @inbounds for k in eachindex(fx)
+        ax = abs(fx[k]); ay = abs(fy[k])
+        (ax > Lx || ay > Ly) || continue
+        outside += 1
+        mx = max(mx, Float64(ax)); my = max(my, Float64(ay))
+        Phi[k] = 0.0; Ex[k] = 0.0; Ey[k] = 0.0
+    end
+    outside == 0 || _spectral_box_coverage_event!(CPUThreadsBackend, :grid_free_field;
+                                                  max_abs_x=mx, max_abs_y=my, outside=outside,
+                                                  box=(Lx, Ly))
     return nothing
 end
 
@@ -945,6 +1074,7 @@ function _spectral_free_potential_from_modes(rho_modes, ns::Integer, fx, fy,
         end
         Ey[k] = scale * ey
     end
+    _spectral_free_field_wall_mask!(Phi, Ex, Ey, fx, fy, Lx, Ly)
     return Phi, Ex, Ey
 end
 
@@ -1153,6 +1283,23 @@ _spectral_box(solver::SpectralPoissonSolver, rep1::Phase6DRep, rep2::Phase6DRep)
                   offset1=first(_mp_current_shard(rep1)),
                   offset2=first(_mp_current_shard(rep2)))
 
+"""
+Name `domain_factor` when a FINITE factor on a finite beam overflows the box:
+`d * sigma_max` is not finite while `sigma_max` and the extremum are. Called
+inside the `!isfinite(L)` branches of the four box functions (CPU and CUDA,
+plain and drifted) after the beam-1 verdict and before beam 2 is blamed, so
+the one cause neither `_nonfinite_coordinate_error` text describes is named
+(2026-10-18 audit, F-38). Returns `nothing` when the overflow is not the
+factor's, leaving the caller's attribution in place.
+"""
+function _spectral_domain_overflow_check(d, smax, emax, context::AbstractString)
+    (isfinite(smax) && isfinite(emax) && !isfinite(d * smax)) || return nothing
+    throw(ArgumentError(
+        "domain_factor = $(d) overflows the $(context): d * sigma_max = $(d) * $(smax) is " *
+        "not finite while every coordinate and the beam rms are. Choose a domain_factor " *
+        "the box can hold (the recommended production value is 8, with 16 the default)."))
+end
+
 function _spectral_box(solver::SpectralPoissonSolver, x1, y1, x2, y2,
                        flags1=nothing, flags2=nothing;
                        offset1::Integer=0, offset2::Integer=0)
@@ -1197,12 +1344,13 @@ function _spectral_box(solver::SpectralPoissonSolver, x1, y1, x2, y2,
         # The verdict above caught a non-finite LIVE COORDINATE. This catches
         # what is left: an empty live set (whose extremum is -Inf, legal on a
         # divided shard but not for the whole beam) and a finite input whose
-        # `d * smax` overflowed. Both agree across the ranks -- every number
-        # here is folded -- and beam 1 is named first, as it was before the
-        # verdict was split out.
+        # `d * smax` overflowed -- named as the factor's fault, not the beams'
+        # (F-38). All agree across the ranks -- every number here is folded --
+        # and beam 1 is named first, as it was before the verdict was split out.
         all(isfinite, (ext_x1, ext_y1)) ||
             _nonfinite_coordinate_error(:beam, (x=x1, y=y1);
                                         context="spectral Dirichlet box, beam 1")
+        _spectral_domain_overflow_check(d, smax, emax, "spectral Dirichlet box")
         _nonfinite_coordinate_error(:beam, (x=x2, y=y2);
                                     context="spectral Dirichlet box, beam 2")
     end
@@ -1261,12 +1409,13 @@ function _spectral_box_drifted(solver::SpectralPoissonSolver, rep1, rep2)
     L = max(d * smax, 1.05 * emax)
     if !isfinite(L)
         # See the note in `_spectral_box`: the verdict took the non-finite
-        # coordinates, this takes the empty live set and the overflowed drift,
-        # and beam 1 is named first.
+        # coordinates, this takes the empty live set, the overflowed drift and
+        # the overflowed factor (F-38), and beam 1 is named first.
         all(isfinite, (ext1x, ext1y, e[5])) ||
             _nonfinite_coordinate_error(:beam,
                 (x=rep1.x, px=rep1.px, y=rep1.y, py=rep1.py, z=rep1.z);
                 context="spectral drifted Dirichlet box, beam 1")
+        _spectral_domain_overflow_check(d, smax, emax, "spectral drifted Dirichlet box")
         _nonfinite_coordinate_error(:beam,
             (x=rep2.x, px=rep2.px, y=rep2.y, py=rep2.py, z=rep2.z);
             context="spectral drifted Dirichlet box, beam 2")
@@ -1611,18 +1760,20 @@ function _spectral_collide_transverse!(solver::SpectralPoissonSolver, beam1::Bea
     # so there is no pair schedule to choose here; the receipt says so rather
     # than leaving a `batch_mode` request unrecorded (2026-09-04).
     _record_execution!(:spectral_pair_schedule, CPUThreadsBackend,
-                       (batch_mode=:order_free, requested=solver.batch_mode,
-                        pairs=n1 * n2, batches=0, widest_batch=0,
-                        ranks=_mp_nranks(),
-                        # `:home` says the collide ran the DIVIDED protocol on
-                        # the home layout, whose folds are no-ops at one rank;
-                        # `:none` is the undivided route. Reading the policy and
-                        # not the rank count is what lets a one-rank arm assert
-                        # that the divided path is the one it measured.
-                        exchange=_mp_multi_process_active() ? :home : :none,
-                        # One receipt shape across the routes: the sliced route
-                        # names the loop it ran, the others say they have none.
-                        schedule=:none))
+                       _spectral_pair_schedule_receipt(
+                           batch_mode=:order_free, requested=solver.batch_mode,
+                           pairs=n1 * n2, batches=0, widest_batch=0,
+                           ranks=_mp_nranks(),
+                           # `:home` says the collide ran the DIVIDED protocol
+                           # on the home layout, whose folds are no-ops at one
+                           # rank; `:none` is the undivided route. Reading the
+                           # policy and not the rank count is what lets a
+                           # one-rank arm assert that the divided path is the
+                           # one it measured.
+                           exchange=_mp_multi_process_active() ? :home : :none,
+                           # The sliced route names the loop it ran, the
+                           # others say they have none.
+                           schedule=:none))
     Lx, Ly = _spectral_box(solver, r1, r2)
     grid = solver.method !== :grid_free
     Nx, Ny = solver.grid
@@ -1782,16 +1933,15 @@ function _spectral_collide_longitudinal!(solver::SpectralPoissonSolver, beam1::B
     # schedules agree" trivially, and a receipt that echoed the field would
     # certify nothing).
     _record_execution!(:spectral_pair_schedule, CPUThreadsBackend,
-                       (batch_mode=batched ? :wavefront : :sequential,
-                        requested=requested,
-                        pairs=npairs,
-                        batches=batched ? length(batches) : 0,
-                        widest_batch=batched ? maximum(length, batches; init=0) : 0,
-                        # One receipt shape across the routes (step 4g): the
-                        # divided ones name their exchange, the undivided one
-                        # says it has none, so a test reads the same key
-                        # whichever ran.
-                        ranks=_mp_nranks(), exchange=:none, schedule=:none))
+                       _spectral_pair_schedule_receipt(
+                           batch_mode=batched ? :wavefront : :sequential,
+                           requested=requested,
+                           pairs=npairs,
+                           batches=batched ? length(batches) : 0,
+                           widest_batch=batched ? maximum(length, batches; init=0) : 0,
+                           # The divided routes name their exchange, the
+                           # undivided one says it has none (step 4g).
+                           ranks=_mp_nranks(), exchange=:none, schedule=:none))
     lease = grid ?
         _acquire_spectral_grid_ws_pool(solver.grid[1], solver.grid[2], max_workers) :
         nothing

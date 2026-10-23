@@ -1448,11 +1448,22 @@ if _HAS_CUDA
                 # device half; fix batch, unit P's sibling) and nowhere else
                 # (measured both ways on both trees, 2026-10-20). Behind the cap
                 # the launch runs under either flag, with the receipt.
+                # The floor at the WORKING precision, as the sequential route
+                # (`solver.min_sigma`, squared inside at MT) and the CPU twin
+                # (`_slice_moments_finalize`, `T(min_sigma)` with T = MT) apply
+                # it. This handed the kernel `T(solver.min_sigma)` with T the
+                # beam's element type, so a Float32 beam under a Float64 solver
+                # squared `Float64(Float32(m))` and floored its variances 5.1e-8
+                # relative away from the sequential route's `m^2` (7.1e-8 at
+                # m = 3e-6; inert at the default 0 and for Float64 beams);
+                # measured on the luminosity, which is MT and scales with
+                # 1/(sx*sy): 6.0e-8 between the two routes before, 0 after
+                # (2026-10-18 audit, F-29; fix batch 4b).
                 _cuda_launch_capped!(_cuda_gaussian_build_moments_kernel!,
                         (threads=launch_build.threads, blocks=launch_build.blocks), nothing,
                         device_kmoments, device_means, moment_flag, device_sums, col_n, L,
                         solver.ignore_centroid1, solver.ignore_centroid2,
-                        T(solver.min_sigma), ncolumns, Val(COUPLED))
+                        MT(solver.min_sigma), ncolumns, Val(COUPLED))
                 kick_launch = _active_cuda_launch(max_seg_len)
                 _cuda_launch_capped!(_cuda_gaussian_fused_kick_kernel!,
                         (threads=kick_launch.threads, blocks=(kick_launch.blocks, nsegments)), nothing,

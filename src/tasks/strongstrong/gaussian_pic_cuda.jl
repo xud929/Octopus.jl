@@ -92,17 +92,9 @@ if _HAS_CUDA
             # This route selects on batch_mode and cuda_indexed_wavefront only.
             # cuda_async, cuda_batch_fft and cuda_wavefront_fft steer the plain
             # PIC CUDA routes and are never read here, so a non-default value
-            # was accepted and dropped. Rejecting matches how this backend
-            # already handles slice_interpolation and interaction_grid.
-            for (name, value) in ((:cuda_async, pic.cuda_async),
-                                  (:cuda_batch_fft, pic.cuda_batch_fft),
-                                  (:cuda_wavefront_fft, pic.cuda_wavefront_fft))
-                value || throw(ArgumentError(
-                    "$(name) = false is not implemented by the CUDA " *
-                    "GaussianPICPoissonSolver backend: its route is chosen by batch_mode " *
-                    "and cuda_indexed_wavefront alone, so a non-default value would be " *
-                    "silently ignored. Use PICPoissonSolver, or leave $(name) at true."))
-            end
+            # was accepted and dropped. The refusals are the `:cuda` rows of
+            # `_GPIC_INERT_PIC_RULES`, the table the report reads (F-44).
+            _gpic_refuse_inert_options(pic, "the CUDA GaussianPICPoissonSolver backend", :cuda)
             wavefront = Symbol(pic.batch_mode) == :wavefront
             indexed = wavefront && _cuda_pic_indexed_wavefront_enabled(pic)
             # The two options this route does read must be observable at their
@@ -952,16 +944,34 @@ if _HAS_CUDA
                 phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R,
                 x01, y01, hx1, hy1, x02, y02, hx2, hy2, nx::Int32, ny::Int32, method_code::Int32,
                 sc1, hzi1, zbias1, kbb1, g1, sc2, hzi2, zbias2, kbb2, g2)
+            # Grid-strided, like the plain-PIC twins in pic_cuda.jl
+            # (`_cuda_pic_kick_pair_indexed_longitudinal_kernel!`, U3-8). These
+            # two gpic kernels computed `index` once and ran the two bodies
+            # behind plain `if`s while being launched through
+            # `_cuda_launch_capped!`, whose contract says every routed kernel
+            # is grid-strided so that its block rescale under a thread cap is a
+            # partition change and not a coverage requirement -- for these two
+            # the rescale WAS the coverage (the longitudinal one is capped
+            # 1024 -> 256 on every launch under `kick_threads = 1024`), and a
+            # cap policy that bounded blocks would have skipped three quarters
+            # of the kicked particles on the hybrid alone (2026-10-18 audit,
+            # F-42; fix batch 4b). A full-coverage launch runs the loop once
+            # per thread, so the kick is the same arithmetic in the same order.
             index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
-            if index <= length(idx2)
-                _cuda_gpic_apply_indexed_longitudinal_kick!(x2, px2, y2, py2, pz2, z2, idx2[index],
-                    phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R, x02, y02, hx2, hy2, nx, ny, method_code,
-                    sc2, hzi2, zbias2, kbb2, g2)
-            end
-            if index <= length(idx1)
-                _cuda_gpic_apply_indexed_longitudinal_kick!(x1, px1, y1, py1, pz1, z1, idx1[index],
-                    phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R, x01, y01, hx1, hy1, nx, ny, method_code,
-                    sc1, hzi1, zbias1, kbb1, g1)
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            n = max(length(idx1), length(idx2))
+            while index <= n
+                if index <= length(idx2)
+                    _cuda_gpic_apply_indexed_longitudinal_kick!(x2, px2, y2, py2, pz2, z2, idx2[index],
+                        phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R, x02, y02, hx2, hy2, nx, ny, method_code,
+                        sc2, hzi2, zbias2, kbb2, g2)
+                end
+                if index <= length(idx1)
+                    _cuda_gpic_apply_indexed_longitudinal_kick!(x1, px1, y1, py1, pz1, z1, idx1[index],
+                        phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R, x01, y01, hx1, hy1, nx, ny, method_code,
+                        sc1, hzi1, zbias1, kbb1, g1)
+                end
+                index += stride
             end
             return nothing
         end
@@ -972,16 +982,22 @@ if _HAS_CUDA
                 phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R,
                 x01, y01, hx1, hy1, x02, y02, hx2, hy2, nx::Int32, ny::Int32, method_code::Int32,
                 sc1, hzi1, zbias1, kbb1, g1, sc2, hzi2, zbias2, kbb2, g2)
+            # Grid-strided; see the longitudinal twin above (F-42).
             index = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
-            if index <= length(idx2)
-                _cuda_gpic_apply_indexed_kick!(x2, px2, y2, py2, z2, idx2[index],
-                    phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R, x02, y02, hx2, hy2, nx, ny, method_code,
-                    sc2, hzi2, zbias2, kbb2, g2)
-            end
-            if index <= length(idx1)
-                _cuda_gpic_apply_indexed_kick!(x1, px1, y1, py1, z1, idx1[index],
-                    phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R, x01, y01, hx1, hy1, nx, ny, method_code,
-                    sc1, hzi1, zbias1, kbb1, g1)
+            stride = CUDA.gridDim().x * CUDA.blockDim().x
+            n = max(length(idx1), length(idx2))
+            while index <= n
+                if index <= length(idx2)
+                    _cuda_gpic_apply_indexed_kick!(x2, px2, y2, py2, z2, idx2[index],
+                        phi12L, Ex12L, Ey12L, phi12R, Ex12R, Ey12R, x02, y02, hx2, hy2, nx, ny, method_code,
+                        sc2, hzi2, zbias2, kbb2, g2)
+                end
+                if index <= length(idx1)
+                    _cuda_gpic_apply_indexed_kick!(x1, px1, y1, py1, z1, idx1[index],
+                        phi21L, Ex21L, Ey21L, phi21R, Ex21R, Ey21R, x01, y01, hx1, hy1, nx, ny, method_code,
+                        sc1, hzi1, zbias1, kbb1, g1)
+                end
+                index += stride
             end
             return nothing
         end

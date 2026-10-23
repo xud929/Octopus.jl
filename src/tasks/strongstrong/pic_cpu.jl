@@ -935,32 +935,18 @@ end
 
 Throw when a code path that implements only the two-node longitudinal
 reconstruction and per-slice-pair mesh sizing is handed
-`slice_interpolation = :quadratic` or `interaction_grid = :source_slice`. A
-non-default public configuration value must never be silently ignored; see
-`AGENTS.md`.
+`slice_interpolation = :quadratic`, `interaction_grid = :source_slice` or a
+`grid_extent` other than `:extrema`. A non-default public configuration value
+must never be silently ignored; see `AGENTS.md`.
+
+The Gaussian-PIC hybrid's refusal of the PIC options it cannot honour on either
+backend, each by name with its reason and remedy. The rows live in
+`_GPIC_INERT_PIC_RULES` (gaussian_pic.jl), the one table the CUDA entry and
+`configuration_report` read too (2026-10-18 audit, F-44); this used to spell
+the three refusals out by hand beside a second hand copy of their names.
 """
-function _require_linear_slice_interpolation(solver::PICPoissonSolver, path::AbstractString)
-    solver.slice_interpolation === :linear || throw(ArgumentError(
-        "slice_interpolation = $(repr(solver.slice_interpolation)) is not implemented by " *
-        "$path; only the CPU PICPoissonSolver path supports :quadratic. Select the CPU " *
-        "backend, or set slice_interpolation = :linear."))
-    solver.interaction_grid === :slice_pair || throw(ArgumentError(
-        "interaction_grid = $(repr(solver.interaction_grid)) is not implemented by " *
-        "$path; only the CPU PICPoissonSolver path supports :source_slice and :node. Select " *
-        "the CPU backend, or set interaction_grid = :slice_pair."))
-    # The Gaussian-subtracted path sizes its own adaptive box from margin_sigma
-    # and the reference Gaussian's moments; it never consults the mesh-extent
-    # estimator, so a non-default value here was accepted and dropped. Measured
-    # identical results for :extrema and :sigma at margin_sigma 5.0 and 0.0.
-    # Rejecting matches how the CUDA PIC backend already handles this same
-    # option rather than silently ignoring it.
-    solver.grid_extent === :extrema || throw(ArgumentError(
-        "grid_extent = $(repr(solver.grid_extent)) is not implemented by $path; it sizes " *
-        "its interaction box from margin_sigma and the subtracted Gaussian's moments and " *
-        "applies no extent estimator, so a non-default value would be silently ignored. " *
-        "Use PICPoissonSolver, or set grid_extent = :extrema."))
-    return nothing
-end
+_require_linear_slice_interpolation(solver::PICPoissonSolver, path::AbstractString) =
+    _gpic_refuse_inert_options(solver, path, :any)
 
 function _validate_pic_grid(nx::Integer, ny::Integer)
     nx >= 5 && ny >= 5 || throw(ArgumentError("PICPoissonSolver grid must be at least (5, 5)"))
@@ -2549,7 +2535,9 @@ against `NaN` is false, so non-finite input takes the zero-weight branch.
 
 With `grid_extent = :extrema` this branch is unreachable, because the mesh is sized
 from the particle extrema plus a 1.5-cell margin. It exists so that the robust
-estimators (`:sigma`, `:quantile`) cannot silently corrupt the field.
+estimator (`:sigma`, the one `grid_extent` value besides `:extrema` the constructor
+accepts; a `:quantile` estimator was measured and removed, see `_pic_axis_extent`)
+cannot silently corrupt the field.
 """
 @inline function _pic_cic_weights(u, n)
     if !(zero(u) <= u <= u_of(n))
@@ -2586,13 +2574,29 @@ behaviour `_pic_cic_weights` documents as worse than dropping. Widening the
 stencil check to drop those particles instead would lose their charge entirely,
 which is not better.
 
-It does not arise on an interaction mesh: `:extrema` sizing puts every particle
-in `u ∈ [1.5, n-2.5]` (measured `[1.591, 61.591]` at `n = 64`). It does arise on
-the luminosity mesh, whose 0.05-cell margin is sized for CIC — measured 2 to 3
-particles of 200,000. Widening that margin was measured and is **worse**: at a
-fixed cell count a larger margin means coarser cells over the beam, and the
-overlap integral moved from `-5.5e-3` to `-6.3e-3` against the analytic Gaussian
-result. The margin stays as it is.
+Where it arises, and where it does not. On a `:slice_pair` interaction mesh sized
+by `:extrema` with `grid_quantize = 0` it cannot: the mesh is built from THIS
+slice's own post-drift extrema plus a 1.5-cell margin, so every particle sits in
+`u ∈ [1.5, n-2.5]` (measured `[1.591, 61.591]` at `n = 64`). On the pre-built
+meshes (`interaction_grid = :node` or `:source_slice`, sized before the collision
+from the turn-start coordinates) and under `grid_extent = :sigma` (an estimator,
+not a cover) the half-cell bands `u ∈ [0, 1/2)` and `(n-3/2, n-1]` ARE populated:
+a particle 1.0 to 1.5 cells outside the mesh's nominal box is kept and displaced
+by one cell, and nothing counts it -- the drop-and-count criterion is `u` outside
+`[0, n-1]`, and these particles are inside it. Measured by the 2026-10-18 audit
+(U4-3, F-31) on the `:node` mesh at `kbb = 3e-7` with TSC: 1004 of 18,000 field
+interpolations on one node field grid were in the band (kept, displaced,
+uncounted) while 382 were outside and counted. `grid_quantize > 0` also eats
+into the `:extrema` margin (a 9 % ladder step plus a half-cell origin rounding
+plus the alignment shift leaves about 0.38 cell in the worst case; derived, not
+measured). The docstring used to say the displacement "does not arise on an
+interaction mesh"; that was true of `:slice_pair` with `:extrema` only.
+
+It also arises on the luminosity mesh, whose 0.05-cell margin is sized for CIC —
+measured 2 to 3 particles of 200,000. Widening that margin was measured and is
+**worse**: at a fixed cell count a larger margin means coarser cells over the
+beam, and the overlap integral moved from `-5.5e-3` to `-6.3e-3` against the
+analytic Gaussian result. The margin stays as it is.
 """
 @inline function _pic_tsc_weights(u, n)
     if !(zero(u) <= u <= u_of(n))

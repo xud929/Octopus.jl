@@ -745,11 +745,12 @@ function _spectral_sliced_transport!(solver::SpectralPoissonSolver, beam1::Beam,
            !batching ? :batched :
            widest_group >= 2 ? :dataflow : :batched
     _record_execution!(:spectral_pair_schedule, CPUThreadsBackend,
-                       (batch_mode=batching ? :wavefront : :sequential,
-                        requested=requested, pairs=npairs,
-                        batches=batching ? length(batches) : 0,
-                        widest_batch=batching ? maximum(length, batches; init=0) : 0,
-                        ranks=P, exchange=:sliced, schedule=loop))
+                       _spectral_pair_schedule_receipt(
+                           batch_mode=batching ? :wavefront : :sequential,
+                           requested=requested, pairs=npairs,
+                           batches=batching ? length(batches) : 0,
+                           widest_batch=batching ? maximum(length, batches; init=0) : 0,
+                           ranks=P, exchange=:sliced, schedule=loop))
     for (which, sb) in ((1, sb1), (2, sb2))
         _record_execution!(:spectral_slice_layout, CPUThreadsBackend,
                            (beam=which, groups=[length(g) for g in sb.layout.groups],

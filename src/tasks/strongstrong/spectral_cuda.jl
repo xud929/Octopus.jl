@@ -191,6 +191,24 @@ if _HAS_CUDA
             qlum1::CUDA.CuMatrix{T}; qlum2::CUDA.CuMatrix{T}
             snapx::CUDA.CuVector{T}; snappx::CUDA.CuVector{T}
             snapy::CUDA.CuVector{T}; snappy::CUDA.CuVector{T}
+            # Pooled replacements for what the luminosity used to allocate per
+            # slice pair (2026-10-18 audit, F-40; fix batch 4b): `snapdx`/`snapdy`
+            # hold the snapshot DRIFTED to the luminosity plane for the 6D
+            # extrema (four fresh `v2x .+ v2px .* s2` temporaries per pair before,
+            # `4 * n1 * N2 * 8` bytes per collide, 19.2 MiB at 40,000 particles
+            # and 15 slices), `lumq1`/`lumq2` are the transverse route's two
+            # deposit grids (two fresh `nx x ny` grids and their product per pair
+            # before, 22.1 MiB of a 25.2 MiB collide). Typed `Any` because their
+            # element type is the BROADCAST's, not the workspace's: under
+            # `field_precision = :single` the snapshot is Float32 while the
+            # coordinates stay Float64, so the drift is Float64 and the
+            # transverse grids are coordinate-typed; a buffer at the workspace
+            # type would have rounded both (the `:single` rounding class is
+            # unit J's F-33, not this fix's). `_cuda_spectral_drift_buffers!`
+            # and `_cuda_spectral_lum_grids!` (re)allocate them on a type or
+            # size change and hand them back typed.
+            snapdx::Any; snapdy::Any
+            lumq1::Any; lumq2::Any
             # One-element accumulator for charge the deposit kernels clip at the
             # Dirichlet wall (R9 tripwire; zeroed and flushed per collision).
             dropped::CUDA.CuVector{Float64}
@@ -198,6 +216,12 @@ if _HAS_CUDA
         end
 
         function _SpectralCudaWS(::Type{T}, Nx::Int, Ny::Int) where {T}
+            # The mesh-width advisory, on this backend: cuFFT pays the same
+            # non-smooth logical-size tax as FFTW (2.7x per whole solve at
+            # (256,256) against (255,255), measured 2026-10-18) and this
+            # constructor built its plans with no note and no receipt while the
+            # CPU twin's recorded one (2026-10-18 audit, F-34; fix batch 4b).
+            _spectral_note_grid_size(Nx, Ny, CUDABackend)
             er1 = CUDA.zeros(T, 2 * (Nx + 1), Ny)
             er2 = CUDA.zeros(T, Nx, 2 * (Ny + 1))
             c1 = CUDA.zeros(Complex{T}, Nx + 2, Ny)
@@ -213,6 +237,7 @@ if _HAS_CUDA
                 zz(), zz(), zz(),
                 zz(), zz(), zz(), zz(), zz(), zz(),
                 zz(), zz(), zv(), zv(), zv(), zv(),
+                nothing, nothing, nothing, nothing,
                 CUDA.zeros(Float64, 1), pr1, pr2)
         end
 
@@ -223,6 +248,26 @@ if _HAS_CUDA
                 ws.snapy = CUDA.zeros(T, n); ws.snappy = CUDA.zeros(T, n)
             end
             return ws
+        end
+
+        # The pooled drift buffers of the 6D luminosity extrema, element type
+        # `RT` (the drift broadcast's result type), at least length n (F-40).
+        function _cuda_spectral_drift_buffers!(ws::_SpectralCudaWS, ::Type{RT}, n::Int) where {RT}
+            if !(ws.snapdx isa CUDA.CuVector{RT}) || length(ws.snapdx::CUDA.CuVector{RT}) < n
+                ws.snapdx = CUDA.zeros(RT, n); ws.snapdy = CUDA.zeros(RT, n)
+            end
+            return ws.snapdx::CUDA.CuVector{RT}, ws.snapdy::CUDA.CuVector{RT}
+        end
+
+        # The pooled transverse luminosity grids, element type `T` (the
+        # coordinates'), shape `nx x ny`, zeroed (F-40).
+        function _cuda_spectral_lum_grids!(ws::_SpectralCudaWS, ::Type{T}, nx::Int, ny::Int) where {T}
+            if !(ws.lumq1 isa CUDA.CuMatrix{T}) || size(ws.lumq1::CUDA.CuMatrix{T}) != (nx, ny)
+                ws.lumq1 = CUDA.zeros(T, nx, ny); ws.lumq2 = CUDA.zeros(T, nx, ny)
+            end
+            q1 = ws.lumq1::CUDA.CuMatrix{T}; q2 = ws.lumq2::CUDA.CuMatrix{T}
+            CUDA.fill!(q1, 0); CUDA.fill!(q2, 0)
+            return q1, q2
         end
 
         mutable struct _SpectralCudaWSLease
@@ -320,12 +365,18 @@ if _HAS_CUDA
         # clipping deposit in it. Both carry `nsource` and `dropped_fraction` so
         # one grep finds both backends, and `scope` says which question the
         # number answers.
+        #
+        # Reported through `_spectral_box_coverage_event!`, the CPU tripwire's
+        # own path: a `:spectral_box_coverage` receipt per flush beside the
+        # budgeted warning, so a reader of the run sees the dropped charge after
+        # the warning's `maxlog` has run out (2026-10-18 audit, F-36).
         function _cuda_spectral_deposit_tripwire_flush!(ws::_SpectralCudaWS, ndep::Int, Lx, Ly)
             ndep > 0 || return nothing
             dropped = Array(ws.dropped)[1]
             if dropped > 1.0e-9 * ndep
-                @warn "spectral deposit clipped charge at the Dirichlet wall; the box \
-                       no longer covers the whole beam" dropped_fraction = dropped / ndep nsource = ndep scope = :collision_aggregate box = (Lx, Ly) maxlog = 8
+                _spectral_box_coverage_event!(CUDABackend, :clipped_charge;
+                                              dropped_fraction=dropped / ndep, nsource=ndep,
+                                              scope=:collision_aggregate, box=(Lx, Ly))
             end
             return nothing
         end
@@ -667,10 +718,13 @@ if _HAS_CUDA
                 CUDA.fill!(ws.dropped, 0.0)
                 ndep = 0
                 # Order-free, as on the CPU twin: there is no schedule to
-                # choose, and the receipt records that (2026-09-04).
+                # choose, and the receipt records that (2026-09-04), in the one
+                # shape every route builds (F-39): one rank, no exchange, no loop.
                 _record_execution!(:spectral_pair_schedule, CUDABackend,
-                                   (batch_mode=:order_free, requested=solver.batch_mode,
-                                    pairs=n1 * n2, batches=0, widest_batch=0))
+                                   _spectral_pair_schedule_receipt(
+                                       batch_mode=:order_free, requested=solver.batch_mode,
+                                       pairs=n1 * n2, batches=0, widest_batch=0,
+                                       ranks=_mp_nranks(), exchange=:none, schedule=:none))
                 # R12 hoist (CPU twin in `_spectral_collide_transverse!`): the
                 # mesh depends only on the source slice, and this path never
                 # mutates x/y, so gather each slice's coordinates and solve its
@@ -712,7 +766,7 @@ if _HAS_CUDA
                         T(Lx), T(Ly), hx, hy, Nx, Ny, a2)
                     if compute_luminosity
                         luminosity += _cuda_spectral_luminosity_pair(
-                            solver, xs1[i], ys1[i], xs2[j], ys2[j], klum, lnx, lny, ws.dropped)
+                            solver, ws, xs1[i], ys1[i], xs2[j], ys2[j], klum, lnx, lny)
                         # NOT added to `ndep`: the luminosity grid covers its
                         # own extrema, so these deposits cannot clip and only
                         # dilute the reported fraction (U11-2).
@@ -795,15 +849,25 @@ if _HAS_CUDA
             v2x = @view sx2[1:n2]; v2px = @view spx2[1:n2]
             v2y = @view sy2[1:n2]; v2py = @view spy2[1:n2]
             # Drifted extrema. Beam 1 reduces over its index vector with the drift/gather
-            # applied inside (no materialized array); beam 2 uses a fused broadcast
-            # reduce over its snapshot views.
+            # applied inside (no materialized array); beam 2's drift is broadcast
+            # ONCE per plane into the workspace's pooled `snapdx`/`snapdy` and
+            # reduced there. This used to broadcast `v2x .+ v2px .* s2` and its
+            # three siblings into four fresh temporaries per pair (F-40); the
+            # broadcast is the same expression and the reductions run over the
+            # same values in the same shape, so the extrema are the same bits.
             x1 = rep1.x; px1 = rep1.px; y1 = rep1.y; py1 = rep1.py
             d1x(p) = x1[p] + px1[p] * s1
             d1y(p) = y1[p] + py1[p] * s1
-            xmin = min(minimum(d1x, idx1), minimum(v2x .+ v2px .* s2))
-            xmax = max(maximum(d1x, idx1), maximum(v2x .+ v2px .* s2))
-            ymin = min(minimum(d1y, idx1), minimum(v2y .+ v2py .* s2))
-            ymax = max(maximum(d1y, idx1), maximum(v2y .+ v2py .* s2))
+            # The drift's result type: the snapshot's element type promoted by
+            # the coordinate-typed `s2`, which is what the four temporaries were.
+            dx, dy = _cuda_spectral_drift_buffers!(ws, promote_type(TWS, T), n2)
+            v2dx = @view dx[1:n2]; v2dy = @view dy[1:n2]
+            v2dx .= v2x .+ v2px .* s2
+            v2dy .= v2y .+ v2py .* s2
+            xmin = min(minimum(d1x, idx1), minimum(v2dx))
+            xmax = max(maximum(d1x, idx1), maximum(v2dx))
+            ymin = min(minimum(d1y, idx1), minimum(v2dy))
+            ymax = max(maximum(d1y, idx1), maximum(v2dy))
             width, height = _spectral_luminosity_extents(
                 solver, xmax - xmin, ymax - ymin, T)
             tx = width / T(nx - 1.1); ty = height / T(ny - 1.1)
@@ -847,9 +911,11 @@ if _HAS_CUDA
                 # CPU-only. The receipt still records what ran, so a request
                 # is visible rather than dropped (2026-09-04).
                 _record_execution!(:spectral_pair_schedule, CUDABackend,
-                                   (batch_mode=:sequential, requested=solver.batch_mode,
-                                    pairs=length(slices1.indices) * length(slices2.indices),
-                                    batches=0, widest_batch=0))
+                                   _spectral_pair_schedule_receipt(
+                                       batch_mode=:sequential, requested=solver.batch_mode,
+                                       pairs=length(slices1.indices) * length(slices2.indices),
+                                       batches=0, widest_batch=0,
+                                       ranks=_mp_nranks(), exchange=:none, schedule=:none))
                 for (_, i, j) in _slice_collision_order(slices1, slices2)
                     idx1 = slices1.indices[i]; idx2 = slices2.indices[j]
                     (length(idx1) == 0 || length(idx2) == 0) && continue
@@ -965,6 +1031,7 @@ if _HAS_CUDA
                 all(isfinite, (ext(r1.x, f1), ext(r1.y, f1))) ||
                     _nonfinite_coordinate_error(:beam, (x=r1.x, y=r1.y);
                                                 context="spectral Dirichlet box, beam 1")
+                _spectral_domain_overflow_check(d, smax, emax, "CUDA spectral Dirichlet box")   # F-38
                 _nonfinite_coordinate_error(:beam, (x=r2.x, y=r2.y);
                                             context="spectral Dirichlet box, beam 2")
             end
@@ -996,6 +1063,7 @@ if _HAS_CUDA
                     _nonfinite_coordinate_error(:beam,
                         (x=r1.x, px=r1.px, y=r1.y, py=r1.py, z=r1.z);
                         context="spectral drifted Dirichlet box, beam 1")
+                _spectral_domain_overflow_check(d, smax, emax, "CUDA spectral drifted Dirichlet box")   # F-38
                 _nonfinite_coordinate_error(:beam,
                     (x=r2.x, px=r2.px, y=r2.y, py=r2.py, z=r2.z);
                     context="spectral drifted Dirichlet box, beam 2")
@@ -1009,10 +1077,19 @@ if _HAS_CUDA
         end
 
         # Density-overlap luminosity on a shared grid (matches the CPU convention).
-        # `dropped` is the caller's workspace tripwire accumulator; the luminosity
-        # box covers its own extrema by construction, so it contributes zero.
+        # The deposits land in the workspace's pooled coordinate-typed grids
+        # (`_cuda_spectral_lum_grids!`) and the overlap is a two-array
+        # `mapreduce`: this used to allocate two fresh grids and their product
+        # per slice pair -- 22.1 MiB of a 25.2 MiB collide at 40,000 particles
+        # and 15 slices (2026-10-18 audit, F-40; fix batch 4b). `mapreduce(*, +,
+        # q1, q2)` reduces the broadcasted products in the same shape and order
+        # `sum(q1 .* q2)` reduced the materialized ones, so the luminosity is
+        # the same bits (pinned against the unfixed tree). The luminosity box
+        # covers its own extrema by construction, so its deposits add nothing to
+        # `ws.dropped`, the tripwire accumulator they are handed.
         function _cuda_spectral_luminosity_pair(solver::SpectralPoissonSolver,
-                                                x1, y1, x2, y2, klum, nx, ny, dropped)
+                                                ws::_SpectralCudaWS, x1, y1, x2, y2,
+                                                klum, nx, ny)
             T = eltype(x1)
             xmin = min(minimum(x1), minimum(x2)); xmax = max(maximum(x1), maximum(x2))
             ymin = min(minimum(y1), minimum(y2)); ymax = max(maximum(y1), maximum(y2))
@@ -1022,13 +1099,13 @@ if _HAS_CUDA
             width += T(0.1) * tx; height += T(0.1) * ty
             xmin -= T(0.05) * tx; ymin -= T(0.05) * ty
             hx = width / (nx - 1); hy = height / (ny - 1)
-            q1 = CUDA.zeros(T, nx, ny); q2 = CUDA.zeros(T, nx, ny)
+            q1, q2 = _cuda_spectral_lum_grids!(ws, T, Int(nx), Int(ny))
             threads = 256
             CUDA.@cuda threads=threads blocks=cld(length(x1), threads) _cuda_spectral_deposit_kernel!(
-                q1, x1, y1, T(-xmin + hx), T(-ymin + hy), hx, hy, nx, ny, dropped)
+                q1, x1, y1, T(-xmin + hx), T(-ymin + hy), hx, hy, nx, ny, ws.dropped)
             CUDA.@cuda threads=threads blocks=cld(length(x2), threads) _cuda_spectral_deposit_kernel!(
-                q2, x2, y2, T(-xmin + hx), T(-ymin + hy), hx, hy, nx, ny, dropped)
-            lum = sum(q1 .* q2)
+                q2, x2, y2, T(-xmin + hx), T(-ymin + hy), hx, hy, nx, ny, ws.dropped)
+            lum = mapreduce(*, +, q1, q2)
             return lum * T(klum) / (hx * hy)
         end
 

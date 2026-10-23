@@ -565,7 +565,10 @@ graph -- which are bit-identical and chosen by the layout: groups wider than
 one rank get the event loop, whole slices keep the batched walk.
 `_SPECTRAL_SLICED_LOOP` overrides that for a measurement or a pin. The
 `:spectral_pair_schedule` receipt names what ran: `exchange=:sliced`, `:home`,
-or `:none` for an undivided run, and `schedule=:batched`/`:dataflow`/`:none`. On the sliced
+or `:none` for an undivided run, and `schedule=:batched`/`:dataflow`/`:none`; the receipt
+has one key set on every route and both backends (`_spectral_pair_schedule_receipt`, fix
+batch 4b of 2026-10-22, F-39: the CUDA routes carried five keys where the CPU ones carried
+eight), a CUDA run reading `ranks=1`, `exchange=:none`, `schedule=:none`. On the sliced
 route a pair's four solves -- two directions times the two drifted planes --
 are dealt across the field slice's group rather than pinned to its head, so
 every rank of a run solves once a slice spans more than one rank. Two ceilings
@@ -579,7 +582,14 @@ sixty-four ranks the wall tracks that chain rather than the work (8 slices
 its own lever: a DST-I over `N` interior points has logical size `2(N + 1)`
 and FFTW is fast only when that is smooth, so `grid=(256, 256)` costs 8.8x
 `grid=(255, 255)`; `_spectral_note_grid_size` records a
-`:spectral_grid_transform` receipt and warns, naming the nearby smooth width. No solver in
+`:spectral_grid_transform` receipt and warns, naming the nearby smooth width, from BOTH
+workspace constructors -- cuFFT pays the same tax (a whole CUDA solve 2.7x at (256,256)
+against (255,255), measured 2026-10-18), and until fix batch 4b (F-34) only the CPU
+constructor said so. The spectral box-coverage events -- charge a deposit clips at the
+wall on either backend, a `:grid_free` source or field point outside the box -- each
+record a `:spectral_box_coverage` receipt beside their budgeted warning (F-36, F-35), and
+a `:grid_free` field point past the wall gets zero field, the `:grid` convention, instead
+of the odd extension's mirrored image. No solver in
 the roster refuses at more than one rank; `_solver_divides` is a
 deny-by-default tripwire, so a solver added later refuses until it is
 divided.
