@@ -8824,6 +8824,119 @@ end
     end
 end
 
+@testset "The CUDA elementwise walker has one implementation and the deprecated LumpedRad route runs the fused kernel (F-102, F-104)" begin
+    # 2026-10-18 audit F-102 (U20-3) and F-104 (U20-5); fix batch 4b, unit TR. Two dead or
+    # duplicated copies of the CUDA tracking route lived beside the live one: a second,
+    # uncalled walker `_track_line_elementwise!` / `_flush_cuda_fused_segment!` (eleven
+    # methods, 0 call sites, semantics that disagreed with `_track_cuda_policy_elementwise!`:
+    # it dropped the context for a lifted element and flattened a nested tuple without a
+    # flush), and a third copy of the grid-stride loop, `cuda_track_lumped_rad_kernel!`,
+    # behind the deprecated `track!(rep, ::LumpedRad, turns, CUDABackend)`, with its own
+    # context (no `index_offset`) and a hand-spelled `:auto` block rule
+    # `min(cld(N, threads), 256)` that three strong-beam launch sites spelled again. Both
+    # are gone: the deprecated entry takes the ONE deprecated route (`track!(rep, elems,
+    # turns, CUDABackend)` of phase6d_track.jl), which builds its context once and fuses
+    # the element -- measured bitwise equal to the removed kernel on 4096 particles, 3
+    # turns (result/fix_batch4_2026_10_22/probes/TR/probe_cuda_f104_red.log) -- and the
+    # per-element launch sites resolve `:auto` through `_cuda_resolve_coverage_blocks`,
+    # the receipt naming the rule. The symbols stay absent (a dead twin of a routing
+    # walker is where the next routing fix lands on the wrong function), and the cap rule
+    # is spelled once in src/track.
+    for sym in (:_track_line_elementwise!, :_flush_cuda_fused_segment!, :cuda_track_lumped_rad_kernel!)
+        @testset let symbol = sym
+            @test !isdefined(Octopus, sym)
+        end
+    end
+    # Every `min(cld(` in the CODE of src/track (comment lines may quote the retired
+    # spelling) sits inside one of the two block resolvers of phase6d_track.jl (the fused
+    # route's occupancy rule, the per-element coverage rule); the enclosing `function`
+    # line is found by scanning back from the match.
+    track_dir = joinpath(pkgdir(Octopus), "src", "track")
+    resolvers = ("_cuda_fused_occupancy_blocks", "_cuda_resolve_coverage_blocks")
+    cap_sites = Tuple{String,Int,String}[]
+    for file in filter(f -> endswith(f, ".jl"), readdir(track_dir))
+        lines = readlines(joinpath(track_dir, file))
+        for (i, line) in enumerate(lines)
+            occursin("min(cld(", line) || continue
+            startswith(lstrip(line), "#") && continue
+            k = findlast(j -> startswith(lstrip(lines[j]), "function "), 1:i)
+            push!(cap_sites, (file, i, k === nothing ? "" : strip(lines[k])))
+        end
+    end
+    @testset let sites = cap_sites
+        @test length(cap_sites) == length(resolvers)
+        @test all(any(occursin(r, site[3]) for r in resolvers) for site in cap_sites)
+    end
+    auto64 = Octopus.ResolvedCUDAExecutionPolicy(0, 64, :auto)
+    @test Octopus._cuda_resolve_coverage_blocks(auto64, 4096) == cld(4096, 64) == 64
+    @test Octopus._cuda_resolve_coverage_blocks(auto64, 100_000) == Octopus._CUDA_COVERAGE_BLOCK_CAP == 256
+    @test Octopus._cuda_resolve_coverage_blocks(auto64, 0) == 0
+    @test Octopus._cuda_resolve_coverage_blocks(Octopus.ResolvedCUDAExecutionPolicy(0, 64, 5), 100_000) == 5
+    @test Octopus._cuda_blocks_resolved_by(auto64) === :particle_coverage
+    @test Octopus._cuda_blocks_resolved_by(Octopus.ResolvedCUDAExecutionPolicy(0, 64, 5)) === :explicit
+    if CUDA_TESTS_ACTIVE
+        CU = Octopus.CUDA
+        set_global_rng!(seed=777, method=:philox)
+        rad = compile_runtime(LumpedRadSpec(damping_turns=(20.0, 25.0, 30.0), beta=(0.7, 0.9, 1.1),
+                                            alpha=(0.2, -0.1, 0.05), sigma=(1.2e-3, 0.8e-3, 2.0e-3),
+                                            rng_id=0x1234))
+        n = 4096
+        gdev() = begin
+            s(scale, phase) = CU.CuArray([scale * sin(0.7 * i + phase) for i in 1:n])
+            Phase6DRep(s(1e-4, 0.0), s(1e-5, 0.3), s(1e-4, 0.9), s(1e-5, 1.2), s(1e-3, 2.1), s(1e-4, 2.5))
+        end
+        receipts(f) = begin
+            audit = ExecutionAudit()
+            rep = gdev()
+            with_execution_audit(audit) do
+                f(rep)
+                CU.synchronize()
+            end
+            return rep, execution_receipts(audit)
+        end
+        host(r) = map(Array, coordinate_arrays(r))
+        # The deprecated entry records the fused launch, one per turn, and no other launch.
+        dep, dep_r = receipts(rep -> track!(rep, rad, 3, Octopus.CUDABackend))
+        fused_r = filter(r -> r.consumer === :cuda_fused_launch, dep_r)
+        @test length(fused_r) == 3
+        @test all(r -> r.values.threads == 256 && r.values.blocks == 256 && r.values.particles == n, fused_r)
+        @test all(r -> r.consumer in (:cuda_device, :cuda_fused_launch), dep_r)
+        # And it tracks the same BITS as the live keyword route over the same one-element
+        # tuple (the walker fuses `(rad,)`, so the two launch the same compiled kernel), and
+        # sits within the fused kernel's rounding of the host reference: the bare-element
+        # kernel `track!(rep, rad, 3; policy=...)` is a different compiled kernel whose FMA
+        # contraction parts 1 to 2 ulps of scale in px, py, pz from the tuple kernel, and
+        # either device kernel parts 1 to 2 ulps of scale from the host (measured on these
+        # 4096 particles, result/fix_batch4_2026_10_22/probes/TR/probe_cuda_routes_agreement.log);
+        # the bound is the guide's rule, the measurement times four rounded up to a power of
+        # two: 8 ulps of each coordinate's scale.
+        live, _ = receipts(rep -> track!(rep, (rad,), 3; policy=CUDAExecutionPolicy(
+            launch=CUDALaunchConfig(threads=256, blocks=256))))
+        @test all(a == b for (a, b) in zip(host(dep), host(live)))
+        ref = Phase6DRep(map(Array, coordinate_arrays(gdev()))...)
+        for turn in 1:3
+            ctx = with_turn(TrackingContext(), Int64(turn - 1))
+            for i in 1:n
+                ref[i] = Octopus._track_lumped_rad_context(rad.method, rad, ctx, i, ref[i]...)
+            end
+        end
+        ulps_of_scale(a, b) = maximum(abs.(a .- b)) / eps(maximum(abs, b))
+        @test all(ulps_of_scale(a, b) <= 8 for (a, b) in zip(host(dep), coordinate_arrays(ref)))
+        # The per-element strong-beam launch names the rule that resolved its blocks.
+        thin = compile_runtime(ThinStrongBeamSpec(kbb=1.0e-8, beta=(1.0, 1.0), sigma=(1.0e-4, 1.0e-4)))
+        for (launch, blocks, rule) in ((CUDALaunchConfig(threads=64, blocks=:auto), 64, :particle_coverage),
+                                       (CUDALaunchConfig(threads=64, blocks=5), 5, :explicit))
+            _, r = receipts(rep -> track!(rep, thin, 1; policy=CUDAExecutionPolicy(launch=launch)))
+            ws = only(filter(x -> x.consumer === :cuda_weak_strong_launch, r))
+            @testset let launch = launch
+                @test ws.values.blocks == blocks && ws.values.resolved_by === rule
+            end
+        end
+    else
+        @test_skip "CUDA device not available: the deprecated LumpedRad route and the per-element launch receipts are not checked"
+    end
+end
+
 function numerical_potential_hessian(moments, S, x, y; kbb=0.7, h=1.0e-5)
     force(x, y) = first(covariance_kick_and_direct_pz(moments, S, x, y; kbb=kbb))
     fxp, fyp = force(x + h, y)
