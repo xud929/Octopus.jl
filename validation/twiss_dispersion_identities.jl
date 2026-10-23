@@ -91,12 +91,16 @@ using .Octopus
 using LinearAlgebra
 using Printf
 
-# Test hook: when `Main.IDENT_DRY_RUN` is defined (a scratch driver defines
-# it before `include`-ing this file), only the constants and the
-# function definitions below are evaluated; the single `validate` call, the
-# printing, the TSV and the gate at the end of the file are skipped, so the
-# reporting code can be exercised on a fake result without the contract.
-const IDENT_DRY_RUN = isdefined(Main, :IDENT_DRY_RUN)
+# Test hook: when the INCLUDING module defines `IDENT_DRY_RUN_HOOK = true`
+# before `include`-ing this file (the suite's dry-run testset includes it into
+# a module of its own), only the constants and the function definitions below
+# are evaluated; the single `validate` call, the printing, the TSV and the gate
+# at the end of the file are skipped, so the reporting code can be exercised
+# on a fake result without the contract. The hook is read from the including
+# module, not from `Main`: a `const` in `Main` outlived the testset and made
+# every later `include` of this file in the same process a silent no-op
+# (2026-10-18 audit F-155/U29-8). A dry run says so, loudly, at the end.
+const IDENT_DRY_RUN = isdefined(@__MODULE__, :IDENT_DRY_RUN_HOOK) && IDENT_DRY_RUN_HOOK === true
 
 const IDENT_SEED  = parse(Int, get(ENV, "OCTOPUS_TWISS_IDENTITY_SEED",  "20260911"))
 const IDENT_MAPS  = parse(Int, get(ENV, "OCTOPUS_TWISS_IDENTITY_MAPS",  "200"))
@@ -254,9 +258,12 @@ end
 # ---------------------------------------------------------------------------
 # The run: ONE validate. The script prints the contract's metrics; it does not
 # re-run fixtures (the contract and this record are one source of truth).
-# Skipped under the IDENT_DRY_RUN test hook documented above.
+# Skipped under the IDENT_DRY_RUN test hook documented above, and the skip is
+# printed: an unrun check is never silent.
 # ---------------------------------------------------------------------------
-if !IDENT_DRY_RUN
+if IDENT_DRY_RUN
+    println("IDENT_DRY_RUN: the identity contract run, the TSV and the gate are SKIPPED (test hook IDENT_DRY_RUN_HOOK in ", @__MODULE__, ")")
+else
     contract = TwissDispersionIdentityContract(seed=UInt64(IDENT_SEED),
                                                dense_maps=IDENT_MAPS,
                                                dense_maps_4d=IDENT_MAPS4)

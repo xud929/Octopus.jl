@@ -5,8 +5,9 @@
 # development-checkpoint lane, which skips the sections registered below via
 # `_lane_gate`, printing one loud LANE SKIP line per section and an accounting
 # banner at the end. The fast lane is a checkpoint, never a finish line: the
-# full-suite gate at CI settings remains the bar before any commit, and the
-# design note's matrix lists the change classes for which the full gate (with
+# full-suite gate at CI settings remains the bar before any PUSH (owner
+# decision 2026-09-04, AGENTS.md "Definition of Done"; it was before any
+# commit until then), and the design note's matrix lists the change classes for which the full gate (with
 # CUDA active) is mandatory. An unknown lane name is an error, never a silent
 # fallback to full -- a typo must not produce a vacuous verdict.
 # ---------------------------------------------------------------------------
@@ -126,12 +127,28 @@ if Octopus._HAS_CUDA
     # draws make a zero here impossible unless the sweep itself regressed.
     @test discriminating > 100
 end
-
+else
+    # The shape the header's own rule asks for (2026-10-18 audit F-150/U28-5): a
+    # CUDA.jl that fails to import must leave a Broken row, not silence.
+    @testset "TSC weights are bit-identical across backends (U2-3): CUDA.jl absent, skipped" begin
+        @test_skip "CUDA.jl did not import (Octopus._HAS_CUDA is false): the host-side TSC weight pin was not run"
+    end
 end
 
 const CUDA_TESTS_ACTIVE = Octopus._HAS_CUDA && Octopus.CUDA.functional()
 
 @testset "CUDA coverage status" begin
+    # The files carrying CUDABackend code, DERIVED from the tree for the banner
+    # below (2026-10-18 audit F-146/U28-1: the hand list said "Twelve" while
+    # thirteen did, `Tasks.jl` missing; the list before it named only the
+    # three *_cuda.jl solvers, 2026-08-05_b audit U17b-6). The scan is shown
+    # to see the tree: every `*_cuda.jl` file is in it, in both branches.
+    cuda_src_root = joinpath(pkgdir(Octopus), "src")
+    cuda_src_files = [relpath(joinpath(root, f), cuda_src_root) for (root, _, files) in walkdir(cuda_src_root)
+                      for f in files if endswith(f, ".jl")]
+    cuda_files = sort!(filter(f -> occursin("CUDABackend", read(joinpath(cuda_src_root, f), String)), cuda_src_files))
+    @test !isempty(cuda_files)
+    @test all(f -> f in cuda_files, filter(endswith("_cuda.jl"), cuda_src_files))
     if CUDA_TESTS_ACTIVE
         # Implied by the branch: `CUDA_TESTS_ACTIVE` IS
         # `_HAS_CUDA && CUDA.functional()` (2026-08-05_b audit, U17b-5). It
@@ -149,12 +166,10 @@ const CUDA_TESTS_ACTIVE = Octopus._HAS_CUDA && Octopus.CUDA.functional()
         NO CUDA DEVICE: the GPU half of this suite did NOT run.
         Every CUDA-gated testset was skipped, including all CPU/CUDA parity
         checks; each reports itself as Broken/skipped in the summary below.
-        A green run here says nothing about ANY CUDA path. Twelve source files
-        carry CUDABackend code -- the three *_cuda.jl solvers plus Beam.jl,
-        phase6d_track.jl, strong_beam_track.jl, radiation_track.jl,
-        Contracts.jl, interface.jl, spectral.jl, Policies.jl and Octopus.jl --
-        and none of it ran. The banner used to name only the first three, which
-        read as the full list (2026-08-05_b audit, U17b-6).
+        A green run here says nothing about ANY CUDA path. $(length(cuda_files)) source
+        files carry CUDABackend code (derived from the tree, not a hand list):
+        $(join(cuda_files, ", "))
+        -- and none of it ran.
         Run on a GPU host before trusting a CUDA change."""
         @test_skip "CUDA device not available -- GPU half of the suite skipped"
     end
@@ -220,17 +235,34 @@ end
         for d in sort!(collect(wholesale))
             isdir(joinpath(docs, d)) || push!(stale, d)
         end
+        # Every FILE of every type, matched by its WHOLE relative path against
+        # the index's link targets, never by basename (2026-10-18 audit
+        # F-149/U28-4, U52-13): `endswith(f, ".md") || continue` left the two
+        # history records that are not markdown (a `.txt` capture, a `.tsv`
+        # benchmark table) outside the rule, and `occursin(f, index)` waved a
+        # file through whenever any link named ANOTHER file of the same
+        # basename -- 27 basenames are duplicated across the audit bundles,
+        # four files passed only through someone else's link, and a newcomer
+        # `U1_report.md` in a fresh directory would have passed the same way.
+        # A wholesale marker covers its directory and the directories nested
+        # in it (the bundles carry `bin/` subdirectories of probe scripts).
+        targets = Set{String}(replace(String(split(String(m.captures[1]), '#')[1]), r"^\./" => "") for m in
+            eachmatch(r"\]\(([^)\s]+)\)", index))
+        covered(dir) = any(w -> dir == w || startswith(dir, w * "/"), wholesale)
         for (root, dirs, files) in walkdir(docs)
             filter!(d -> !startswith(d, "."), dirs)
             for f in files
-                endswith(f, ".md") || continue
                 f == "README.md" && root == docs && continue
-                (occursin(f, index) || relpath(root, docs) in wholesale) ||
-                    push!(unindexed, relpath(joinpath(root, f), docs))
+                rel = relpath(joinpath(root, f), docs)
+                (rel in targets || covered(relpath(root, docs))) || push!(unindexed, rel)
             end
         end
         @test isempty(unindexed)
         isempty(unindexed) || @info "documents missing from docs/README.md" unindexed
+        # and the other direction: no link target names a file that is not there
+        dangling = sort!([t for t in targets if !startswith(t, "http") && !ispath(joinpath(docs, t))])
+        @test isempty(dangling)
+        isempty(dangling) || @info "docs/README.md links naming no file" dangling
         @test isempty(stale)
         isempty(stale) || @info "indexed-wholesale markers naming no directory" stale
         # The exemption is narrow: it must not have swallowed `history/` again.
@@ -239,20 +271,27 @@ end
 
         # The rule shown failing, on a synthetic index rather than by writing
         # into docs/: an index that merely LINKS files inside a directory must
-        # not thereby exempt that directory. This is the old rule's hole, and it
-        # is the whole difference between the two clauses.
-        let fake = "see [`history/a.md`](history/a.md) and (`history/`)\n",
+        # not thereby exempt that directory (the old directory clause's hole),
+        # and a link to ANOTHER file of the same basename must not index this
+        # one (the old name clause's hole, F-149). Both holes of the old rule
+        # are shown open and both closed by the path rule.
+        let fake = "see [`a.md`](history/a.md) and [`U1_report.md`](bundle_a/U1_report.md) (`history/`)\n" *
+                   "<!-- indexed-wholesale: bundle_a -->\n",
             old_rule(f, dir, idx) = occursin(f, idx) || occursin(dir * "/", idx),
             marks(idx) = Set{String}(String(m.captures[1]) for m in
                 eachmatch(r"<!--\s*indexed-wholesale:\s*(\S+?)/?\s*-->", idx)),
-            new_rule(f, dir, idx) = occursin(f, idx) || dir in marks(idx)
-            @test old_rule("b.md", "history", fake)        # waved through
-            @test !new_rule("b.md", "history", fake)       # caught
-            @test new_rule("a.md", "history", fake)        # named files still pass
-            # and a declared directory is still exempt, which is what the two
-            # audit bundles rely on
-            @test new_rule("b.md", "bundle",
-                           fake * "<!-- indexed-wholesale: bundle -->\n")
+            links(idx) = Set{String}(String(m.captures[1]) for m in eachmatch(r"\]\(([^)\s]+)\)", idx)),
+            path_rule(rel, dir, idx) = rel in links(idx) || any(w -> dir == w || startswith(dir, w * "/"), marks(idx))
+            @test old_rule("b.md", "history", fake)                  # the directory hole: waved through
+            @test !path_rule("history/b.md", "history", fake)         # caught
+            @test path_rule("history/a.md", "history", fake)          # named files still pass
+            @test old_rule("U1_report.md", "fresh", fake)             # the basename hole: another directory's file of the same name
+            @test !path_rule("fresh/U1_report.md", "fresh", fake)     # caught by the whole path
+            @test path_rule("bundle_a/U1_report.md", "bundle_a", fake)
+            # a declared directory is exempt, its nested directories with it
+            # (what the audit bundles rely on), and an undeclared one is not
+            @test path_rule("bundle_a/bin/x.jl", "bundle_a/bin", fake)
+            @test !path_rule("bundle_b/x.jl", "bundle_b", fake)
         end
     end
 
@@ -1149,12 +1188,16 @@ end
     @test occursin("TwissDispersionIdentityContract", md)
     # the snapshot on disk differs from the live one at most in lines naming
     # the contract (the integrator regenerates it on main; the 4b-B shape)
-    root = dirname(dirname(dirname(String(first(methods(Octopus.validate_configuration_metadata)).file))))
-    ondisk = joinpath(dirname(root), "docs", "registry_snapshot.md")
+    # by the package root, not by counting directories above one method's file
+    # (2026-10-18 audit F-148/U28-3, U30-10: three `dirname`s encoded where
+    # `validate_configuration_metadata` happens to live, and a miss was silent)
+    ondisk = joinpath(pkgdir(Octopus), "docs", "registry_snapshot.md")
     if isfile(ondisk)
         live = Set(split(md, '\n')); disk = Set(split(read(ondisk, String), '\n'))
         changed = union(setdiff(live, disk), setdiff(disk, live))
         @test all(l -> occursin("TwissDispersionIdentityContract", l), changed)
+    else
+        @test_skip "registry snapshot not on disk at $(ondisk): the on-disk comparison was not run"
     end
     # the contract rejects unknown keywords (the real validate is T2's)
     @test_throws ArgumentError validate(TwissDispersionIdentityContract(); bogus=1)
@@ -1202,12 +1245,16 @@ end
     @test occursin("TwissExternalReferenceContract", md)
     # the snapshot on disk differs from the live one at most in lines naming
     # the contract (the integrator regenerates it on main; the 4b-B shape)
-    root = dirname(dirname(dirname(String(first(methods(Octopus.validate_configuration_metadata)).file))))
-    ondisk = joinpath(dirname(root), "docs", "registry_snapshot.md")
+    # by the package root, not by counting directories above one method's file
+    # (2026-10-18 audit F-148/U28-3, U30-10: three `dirname`s encoded where
+    # `validate_configuration_metadata` happens to live, and a miss was silent)
+    ondisk = joinpath(pkgdir(Octopus), "docs", "registry_snapshot.md")
     if isfile(ondisk)
         live = Set(split(md, '\n')); disk = Set(split(read(ondisk, String), '\n'))
         changed = union(setdiff(live, disk), setdiff(disk, live))
         @test all(l -> occursin("TwissExternalReferenceContract", l), changed)
+    else
+        @test_skip "registry snapshot not on disk at $(ondisk): the on-disk comparison was not run"
     end
     # the contract rejects unknown keywords (the real validate is in "Physics contracts")
     @test_throws ArgumentError validate(TwissExternalReferenceContract(); bogus=1)
@@ -1388,6 +1435,26 @@ _st6_declaring_kinds() = count(T -> TwissDispersionAnalysis in Octopus.supported
 # measured arms' maxima (c = max(8, 2^ceil(log2(10 max)))); the re-open rule reads the ratios at the frozen c and
 # says when a row must be measured again. The ::notice chunks in the stage 6 testset carry the runner's table.
 const _ST6_PIN = 0.5
+# The re-open threshold of the rule above: rows above it are WARNED, by name, in the stage 6 testset (2026-10-18 audit
+# F-151/U28-6: the rule had no instrument, a row drifting into (0.25, 0.5] was silently green).
+const _ST6_REOPEN = 0.25
+# The element registry's containers, snapshotted and restored as ONE set (2026-10-18 audit F-147/U28-2): the stage 6
+# negatives register scratch kinds, and a restore that hand-listed three of the four containers
+# `register_element_meta!` writes left a `friendly_constructor` entry behind, invisible to both validators. The
+# testset derives the set from the registering functions' own source, so a fifth container cannot join unrestored.
+const _ST6_REGISTRY_CONTAINERS = (:REGISTERED_ELEMENT_SPECS, :ELEMENT_META_BY_SPEC_TYPE, :ELEMENT_META_BY_FRIENDLY_TYPE,
+                                  :ELEMENT_META_BY_KIND)
+_st6_registry_state() = NamedTuple{_ST6_REGISTRY_CONTAINERS}(map(c -> copy(getfield(Octopus, c)), _ST6_REGISTRY_CONTAINERS))
+function _st6_restore_registry!(saved)
+    for c in _ST6_REGISTRY_CONTAINERS
+        live = getfield(Octopus, c)
+        empty!(live)
+        live isa AbstractVector ? append!(live, saved[c]) : merge!(live, saved[c])
+    end
+    return nothing
+end
+"A scratch friendly type for the n3 liar: the fourth container is written, so the restore is exercised on it."
+struct _St6LiarFriendly end
 function _st6_pin_lines(src::Vector{String})
     # a block runs from its column-0 title line to the first bare `end` after it (a column-0 `end` inside either
     # testset would truncate the scan); a title found other than once, or no bare `end`, contributes no lines, and
@@ -1418,8 +1485,10 @@ end
     @test m[:worst_identity] in keys(c.multipliers)
     st6_slugs = sort!(collect(keys(c.multipliers)); by = s -> -get(m, Symbol("max_", s), Inf))
     st6_ct = Base.JLOptions().cpu_target
+    st6_reopen = [string(slug) for slug in st6_slugs if get(m, Symbol("max_", slug), NaN) > _ST6_REOPEN]
     println("stage 6 identity pins: ratio at the frozen c | c | argmax fixture (host ", Sys.CPU_NAME, ", cpu_target ",
-            st6_ct == C_NULL ? "native" : unsafe_string(st6_ct), ", OPENBLAS_CORETYPE ", get(ENV, "OPENBLAS_CORETYPE", "auto"), ")")
+            st6_ct == C_NULL ? "native" : unsafe_string(st6_ct), ", OPENBLAS_CORETYPE ", get(ENV, "OPENBLAS_CORETYPE", "auto"),
+            "; rows above the re-open threshold ", _ST6_REOPEN, ": ", length(st6_reopen), ")")
     # the rows' cells (slug, ratio, c, argmax) built once: the plain table below prints the same text as before (local
     # logs do not change) and the ::notice chunks under GITHUB_ACTIONS read the same strings
     st6_cells = [(string(slug), string(round(get(m, Symbol("max_", slug), NaN); sigdigits=4)), string(round(Int, c.multipliers[slug])),
@@ -1444,6 +1513,15 @@ end
         @testset let slug = slug, ratio = get(m, Symbol("max_", slug), NaN)
             @test ratio <= _ST6_PIN
         end
+    end
+    # The RE-OPEN rule's instrument (the rule's text above `_ST6_PIN`): a row above `_ST6_REOPEN` at its frozen c
+    # re-opens that row's measurement before the pin trips. Not a failure (the pin is one half) but LOUD: a warning
+    # naming the rows, a GitHub annotation on the runner, and the count in the header line above, so the rule no
+    # longer depends on a human reading the 57-row table (2026-10-18 audit F-151/U28-6). No ratio pin here: the
+    # `_st6_pin_lines` tripwire at the end of this testset counts the pins, and this is not one.
+    if !isempty(st6_reopen)
+        @warn "stage 6 identity pins: $(length(st6_reopen)) row(s) above the re-open threshold $(_ST6_REOPEN) at the frozen c (the pin is $(_ST6_PIN)); re-open the row's measurement (an H15 third-arm entry or the row's kappa re-examined), never a hand move of c" rows = st6_reopen host = Sys.CPU_NAME
+        haskey(ENV, "GITHUB_ACTIONS") && println("::warning title=stage 6 identity pins above the re-open threshold ", _ST6_REOPEN, " (", Sys.CPU_NAME, ")::", join(st6_reopen, ", "))
     end
     @test m[:identities] == length(c.multipliers)
     # the silent-diagnostic table: every expected diagnostic fired
@@ -1488,21 +1566,36 @@ end
     fewer = copy(c.multipliers); delete!(fewer, slug2)
     r2 = Octopus._identity_contract_probe(TwissDispersionIdentityContract(multipliers=fewer), fx, analyze)
     @test !r2.passed && occursin(string(slug2), r2.message) && occursin("no multiplier", r2.message)
+    # The registry is restored as the WHOLE set of containers the registering functions write, derived from
+    # their source, and the state is compared after the restore (2026-10-18 audit F-147/U28-2: the hand-listed
+    # restore deleted from three of the four containers; a liar with a friendly constructor left its entry in
+    # `ELEMENT_META_BY_FRIENDLY_TYPE` for every later testset, and `validate(c).passed` could not see it).
+    let ksrc = read(joinpath(pkgdir(Octopus), "src", "knowledge", "Knowledge.jl"), String),
+        body(name) = match(Regex("^function " * name * "\\(.*?^end", "ms"), ksrc).match,
+        written = Set(Symbol(w.match) for f in ("register_element_meta!", "register_element_spec!")
+                      for w in eachmatch(r"\b(REGISTERED_ELEMENT_SPECS|ELEMENT_META_BY_[A-Z_]+)\b", body(f)))
+        @test written == Set(_ST6_REGISTRY_CONTAINERS)
+        # and every registry container the module defines is in the set: a fifth table cannot join unrestored
+        @test Set(n for n in names(Octopus; all=true) if startswith(string(n), "ELEMENT_META_BY_") || n === :REGISTERED_ELEMENT_SPECS) ==
+              Set(_ST6_REGISTRY_CONTAINERS)
+    end
+    st6_saved = _st6_registry_state()
     # n3: the liar kind declares the analysis with an example `analyze` cannot take
-    # (a 2x2 matrix); the sweep must fail the contract by name and count it.
+    # (a 2x2 matrix); the sweep must fail the contract by name and count it. It
+    # carries a friendly constructor so the fourth container is written too.
     try
         Octopus.register_element_meta!(Octopus.ElementMeta(;
-            kind=:idc_liar, spec_type=ElementSpec{:idc_liar}, tracking_methods=[Symplectic6DMap],
-            analyses=[TwissDispersionAnalysis], example=[1.0 0.0; 0.0 1.0]))
+            kind=:idc_liar, spec_type=ElementSpec{:idc_liar}, friendly_constructor=_St6LiarFriendly,
+            tracking_methods=[Symplectic6DMap], analyses=[TwissDispersionAnalysis], example=[1.0 0.0; 0.0 1.0]))
+        @test haskey(Octopus.ELEMENT_META_BY_FRIENDLY_TYPE, _St6LiarFriendly)     # the fourth container IS written
         r3 = Octopus._identity_contract_probe(c, fx, analyze)
         @test !r3.passed && occursin("idc_liar", r3.message)
         @test r3.metrics[:kinds_declaring_without_result] == 1
         @test r3.metrics[:kinds_declaring] == m[:kinds_declaring] + 1
     finally
-        delete!(Octopus.ELEMENT_META_BY_KIND, :idc_liar)
-        delete!(Octopus.ELEMENT_META_BY_SPEC_TYPE, ElementSpec{:idc_liar})
-        filter!(t -> t !== ElementSpec{:idc_liar}, Octopus.REGISTERED_ELEMENT_SPECS)
+        _st6_restore_registry!(st6_saved)
     end
+    @test _st6_registry_state() == st6_saved                                  # every container, not three of four
     # n3b: a declaring kind with NO metadata example is uncovered, never silently skipped: counted
     # in kinds_without_example and failed by name (the SymplecticityContract twin's rule).
     try
@@ -1514,11 +1607,10 @@ end
         @test r3b.metrics[:kinds_without_example] == 1
         @test r3b.metrics[:kinds_analyzed] + r3b.metrics[:kinds_refused] + r3b.metrics[:kinds_without_example] == r3b.metrics[:kinds_declaring]
     finally
-        delete!(Octopus.ELEMENT_META_BY_KIND, :idc_noexample)
-        delete!(Octopus.ELEMENT_META_BY_SPEC_TYPE, ElementSpec{:idc_noexample})
-        filter!(t -> t !== ElementSpec{:idc_noexample}, Octopus.REGISTERED_ELEMENT_SPECS)
+        _st6_restore_registry!(st6_saved)
     end
-    @test validate(c).passed        # registry restored
+    @test _st6_registry_state() == st6_saved
+    @test validate(c).passed        # registry restored (the validate is implied by the state equality; kept as the contract's own word)
     # n4: a verb that certifies every bunched run silently -> D9's expected
     # :degraded (the uncertified heuristic) never fires -> the row is named in
     # the silent list and the message names a silent row (the first in table
@@ -2688,11 +2780,19 @@ end
     by, ay, muy = 1.5, -0.4, 2pi * 0.31
     bz, muz = 10.0, 2pi * 0.05
     Rs = ((0.5, 0.5, 1.5, 0.5), (0.4, 0.2, 0.6, 0.3), (0.5, 0.2, -0.1, 0.56), (0.8, 0.3, -0.6, 1.025))
-    @test maximum(abs.([r[1] * r[4] - r[2] * r[3] for r in Rs] .- [-0.5, 0.0, 0.3, 1.0])) <= 2 * eps()
+    dets_design = (-0.5, 0.0, 0.3, 1.0)
+    @test maximum(abs.([r[1] * r[4] - r[2] * r[3] for r in Rs] .- collect(dets_design))) <= 2 * eps()
+    # The zero-weight row's admissibility branch below is keyed on the DESIGN determinant, not on the computed
+    # one (2026-10-18 audit F-151/U28-7: `d == 0` on `det(Rm)` was exact only because 0.4 * 0.3 and 0.2 * 0.6
+    # round to the same double, and the `else` arm's tolerances scale as 1 / (w d)^2, vacuous at a one-ulp d).
+    # The exactness that branch rests on is a stated PRECONDITION: the design-zero row's literals multiply to an
+    # exactly zero determinant; a row admitted only to 2 eps would fail here, loudly, instead of taking the
+    # wrong arm.
+    @test det([Rs[2][1] Rs[2][2]; Rs[2][3] Rs[2][4]]) == 0
     m0 = compile_runtime(Linear6DSpec(beta1=(bx, by, bz), alpha1=(ax, ay, 0.0), dmu=(mux, muy, muz)))
     M0 = one_turn_matrix((m0,)).matrix[1:4, 1:4]
     @test norm(M0 - _pb_blockdiag(Octopus._twiss_block(bx, ax, mux), Octopus._twiss_block(by, ay, muy))) <= 64 * eps() * norm(M0)
-    for (mode, form) in ((XY_MODEA, 1), (XY_MODEB, 2)), r in Rs
+    for (mode, form) in ((XY_MODEA, 1), (XY_MODEB, 2)), (r, d_design) in zip(Rs, dets_design)
         Rm = [r[1] r[2]; r[3] r[4]]; d = det(Rm)
         W = compile_runtime(XYCouplingSpec(r1=r[1], r2=r[2], r3=r[3], r4=r[4], mode=mode))
         Winv = form == 1 ? compile_runtime(XYCouplingSpec(r1=-r[1], r2=-r[2], r3=-r[3], r4=-r[4], mode=mode)) :
@@ -2734,11 +2834,11 @@ end
             # and weight 1 - w, admissible iff det R > 0.
             uexp = form == 1 ? d / (1 + d) : 1 / (1 + d)
             @test abs(_pb_val(et.u) - uexp) <= c * eps() * kq * nU
-            @test other.admissible == (d > 0)
-            if d == 0
+            @test other.admissible == (d_design > 0)      # the kernel's own floor refuses a form whose det is at rounding level
+            if d_design == 0
                 @test !is_determined(other.R) && other.R.reason === :form_inadmissible   # zero weight: no finite R
                 @test other.det_R.reason === :form_inadmissible
-            elseif d < 0
+            elseif d_design < 0
                 @test is_determined(other.R) && 1 + _pb_val(other.det_R) < 0                # det = 1/d < -1
                 @test other.lambda.reason === :form_inadmissible && other.twiss.reason === :form_inadmissible
             else
@@ -3785,9 +3885,17 @@ end
     S4 = Octopus._symplectic_form(4)
     @test norm(Mq' * S4 * Mq - S4) <= 16 * _MC_EPS
     rq = _mc_run(Mq)
-    @test !any(rq.real_class) && 1 <= length(rq.clusters) <= 2      # the off-circle pairs are Krein-neutral (kappa = Inf), so they merge
+    # the off-circle pairs are Krein-neutral (kappa = Inf) and MERGE: one cluster, asserted rather than hedged
+    # between one and two (2026-10-18 audit F-152/U29-2: `1 <= length <= 2` accepted both outcomes of the very
+    # decision this comment claims)
+    @test !any(rq.real_class) && length(rq.clusters) == 1
     @test all(c -> c.classification === :unstable && c.reason === :unstable_spectrum, rq.clusters)
-    @test all(c -> abs(minimum(c.unit_circle_departures) - 1e-4) <= 1e-8, rq.clusters)
+    # the departures |rho| - 1 of the quartet are 1e-4 (the (1 + 1e-4) members) and 1e-4 / (1 + 1e-4) (their
+    # inverses), each within the eigenvalue roundoff of a normal 4x4 at |rho| ~ 1: c eps, c = 16 (measured 0.05 eps
+    # and 1.07 eps on both gate arms). The former `|min - 1e-4| <= 1e-8` was the fixture's own second-order term
+    # 1e-8 / (1 + 1e-4), passing with a margin of 1e-12 (F-152/U29-3), not a roundoff budget.
+    @test all(c -> abs(maximum(c.unit_circle_departures) - 1e-4) <= 16 * _MC_EPS, rq.clusters)
+    @test all(c -> abs(minimum(c.unit_circle_departures) - 1e-4 / (1 + 1e-4)) <= 16 * _MC_EPS, rq.clusters)
     @test all(c -> minimum(c.unit_circle_departures) / c.stability_scale > 1e4, rq.clusters)   # measured 1e-4 / 9e-13
     @test rq.degeneracy_status === :unstable
     for (name, M, nreal, expect) in (("diag(2, 1/2, R(1.2))", _mc_bd([2.0 0; 0 0.5], R12), 2, :unstable),
@@ -3936,7 +4044,12 @@ end
     # pair exactly where its own chord exceeds the default and keeps two singletons below it; the ladder must
     # exercise BOTH branches (at the frozen default 1e-3: two singletons down to eps = 1e-10, one cluster at 1e-11;
     # the earlier hard-coded split at 1e-9 / 1e-10 pinned the provisional 1e-4).
-    @test all(e -> ncoll[e] == (qcoll[e] > Octopus._DEFAULT_RESOLUTION_CHORD ? 1 : 2), keys(ncoll))
+    # The flip is pinned WHERE the comment puts it (two singletons down to eps = 1e-10, one cluster at 1e-11 at the
+    # frozen default), by the branch counts alone: the former `ncoll == (qcoll > default ? 1 : 2)` read both the
+    # decision and the deciding chord from the same report and restated the solver's merge rule (2026-10-18 audit
+    # F-153/U29-4). The chord q grows tenfold per decade (2.8e-5, 2.8e-4, 2.8e-3 at eps = 1e-9, 1e-10, 1e-11), so a
+    # solver merging a decade early or late moves the flip.
+    @test ncoll[1e-10] == 2 && ncoll[1e-11] == 1
     @test any(e -> ncoll[e] == 2, keys(ncoll)) && any(e -> ncoll[e] == 1, keys(ncoll))
     ks = sort(collect(keys(qcoll)); rev=true)                                     # eps descending: q grows down the ladder
     @test all(i -> qcoll[ks[i + 1]] > qcoll[ks[i]], 1:length(ks) - 1)
@@ -4175,7 +4288,14 @@ end
     @test abs(cf_probe.kappa_frame - cf.kappa_frame) <= 64 * _AMB_EPS * cf.kappa_frame
     # The N5 projector of the frame against the cluster's Schur spectral projector.
     @test norm(cf.P - determined_value(cf.cluster.projector)) <= 64 * _AMB_EPS * cf.kappa_frame
-    @test norm(cf.G - determined_value(cf.cluster.covariance)) == 0     # G IS the cluster covariance
+    # Two identities of the (E3)-normalized frame that the covariance must satisfy, in place of a line comparing
+    # `cf.G` with the value `_st3_cluster` copies it from (2026-10-18 audit F-153/U29-5, a tautology): with
+    # u_j = a_j + i b_j, a_j^T S b_j = -1 (Im u^* S u = -2, the `_amb_orient` sign) and the modes S-orthogonal,
+    # G = sum (a a^T + b b^T) and P = -Im(U U^*) S give G S G = Im(U U^*) = P S, so (G S)^2 = -P; and P is the
+    # identity on the range of G, so P G = G. Measured 1.4 eps and 2 eps on both gate arms; c = 64 at kappa_frame
+    # (2 on this fixture).
+    @test norm((cf.G * S6)^2 + cf.P) <= 64 * _AMB_EPS * cf.kappa_frame
+    @test norm(cf.P * cf.G - cf.G) <= 64 * _AMB_EPS * cf.kappa_frame
     chk = Octopus._check_cluster_frame(cf.U)
     @test chk.kappa >= 2 - 64 * _AMB_EPS      # an (E3) column has ||u||^2 >= 2, equality on this fixture
     @test chk.normalization <= 64 * _AMB_EPS * 2 * chk.kappa / 10
@@ -4869,10 +4989,13 @@ _st4_wrap(mu) = mod(mu, 2pi)
             @test norm(_st4_val(r.zeta) - f.zeta, Inf) <= c * eps() * kappa
             @test norm(_st4_val(r.eta) - f.eta, Inf) <= c * eps() * kappa
             @test abs(_st4_val(r.h) - f.h) <= c * eps() * kappa
-            # the (I1) floor is the kernel's own (`_kappa_route`, re-derived 2026-09-14) with the route's reported
-            # amplification, on the exact graph (it stands for the route's graph to within the agreement bound): the
-            # suite carries one formula for that floor, and a :none status already implies this bound
-            @test _st4_val(r.invariance_residual).normalized <= Octopus._ROUTE_INVARIANCE_MULTIPLIER * eps() * Octopus._kappa_route(f.M, f.D, r.coefficient_condition)
+            # the (I1) normalized residual against the TEST's own kappa and c (measured 93.3 eps kappa over the 994
+            # :none routes of the 200 maps, both gate arms; c_route = 1024): the former line re-evaluated the kernel's
+            # own acceptance inequality (`_ROUTE_INVARIANCE_MULTIPLIER * eps() * _kappa_route(...)`), which a :none
+            # status already implies, so a moved multiplier or a changed `_kappa_route` moved both sides together
+            # (2026-10-18 audit F-153/U29-6); the kernel's floor is probed at its edge by the 0.99/1.01 g_edge test
+            # and the garbage-graph test below
+            @test _st4_val(r.invariance_residual).normalized <= c_route * eps() * kappa
             @test abs(_st4_val(r.trace_residual)) <= c_route * eps() * kappa
             @test r.converged
             r.route in (:newton, :fixed_point) ? (@test r.iterations >= 1) : (@test r.iterations == 0 && r.halvings == 0)
@@ -5549,7 +5672,14 @@ end
         crab = compile_runtime(ThinCrabCavitySpec{1}(400.0e6; strengthX=(-k,)))     # pitfall 9: the kernel's sign
         M = one_turn_matrix((dba..., rf, crab)).matrix
         @test abs(M[2, 5] - k) <= 16eps()                                              # the theory's +k convention
-        @test abs(tr(M[5:6, 5:6])) < 2 + 0.3 && Octopus._symplectic_defect(M).frobenius <= 16eps()
+        # the stability witness is the 6D spectrum on the unit circle (measured max |abs(rho) - 1| = 0.68 and 0.23
+        # eps ||M|| for the two k, both gate arms; c = 16), not the (z, pz) sub-block's trace: that trace is 2.02 and
+        # 2.20 here (the sub-block is not the synchrotron mode's block in a coupled map) and the former `< 2 + 0.3`
+        # was a bound widened to the data (2026-10-18 audit F-152/U29-1). The cell's z slip, the reason the DBA
+        # replaced the FODO whose M[5, 6] is zero, is asserted as such.
+        @test maximum(abs.(abs.(eigvals(M)) .- 1)) <= 16 * eps() * norm(M)
+        @test abs(M[5, 6]) > 0.01                                                      # R56 = -0.0814: a cell with z slip
+        @test Octopus._symplectic_defect(M).frobenius <= 16eps()
         cl = _st4_clusters(M)
         @test cl.degeneracy_status === :all_resolved
         rep = Octopus._dispersion_routes(M, cl)
@@ -6465,6 +6595,16 @@ end
 _st4b_a_dense6() = Octopus._manufactured_symplectic_map(MersenneTwister(_ST4B_SEED), 6; stable=true)[1]
 "The dense stable 4x4 map (row 5)."
 _st4b_a_dense4() = Octopus._manufactured_symplectic_map(MersenneTwister(_ST4B_SEED), 4; stable=true)[1]
+"""
+Three pairs of which one rotates in the OPPOSITE sense (tunes 0.73, -1.41, -0.94), conjugated by a random
+symplectic W (scale 0.1): the auto partition is three definite singletons, and the explicit union of a
+same-sense pair with the opposite one is :indefinite (Gram signs [-1, 1]), which no union of the dense stable
+6D map's pairs is (2026-10-18 audit F-157/U30-2).
+"""
+function _st4b_a_opposite6()
+    W = Octopus._manufactured_symplectic_map(MersenneTwister(_ST4B_SEED + 77), 6; scale=0.1).M
+    return W * _st4b_a_blockrot(0.73, -1.41, -0.94) * Octopus._symplectic_inverse(W)
+end
 "Coasting map (row 6, stage 4a builder): zeta = 0, random eta, stable random 4D block, shear s."
 function _st4b_a_coasting(s::Real; seed=_ST4B_SEED)
     rng = MersenneTwister(seed); eta = 0.2 * randn(rng, 4)
@@ -6679,9 +6819,15 @@ end
     @test analysis_option_schema(Octopus.PlaceholderAnalysis) === NamedTuple()
     @test analysis_option_schema(Octopus.PlaceholderAnalysis()) === NamedTuple()
     @test Set(Octopus._ANALYSIS_CONSUMERS) == Set(meta.consumer for meta in values(schema))
-    # every export of the file is documented
-    for name in (:TwissDispersionAnalysis, :TwissDispersionResult, :OpticsAnalysisError, :NormalMode, :ANALYSIS_STATUSES,
-                 :analyze, :analysis_option_schema, :matched_covariance, :normal_mode)
+    # every export of the file is documented: the names are DERIVED from the file's own `export` statement
+    # (2026-10-18 audit F-154/U29-7: a hand-typed list of nine names equal to the export line could not see a tenth
+    # export). The statement runs over its comma-continued lines; the parse is shown to have hit it (`analyze` is in it).
+    tda_src = read(joinpath(pkgdir(Octopus), "src", "analysis", "twiss_dispersion_analysis.jl"), String)
+    tda_export = match(r"^export[ \t]+((?:[^\n]*,[ \t]*\n)*[^\n]*)"m, tda_src)
+    @test tda_export !== nothing
+    tda_exports = [Symbol(strip(n)) for n in split(replace(tda_export.captures[1], '\n' => ' '), ','; keepempty=false)]
+    @test :analyze in tda_exports && length(tda_exports) >= 9
+    for name in tda_exports
         @test name in names(Octopus)
         @test Base.Docs.hasdoc(Octopus, name)
     end
@@ -6769,11 +6915,32 @@ end
     # inputs). The TW-TENTH line (the freezing-set decision of 2026-09-14) counts the rows above 0.1, 0.25, 0.5 and 1
     # with strict inequalities: the fake's a_row at exactly 0.1 is not counted, b_row at 0.2 is, and neither exceeds
     # a quarter. The script is included into a module of its own (it defines constants and functions); it loads Printf,
-    # a test dependency since this testset (Pkg.test runs without @stdlib in the load path).
-    isdefined(Main, :IDENT_DRY_RUN) || Core.eval(Main, :(const IDENT_DRY_RUN = true))
+    # a test dependency since this testset (Pkg.test runs without @stdlib in the load path). The dry-run hook is set
+    # ON THAT MODULE (`IDENT_DRY_RUN_HOOK`), never on `Main`: a `const IDENT_DRY_RUN` in `Main` outlived the testset,
+    # and a later `include` of the script in the same process (the stage runner, a REPL) ran no contract and printed
+    # nothing (2026-10-18 audit F-155/U29-8); the script now also prints a loud line when it is dry.
     dry = Module(:IdentDryRun)
     Core.eval(dry, :(using Octopus))
-    Base.include(dry, joinpath(pkgdir(Octopus), "validation", "twiss_dispersion_identities.jl"))
+    Core.eval(dry, :(const IDENT_DRY_RUN_HOOK = true))
+    @test !isdefined(Main, :IDENT_DRY_RUN)                            # nothing leaks into the process
+    # the include's stdout, captured the way "Loss accounting reports itself" captures (drained on a task)
+    function dry_capture_stdout(f)
+        original = stdout
+        rd, wr = redirect_stdout()
+        reader = @async read(rd, String)
+        try
+            f()
+        finally
+            redirect_stdout(original)
+            close(wr)
+        end
+        return fetch(reader)
+    end
+    dry_out = dry_capture_stdout() do
+        Base.include(dry, joinpath(pkgdir(Octopus), "validation", "twiss_dispersion_identities.jl"))
+    end
+    @test dry.IDENT_DRY_RUN && occursin("IDENT_DRY_RUN", dry_out) && occursin("SKIPPED", dry_out)   # the skip is loud
+    @test !isdefined(Main, :IDENT_DRY_RUN)
     slugs = [:b_row, :a_row]
     mult = Dict(:a_row => 8.0, :b_row => 16.0, :r_u6_reconstruction => 64.0, :r_u6_symplecticity => 32.0)
     m = Dict{Symbol,Any}(:max_a_row => 0.1, :maxval_a_row => 1e-12, :argmax_a_row => "map 1",
@@ -7110,8 +7277,16 @@ end
     # a generous explicit atol accepts the displaced point
     ra = analyze(TwissDispersionAnalysis(closed_orbit_atol=1.0), lms)
     @test ra.status === :passed && Octopus.is_determined(ra.closed_orbit)
-    # the default atol: c eps max(1, max|point|), a fixed point at the origin has residual exactly zero
-    @test Octopus._CLOSED_ORBIT_ATOL_MULTIPLIER * eps() * 1.0 > 0
+    # the default atol rule at its consumer, on THIS fixture (2026-10-18 audit F-158/U30-3: the line here was
+    # `_CLOSED_ORBIT_ATOL_MULTIPLIER * eps() * 1.0 > 0`, true for any positive constant): the :warn run's diagnostic
+    # carries the tolerance it applied, its source :default, and the rule c eps max(1, max|C point|) in the SCALED
+    # coordinates (the displaced point's max|C p| = 6.4e-4 here, so the floor 1 is the active factor); the residual
+    # exceeds it, which is why the run warned
+    co_default = _st4b_a_val(rw.diagnostics.closed_orbit)
+    @test co_default.tolerance_source === :default && co_default.action === :warned
+    @test co_default.tolerance == Octopus._CLOSED_ORBIT_ATOL_MULTIPLIER * eps() *
+                                  max(1.0, maximum(abs, Octopus._scaling_matrix(rw.scaling) * collect(lms.provenance.point)))
+    @test co_default.residual == res && co_default.residual > co_default.tolerance
     # finite differences: the truncation error is not roundoff, so a number is required
     lfd = one_turn_matrix(fodo; method=FiniteDifferenceLinearization(1e-6))
     @test lfd.provenance.method isa FiniteDifferenceLinearization
@@ -7184,7 +7359,10 @@ end
     r = analyze(TwissDispersionAnalysis(), cst.M)
     S = _st4b_a_val(r.separation)
     kappa = max(1, norm(cst.M)) * norm(S.transformation) * norm(S.inverse)
-    @test norm(_st4b_a_val(r.physical.eta) - cst.eta) <= 256 * eps() * kappa     # c measured 116 (report_4b_A.md)
+    # c by the one-tenth rule of the Scaling testset above: measured 115.9 natively and 36.5 on the Haswell arm (fix
+    # batch 4b, probes/TS/logs/measure_*.log), so c >= 1159, 2048; the former 256 sat 2.2x above the native value
+    # inside the window that rule forbids (2026-10-18 audit F-159/U30-6)
+    @test norm(_st4b_a_val(r.physical.eta) - cst.eta) <= 2048 * eps() * kappa
 end
 
 @testset "Prescribed h = 0.05: the heuristic is uncertified and degraded, the tune certifies and recovers the analytic triple (F4 amendment, row 7)" begin
@@ -7229,11 +7407,12 @@ end
     @test _st4b_a_val(ri.physical.h) == _st4b_a_val(rc.physical.h)
     # an index outside the spectrum is refused at the boundary
     @test_throws ArgumentError analyze(TwissDispersionAnalysis(longitudinal_mode=7), p.M)
-    # the iterative routes on the heuristic's mode: "another branch" degradations name the route (record item 2)
+    # the iterative routes on the heuristic's mode: neither lands on another branch here (the set is EMPTY on this
+    # fixture, asserted; 2026-10-18 audit F-157/U30-5: the loop below iterated nothing and the comment promised a
+    # check the data does not provide), so the heuristic run carries no "another invariant plane" degradation at
+    # all; the route-naming rule (record item 2) is pinned non-vacuously on the certified run, `other_c` below
     other = [x.route for x in r.dispersion.routes if x.route in (:newton, :fixed_point) && x.status === :not_invariant && occursin("another branch", x.detail)]
-    for route in other
-        @test any(s -> occursin("another invariant plane", s) && occursin(":$(route)", s), r.degradations)
-    end
+    @test isempty(other) && !any(s -> occursin("another invariant plane", s), r.degradations)
     # a route that simply did not converge is NOT an "another branch" degradation
     nonconv = [x.route for x in r.dispersion.routes if x.status === :not_invariant && !occursin("another branch", x.detail)]
     for route in nonconv
@@ -7305,12 +7484,17 @@ end
     @test occursin("NEVER certified on its own", doc) && occursin("not the `normal_mode` number", doc)
 end
 
-@testset "Reason table: one fixture per reason the pipeline can emit, the set seen equals the set the docstrings claim (F13)" begin
-    claimed = Set([:not_requested, :cluster_unresolved, :indefinite_cluster, :unstable_spectrum, :unit_eigenvalue,
-                   :coasting_structure, :form_inadmissible, :singular_coefficient, :not_invariant, :route_not_selected,
-                   :singular_longitudinal_projection, :unresolved_defective])
-    # the other three members of DETERMINATION_REASONS (:graph_isotropic, :zero_projection, :not_derived_for_cluster) have
-    # no analyze-level fixture in this table; their kernels are tested where they are emitted (stage 9, U11b-2-3)
+@testset "Reason table: one fixture per reason the pipeline can emit, the set seen equals DETERMINATION_REASONS minus :none and the three kernel-level reasons (F13)" begin
+    # DERIVED from the constant (2026-10-18 audit F-158/U30-9: a hand-written 12-member literal under a title that
+    # said "the set the docstrings claim"; the docstring tie is the `documented(:DETERMINATION_REASONS)` pin of the
+    # vocabulary testset): every reason the constant declares must be seen here, except :none and the three
+    # kernel-level reasons (:graph_isotropic, :zero_projection, :not_derived_for_cluster) that have no
+    # analyze-level fixture in this table; their kernels are tested where they are emitted (stage 9, U11b-2-3). A
+    # reason added to the constant without a fixture here fails this testset by name.
+    kernel_only = Set([:graph_isotropic, :zero_projection, :not_derived_for_cluster])
+    @test all(in(Octopus.DETERMINATION_REASONS), kernel_only)
+    claimed = setdiff(Set(Octopus.DETERMINATION_REASONS), kernel_only, Set([:none]))
+    @test length(claimed) == 12                                     # the twelve analyze-level reasons of 2026-10-18
     seen = Set{Symbol}()
     function collect!(r)
         for f in (r.closed_orbit, r.transverse, r.separation, r.projected_optics, r.ohmi, r.covariance_6d, r.covariance,
@@ -7595,14 +7779,26 @@ end
     @test _st4b_a_val(rp.physical.h) == _st4b_a_val(r0.physical.h)
     # a partition that is not closed under conjugation is the kernel's ArgumentError, thrown through analyze
     @test_throws ArgumentError analyze(TwissDispersionAnalysis(clusters=[[1, 2], [3, 4], [5, 6]], strict=false), M6)
-    # a union of two conjugate pairs: the classification is still COMPUTED (stage 3), the grouping is promised
+    # a union of two conjugate pairs: the classification is still COMPUTED (stage 3), the grouping is promised.
+    # Both outcomes are ASSERTED on fixtures of their own rather than selected from the artifact (2026-10-18 audit
+    # F-157/U30-2: the `if classification in (:indefinite, :unresolved)` guard was false on the dense map, so the
+    # degradation-naming assertion never ran). (i) The dense stable map: every pairwise union is :definite (same
+    # Krein sense) and no degradation names the cluster.
     union = [vcat(part[1], part[2]), part[3]]
     ru = analyze(TwissDispersionAnalysis(clusters=union, strict=false), M6)
     @test [sort(c.members) for c in ru.clusters.clusters] == [sort(g) for g in union]
-    @test ru.clusters.clusters[1].classification in Octopus.CLUSTER_CLASSIFICATIONS
-    if ru.clusters.clusters[1].classification in (:indefinite, :unresolved)
-        @test ru.status === :degraded && any(s -> occursin("cluster 1", s), ru.degradations)
-    end
+    @test ru.clusters.clusters[1].classification === :definite
+    @test !any(s -> occursin("cluster 1", s) && occursin("indefinite", s), ru.degradations)   # (the heuristic's own degradation names "(cluster 1; signed z-area ...)")
+    # (ii) a same-sense pair forced together with the opposite-sense one: the union is :indefinite, the result is
+    # :degraded and the degradation names "cluster 1" (the `clusters` option's docstring: "an explicit union of
+    # far-apart pairs with a mixed Gram is :indefinite")
+    Mo6 = _st4b_a_opposite6()
+    ro = analyze(TwissDispersionAnalysis(strict=false), Mo6)
+    parto = [c.members for c in ro.clusters.clusters]
+    @test length(parto) == 3 && all(c.classification === :definite for c in ro.clusters.clusters)
+    ruo = analyze(TwissDispersionAnalysis(clusters=[vcat(parto[1], parto[2]), parto[3]], strict=false), Mo6)
+    @test ruo.clusters.clusters[1].classification === :indefinite
+    @test ruo.status === :degraded && count(s -> occursin("cluster 1", s) && occursin("indefinite", s), ruo.degradations) == 1
     # 4x4: the explicit union blocks the frame exactly when _frame_availability of the explicit report returns a reason
     M4 = _st4b_a_dense4()
     r4 = analyze(TwissDispersionAnalysis(strict=false), M4)
@@ -7910,14 +8106,11 @@ end
     @test derived == Set([TwissDispersionAnalysis, PlaceholderAnalysis])
     @test all(T -> parentmodule(T) === Octopus && isconcretetype(T), derived)
     @test analysis_option_schema(PlaceholderAnalysis) === NamedTuple()
-    # the guard's message form, on a scratch type outside the hand list
-    hand = (TwissDispersionAnalysis, PlaceholderAnalysis)
-    msgs = String[]
-    for T in (derived..., Nothing)
-        T in hand || push!(msgs, "$(T) is a concrete Octopus analysis with no block in " *
-            "validate_configuration_metadata; add one (see the policy tree guard)")
-    end
-    @test msgs == ["Nothing is a concrete Octopus analysis with no block in validate_configuration_metadata; add one (see the policy tree guard)"]
+    # The tree guard's refusal has NO executed negative control here, and this testset no longer pretends to one
+    # (2026-10-18 audit F-158/U30-4: a loop the test wrote itself over its own `hand` tuple was asserted against the
+    # literal it pushed). A concrete subtype of AbstractAnalysis defined in this process would be permanent (a type
+    # cannot be undefined) and would break the derived-set pin above and the real `validate` later in the file; the
+    # guard's loop is READ in the source below, exactly as the policy tree guard it mirrors is.
     # the block text is in the source
     src = read(String(first(methods(Octopus.validate_configuration_metadata)).file), String)
     @test occursin("_concrete_octopus_subtypes(AbstractAnalysis)", src)
@@ -8150,13 +8343,17 @@ end
     md = Octopus.registry_snapshot_markdown()
     @test occursin("AnalysisOptionEffectivenessContract", md) && occursin("TwissDispersionAnalysis", md)
     # the snapshot on disk differs from the live one at most in the Analyses and Contracts lines
-    root = dirname(dirname(dirname(String(first(methods(Octopus.validate_configuration_metadata)).file))))
-    ondisk = joinpath(dirname(root), "docs", "registry_snapshot.md")
+    # by the package root, not by counting directories above one method's file
+    # (2026-10-18 audit F-148/U28-3, U30-10: three `dirname`s encoded where
+    # `validate_configuration_metadata` happens to live, and a miss was silent)
+    ondisk = joinpath(pkgdir(Octopus), "docs", "registry_snapshot.md")
     if isfile(ondisk)
         live = Set(split(md, '\n')); disk = Set(split(read(ondisk, String), '\n'))
         changed = union(setdiff(live, disk), setdiff(disk, live))
         @test all(l -> occursin("TwissDispersionAnalysis", l) || occursin("AnalysisOptionEffectivenessContract", l) ||
                        occursin("PlaceholderAnalysis", l) || occursin("Analyses", l) || occursin("Contracts", l), changed)
+    else
+        @test_skip "registry snapshot not on disk at $(ondisk): the on-disk comparison was not run"
     end
     # the contract rejects unknown keywords and never throws for a failed probe
     c = AnalysisOptionEffectivenessContract()
@@ -9103,8 +9300,11 @@ end
         g1 = gdev(); g2 = gdev()
         track!(g1, elem, 3, Octopus.CUDABackend); Octopus.CUDA.synchronize()
         track!(g2, elem, 3, Octopus.CUDABackend); Octopus.CUDA.synchronize()
-        @test Array(g1.x) == Array(g2.x) && Array(g1.px) == Array(g2.px)
-        @test Array(g1.pz) == Array(g2.pz)
+        # every coordinate: each plane draws its own counter component (2026-10-18 audit F-159/U30-8: x, px and pz
+        # were compared, y, py and z never)
+        for f in (:x, :px, :y, :py, :z, :pz)
+            @test Array(getproperty(g1, f)) == Array(getproperty(g2, f))
+        end
         # And it matches the host context-path reference — the same draws by
         # construction (the counter is integer-exact across backends), the
         # kick arithmetic to within GPU/CPU FMA-contraction ulps (measured
@@ -9118,8 +9318,12 @@ end
                     elem.method, elem, ctx, i, ref[i]...)
             end
         end
-        @test maximum(abs.(Array(g1.x) .- ref.x)) <= 1.0e-16
-        @test maximum(abs.(Array(g1.px) .- ref.px)) <= 1.0e-16
+        # all six coordinates against the host reference (measured <= 8.7e-19 on every one, 2026-10-18 audit U30-8)
+        for f in (:x, :px, :y, :py, :z, :pz)
+            @testset let coordinate = f
+                @test maximum(abs.(Array(getproperty(g1, f)) .- getproperty(ref, f))) <= 1.0e-16
+            end
+        end
         # Statistical sanity retained from the row's measurement: pure
         # diffusion variance grows as turns * exc^2.
         spec_d = LumpedRadSpec(damping_turns=(1e18, 1e18, 1e18), beta=(1.0, 1.0, 1.0),
@@ -9302,6 +9506,14 @@ end
          0.0012000000040669255, 0.00020002747050993912),
     )
     q = (4.0e-4, 1.0e-4, -2.0e-4, -1.5e-4, 1.2e-3, 2.0e-4)
+    # The pins hold at a STATED tolerance, 8 ulps of each component (2026-10-18 audit F-159/U30-7: `==` against
+    # 17-digit literals rested on every operation's order and contraction). The maps are deterministic IEEE
+    # arithmetic (measured 0 ulps on both gate arms); a legitimate re-association moves a result by O(1) ulps per
+    # reordered operation, which 8 covers, while the five selectors stay told apart: every two differ by at least
+    # 3620 ulps on some component (pz for the paraxial-frozen/Hirata pair, which share every other coordinate by
+    # construction; x for the rest), asserted below at 1000, 125x the tolerance.
+    drift_ulps = 8
+    outputs = Vector{Float64}[]
     for (selector, drift_type, reference) in zip(selectors, types, expected)
         element = ThinStrongBeam(ThinStrongBeamSpec(;
             kbb=1.0e-7, beta=(0.8, 1.2), alpha=(0.3, -0.2),
@@ -9309,7 +9521,14 @@ end
             angle=(3.0e-4, -2.0e-4, 0.0),
             curvature=(2.0e-3, -1.0e-3, 0.0), virtual_drift=selector))
         @test element.virtual_drift isa drift_type
-        @test element(q...) == reference
+        out = collect(element(q...))
+        @testset let selector = selector, worst_ulps = maximum(abs(out[c] - reference[c]) / eps(abs(reference[c])) for c in 1:6)
+            @test worst_ulps <= drift_ulps
+        end
+        push!(outputs, out)
+    end
+    for i in 1:length(outputs), j in (i + 1):length(outputs)
+        @test maximum(abs(outputs[i][c] - outputs[j][c]) / eps(abs(outputs[i][c])) for c in 1:6) >= 1000
     end
     direct = ThinStrongBeam(ThinStrongBeamSpec(;
         kbb=1.0e-7, beta=(1.0, 1.0), sigma=(1.0e-3, 1.0e-3),
@@ -11203,14 +11422,16 @@ end
     # few ulp of their scale, for every kernel over the sweep (measured 2026-10-17:
     # curved drift z <= 4.7, bend z <= 15.6 except the weak bend's 52.6, solenoid
     # 0.5, curved solenoid 2.1; transverse <= 10 everywhere).
-    function worst(f64, fbig, through)
+    # `scale(u, i)`: an extra floor of the transverse error's scale for coordinate i (the solenoids' kinetic
+    # momentum below); the default adds nothing
+    function worst(f64, fbig, through; scale=(u, i) -> 0.0)
         wz = 0.0; wt = 0.0
         for u in kparts
             r64 = f64(u); rb = fbig(big.(u))
             wz = max(wz, kulps(r64[5], rb[5], u[5]))
             for i in (1, 2, 3, 4)
                 i in through && continue
-                wt = max(wt, cerr(r64[i], rb[i], max(abs(Float64(rb[i])), abs(u[i]))))
+                wt = max(wt, cerr(r64[i], rb[i], max(abs(Float64(rb[i])), abs(u[i]), scale(u, i))))
             end
             @test all(i -> r64[i] === u[i], through)   # the coordinates the map leaves alone
         end
@@ -11240,15 +11461,31 @@ end
     let r = O._lattice_bend(0.3, 0.3, 0.5, 0.0, 0.0, 0.0, 0.0, 2.0e-3, 0.0)
         @test r[2] === 0.0 && r[5] === 2.0e-3
     end
+    # The solenoids' transverse outputs round at the KINETIC momentum, not at the coordinate they land in: the
+    # body rotates (P_x, P_y) = (p_x + k y, p_y - k x) (`_solenoid_edge`, k = ks/2) and the exit edge subtracts
+    # k y again, so an output p_x of 2e-5 carries the roundings of a |P| of 2e-3, and the displacement (P/p_s) C1
+    # is of order |P| L. The transverse error's scale is therefore max(|out|, |in|, |P_in|) for the momenta and
+    # max(|out|, |in|, |P_in| L) for the positions. Under the coordinate's own scale the straight solenoid read
+    # 110 (seed 3, p_x) and 215 (seed 6, y) ulps of a CORRECT result for other seeds of this very sweep, and the
+    # curved one 11.8 against its 16 (2026-10-18 audit, D11/U48-8: the pin held for seed 2026 alone). Under the
+    # kinetic scale the worst over 13 seeds (2026 and 1..12, 101 particles each) is 3.4 ulps for the straight
+    # solenoid and 3.3 for the curved one (fix batch 4b, probes/TS/logs/measure_native.log and measure_J.log,
+    # section J), so the bound is 16, the sibling rows' class.
+    solenoid_scale(ks, L) = (u, i) -> begin
+        P = hypot(O._solenoid_edge(ks / 2, u[1], u[3], u[2], u[4])...)
+        i in (2, 4) ? P : P * L
+    end
     for (ks, L, zb) in ((1.7, 1.3, 2), (0.2, 0.5, 2))
-        wz, wt = worst(u -> O._solenoid_map(ks, L, u...), u -> O._solenoid_map(big(ks), big(L), u...), (6,))
+        wz, wt = worst(u -> O._solenoid_map(ks, L, u...), u -> O._solenoid_map(big(ks), big(L), u...), (6,);
+                       scale=solenoid_scale(ks, L))
         @testset let kernel = "solenoid", ks = ks, L = L, z_ulps = wz, transverse_ulps = wt
             @test z_ulps <= zb
-            @test transverse_ulps <= 64
+            @test transverse_ulps <= 16
         end
     end
     for (h, ks, L, nst, zb) in ((0.18, 1.7, 1.3, 16, 8), (0.01, 0.2, 0.5, 4, 8))
-        wz, wt = worst(u -> O._solenoid_curved_map(h, ks, L, nst, u...), u -> O._solenoid_curved_map(big(h), big(ks), big(L), nst, u...), (6,))
+        wz, wt = worst(u -> O._solenoid_curved_map(h, ks, L, nst, u...), u -> O._solenoid_curved_map(big(h), big(ks), big(L), nst, u...), (6,);
+                       scale=solenoid_scale(ks, L))
         @testset let kernel = "curved solenoid", h = h, ks = ks, L = L, z_ulps = wz, transverse_ulps = wt
             @test z_ulps <= zb
             @test transverse_ulps <= 16
@@ -33584,10 +33821,34 @@ end
     @test collect(sol(1.0e-12, 1.3)(u0...)) ≈ drift atol=1e-14
     @test collect(sol(0.0, 1.3)(u0...)) ≈ collect(compile_runtime(DriftSpec(L=1.3))(u0...)) atol=1e-15
 
-    # Zero length is the identity for any strength: the two edge conversions are
-    # evaluated at the same x,y and cancel term by term. Not the same thing as a
-    # MAD-X thin solenoid, which holds ks*L fixed instead.
-    @test collect(sol(1.7, 0.0)(u0...)) == collect(u0)
+    # Zero length is the identity for any strength, stated as what it IS (2026-10-18
+    # audit, D12/U48-9: a bitwise pin on one particle held for 44 % of random
+    # particles at these amplitudes). The body at L = 0 multiplies by sin(0) = 0 and
+    # cos(0) = 1 exactly (`_curv_sin(kappa/2, 0) = 0`), so x, y, z and pz come back
+    # BIT FOR BIT; the momenta go through the two edges, fl(fl(p_x + k y) - k y):
+    # two roundings at max(|p_x|, |P_x|), the same rounded product k y cancelling,
+    # so |p_x' - p_x| <= eps(max(|p_x|, |P_x|)), the analytical bound, attained
+    # (measured worst exactly 1.0 over 30 000 random particles at three amplitude
+    # regimes; bitwise for 67 % at |p| ~ |x| ~ 1e-3, 98 % at |p| ~ 0.1, 4 % at
+    # |p| ~ 1e-4; fix batch 4b, probes/TS/logs/measure_native.log, section K). Not
+    # the same thing as a MAD-X thin solenoid, which holds ks*L fixed instead.
+    let sol0 = sol(1.7, 0.0), k = 1.7 / 2, rng0 = MersenneTwister(20261022),
+        exact_rest = true, worst_px = 0.0, worst_py = 0.0, n_rounded = 0
+        for u in Iterators.flatten(((u0,), (1.0e-3 .* ntuple(_ -> randn(rng0), 6) for _ in 1:1000)))
+            out = sol0(u...)
+            exact_rest &= out[1] === u[1] && out[3] === u[3] && out[5] === u[5] && out[6] === u[6]
+            Px, Py = Octopus._solenoid_edge(k, u[1], u[3], u[2], u[4])
+            worst_px = max(worst_px, abs(out[2] - u[2]) / eps(max(abs(u[2]), abs(Px))))
+            worst_py = max(worst_py, abs(out[4] - u[4]) / eps(max(abs(u[4]), abs(Py))))
+            (out[2] === u[2] && out[4] === u[4]) || (n_rounded += 1)
+        end
+        @test exact_rest
+        @test worst_px <= 1.0 && worst_py <= 1.0
+        # the sweep sees the rounding it tolerates: about a third of the particles
+        # are not bitwise in the momenta (zero here would be a fixture that cannot
+        # fail on a wrong edge)
+        @test n_rounded > 100
+    end
 
     # The closed form must solve Hamilton's equations, not merely look like it.
     # RK4 on the equations of motion from the theory note, Section 4.1.
@@ -40068,5 +40329,5 @@ if !_lane_full()
         println("  skipped: ", name)
     end
     printstyled("This lane is a development checkpoint, not a finish line: the full-suite\n" *
-                "gate at CI settings is still owed before any commit.\n"; color=:yellow)
+                "gate at CI settings is still owed before any push (owner decision 2026-09-04).\n"; color=:yellow)
 end
