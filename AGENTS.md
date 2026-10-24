@@ -157,7 +157,7 @@ checks run before the gate, never instead of it. Receipts:
 | CUDA-reachable code | every branch compiles as device IR; the backend-consistency scripts | full, CUDA active, on a GPU machine |
 | concurrency surfaces: worker closures, reductions, chunk grids, counter RNG | the `Core.Box` tripwire; thread-count invariance | full, at four threads |
 | examples | the script runs; the catalogue entry | full; example execution is full-lane only |
-| validation, study, or benchmark | the script reproduces; the record is committed | full, before the commit carrying the claim |
+| validation, study, or benchmark | the script reproduces; the record is committed | full, before the push carrying the claim |
 | test infrastructure: lanes, gates, `test/runtests.jl` | the skip banner still appears | full |
 | read-only work | report the recorded configuration and every skipped check | none |
 
@@ -166,10 +166,11 @@ checks run before the gate, never instead of it. Receipts:
 - The gate the matrix names ran on the final tree of the batch being pushed,
   CUDA active where the matrix requires it; the report names the lane, lists
   every skipped or unrunnable check, and states what was not verified. The
-  gate is owed before every PUSH rather than before every commit (owner
-  decision 2026-09-04): commits may accumulate locally, and the gate covers
-  the tree they add up to. Each commit message names the gate that covered
-  it.
+  gate is owed before every PUSH rather than before every commit (an owner
+  decision, recorded with its measurement in `docs/experiences.md`, "Process
+  habits that earned their place"): commits may accumulate locally, and the
+  gate covers the tree they add up to. Each commit message names the gate
+  that covered it.
 - Every new public option has its effectiveness test, every new public object
   is in `docs/registry_snapshot.md`, every new document is in `docs/README.md`.
 - `docs/todo.md`, `docs/history/`, and `docs/experiences.md` changed in the
