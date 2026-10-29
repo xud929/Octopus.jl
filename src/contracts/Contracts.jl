@@ -286,6 +286,13 @@ owners are derived (`RunArtifact`, the two task kinds and every concrete
 (owner, option) pairs whose declared consumer is an output receipt, and a run
 that checked none fails (F-52).
 
+Beam initialization is checked on both available backends. The five bounded
+initialization options must reach their declared receipts and change the
+coordinates as specified: uniform draws stay inside their box,
+moving either bound changes the affine image of the same draws, and Cartesian
+grids agree with independently enumerated point products. Coverage is derived
+from `beam_initialization_option_schema()` and a missing probe fails.
+
 If CUDA is unavailable, CPU/schema checks run and the overall result is
 `status=:skipped`; an unavailable CUDA check is never reported as passed. The
 same holds for the logical-worker invariance comparison: on a single-threaded
@@ -557,6 +564,186 @@ function _output_receipt_pairs(schemas)
     return sum(count(meta -> meta.consumer in consumers, schema) for (_, schema) in schemas; init=0)
 end
 
+"""Run one Beam constructor while retaining both its coordinates and receipts.
+
+The two injected functions are internal test seams: a deliberately corrupted
+constructor or dropped receipt must fail the effectiveness judgment, even if
+the other half is still correct. They are not public configuration options.
+"""
+function _beam_initialization_observation(constructor, backend, args, kwargs,
+                                         receipt_transform)
+    beam_ref = Ref{Any}()
+    audit = with_execution_audit() do
+        beam_ref[] = constructor(args...; kwargs...)
+    end
+    beam = beam_ref[]
+    beam isa Beam{backend} || throw(ArgumentError(
+        "Beam initialization returned storage tagged for a different backend"))
+    storage_matches = backend === CPUThreadsBackend ?
+        all(a -> a isa Vector{Float64}, coordinate_arrays(beam)) :
+        backend === CUDABackend && all(a -> a isa CUDA.CuArray{Float64,1}, coordinate_arrays(beam))
+    storage_matches || throw(ArgumentError(
+        "Beam initialization coordinates do not use the requested backend and Float64 storage"))
+    return (beam=beam, coordinates=map(Array, coordinate_arrays(beam)),
+            receipts=receipt_transform(execution_receipts(audit)))
+end
+
+"""
+    _beam_initialization_effectiveness(backend; constructor=Beam, receipt_transform=identity)
+
+Check the bounded constructor options at their runtime consumer and on the
+actual coordinates. The fixture axes use exactly representable binary spacings,
+so grid comparisons are exact. The uniform affine comparisons allow 32 ulps
+of their coordinate scale for the division used to recover a baseline draw.
+The deterministic Cartesian oracle enumerates literal axis values and shares
+no range-building or linear-index decoder with the initialization implementation.
+"""
+function _beam_initialization_effectiveness(backend; constructor=Beam,
+                                           receipt_transform=identity)
+    metrics = Dict{Symbol,Any}(:backend => backend, :cases_checked => 0,
+                              :receipts_checked => 0, :options_checked => Symbol[])
+    errors = String[]
+    # These are probe owners, not a copy of an implementation enumeration.
+    # Their exact set is compared with the public schema in both directions.
+    option_probes = (distribution=:uniform, lower=:lower, upper=:upper,
+                     grid_size=:grid_size_changed, grid_step=:grid_step_changed)
+    schema = beam_initialization_option_schema()
+    if Set(keys(option_probes)) != Set(keys(schema))
+        return ContractResult(false,
+            "Beam initialization effectiveness probes and schema keys disagree."; metrics=metrics)
+    end
+    for (name, meta) in pairs(schema)
+        (meta.consumer === :beam_initialization && backend in meta.supported_backends) ||
+            push!(errors, "Beam.$(name) does not declare the tested initialization consumer/backend")
+    end
+    isempty(errors) || return ContractResult(false, join(errors, "; "); metrics=metrics)
+
+    lower = (10.0, 20.0, 30.0, 40.0, 50.0, 60.0)
+    upper = (12.0, 24.0, 36.0, 48.0, 60.0, 72.0)
+    lowered = map(x -> x - 1.0, lower)
+    raised = map(x -> x + 1.0, upper)
+    grid_lower = (2.0, -1.0, 0.0, 1.0, 3.0, -2.0)
+    grid_upper = (4.0, 1.0, 0.0, 1.0, 3.0, -2.0)
+    coarse_size = (3, 2, 1, 1, 1, 1)
+    fine_size = (5, 2, 1, 1, 1, 1)
+    coarse_step = (1.0, 2.0, 0.0, 0.0, 0.0, 0.0)
+    fine_step = (0.5, 2.0, 0.0, 0.0, 0.0, 0.0)
+    coarse_axes = ([2.0, 3.0, 4.0], [-1.0, 1.0], [0.0], [1.0], [3.0], [-2.0])
+    fine_axes = ([2.0, 2.5, 3.0, 3.5, 4.0], [-1.0, 1.0], [0.0], [1.0], [3.0], [-2.0])
+    # Ask the registry, rather than assuming that a high literal is unclaimed.
+    rid = _unheld_rng_id(next_rng_id!(consumer=:beam) + 1_000_000)
+    cases = (
+        (name=:uniform, args=(512, backend),
+         kwargs=(distribution=:uniform, lower=lower, upper=upper, rng_id=rid),
+         distribution=:uniform, lower=lower, upper=upper,
+         grid_size=nothing, grid_step=nothing, axes=nothing),
+        (name=:lower, args=(512, backend),
+         kwargs=(distribution=:uniform, lower=lowered, upper=upper, rng_id=rid),
+         distribution=:uniform, lower=lowered, upper=upper,
+         grid_size=nothing, grid_step=nothing, axes=nothing),
+        (name=:upper, args=(512, backend),
+         kwargs=(distribution=:uniform, lower=lower, upper=raised, rng_id=rid),
+         distribution=:uniform, lower=lower, upper=raised,
+         grid_size=nothing, grid_step=nothing, axes=nothing),
+        (name=:grid_size, args=(backend,),
+         kwargs=(distribution=:grid, lower=grid_lower, upper=grid_upper, grid_size=coarse_size),
+         distribution=:grid, lower=grid_lower, upper=grid_upper,
+         grid_size=coarse_size, grid_step=coarse_step, axes=coarse_axes),
+        (name=:grid_size_changed, args=(backend,),
+         kwargs=(distribution=:grid, lower=grid_lower, upper=grid_upper, grid_size=fine_size),
+         distribution=:grid, lower=grid_lower, upper=grid_upper,
+         grid_size=fine_size, grid_step=fine_step, axes=fine_axes),
+        (name=:grid_step, args=(backend,),
+         kwargs=(distribution=:grid, lower=grid_lower, upper=grid_upper, grid_step=coarse_step),
+         distribution=:grid, lower=grid_lower, upper=grid_upper,
+         grid_size=coarse_size, grid_step=coarse_step, axes=coarse_axes),
+        (name=:grid_step_changed, args=(backend,),
+         kwargs=(distribution=:grid, lower=grid_lower, upper=grid_upper, grid_step=fine_step),
+         distribution=:grid, lower=grid_lower, upper=grid_upper,
+         grid_size=fine_size, grid_step=fine_step, axes=fine_axes),
+    )
+    observations = Dict{Symbol,Any}()
+    for fixture in cases
+        try
+            observation = _beam_initialization_observation(constructor, backend,
+                fixture.args, fixture.kwargs, receipt_transform)
+            observations[fixture.name] = observation
+            expected_count = fixture.axes === nothing ? first(fixture.args) :
+                             prod(length.(fixture.axes))
+            all(a -> length(a) == expected_count && all(isfinite, a),
+                observation.coordinates) || push!(errors,
+                "$(fixture.name): coordinate count or finiteness disagrees with the constructor request")
+            observation.beam.params.npart == expected_count || push!(errors,
+                "$(fixture.name): the default physical population differs from the global macroparticle count")
+            receipts = filter(r -> r.consumer === :beam_initialization, observation.receipts)
+            if length(receipts) != 1
+                push!(errors, "$(fixture.name): expected exactly one beam_initialization receipt")
+            else
+                receipt = only(receipts)
+                receipt.backend === backend || push!(errors,
+                    "$(fixture.name): initialization receipt names the wrong backend")
+                expected = (distribution=fixture.distribution, lower=fixture.lower,
+                            upper=fixture.upper, grid_size=fixture.grid_size,
+                            grid_step=fixture.grid_step, n_macro=expected_count,
+                            coordinate_type=Float64,
+                            requested_grid_size=get(fixture.kwargs, :grid_size, nothing),
+                            requested_grid_step=get(fixture.kwargs, :grid_step, nothing))
+                for (name, value) in pairs(expected)
+                    (haskey(receipt.values, name) && isequal(receipt.values[name], value)) ||
+                        push!(errors, "$(fixture.name): initialization receipt did not resolve $(name)")
+                end
+                metrics[:receipts_checked] += 1
+            end
+            if fixture.axes === nothing
+                for dim in 1:6
+                    values = observation.coordinates[dim]
+                    all(x -> fixture.lower[dim] <= x <= fixture.upper[dim], values) ||
+                        push!(errors, "$(fixture.name): coordinate $(dim) left its uniform bounds")
+                    length(unique(values)) > 1 || push!(errors,
+                        "$(fixture.name): coordinate $(dim) did not sample the nonconstant interval")
+                end
+            else
+                points = vec(collect(Iterators.product(fixture.axes...)))
+                for dim in 1:6
+                    observation.coordinates[dim] == [p[dim] for p in points] ||
+                        push!(errors, "$(fixture.name): coordinate $(dim) differs from the Cartesian-product oracle")
+                end
+            end
+            metrics[:cases_checked] += 1
+        catch err
+            push!(errors, "$(fixture.name): initialization probe failed: $(sprint(showerror, err))")
+        end
+    end
+    # The SAME stream must move affinely when just one bound changes. Both
+    # bounds use intervals well away from zero, so a Gaussian/default route,
+    # ignored bound, or sample standardization cannot satisfy these witnesses.
+    if all(name -> haskey(observations, name), (:uniform, :lower, :upper))
+        reference = observations[:uniform].coordinates
+        for name in (:lower, :upper)
+            candidate = observations[name].coordinates
+            destination_lower = name === :lower ? lowered : lower
+            destination_upper = name === :upper ? raised : upper
+            for dim in 1:6
+                normalized = (reference[dim] .- lower[dim]) ./ (upper[dim] - lower[dim])
+                expected = destination_lower[dim] .+
+                           (destination_upper[dim] - destination_lower[dim]) .* normalized
+                tolerance = 32eps(Float64) * max(1.0, abs(destination_lower[dim]), abs(destination_upper[dim]))
+                (length(candidate[dim]) == length(expected) &&
+                 all(isapprox.(candidate[dim], expected; atol=tolerance, rtol=0))) ||
+                    push!(errors, "$(name): changing the bound did not apply the same uniform draws affinely")
+                candidate[dim] != reference[dim] || push!(errors,
+                    "$(name): the non-default bound was ineffective on coordinate $(dim)")
+            end
+        end
+    end
+    metrics[:options_checked] = [name for (name, fixture) in pairs(option_probes)
+                                 if haskey(observations, fixture)]
+    metrics[:errors] = errors
+    return ContractResult(isempty(errors), isempty(errors) ?
+        "Beam initialization options reached their consumers and generated the requested coordinates." :
+        join(errors, "; "); metrics=metrics)
+end
+
 function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
     _reject_unknown_validate_kwargs(contract, kwargs)
     metrics = Dict{Symbol,Any}()
@@ -585,6 +772,11 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
         return ContractResult(false, "configuration metadata validation failed: $(sprint(showerror, err))";
                               metrics=metrics)
     end
+
+    initialization_cpu = _beam_initialization_effectiveness(CPUThreadsBackend)
+    metrics[:beam_initialization_cpu] = initialization_cpu.metrics
+    initialization_cpu.passed || return ContractResult(false,
+        "CPU Beam initialization effectiveness failed: $(initialization_cpu.message)"; metrics=metrics)
 
     base = _contract_default_initial_rep(contract.n_particles, Float64)
     line = (CrabDispersionSpec{Float64}(zeta1=0.02, zeta3=-0.01),)
@@ -958,6 +1150,11 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
             (worker_skip === nothing ? "" : "; the logical-worker invariance was NOT compared: " * worker_skip);
             metrics=metrics)
     end
+
+    initialization_cuda = _beam_initialization_effectiveness(CUDABackend)
+    metrics[:beam_initialization_cuda] = initialization_cuda.metrics
+    initialization_cuda.passed || return ContractResult(false,
+        "CUDA Beam initialization effectiveness failed: $(initialization_cuda.message)"; metrics=metrics)
 
     cuda_threads_sweep = (64, 128, 256, 512)
     cuda_launch_receipts = Dict{Tuple{Int,Any},Int}()

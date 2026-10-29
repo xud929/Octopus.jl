@@ -13,6 +13,8 @@ When an item below closes: move its row (with the closing measurements) to the
 archive under a dated note, and if it taught something reusable, add the
 lesson to `experiences.md`.
 
+Latest closure: [bounded beam initialization, 2026-10-29](history/audit_beam_initialization_2026_10_29.md).
+
 ## Open, most actionable first
 
 | item | state | notes |

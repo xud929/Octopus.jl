@@ -2,7 +2,7 @@ export BeamParams, Phase6DRep, Beam,
        coordinate_arrays, coordinate_array, add_offset!, beam_statistics,
        is_live, count_live, count_dead, allow_lost_particles,
        write_beam_coordinates,
-       read_beam_coordinates
+       read_beam_coordinates, beam_initialization_option_schema
 
 using Random
 
@@ -610,6 +610,8 @@ end
 
 """
     Beam(N, policy_or_backend, FloatT=Float64;
+         distribution=:gaussian, lower=nothing, upper=nothing,
+         grid_size=nothing, grid_step=nothing,
          beta=(1,1,1), alpha=(0,0,0), sigma=nothing, emit=nothing,
          coupling=zeros(4), R=nothing, C=nothing, mode=XY_MODEA,
          eta=zeros(4), zeta=zeros(4), initial_offset=zeros(6),
@@ -617,12 +619,29 @@ end
          charge=0, mc2=0, E0=0, r0=0, npart=N)
 
 Construct a beam with randomized six-dimensional coordinates on either the CPU
-threaded backend or CUDA backend:
+threaded backend or CUDA backend. The default `distribution=:gaussian` follows
+the established construction:
 
 1. generate standardized Gaussian coordinates,
 2. normalize by Twiss/sigma or Twiss/emittance parameters,
 3. apply optional `XYCoupling`, `MomentumDispersion`, and `CrabDispersion`,
 4. apply an optional six-coordinate `initial_offset`.
+
+With `distribution=:uniform`, supply six-component `lower` and `upper` bounds
+in physical `(x, px, y, py, z, pz)` order. Coordinates are independent uniform
+draws, mapped directly into those bounds, without sample standardization.
+Equal bounds fix that coordinate. Float32 and Float64 are supported; bounds
+and spans must remain finite and distinct bounds must remain distinct after
+conversion. Rounding can reach an endpoint, so containment is inclusive.
+Non-default Gaussian optics, maps, offsets, and cutoff are refused by name.
+The same physical beam parameters and random-stream options apply. Counter
+uniform coordinates are formed on the host and copied to CUDA exactly.
+An explicit RNG draws on its own storage before host affine mapping.
+
+`:grid` uses the no-count `Beam(policy_or_backend, FloatT; ...)` overload
+documented below. `grid_size`/`grid_step` are refused by the random forms,
+and bounds are refused by the Gaussian form. See
+[`beam_initialization_option_schema`](@ref) for the distribution metadata.
 
 `N` must be positive. Construct `Phase6DRep` directly when an empty
 representation is needed.
@@ -679,7 +698,7 @@ function Beam(N::Integer, policy::AbstractExecutionPolicy, FloatT::Type{RT}=Floa
     # before the draw (2026-10-18 audit F-187/U27-3: it used to be activated
     # here, before any check).
     _require_sampling_float(RT)
-	return Beam(Int(N), backend_type(policy), RT; execution_policy=policy, kwargs...)
+	return Beam(N, backend_type(policy), RT; execution_policy=policy, kwargs...)
 end
 
 """
@@ -703,14 +722,28 @@ communication, and costs one transient allocation of the full beam per rank.
 function Beam(N::Integer, policy::MultiProcessExecutionPolicy, FloatT::Type{RT}=Float64;
               kwargs...) where {RT<:Real}
     _require_sampling_float(RT)
-    whole = Beam(Int(N), backend_type(policy), RT; execution_policy=policy, kwargs...)
-    context = _open_multi_process_context(
-        MultiProcessRequest(policy.ranks),
-        _resolved_cpu_threads(_composed_cpu_policy(policy)))
-    context.nranks == 1 && return whole
-    shard = _mp_shard_range(Int(N), context.nranks, context.rank)
+    return Beam(N, backend_type(policy), RT; execution_policy=policy, kwargs...)
+end
+
+function _prepare_beam_initialization(policy, n)
+    if policy isa MultiProcessExecutionPolicy
+        # Resolve/refuse the communicator after keyword validation but BEFORE
+        # drawing. A rank mismatch must not leave a claimed random stream or
+        # a successful initialization receipt (2026-10-29 neighbour audit).
+        context = _open_multi_process_context(MultiProcessRequest(policy.ranks),
+            _resolved_cpu_threads(_composed_cpu_policy(policy)))
+        # The chunk-alignment restriction is a second possible refusal. Resolve
+        # the range here too, before sampling, including non-divisor rank counts.
+        return context.nranks == 1 ? nothing : _mp_shard_range(n, context.nranks, context.rank)
+    end
+    policy === nothing || activate_policy!(policy)
+    return nothing
+end
+
+_shard_initialized_beam(whole::Beam, ::Nothing) = whole
+function _shard_initialized_beam(whole::Beam{BTAG}, shard::UnitRange) where {BTAG}
     rep = _shard_rep(whole.rep, shard)
-    return Beam{backend_type(policy),typeof(whole.params),typeof(rep)}(whole.params, rep)
+    return Beam{BTAG,typeof(whole.params),typeof(rep)}(whole.params, rep)
 end
 
 """This rank's copy of `rep[range]`: a copy, not a view, so the whole beam the
@@ -719,6 +752,53 @@ _shard_rep(rep::Phase6DRep, range) =
     Phase6DRep(map(a -> a[range], coordinate_arrays(rep))...)
 
 function Beam(N::Integer, backend::Type{BTAG}, FloatT::Type{RT}=Float64;
+              kwargs...) where {BTAG<:AbstractExecutionBackend,RT<:Real}
+    return _initialize_beam(N, backend, RT; kwargs...)
+end
+
+"""
+    Beam(policy_or_backend, FloatT=Float64; distribution=:grid,
+         lower, upper, grid_size=nothing, grid_step=nothing,
+         charge=0, mc2=0, E0=0, r0=0, npart=prod(grid_size))
+
+Construct an endpoint-inclusive Cartesian grid in physical `(x, px, y, py, z,
+pz)` coordinates. Supply six bounds and exactly one six-component `grid_size`
+(positive integer POINT counts) or `grid_step` (coordinate spacing). The
+macroparticle count is derived; a positional count with `distribution=:grid`
+is refused. `x` varies fastest, then `px`, `y`, `py`, `z`, `pz`.
+
+A fixed axis needs equal bounds and count one (or step zero); other axes need
+at least two points (or a positive step dividing the span). Step divisibility
+allows at most `min(1/4, 8eps(FloatT)*max(1, abs(span/step)))` intervals of
+roundoff. Both endpoints are retained; the receipt records realized spacing.
+Generated axis values must be distinct in FloatT. Bounds and their spans must
+be finite and distinct bounds must remain distinct after conversion.
+
+Float32 and Float64 are supported on CPU and CUDA. Construction runs on the
+host and uploads once. A multi-process policy keeps the same contiguous shard
+as the count-taking constructor, with physical `npart` remaining global.
+Grid construction consumes no RNG stream. Non-default Gaussian optics,
+offsets, cutoff, and RNG options are refused. See [`Beam`](@ref)'s random
+constructor and [`beam_initialization_option_schema`](@ref).
+"""
+function Beam(policy::AbstractExecutionPolicy, FloatT::Type{RT}=Float64;
+              kwargs...) where {RT<:Real}
+    return Beam(backend_type(policy), RT; execution_policy=policy, kwargs...)
+end
+
+function Beam(policy::MultiProcessExecutionPolicy, FloatT::Type{RT}=Float64;
+              kwargs...) where {RT<:Real}
+    return Beam(backend_type(policy), RT; execution_policy=policy, kwargs...)
+end
+
+function Beam(backend::Type{BTAG}, FloatT::Type{RT}=Float64;
+              kwargs...) where {BTAG<:AbstractExecutionBackend,RT<:Real}
+    return _initialize_beam(nothing, backend, RT; kwargs...)
+end
+
+function _initialize_beam(N::Union{Nothing,Integer}, backend::Type{BTAG}, FloatT::Type{RT}=Float64;
+              distribution=N === nothing ? :grid : :gaussian,
+              lower=nothing, upper=nothing, grid_size=nothing, grid_step=nothing,
               beta=(one(RT), one(RT), one(RT)),
               alpha=(zero(RT), zero(RT), zero(RT)),
               sigma=nothing,
@@ -737,6 +817,17 @@ function Beam(N::Integer, backend::Type{BTAG}, FloatT::Type{RT}=Float64;
               execution_policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
               kwargs...) where {BTAG<:AbstractExecutionBackend,RT<:Real}
 	_require_sampling_float(RT)
+	if distribution === :uniform || distribution === :grid
+        return _bounded_beam(N, BTAG, RT; distribution, lower, upper, grid_size, grid_step,
+            beta, alpha, sigma, emit, zeta, eta, coupling, R, C, mode, cutoff,
+            rng, seed, rng_id, initial_offset, execution_policy, kwargs...)
+    end
+    distribution === :gaussian || throw(ArgumentError(
+        "Beam distribution must be :gaussian, :uniform, or :grid; got $(repr(distribution))"))
+    N === nothing && throw(ArgumentError("Beam distribution=:gaussian requires a positional particle count"))
+    for (key, value) in pairs((; lower, upper, grid_size, grid_step))
+        value === nothing || throw(ArgumentError("Beam $(key) is inactive for distribution=:gaussian"))
+    end
 	N > 0 || throw(ArgumentError("random Beam construction requires a positive particle count; got $(N)"))
 	params = _beam_params(RT, Int(N); kwargs...)
 	# Every keyword is validated BEFORE the policy is activated and before the
@@ -751,7 +842,7 @@ function Beam(N::Integer, backend::Type{BTAG}, FloatT::Type{RT}=Float64;
 	ζ = _tuple_typed(zeta, 4, RT; keyword=:zeta)
 	offset = _tuple_typed(initial_offset, 6, RT; keyword=:initial_offset)
 	_check_beam_sampling(cutoff, seed, rng_id)
-	execution_policy === nothing || activate_policy!(execution_policy)
+    shard = _prepare_beam_initialization(execution_policy, Int(N))
 	# The counter path draws, standardizes and normalizes on the HOST for either
 	# backend and uploads once, so a CUDA beam is the CPU beam of the same seed
 	# and stream bit for bit (2026-10-18 audit F-189/U27-5; the device fuses the
@@ -770,7 +861,250 @@ function Beam(N::Integer, backend::Type{BTAG}, FloatT::Type{RT}=Float64;
 	_apply_initial_maps!(rep, BTAG, RT;
 		coupling=r, eta=η, zeta=ζ, mode=mode, policy=execution_policy)
 	add_offset!(rep, offset)
-	return Beam{BTAG, typeof(params), typeof(rep)}(params, rep)
+    beam = _shard_initialized_beam(Beam{BTAG,typeof(params),typeof(rep)}(params, rep), shard)
+    _record_execution!(:beam_initialization, BTAG,
+        (distribution=:gaussian, lower=nothing, upper=nothing, grid_size=nothing,
+         grid_step=nothing, requested_grid_size=nothing, requested_grid_step=nothing,
+         n_macro=length(rep), coordinate_type=RT))
+	return beam
+end
+
+"""
+    beam_initialization_option_schema()
+
+Metadata for the distribution selector and bounded initialization options of
+[`Beam`](@ref). The `distribution` default describes the count-taking form
+(`:gaussian`); the no-count form defaults to `:grid`. Legacy Gaussian optics
+and RNG options remain documented on `Beam` and are not enumerated here.
+Each option reaches the successful `:beam_initialization` execution receipt.
+`grid_size` and `grid_step` in that receipt describe resolved counts and
+realized spacing; `requested_grid_size` and `requested_grid_step` retain the
+request separately. Bounds refer to final physical coordinates. Invalid or
+inactive requests throw before activation, allocation, or RNG claims.
+"""
+beam_initialization_option_schema() = (
+    distribution=ConfigurationOptionMeta(Symbol, :gaussian,
+        ":gaussian or :uniform with a positional count; :grid without one. " *
+        "The no-count constructor defaults to :grid. Other values and forms are refused.";
+        category=:physics, supported_backends=(CPUThreadsBackend, CUDABackend), consumer=:beam_initialization),
+    lower=ConfigurationOptionMeta(Union{Nothing,Tuple,AbstractVector}, nothing,
+        "Six finite physical lower bounds in (x,px,y,py,z,pz) order; required by " *
+        ":uniform and :grid, refused by :gaussian. Must not exceed upper after conversion.";
+        category=:physics, supported_backends=(CPUThreadsBackend, CUDABackend),
+        dependencies=(:distribution, :upper), consumer=:beam_initialization),
+    upper=ConfigurationOptionMeta(Union{Nothing,Tuple,AbstractVector}, nothing,
+        "Six finite physical upper bounds; required by :uniform and :grid, " *
+        "refused by :gaussian. Distinct bounds must remain distinct in FloatT; spans must be finite.";
+        category=:physics, supported_backends=(CPUThreadsBackend, CUDABackend),
+        dependencies=(:distribution, :lower), consumer=:beam_initialization),
+    grid_size=ConfigurationOptionMeta(Union{Nothing,Tuple,AbstractVector}, nothing,
+        "Six positive non-Bool integer point counts, :grid only; exactly one of " *
+        "grid_size/grid_step. Fixed axes require one point, other axes at least two; " *
+        "the checked product determines macroparticle count, x fastest.";
+        category=:physics, supported_backends=(CPUThreadsBackend, CUDABackend),
+        dependencies=(:distribution, :lower, :upper, :grid_step), consumer=:beam_initialization),
+    grid_step=ConfigurationOptionMeta(Union{Nothing,Tuple,AbstractVector}, nothing,
+        "Six finite coordinate spacings, :grid only and exclusive with grid_size. " *
+        "Zero on fixed axes, positive and dividing the span on other axes, with " *
+        "at most min(1/4,8eps(FloatT)*max(1,abs(span/step))) intervals of roundoff. " *
+        "The receipt records endpoint-inclusive realized spacing.";
+        category=:physics, supported_backends=(CPUThreadsBackend, CUDABackend),
+        dependencies=(:distribution, :lower, :upper, :grid_size), consumer=:beam_initialization),
+)
+
+function _beam_six(values, key)
+    (values isa Tuple || values isa AbstractVector) && length(values) == 6 ||
+        throw(ArgumentError("Beam $(key) requires six values in (x,px,y,py,z,pz) order"))
+    return Tuple(values)
+end
+
+function _beam_box_values(values, key, ::Type{T}) where {T}
+    raw = _beam_six(values, key)
+    return ntuple(6) do d
+        x = raw[d]
+        x isa Real && !(x isa Bool) && isfinite(x) || throw(ArgumentError(
+            "Beam $(key)[$(d)] must be a finite real value"))
+        y = try
+            T(x)
+        catch
+            throw(ArgumentError("Beam $(key)[$(d)] cannot be represented in $(T)"))
+        end
+        isfinite(y) || throw(ArgumentError("Beam $(key)[$(d)] must remain finite in $(T)"))
+        y
+    end
+end
+
+function _beam_box_bounds(lower, upper, ::Type{T}) where {T}
+    lo = _beam_box_values(lower, :lower, T)
+    hi = _beam_box_values(upper, :upper, T)
+    for d in 1:6
+        lower[d] <= upper[d] && lo[d] <= hi[d] || throw(ArgumentError(
+            "Beam lower[$(d)] must not exceed upper[$(d)]"))
+        lower[d] != upper[d] && lo[d] == hi[d] && throw(ArgumentError(
+            "Beam lower/upper[$(d)] collapse to one value in $(T)"))
+        isfinite(hi[d] - lo[d]) || throw(ArgumentError(
+            "Beam lower/upper[$(d)] span must remain finite in $(T)"))
+    end
+    return lo, hi
+end
+
+function _check_bounded_beam_optics(; beta, alpha, sigma, emit, zeta, eta,
+                                   coupling, R, C, mode, cutoff, initial_offset)
+    # Compare requests BEFORE FloatT conversion: rounding an inactive value to
+    # its default is still silently ignoring the requested configuration.
+    for (key, value, n, neutral) in ((:beta, beta, 3, 1), (:alpha, alpha, 3, 0),
+            (:zeta, zeta, 4, 0), (:eta, eta, 4, 0), (:coupling, coupling, 4, 0),
+            (:initial_offset, initial_offset, 6, 0))
+        valid_shape = (value isa Tuple || value isa AbstractVector) &&
+            (length(value) == n || (key === :alpha && length(value) == 2))
+        valid_shape && all(x -> x == neutral, value) || throw(ArgumentError(
+            "Beam $(key) is Gaussian-only; bounded distributions require its neutral default"))
+    end
+    for (key, value) in pairs((; sigma, emit, R, C))
+        value === nothing || throw(ArgumentError("Beam $(key) is Gaussian-only"))
+    end
+    mode === XY_MODEA || throw(ArgumentError("Beam mode is Gaussian-only; bounded distributions require XY_MODEA"))
+    cutoff == 5 || throw(ArgumentError("Beam cutoff is Gaussian-only; bounded distributions require its default 5"))
+    return nothing
+end
+
+function _beam_storage_count(counts, ::Type{T}) where {T}
+    try
+        n = foldl(Base.checked_mul, counts; init=1)
+        Base.checked_mul(Base.checked_mul(n, 6), sizeof(T))
+        return n
+    catch err
+        err isa OverflowError || rethrow()
+        throw(ArgumentError("Beam macroparticle count or six-coordinate storage size overflows Int"))
+    end
+end
+
+function _beam_grid_axes(lo, hi, grid_size, grid_step, ::Type{T}) where {T}
+    (grid_size === nothing) != (grid_step === nothing) || throw(ArgumentError(
+        "Beam grid requires exactly one of grid_size or grid_step"))
+    counts = if grid_size !== nothing
+        raw = _beam_six(grid_size, :grid_size)
+        ntuple(6) do d
+            v = raw[d]
+            v isa Integer && !(v isa Bool) && 0 < v <= typemax(Int) ||
+                throw(ArgumentError("Beam grid_size[$(d)] must be a positive Int-representable integer"))
+            Int(v)
+        end
+    else
+        steps = _beam_box_values(grid_step, :grid_step, T)
+        ntuple(6) do d
+            if lo[d] == hi[d]
+                grid_step[d] == 0 || throw(ArgumentError("Beam grid_step[$(d)] must be zero on a fixed axis"))
+                1
+            else
+                steps[d] > 0 || throw(ArgumentError("Beam grid_step[$(d)] must remain positive in $(T)"))
+                ratio = Float64(hi[d] - lo[d]) / Float64(steps[d])
+                isfinite(ratio) && 0 < ratio < typemax(Int) || throw(ArgumentError(
+                    "Beam grid_step[$(d)] produces an unrepresentable interval count"))
+                intervals = round(Int, ratio)
+                tolerance = min(0.25, 8 * Float64(eps(T)) * max(1, abs(ratio)))
+                intervals >= 1 && abs(ratio - intervals) <= tolerance || throw(ArgumentError(
+                    "Beam grid_step[$(d)] must divide the lower/upper span"))
+                Base.checked_add(intervals, 1)
+            end
+        end
+    end
+    n = _beam_storage_count(counts, T)
+    for d in 1:6
+        (lo[d] == hi[d] ? counts[d] == 1 : counts[d] >= 2) || throw(ArgumentError(
+            "Beam grid_size[$(d)] must be one on a fixed axis and at least two otherwise"))
+    end
+    axes = ntuple(d -> range(lo[d], hi[d]; length=counts[d]), 6)
+    for d in 1:6
+        previous = first(axes[d])
+        for i in 2:counts[d]
+            current = axes[d][i]
+            isfinite(current) && previous < current <= hi[d] || throw(ArgumentError(
+                "Beam grid_size/grid_step[$(d)] cannot produce distinct bounded points in $(T)"))
+            previous = current
+        end
+    end
+    spacing = ntuple(d -> counts[d] == 1 ? zero(T) :
+        (hi[d] - lo[d]) / T(counts[d] - 1), 6)
+    return axes, counts, spacing, n
+end
+
+function _uniform_box_rep(::Type{T}, n, lo, hi; rng, seed, rng_id) where {T}
+    resolved_rng = _resolve_rng(CPUThreadsBackend, rng, seed, rng_id)
+    counter_seed = seed === nothing ? global_rng_seed() : UInt64(seed)
+    method = global_rng_method_code()
+    stream = resolved_rng === nothing ?
+        (rng_id == 0 ? next_rng_id!(consumer=:beam) : claim_rng_id!(rng_id; consumer=:beam)) : 0
+    coords = ntuple(6) do d
+        draws = resolved_rng === nothing ?
+            [octopus_uniform01(counter_seed, method, 0, stream, i, d, T) for i in 1:n] :
+            Array(rand(resolved_rng, T, n))
+        # A rounded affine map can overshoot by an ulp; containment is part of
+        # this API. Fixed axes also preserve their exact supplied value.
+        for i in eachindex(draws)
+            draws[i] = lo[d] == hi[d] ? lo[d] : clamp(lo[d] + draws[i] * (hi[d] - lo[d]), lo[d], hi[d])
+        end
+        draws
+    end
+    return Phase6DRep(coords...)
+end
+
+function _bounded_beam(N, ::Type{BTAG}, ::Type{T}; distribution, lower, upper,
+        grid_size, grid_step, beta, alpha, sigma, emit, zeta, eta, coupling,
+        R, C, mode, cutoff, rng, seed, rng_id, initial_offset, execution_policy,
+        kwargs...) where {BTAG<:AbstractExecutionBackend,T}
+    T in (Float32, Float64) || throw(ArgumentError("Beam bounded distributions require Float32 or Float64"))
+    distribution === :grid && N !== nothing && throw(ArgumentError(
+        "Beam distribution=:grid derives its count; omit the positional particle count"))
+    distribution === :uniform && N === nothing && throw(ArgumentError(
+        "Beam distribution=:uniform requires a positional particle count"))
+    _check_bounded_beam_optics(; beta, alpha, sigma, emit, zeta, eta, coupling,
+        R, C, mode, cutoff, initial_offset)
+    lo, hi = _beam_box_bounds(lower, upper, T)
+    if distribution === :uniform
+        for (key, value) in pairs((; grid_size, grid_step))
+            value === nothing || throw(ArgumentError("Beam $(key) is inactive for distribution=:uniform"))
+        end
+        N isa Integer && !(N isa Bool) && 0 < N <= typemax(Int) || throw(ArgumentError(
+            "Beam uniform particle count must be a positive Int-representable integer"))
+        n = _beam_storage_count((Int(N),), T)
+        _check_beam_sampling(5, seed, rng_id)
+        rng === nothing || rng isa AbstractRNG || throw(ArgumentError(
+            "Beam uniform rng must be an AbstractRNG or nothing"))
+        # New bounded modes validate full counter widths before claiming a stream.
+        seed === nothing || seed <= typemax(UInt64) || throw(ArgumentError("Beam seed exceeds UInt64"))
+        rng_id <= typemax(UInt64) || throw(ArgumentError("Beam rng_id exceeds UInt64"))
+        params = _beam_params(T, n; kwargs...)
+        shard = _prepare_beam_initialization(execution_policy, n)
+        host_rep = _uniform_box_rep(T, n, lo, hi; rng, seed, rng_id)
+        rep = _rep_on_backend(BTAG, host_rep)
+        beam = _shard_initialized_beam(Beam{BTAG,typeof(params),typeof(rep)}(params, rep), shard)
+        _record_execution!(:beam_initialization, BTAG,
+            (distribution=:uniform, lower=lo, upper=hi, grid_size=nothing,
+             grid_step=nothing, requested_grid_size=nothing, requested_grid_step=nothing,
+             n_macro=length(rep), coordinate_type=T))
+        return beam
+    end
+    for (key, value, default) in ((:rng, rng, nothing), (:seed, seed, nothing), (:rng_id, rng_id, 0))
+        isequal(value, default) || throw(ArgumentError("Beam $(key) is inactive for distribution=:grid"))
+    end
+    axes, counts, spacing, grid_n = _beam_grid_axes(lo, hi, grid_size, grid_step, T)
+    params = _beam_params(T, grid_n; kwargs...)
+    shard = _prepare_beam_initialization(execution_policy, grid_n)
+    coords = ntuple(_ -> Vector{T}(undef, grid_n), 6)
+    for (i, point) in enumerate(Iterators.product(axes...))
+        for d in 1:6
+            coords[d][i] = point[d]
+        end
+    end
+    rep = _rep_on_backend(BTAG, Phase6DRep(coords...))
+    beam = _shard_initialized_beam(Beam{BTAG,typeof(params),typeof(rep)}(params, rep), shard)
+    _record_execution!(:beam_initialization, BTAG,
+        (distribution=:grid, lower=lo, upper=hi, grid_size=counts, grid_step=spacing,
+         requested_grid_size=grid_size === nothing ? nothing : Tuple(grid_size),
+         requested_grid_step=grid_step === nothing ? nothing : Tuple(grid_step),
+         n_macro=length(rep), coordinate_type=T))
+    return beam
 end
 
 function _beam_alpha(alpha, ::Type{T}) where {T}

@@ -14,6 +14,16 @@ representation for six-dimensional coordinates:
 
 Other representations may be added later.
 
+Beam initialization supports Gaussian coordinates (the count-taking default),
+bounded uniform random coordinates, and endpoint-inclusive Cartesian grids
+(the no-count constructor). The new bounded modes construct Float32/Float64
+coordinates on the host and upload once for CUDA; they do not apply Gaussian
+standardization or optics maps. MPI uses the existing whole-beam construction
+and contiguous-shard strategy. The initialization receipt reports the global
+macroparticle count and resolved grid shape; physical `npart` remains global.
+See `?Beam`, `?beam_initialization_option_schema`, and
+[`design/beam_initialization.md`](design/beam_initialization.md).
+
 ## Current Tracking Interface
 
 The current `Symplectic6DMap` tracking primitive is:

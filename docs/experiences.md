@@ -2113,6 +2113,31 @@ for the strings you touch, and change the pin and the text in one commit (batch 
 The static check that found no second collision -- every pin re-evaluated against the edited tree -- is
 the five-line script a sweep runs before its gate, not after.
 
+## Bounded initialization needs a distinct validation path
+
+The uniform/grid feature (2026-10-29) reused the Gaussian constructor family,
+but its bounds describe physical coordinates: Gaussian sample standardization
+or initial maps would invalidate the requested box. The reviewed design gives
+the bounded modes their own validation and sampling path, rejects non-default
+Gaussian transforms before narrowing can hide them, and verifies actual
+coordinates beside consumer receipts. The neighbour review also found that
+MPI communicator validation occurred after drawing; moving communicator and
+shard-range validation before sampling prevents refused constructors from
+claiming streams or recording successful initialization. The
+[record](history/audit_beam_initialization_2026_10_29.md) carries the failing
+controls, unchanged Gaussian fingerprints, and measured checks.
+
+A probe's RNG reservation is still a source claim site. The full gate caught
+an unnamed reservation in the new effectiveness helper after all initialization
+checks had passed. Naming its `:beam` consumer made the unchanged RNG-policy
+testset pass 36/36. Include that existing source census when adding a draw or
+reservation, alongside the metadata and `Core.Box` checks.
+
+Test fixtures also join live subtype reflection: the activation-counting
+policy needed a `description` method even though it lived in `Main`. The
+unchanged registry checks caught that omission. Run the registry checks with
+new fixtures loaded, not only against a clean package session.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

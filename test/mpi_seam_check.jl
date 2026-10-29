@@ -181,6 +181,63 @@ with_execution_audit(audit) do
     end
 end
 
+# --- bounded initialization: the constructor returns this rank's shard ---
+#
+# The undivided reference uses a backend tag, so it does not request an
+# ordinary CPU policy inside an MPI launcher. Each constructor below runs
+# outside a policy scope: it must open the communicator itself. Global
+# population/count receipts are checked beside local coordinates, since a
+# constructor that returned every particle on every rank could otherwise
+# pass a same-seed comparison. No parent parsing depends on this new marker;
+# any failed property exits through fail() before the existing seam finishes.
+let rank = child_rank(), nranks = MPI.Comm_size(MPI.COMM_WORLD)
+    policy = MultiProcessExecutionPolicy(threads=1, ranks=nranks)
+    lower = (-1.0, -0.5, 0.0, -0.5, 0.125, 0.0)
+    upper = (1.0, 0.5, 1.0, 0.5, 0.125, 0.0)
+    counts = (5, 3, 3, 2, 1, 1)
+    spacing = (0.5, 0.5, 0.5, 1.0, 0.0, 0.0)
+    rid = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
+    checked = 0
+    for T in (Float32, Float64), form in (:uniform, :grid_size, :grid_step)
+        distribution = form === :uniform ? :uniform : :grid
+        constructor = if form === :uniform
+            # An odd count straddles the fixed chunk partition differently
+            # at one, two and four ranks; physical population stays global.
+            backend -> Beam(257, backend, T; distribution=:uniform,
+                lower=lower, upper=upper, rng_id=rid, npart=7.0e10)
+        elseif form === :grid_size
+            backend -> Beam(backend, T; lower=lower, upper=upper, grid_size=counts)
+        else
+            backend -> Beam(backend, T; lower=lower, upper=upper, grid_step=spacing)
+        end
+        whole = constructor(CPUThreadsBackend)
+        holder = Ref{Any}()
+        init_audit = with_execution_audit() do
+            holder[] = constructor(policy)
+        end
+        shard = holder[]
+        global_n = length(whole.rep)
+        expected_range = Octopus._mp_shard_range(global_n, nranks, rank)
+        length(shard.rep) == length(expected_range) ||
+            fail("bounded initialization $(form)/$(T) rank $(rank): wrong local count")
+        for (local_values, all_values) in zip(coordinate_arrays(shard), coordinate_arrays(whole))
+            local_values == all_values[expected_range] ||
+                fail("bounded initialization $(form)/$(T) rank $(rank): coordinates differ from the undivided slice")
+        end
+        expected_population = form === :uniform ? T(7.0e10) : T(global_n)
+        shard.params.npart == expected_population ||
+            fail("bounded initialization $(form)/$(T) rank $(rank): physical population became local")
+        receipts = filter(r -> r.consumer === :beam_initialization, execution_receipts(init_audit))
+        length(receipts) == 1 || fail("bounded initialization $(form)/$(T): expected one initialization receipt")
+        receipt = only(receipts)
+        receipt.backend === CPUThreadsBackend && receipt.values.distribution === distribution &&
+            receipt.values.n_macro == global_n && receipt.values.coordinate_type === T ||
+            fail("bounded initialization $(form)/$(T): receipt does not describe the global construction")
+        checked += 1
+    end
+    @printf("MPI-BOUNDINIT rank=%d nranks=%d cases=%d OK\n", rank, nranks, checked)
+end
+
 # --- sharded tracking (step 3a) -----------------------------------------
 #
 # Built and tracked exactly as a user would, through the public constructor

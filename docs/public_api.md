@@ -27,6 +27,24 @@ with:
 write_registry_snapshot()
 ```
 
+## Construct Beams
+
+```julia
+?Beam
+?BeamParams
+?Phase6DRep
+?beam_initialization_option_schema
+```
+
+`Beam(N, policy; distribution=:gaussian, ...)` preserves the Gaussian default.
+Use `distribution=:uniform, lower=lo, upper=hi` for random points in a physical
+6D box. For a Cartesian grid, omit `N`:
+`Beam(policy; lower=lo, upper=hi, grid_size=counts)` or `grid_step=spacing`.
+The six-component order is `(x, px, y, py, z, pz)`; `grid_size` counts points,
+and their product determines the macroparticle count. See the
+[initialization design](design/beam_initialization.md) for the decisions behind
+the API; `?Beam` owns the endpoint and inactive-option rules.
+
 ## Construct Elements
 
 Start with:

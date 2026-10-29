@@ -1955,12 +1955,76 @@ function _concrete_octopus_subtypes(T::Type, acc=Any[])
     return acc
 end
 
+"""Check constructor-only Beam metadata against the initialization consumers.
+
+The schema default describes the count-taking constructor. The no-count
+constructor has a different distribution default, so it is observed separately.
+An explicit local RNG keeps this metadata query out of the global stream registry.
+The optional schema argument lets the suite inject metadata drift without replacing
+module methods or making subsequent checks depend on their execution order.
+"""
+function _beam_initialization_metadata_errors(schema=beam_initialization_option_schema())
+    errors = String[]
+    constructor_keywords = Set(k for method in methods(_initialize_beam)
+                               for k in Base.kwarg_decl(method))
+    Set(keys(schema)) ⊆ constructor_keywords || push!(errors,
+        "Beam initialization schema names a keyword the constructor does not accept")
+    for (name, meta) in pairs(schema)
+        meta.consumer === :beam_initialization || push!(errors,
+            "Beam.$(name) metadata does not name its beam_initialization consumer")
+        Set(meta.supported_backends) == Set((CPUThreadsBackend, CUDABackend)) || push!(errors,
+            "Beam.$(name) metadata must support CPUThreadsBackend and CUDABackend")
+    end
+    try
+        default_audit = with_execution_audit() do
+            Beam(4, CPUThreadsBackend; rng=MersenneTwister(0))
+        end
+        default_receipts = filter(r -> r.consumer === :beam_initialization,
+                                  execution_receipts(default_audit))
+        if length(default_receipts) != 1
+            push!(errors, "default Beam construction did not record exactly one initialization receipt")
+        else
+            observed = only(default_receipts).values
+            # Constructor-only options have no corresponding Beam fields.
+            # Derive their complete set from the consumer receipt, separating
+            # only the receipt's provenance fields. A subset check against
+            # constructor keywords cannot notice a schema key that disappeared.
+            auxiliary = (:n_macro, :coordinate_type, :requested_grid_size,
+                         :requested_grid_step)
+            observed_options = setdiff(Set(keys(observed)), Set(auxiliary))
+            Set(keys(schema)) == observed_options || push!(errors,
+                "Beam initialization schema keys disagree with the initialization consumer fields")
+            for (name, meta) in pairs(schema)
+                if !haskey(observed, name)
+                    push!(errors, "Beam.$(name) has no field at its initialization consumer")
+                elseif !isequal(observed[name], meta.default)
+                    push!(errors, "Beam.$(name) metadata default disagrees with the count-taking constructor")
+                end
+            end
+        end
+        grid_audit = with_execution_audit() do
+            Beam(CPUThreadsBackend; lower=ntuple(_ -> 0.0, 6),
+                 upper=ntuple(_ -> 0.0, 6), grid_size=ntuple(_ -> 1, 6))
+        end
+        grid_receipts = filter(r -> r.consumer === :beam_initialization,
+                               execution_receipts(grid_audit))
+        (length(grid_receipts) == 1 &&
+         only(grid_receipts).values.distribution === :grid &&
+         only(grid_receipts).values.n_macro == 1) || push!(errors,
+            "the no-count Beam constructor did not default to a one-point grid")
+    catch err
+        push!(errors, "Beam initialization metadata probe failed: $(sprint(showerror, err))")
+    end
+    return errors
+end
+
 """
     validate_configuration_metadata() -> Bool
 
 Cross-check every public configuration schema against its constructor:
 execution policies, `LongitudinalSlicing`, `CUDAPICLaunchConfig`, the Poisson
-solvers, `StrongStrongTask` options, diagnostics, schedules, and observers.
+solvers, `StrongStrongTask` options, diagnostics, schedules, observers, and
+the bounded Beam initialization options.
 Checks that schema keys match public fields, metadata defaults match
 constructor defaults, every option names a runtime consumer, and every
 concrete solver/observer defined in Octopus is covered. Throws an
@@ -1969,6 +2033,7 @@ concrete solver/observer defined in Octopus is covered. Throws an
 """
 function validate_configuration_metadata()
     errors = String[]
+    append!(errors, _beam_initialization_metadata_errors())
     # Completeness by TYPE TREE, not hand list. The U3-4 repair totalized the
     # solver and observer loops this way and stopped at them: policies and
     # schedules kept their hand-written tuples, so a new concrete

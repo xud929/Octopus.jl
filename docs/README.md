@@ -35,6 +35,15 @@ cites the theory it builds on and the alternatives it rejected; it does not
 duplicate derivations. (`knob_control.md` above is also a design note; it
 predates this folder and stays top-level because `AGENTS.md` links it.)
 
+- [`beam_initialization.md`](design/beam_initialization.md) — bounded uniform
+  random and Cartesian-grid beam construction: physical bounds, grid sizing,
+  Gaussian compatibility, RNG and backend behavior, and verification plan.
+  Implementation and neighbour review:
+  [`audit_beam_initialization_2026_10_29.md`](history/audit_beam_initialization_2026_10_29.md),
+  with the independent
+  [`U1 report`](history/audit_beam_initialization_2026_10_29_unit_reports/U1_report.md),
+  [full-gate testsets](history/audit_beam_initialization_2026_10_29_gate.tsv), and
+  [script receipts](history/audit_beam_initialization_2026_10_29_scripts.tsv).
 - [`testing_lanes.md`](design/testing_lanes.md) — the fast development lane
   (`Pkg.test(test_args=["lane=fast"])`): the measured time split behind the
   lane-gated heavyweight sections (13 at the 2026-08-13 measurement; the list

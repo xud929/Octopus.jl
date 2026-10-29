@@ -18765,6 +18765,440 @@ end
     end
 end
 
+@testset "Uniform Beam samples the requested box without Gaussian normalization" begin
+    old_seed, old_method = global_rng_seed(), global_rng_method()
+    rid = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
+    other_rid = Octopus._unheld_rng_id(rid + 1)
+    lower = (-2.0, -0.5, 10.0, -0.02, -3.0, 0.125)
+    upper = (4.0, 0.5, 14.0, 0.04, 1.0, 0.875)
+    n = 16_384
+    try
+        for T in (Float32, Float64), method in (:philox, :splitmix)
+            @testset let coordinate_type = T, rng_method = method
+                set_global_rng!(seed=20261029, method=method)
+                mk(; kw...) = Beam(n, CPUThreadsBackend, T;
+                    distribution=:uniform, lower=lower, upper=upper, kw...)
+                b = mk(rng_id=rid)
+                coords = coordinate_arrays(b)
+                @test all(a -> eltype(a) === T && length(a) == n, coords)
+                @test b.params.npart == T(n)
+                @test coords == coordinate_arrays(mk(rng_id=rid))
+                @test all(a != c for (a, c) in zip(coords, coordinate_arrays(mk(rng_id=other_rid))))
+                set_global_rng!(seed=20261030, method=method)
+                @test all(a != c for (a, c) in zip(coords, coordinate_arrays(mk(rng_id=rid))))
+                set_global_rng!(seed=20261029, method=method)
+
+                # The reference is the continuous uniform law, not a second
+                # evaluation of the sampler. Eight sampling standard errors:
+                # Var(mean)=1/(12N), Var(sample variance)≈1/(180N).
+                normalized = map(enumerate(coords)) do (j, a)
+                    lo, hi = T(lower[j]), T(upper[j])
+                    @test all(x -> lo <= x <= hi, a)
+                    u = (Float64.(a) .- Float64(lo)) ./ (Float64(hi) - Float64(lo))
+                    μ = sum(u) / n
+                    v = sum(x -> (x - μ)^2, u) / n
+                    @test abs(μ - 0.5) <= 8 / sqrt(12n)
+                    @test abs(v - 1 / 12) <= 8 / sqrt(180n)
+                    @test minimum(u) < 0.01 && maximum(u) > 0.99
+                    u
+                end
+                for j in 1:5, k in (j + 1):6
+                    a, c = normalized[j], normalized[k]
+                    ma, mc = sum(a) / n, sum(c) / n
+                    cov = sum((a .- ma) .* (c .- mc)) / n
+                    @test abs(cov) <= 8 / (12sqrt(n))
+                end
+                # Moving one bound must act on only that coordinate. A global
+                # normalization or a reused coordinate stream fails this.
+                moved_lower = Base.setindex(lower, -0.04, 4)
+                moved = Beam(n, CPUThreadsBackend, T; distribution=:uniform,
+                             lower=moved_lower, upper=upper, rng_id=rid)
+                for j in 1:6
+                    @test (coordinate_array(moved, j) == coords[j]) == (j != 4)
+                end
+                single = Beam(1, CPUThreadsBackend, T; distribution=:uniform,
+                              lower=lower, upper=upper, rng_id=rid)
+                @test all(coordinate_array(single, j)[1] == coords[j][1] for j in 1:6)
+            end
+        end
+
+        # The explicit RNG is reproducible, is actually consumed, and does not
+        # consume an automatic counter stream. Do not prescribe a stateful
+        # RNG's batching: only require repeatability and actual consumption.
+        stateful = MersenneTwister(991)
+        would_be = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1)
+        a = Beam(37, CPUThreadsBackend; distribution=:uniform,
+                 lower=lower, upper=upper, rng=stateful)
+        b = Beam(37, CPUThreadsBackend; distribution=:uniform,
+                 lower=lower, upper=upper, rng=MersenneTwister(991))
+        @test coordinate_arrays(a) == coordinate_arrays(b)
+        @test rand(stateful) != rand(MersenneTwister(991))
+        @test Octopus.next_rng_id!() == would_be
+
+        # A per-beam seed override still warns and reaches the draw.
+        set_global_rng!(seed=20261029, method=:philox)
+        seeded = @test_logs (:warn, r"seed keyword is deprecated") Beam(17, CPUThreadsBackend;
+            distribution=:uniform, lower=lower, upper=upper, seed=991, rng_id=rid)
+        set_global_rng!(seed=991, method=:philox)
+        @test coordinate_arrays(seeded) == coordinate_arrays(Beam(17, CPUThreadsBackend;
+            distribution=:uniform, lower=lower, upper=upper, rng_id=rid))
+    finally
+        set_global_rng!(seed=old_seed, method=old_method)
+    end
+end
+
+@testset "Grid Beam derives its population and ordered Cartesian product from its axes" begin
+    # Literal axis values form the oracle independently of the implementation's
+    # count/spacing resolver. The unequal counts make axis-order errors visible.
+    axes = ((-1.0, 0.0, 1.0), (-0.5, 0.5), (2.0,), (-0.25, 0.25), (0.0,), (0.125,))
+    lower, upper = map(first, axes), map(last, axes)
+    counts = map(length, axes)
+    expected = vec(collect(Iterators.product(axes...)))
+    spacing = (1.0, 1.0, 0.0, 0.5, 0.0, 0.0)
+    for T in (Float32, Float64), second in (CPUThreadsBackend, CPUThreadsExecutionPolicy(threads=1))
+        @testset let coordinate_type = T, policy_or_backend = typeof(second)
+            sampled = Ref{Any}()
+            audit = with_execution_audit() do
+                sampled[] = Beam(second, T; lower=lower, upper=upper, grid_size=counts)
+            end
+            grid = sampled[]
+            @test length(grid.rep) == length(expected)
+            @test [grid.rep[i] for i in 1:length(grid.rep)] == map(p -> T.(p), expected)
+            @test all(a -> eltype(a) === T, coordinate_arrays(grid))
+            @test grid.params.npart == T(length(expected))
+            r = only(filter(r -> r.consumer === :beam_initialization, execution_receipts(audit)))
+            @test r.backend === CPUThreadsBackend
+            @test r.values.distribution === :grid
+            @test r.values.lower == T.(lower) && r.values.upper == T.(upper)
+            @test r.values.grid_size == counts && r.values.grid_step == T.(spacing)
+            @test r.values.requested_grid_size == counts && r.values.requested_grid_step === nothing
+            @test r.values.n_macro == length(expected) && r.values.coordinate_type === T
+            by_step = Beam(second, T; distribution=:grid, lower=collect(lower), upper=collect(upper),
+                           grid_step=collect(spacing))
+            @test coordinate_arrays(by_step) == coordinate_arrays(grid)
+            physical = Beam(second, T; lower=lower, upper=upper, grid_size=counts,
+                            npart=8.0e10, charge=-1, mc2=EMASS_EV, E0=10.0e9, r0=RE)
+            @test physical.params.npart == T(8.0e10)
+            @test physical.params.charge == -one(T) && physical.params.E0 == T(10.0e9)
+            @test coordinate_arrays(physical) == coordinate_arrays(grid)
+        end
+    end
+
+    # Decimal division may differ from an integer by roundoff. Endpoints are
+    # exact requested FloatT values, and the receipt records realized spacing.
+    for T in (Float32, Float64)
+        lo = ntuple(_ -> zero(T), 6)
+        hi = (T(0.3), zero(T), zero(T), zero(T), zero(T), zero(T))
+        step = (T(0.1), zero(T), zero(T), zero(T), zero(T), zero(T))
+        holder = Ref{Any}()
+        audit = with_execution_audit() do
+            holder[] = Beam(CPUThreadsBackend, T; lower=lo, upper=hi, grid_step=step)
+        end
+        grid = holder[]
+        @test length(grid.rep) == 4
+        @test first(grid.rep.x) === lo[1] && last(grid.rep.x) === hi[1]
+        @test all(diff(grid.rep.x) .> zero(T))
+        @test all(isapprox(d, step[1]; rtol=8eps(T)) for d in diff(grid.rep.x))
+        receipt = only(filter(r -> r.consumer === :beam_initialization, execution_receipts(audit)))
+        @test receipt.values.requested_grid_step == step
+        @test receipt.values.grid_size == (4, 1, 1, 1, 1, 1)
+        @test receipt.values.grid_step[1] == (hi[1] - lo[1]) / T(3)
+        adjacent = (nextfloat(one(T)), zero(T), zero(T), zero(T), zero(T), zero(T))
+        base = (one(T), zero(T), zero(T), zero(T), zero(T), zero(T))
+        g2 = Beam(CPUThreadsBackend, T; lower=base, upper=adjacent, grid_size=(2, 1, 1, 1, 1, 1))
+        @test g2.rep.x == [one(T), nextfloat(one(T))]
+        @test_throws ArgumentError Beam(CPUThreadsBackend, T; lower=base, upper=adjacent,
+                                        grid_size=(3, 1, 1, 1, 1, 1))
+    end
+
+    # The one-point Cartesian product is a valid beam, even when all six
+    # coordinates are fixed. Grid construction must leave the RNG alone.
+    point = (3.0, -1.0, 2.0, 0.25, 0.0, -0.5)
+    would_be = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1)
+    singleton = Beam(CPUThreadsBackend; lower=point, upper=point, grid_size=ones(Int, 6))
+    zero_steps = Beam(CPUThreadsBackend; lower=point, upper=point, grid_step=zeros(6))
+    @test singleton.rep[1] == point && singleton.params.npart == 1.0
+    @test coordinate_arrays(singleton) == coordinate_arrays(zero_steps)
+    @test Octopus.next_rng_id!() == would_be
+    fixed_random = Beam(11, CPUThreadsBackend; distribution=:uniform, lower=point, upper=point)
+    @test all(fixed_random.rep[i] == point for i in 1:11)
+end
+
+@testset "Bounded Beam refuses invalid or inactive requests before policy and RNG effects" begin
+    z6, o6 = ntuple(_ -> 0.0, 6), ntuple(_ -> 1.0, 6)
+    counts = ntuple(_ -> 2, 6)
+    policy = CPUThreadsExecutionPolicy(threads=1)
+    rid = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
+    uniform(; kw...) = Beam(8, policy; distribution=:uniform, lower=z6, upper=o6, rng_id=rid, kw...)
+    grid(; kw...) = Beam(policy; lower=z6, upper=o6, grid_size=counts, kw...)
+    # One refusal probe checks the error type, named cause, receipt silence,
+    # and registry state; an early return or deferred refusal cannot pass it.
+    function refuses(name, f)
+        err = Ref{Any}(nothing)
+        audit = with_execution_audit() do
+            try
+                f()
+            catch e
+                err[] = e
+            end
+        end
+        @test err[] isa ArgumentError
+        @test err[] isa ArgumentError && occursin(name, sprint(showerror, err[]))
+        @test isempty(execution_receipts(audit))
+        @test !Octopus._rng_id_held(rid)
+    end
+    would_be = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1)
+    for (name, f) in (
+        ("distribution", () -> Beam(8, policy; distribution=:unknown)),
+        ("distribution", () -> Beam(policy; distribution=:uniform, lower=z6, upper=o6, grid_size=counts)),
+        ("distribution", () -> Beam(policy; distribution=:gaussian, lower=z6, upper=o6, grid_size=counts)),
+        ("grid", () -> Beam(64, policy; distribution=:grid, lower=z6, upper=o6, grid_size=counts)),
+        ("lower", () -> Beam(8, policy; distribution=:uniform, upper=o6)),
+        ("upper", () -> Beam(8, policy; distribution=:uniform, lower=z6)),
+        ("lower", () -> Beam(8, policy; distribution=:uniform, lower=zeros(5), upper=o6)),
+        ("upper", () -> Beam(policy; lower=z6, upper=ones(5), grid_size=counts)),
+        ("lower", () -> Beam(8, policy; distribution=:uniform, lower=Base.setindex(z6, NaN, 1), upper=o6)),
+        ("upper", () -> Beam(8, policy; distribution=:uniform, lower=z6, upper=Base.setindex(o6, Inf, 1))),
+        ("lower", () -> Beam(8, policy; distribution=:uniform, lower=o6, upper=z6)),
+        ("lower", () -> Beam(8, policy; lower=z6)),
+        ("upper", () -> Beam(8, policy; upper=o6)),
+        ("grid_size", () -> uniform(grid_size=counts)),
+        ("grid_step", () -> uniform(grid_step=o6)),
+        ("grid_size", () -> Beam(8, policy; grid_size=counts)),
+        ("grid_step", () -> Beam(8, policy; grid_step=o6)),
+        ("grid", () -> Beam(policy; lower=z6, upper=o6)),
+        ("grid", () -> grid(grid_step=o6)),
+        ("grid_size", () -> Beam(policy; lower=z6, upper=o6, grid_size=(2, 2, 2))),
+        ("grid_size", () -> Beam(policy; lower=z6, upper=o6, grid_size=(true, 2, 2, 2, 2, 2))),
+        ("grid_size", () -> Beam(policy; lower=z6, upper=o6, grid_size=(2.0, 2, 2, 2, 2, 2))),
+        ("grid_size", () -> Beam(policy; lower=z6, upper=o6, grid_size=(0, 2, 2, 2, 2, 2))),
+        ("grid_size", () -> Beam(policy; lower=z6, upper=o6, grid_size=(1, 2, 2, 2, 2, 2))),
+        ("grid_size", () -> Beam(policy; lower=z6, upper=z6, grid_size=counts)),
+        ("grid_step", () -> Beam(policy; lower=z6, upper=o6, grid_step=(0.3, 1, 1, 1, 1, 1))),
+        ("grid_step", () -> Beam(policy; lower=z6, upper=o6, grid_step=(0, 1, 1, 1, 1, 1))),
+        ("grid_step", () -> Beam(policy; lower=z6, upper=o6, grid_step=(-1, 1, 1, 1, 1, 1))),
+        ("grid_step", () -> Beam(policy; lower=z6, upper=o6, grid_step=(Inf, 1, 1, 1, 1, 1))),
+        ("grid_step", () -> Beam(policy; lower=z6, upper=z6, grid_step=o6)),
+        ("rng", () -> grid(rng=MersenneTwister(2))),
+        ("seed", () -> grid(seed=2)),
+        ("rng_id", () -> grid(rng_id=rid)),
+    )
+        @testset let refused_option = name
+            refuses(name, f)
+        end
+    end
+    inactive = ((; beta=(2, 1, 1)), (; alpha=(0.1, 0, 0)), (; sigma=(1, 1, 1)),
+                (; emit=(1, 1, 1)), (; coupling=(0.1, 0, 0, 0)), (; R=(0, 0, 0, 0)),
+                (; C=(0, 0, 0, 0)), (; mode=Octopus.XY_MODEB), (; eta=(0.1, 0, 0, 0)),
+                (; zeta=(0.1, 0, 0, 0)), (; initial_offset=(0.1, 0, 0, 0, 0, 0)), (; cutoff=Inf))
+    for kw in inactive
+        key = string(only(keys(kw)))
+        refuses(key, () -> uniform(; kw...))
+        refuses(key, () -> grid(; kw...))
+    end
+    # These are non-default BEFORE conversion, neutral afterward: the caller's
+    # requested option must not disappear when Float32 narrows it.
+    for kw in ((; beta=(nextfloat(1.0), 1.0, 1.0)),
+               (; alpha=(1.0e-100, 0.0, 0.0)),
+               (; initial_offset=(1.0e-100, 0.0, 0.0, 0.0, 0.0, 0.0)),
+               (; cutoff=nextfloat(5.0)))
+        refuses(string(only(keys(kw))), () -> Beam(8, policy, Float32;
+            distribution=:uniform, lower=z6, upper=o6, rng_id=rid, kw...))
+    end
+    # The suite deliberately has no MPI extension loaded. Asking for two
+    # ranks is therefore a refusal, before all three initialization branches
+    # may draw or claim success (the bounded-mode neighbour audit, BI-1).
+    missing_ranks = MultiProcessExecutionPolicy(threads=1, ranks=2)
+    refuses("ranks", () -> Beam(8, missing_ranks; distribution=:gaussian, rng_id=rid))
+    refuses("ranks", () -> Beam(8, missing_ranks; distribution=:uniform,
+        lower=z6, upper=o6, rng_id=rid))
+    refuses("ranks", () -> Beam(missing_ranks; lower=z6, upper=o6, grid_size=counts))
+    @test Octopus.next_rng_id!() == would_be
+
+    # Geometry errors and arithmetic overflow are caught before any huge
+    # allocation. These cases have no random state to consume.
+    @test_throws ArgumentError Beam(policy, Float64; lower=z6, upper=o6,
+                                    grid_size=(typemax(Int), 2, 2, 2, 2, 2))
+    storage_overflow = div(typemax(Int), 6sizeof(Float64)) + 1
+    @test_throws ArgumentError Beam(policy; lower=z6, upper=(1, 0, 0, 0, 0, 0),
+                                    grid_size=(storage_overflow, 1, 1, 1, 1, 1))
+    @test_throws ArgumentError Beam(8, policy, Float32; distribution=:uniform,
+        lower=(1, 0, 0, 0, 0, 0), upper=(nextfloat(1.0), 1, 1, 1, 1, 1))
+    @test_throws ArgumentError Beam(8, policy, Float32; distribution=:uniform,
+        lower=z6, upper=(1.0e100, 1, 1, 1, 1, 1))
+    @test_throws ArgumentError Beam(8, policy; distribution=:uniform,
+        lower=(-floatmax(Float64), 0, 0, 0, 0, 0), upper=(floatmax(Float64), 1, 1, 1, 1, 1))
+    @test_throws ArgumentError Beam(policy, Float32; lower=z6, upper=o6,
+                                    grid_step=(1.0e-100, 1, 1, 1, 1, 1))
+    for T in (Int, BigFloat), second in (policy, CPUThreadsBackend)
+        @test_throws ArgumentError Beam(8, second, T; distribution=:uniform, lower=z6, upper=o6)
+        @test_throws ArgumentError Beam(second, T; lower=z6, upper=o6, grid_size=counts)
+    end
+    # The positive control does claim a stream and activate its policy.
+    accepted = with_execution_audit() do
+        uniform()
+    end
+    @test Octopus._rng_id_held(rid)
+    @test any(r -> r.consumer === :beam_initialization && r.values.distribution === :uniform,
+              execution_receipts(accepted))
+end
+
+@testset "Bounded Beam preserves backend and policy semantics and the Gaussian default" begin
+    rid = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
+    lower = (-0.125, -0.25, 0.5, -0.5, -0.75, 0.0)
+    upper = (0.125, 0.25, 1.0, 0.5, 0.75, 0.125)
+    counts = (3, 2, 3, 2, 2, 2)
+    for T in (Float32, Float64)
+        kwargs = (; beta=(0.55, 0.056, 12.7), alpha=(0.3, -0.2, 0.4),
+                  emit=(20.0e-9, 1.3e-9, 36.0e-6), rng_id=rid)
+        gaussian = Beam(127, CPUThreadsBackend, T; kwargs...)
+        explicit_gaussian = Beam(127, CPUThreadsBackend, T; distribution=:gaussian, kwargs...)
+        @test coordinate_arrays(gaussian) == coordinate_arrays(explicit_gaussian)
+        for distribution in (:uniform, :grid)
+            mk(second) = distribution === :uniform ?
+                Beam(127, second, T; distribution=distribution, lower=lower, upper=upper, rng_id=rid, npart=1.0e10) :
+                Beam(second, T; distribution=distribution, lower=lower, upper=upper, grid_size=counts, npart=1.0e10)
+            cpu = mk(CPUThreadsBackend)
+            one_worker = mk(CPUThreadsExecutionPolicy(threads=1))
+            four_workers = mk(CPUThreadsExecutionPolicy(threads=4))
+            mpi_one = mk(MultiProcessExecutionPolicy(threads=1, ranks=1))
+            @test coordinate_arrays(cpu) == coordinate_arrays(one_worker) == coordinate_arrays(four_workers)
+            @test coordinate_arrays(cpu) == coordinate_arrays(mpi_one)
+            @test cpu.params == mpi_one.params
+            if CUDA_TESTS_ACTIVE
+                holder = Ref{Any}()
+                audit = with_execution_audit() do
+                    holder[] = mk(CUDAExecutionPolicy(device=0))
+                end
+                gpu = holder[]
+                @test gpu.rep.x isa Octopus.CUDA.CuArray
+                @test all(a == Array(g) for (a, g) in zip(coordinate_arrays(cpu), coordinate_arrays(gpu)))
+                r = only(filter(r -> r.consumer === :beam_initialization, execution_receipts(audit)))
+                @test r.backend === CUDABackend && r.values.distribution === distribution
+                @test r.values.n_macro == length(gpu.rep)
+                tag_gpu = mk(CUDABackend)
+                @test all(a == Array(g) for (a, g) in zip(coordinate_arrays(cpu), coordinate_arrays(tag_gpu)))
+            else
+                @test_skip "CUDA bounded Beam construction: device not available"
+            end
+        end
+    end
+end
+
+@testset "Uniform and grid beams track through a sliced weak-strong collision on CPU and CUDA" begin
+    lower = (2.0e-5, -1.0e-5, -3.0e-6, -1.0e-5, -0.01, -1.0e-4)
+    upper = (8.0e-5, 1.0e-5, 6.0e-6, 1.0e-5, 0.01, 1.0e-4)
+    rid = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
+    thin = ThinStrongBeamSpec{Float64}(kbb=-1.0e-8, klum=1.0,
+        beta=(0.55, 0.056), sigma=(95.0e-6, 8.5e-6))
+    strong = GaussianStrongBeamSpec{Float64}(thin=thin, ns=3, sigz=0.007, slice_method=:equal_area)
+    for distribution in (:uniform, :grid)
+        mk(policy) = distribution === :uniform ?
+            Beam(128, policy; distribution=distribution, lower=lower, upper=upper, rng_id=rid) :
+            Beam(policy; distribution=distribution, lower=lower, upper=upper, grid_size=(3, 2, 3, 2, 3, 2))
+        cpu_policy = CPUThreadsExecutionPolicy(threads=1)
+        cpu = mk(cpu_policy)
+        original_px = copy(cpu.rep.px)
+        execute!(TrackingTask((strong,); policy=cpu_policy), cpu; turns=2)
+        @test count_live(cpu.rep) == length(cpu.rep)
+        @test maximum(abs, cpu.rep.px .- original_px) > 1.0e-10
+        if CUDA_TESTS_ACTIVE
+            gpu_policy = CUDAExecutionPolicy(device=0)
+            gpu = mk(gpu_policy)
+            audit = with_execution_audit() do
+                execute!(TrackingTask((strong,); policy=gpu_policy), gpu; turns=2)
+            end
+            @test count_live(gpu.rep) == length(gpu.rep)
+            @test any(r -> r.backend === CUDABackend &&
+                          r.consumer in (:cuda_fused_launch, :cuda_weak_strong_launch), execution_receipts(audit))
+            for (a, g) in zip(coordinate_arrays(cpu), coordinate_arrays(gpu))
+                # The analytic kick uses device special functions; this is a
+                # physics agreement bound, not a bitwise tracking claim.
+                scale = max(maximum(abs, a), 1.0e-12)
+                @test maximum(abs, a .- Array(g)) <= 1.0e-10 * scale
+            end
+        else
+            @test_skip "CUDA bounded Beam weak-strong tracking: device not available"
+        end
+    end
+end
+
+@testset "Beam initialization metadata and effectiveness checks detect injected drift" begin
+    schema = beam_initialization_option_schema()
+    @test isempty(Octopus._beam_initialization_metadata_errors(schema))
+    m = schema.distribution
+    wrong_default = merge(schema, (distribution=ConfigurationOptionMeta(
+        m.option_type, :uniform, m.meaning; category=m.category,
+        supported_backends=m.supported_backends, dependencies=m.dependencies,
+        consumer=m.consumer, perturbs_timing=m.perturbs_timing),))
+    default_errors = Octopus._beam_initialization_metadata_errors(wrong_default)
+    @test any(s -> occursin("distribution", s) && occursin("default", s), default_errors)
+    wrong_consumer = merge(schema, (distribution=ConfigurationOptionMeta(
+        m.option_type, m.default, m.meaning; category=m.category,
+        supported_backends=m.supported_backends, dependencies=m.dependencies,
+        consumer=:not_the_initialization_consumer, perturbs_timing=m.perturbs_timing),))
+    consumer_errors = Octopus._beam_initialization_metadata_errors(wrong_consumer)
+    @test any(s -> occursin("distribution", s) && occursin("consumer", s), consumer_errors)
+    extra_key = merge(schema, (nonexistent_initialization_option=schema.lower,))
+    @test !isempty(Octopus._beam_initialization_metadata_errors(extra_key))
+    missing_key = Base.structdiff(schema, NamedTuple{(:upper,)})
+    @test !isempty(Octopus._beam_initialization_metadata_errors(missing_key))
+
+    check = Octopus._beam_initialization_effectiveness(CPUThreadsBackend)
+    @test check.passed
+    @test check.metrics[:cases_checked] == 7 && check.metrics[:receipts_checked] == 7
+    @test Set(check.metrics[:options_checked]) == Set(keys(schema))
+    missing_receipts = Octopus._beam_initialization_effectiveness(CPUThreadsBackend;
+        receipt_transform=receipts -> empty(receipts))
+    @test !missing_receipts.passed
+    @test missing_receipts.metrics[:cases_checked] == 7
+    @test missing_receipts.metrics[:receipts_checked] == 0
+    @test occursin("receipt", missing_receipts.message)
+
+    # All real consumer receipts survive, but the returned distribution is
+    # wrong. A check that only examines configuration echoes must fail here.
+    function corrupted_coordinates(args...; kwargs...)
+        beam = Beam(args...; kwargs...)
+        beam.rep.x .= 0.0
+        return beam
+    end
+    wrong_coordinates = Octopus._beam_initialization_effectiveness(CPUThreadsBackend;
+        constructor=corrupted_coordinates)
+    @test !wrong_coordinates.passed
+    @test wrong_coordinates.metrics[:cases_checked] == 7
+    @test wrong_coordinates.metrics[:receipts_checked] == 7
+    @test occursin("coordinate", wrong_coordinates.message)
+end
+
+struct _BoundedBeamProbePolicy <: Octopus.AbstractExecutionPolicy
+    activation_count::Base.RefValue{Int}
+end
+Octopus.description(::Type{_BoundedBeamProbePolicy}) =
+    "Test-only CPU policy that counts allocation-time beam activations."
+Octopus.backend_type(::_BoundedBeamProbePolicy) = CPUThreadsBackend
+function Octopus.activate_policy!(policy::_BoundedBeamProbePolicy)
+    policy.activation_count[] += 1
+    return policy
+end
+
+@testset "Uniform Beam validates its explicit RNG before activating the policy" begin
+    lower, upper = ntuple(_ -> 0.0, 6), ntuple(_ -> 1.0, 6)
+    activations = Ref(0)
+    policy = _BoundedBeamProbePolicy(activations)
+    err = try
+        Beam(8, policy; distribution=:uniform, lower=lower, upper=upper, rng=:invalid)
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError && occursin("rng", sprint(showerror, err))
+    @test activations[] == 0
+    valid = Beam(8, policy; distribution=:uniform, lower=lower, upper=upper,
+                 rng=MersenneTwister(31))
+    @test activations[] == 1
+    @test length(valid.rep) == 8 && all(a -> all(isfinite, a), coordinate_arrays(valid))
+end
+
 if _lane_gate("ForwardDiff differentiates the lattice")
 @testset "ForwardDiff differentiates the lattice" begin
     # Octopus takes NO runtime dependency on ForwardDiff. It works because the
