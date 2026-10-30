@@ -108,6 +108,9 @@ struct TrackingTask <: AbstractTask
     # What the constructor's sharing warnings named, read by the resolved-line
     # equal-digest check so one cause warns once (`ReportedSharing`; 2026-10-16).
     reported_sharing::ReportedSharing
+    # Capture state is independent of compilation and plan caches. In particular,
+    # a knob update must not silently redefine the reference for noise trials.
+    phase_space_reset::Base.RefValue{Any}
 end
 
 """Routes `luminosity_tracking` accepts."""
@@ -134,7 +137,7 @@ function configuration_report(task::TrackingTask, rep::Phase6DRep)
             output=(_ra_artifact_entry(task.artifact, :tracking_output),
                     ConfigurationEntry(:loss_report, task.loss_report, task.loss_report, :resolved,
                         task.loss_report ?
-                        "the loss accounting is reconciled and reported per execute!" :
+                        "the loss accounting is reconciled and reported" :
                         "the loss reconciliation is skipped: no unattributed warning, no " *
                         "summary in the artifact's /losses group",
                         :tracking_output)),
@@ -216,6 +219,13 @@ silencing it, so a caller stepping one turn at a time pays nothing — but it
 switches off the **detection** along with the printing: no `unattributed`
 warning, and no summary written into the artifact. The per-particle loss
 records are unaffected.
+
+With a [`PhaseSpaceResetSpec`](@ref), accounting is per trial and
+`loss_report=true` is required. [`phase_space_reset_summary`](@ref) returns
+bounded totals for the latest execution window and its final or partial trial;
+an artifact records `:reset_trials` and `:reset_losses`, instead of permanent
+`:losses`. The snapshot survives continuation and explicit turn replay;
+[`clear_phase_space_reset!`](@ref) rearms capture without rewinding noise.
 """
 function TrackingTask(elements;
                       policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
@@ -261,7 +271,8 @@ function TrackingTask(elements;
     return TrackingTask(element_tuple, policy, action_tuple, observer_tuple, contracts, analyses,
                         Ref{Int64}(0), Ref{Any}(nothing), Dict{Any,Any}(),
                         loss_report, Ref{Any}(nothing), art, Ref(WeakRef(nothing)),
-                        record_turn_times, Float64[], luminosity_tracking, reported_sharing)
+                        record_turn_times, Float64[], luminosity_tracking, reported_sharing,
+                        Ref{Any}(nothing))
 end
 
 """
@@ -326,7 +337,10 @@ tracking_task_option_schema() = (
         "artifact's /losses group when one is attached, on stdout otherwise, with " *
         "a warning whenever `unattributed != 0`. `false` skips the reduction, and " *
         "with it the detection: no unattributed warning, no summary in the " *
-        "artifact. The per-particle loss records are unaffected.";
+        "artifact. The per-particle loss records are unaffected. A task with " *
+        "PhaseSpaceResetSpec requires true and reconciles every trial before " *
+        "restoration; its bounded summary and reset_trials/reset_losses " *
+        "artifact products describe trial outcomes.";
         category=:diagnostics, consumer=:tracking_output),
 )
 
@@ -1016,6 +1030,35 @@ execute!(task::TrackingTask, beam::Beam; turns::Integer=1, start_turn=nothing) =
     (execute!(task, beam.rep; turns=turns, start_turn=start_turn); beam)
 
 function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
+    # Refuse a nested call before compilation and, crucially, outside the
+    # failure cleanup below: that cleanup belongs to the outer pending trial.
+    existing_reset_state = task.phase_space_reset[]
+    existing_reset_state !== nothing && existing_reset_state.running && throw(ArgumentError(
+        "a PhaseSpaceReset task cannot execute concurrently or recursively"))
+    previous_record, previous_owner = task.loss_record[], task.loss_owner[]
+    previous_runtime_entries = task.runtime_entries_cache[]
+    previous_admission = existing_reset_state === nothing ? 0 : existing_reset_state.admission
+    try
+        return _execute_tracking_window!(task, rep; turns=turns, start_turn=start_turn)
+    catch
+        state = task.phase_space_reset[]
+        if state !== nothing && state.admission == previous_admission
+            # Compilation can allocate a candidate beam's loss scratch before
+            # ownership or artifact validation refuses it. An unadmitted call
+            # must preserve the last accepted trial's public loss diagnostics.
+            task.loss_record[] = previous_record
+            task.loss_owner[] = previous_owner
+            # Keep accepted resolved noise tables, even if the global seed
+            # changed meanwhile. Their cache key still detects real spec or
+            # knob changes; rejected windows must not resynthesise them.
+            task.runtime_entries_cache[] = previous_runtime_entries
+            empty!(task.plan_cache)
+        end
+        rethrow()
+    end
+end
+
+function _execute_tracking_window!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
     nturns, first_turn, next_turn =
         _task_execution_window(task.next_turn[], turns, start_turn)
     if (nturns > 1 || first_turn != 0) && _has_accelerating_cavity(task.elements)
@@ -1075,9 +1118,15 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
             # collective, and every fold inside the run reads it from here
             # instead of paying for its own.
             _with_shard(rep, _mp_resolve_shard(length(rep))) do
-                _execute_tracking_task!(
-                    task, rep, runtime_entries, runtime_elems, nturns, first_turn, policy;
-                    turn_modulation=prov)
+                reset_state = _prepare_phase_space_reset!(task, rep, runtime_entries; turns=nturns)
+                reset_state === nothing || (reset_state.running = true)
+                try
+                    _execute_tracking_task!(
+                        task, rep, runtime_entries, runtime_elems, nturns, first_turn, policy;
+                        turn_modulation=prov)
+                finally
+                    reset_state === nothing || (reset_state.running = false)
+                end
             end
         end
     catch
@@ -1110,7 +1159,12 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
         # warning; the loss rows are still written and the artifact still
         # closes.
         crash_summary = try
-            _task_loss_summary(task, rep)
+            if _has_phase_space_reset(runtime_entries)
+                _finish_failed_reset_trial!(task, rep)
+                nothing
+            else
+                _task_loss_summary(task, rep)
+            end
         catch summary_error
             @warn "the crashed run's loss accounting could not be reconciled; the " *
                   "tracking error that stopped the run is the one below, and is the " *
@@ -1133,8 +1187,10 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
             # skipped the close until F-77's fix, the same open-and-locked
             # shape the output tail below had).
             try
-                _ra_write_losses!(task.artifact, task.loss_record[],
-                                  _aperture_s_positions(task.elements), crash_summary)
+                if !_has_phase_space_reset(runtime_entries)
+                    _ra_write_losses!(task.artifact, task.loss_record[],
+                                      _aperture_s_positions(task.elements), crash_summary)
+                end
             catch artifact_error
                 @warn "the crashed run's loss rows could not be written to its artifact; " *
                       "the tracking error that stopped the run is the one below" artifact_error
@@ -1164,7 +1220,8 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
     try
         _with_resolved_policy(active) do
             _with_shard(rep, _mp_resolve_shard(length(rep))) do
-                summary = _global_loss_summary(_task_loss_summary(task, rep))
+                summary = _has_phase_space_reset(runtime_entries) ? nothing :
+                          _global_loss_summary(_task_loss_summary(task, rep))
                 # The console-quiet rule: with an artifact attached the
                 # accounting goes into its /losses group (written just
                 # below), so the summary is "on file".
@@ -1175,9 +1232,11 @@ function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
                     # continued file's earlier rows kept below this window,
                     # this record's appended; 2026-10-19, F-57), then the
                     # artifact closes.
-                    _ra_write_losses!(task.artifact, task.loss_record[],
-                                      _aperture_s_positions(task.elements), summary,
-                                      first(_mp_current_shard(rep)); folded=true)
+                    if !_has_phase_space_reset(runtime_entries)
+                        _ra_write_losses!(task.artifact, task.loss_record[],
+                                          _aperture_s_positions(task.elements), summary,
+                                          first(_mp_current_shard(rep)); folded=true)
+                    end
                     finalize_run_artifact!(task.artifact)
                 end
             end
@@ -1391,7 +1450,8 @@ neighbour audit (lead U3-5) the four-clause conjunction was written out twice.
 """
 _fast_tracking_path(task, runtime_entries) =
     isempty(task.actions) && isempty(task.observers) &&
-    !_has_line_hooks(runtime_entries) && task.artifact === nothing
+    !_has_line_hooks(runtime_entries) && task.artifact === nothing &&
+    !_has_phase_space_reset(runtime_entries)
 
 """
     _record_tracking_receipts!(task, runtime_entries, policy, turns, first_turn, prov)
@@ -1450,6 +1510,7 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     # (`first_turn + offset` below), so a planner filtering against `0:turns-1`
     # disagrees with it on every execute! after the first.
     art = task.artifact
+    reset_state = _has_phase_space_reset(runtime_entries) ? task.phase_space_reset[] : nothing
     # WRAPPER-AWARE since 2026-09-08. This scan feeds three things -- the beam
     # list, the artifact's channel labels and the per-turn push loop -- so all
     # three were equally blind to a wrapped beam, and fixing only the isolation
@@ -1517,6 +1578,7 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
                               aperture_names=record === nothing ? String[] : aperture_names(record),
                               task_kind=string(nameof(typeof(task))))
     end
+    _bind_phase_space_reset_window!(reset_state, task, first_turn, turns)
     Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => art,
                            _ACTIVE_PROBE_S_MAP =>
                                (art === nothing ? nothing :
@@ -1562,6 +1624,10 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     # refusal here left the earlier groups cut back) -- then the per-run
     # receipts, then the route's.
     art === nothing || commit_run_artifact!(art)
+    if reset_state !== nothing
+        reset_state.admission += 1
+        _start_reset_trial_window!(reset_state.ledger)
+    end
     # The task's output receipt (2026-10-16 fix batch, S4-1/S4-10): the path
     # and the luminosity channels the artifact opened with, and the
     # loss-report switch; the artifact's own resolution is the
@@ -1621,7 +1687,7 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
             # whole line every turn (U1-3).
             plan = get(task.plan_cache, plan_key, nothing)
             if plan === nothing
-                plan = _build_tracking_plan(runtime_entries, plan_key)
+                plan = _build_tracking_plan(runtime_entries, plan_key, reset_state)
                 task.plan_cache[plan_key] = plan
             end
             # The ledger's live-progress column, set BEFORE any channel push
@@ -1646,6 +1712,10 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
                                                   turn, Float64(lum))
                 end
             end
+            reset_state === nothing || _finish_reset_trial!(
+                reset_state.ledger, rep, task.loss_record[], art;
+                completed=true, folded=true,
+                shard_offset=first(_mp_current_shard(rep)))
             _stamp_turn!(_record_turns, task.turn_times, _turn_t0, _turn_backend)
         end
         tracking_completed = true
@@ -1993,7 +2063,8 @@ per-particle slots are indexed by particle and live on the beam's device.
 artifact only the per-aperture counters are kept.
 """
 function _ensure_loss_record!(record_ref::Base.RefValue{Any}, owner::Base.RefValue{WeakRef},
-                              elements::Tuple, rep, want_slots::Bool)
+                              elements::Tuple, rep, want_slots::Bool;
+                              match_names::Bool=false)
     rep === nothing && return record_ref[]
     storage = first(coordinate_arrays(rep))
     specs = _aperture_specs(elements)
@@ -2001,6 +2072,7 @@ function _ensure_loss_record!(record_ref::Base.RefValue{Any}, owner::Base.RefVal
         owner[] = WeakRef(storage)
         return nothing
     end
+    names = match_names ? _loss_record_aperture_names(specs) : nothing
     existing = record_ref[]
     if existing !== nothing
         # Identity first: everything below only establishes that the record has
@@ -2022,23 +2094,28 @@ function _ensure_loss_record!(record_ref::Base.RefValue{Any}, owner::Base.RefVal
         fits = owner[].value === storage &&
                length(loss_counts(existing)) == length(specs) &&
                _loss_record_matches_rep(existing, rep) &&
+               (!match_names || aperture_names(existing) == names) &&
                (existing.slots === nothing) == !want_slots &&
                (existing.slots === nothing || size(existing.slots, 2) == length(rep))
         fits && return existing
     end
-    names = [String(getparam(spec, :name, "")) for spec in specs]
-    for (i, name) in enumerate(names)
-        isempty(name) && (names[i] = "aperture_$(i)")
-    end
+    names === nothing && (names = _loss_record_aperture_names(specs))
     record = LossRecord(names, length(rep), rep; log=want_slots)
     record_ref[] = record
     owner[] = WeakRef(storage)
     return record
 end
 
+function _loss_record_aperture_names(specs)
+    return [let name = String(getparam(spec, :name, ""))
+                isempty(name) ? "aperture_$(i)" : name
+            end for (i, spec) in enumerate(specs)]
+end
+
 _ensure_loss_record!(task::TrackingTask, rep) =
     _ensure_loss_record!(task.loss_record, task.loss_owner, task.elements, rep,
-                         task.artifact !== nothing)
+                         task.artifact !== nothing;
+                         match_names=task.phase_space_reset[] !== nothing)
 
 """
     _bind_line_entries(entries::Tuple, elements, record) -> (entries, binding)
@@ -2480,7 +2557,7 @@ _active_plan_key(entries::Tuple, ctx, task_diagnostics::Bool,
                  luminosity_tracking::Symbol=:isolated) =
     _active_plan_key(_line_hook_entries(entries), ctx, task_diagnostics, luminosity_tracking)
 
-function _build_tracking_plan(entries::Tuple, plan_key)
+function _build_tracking_plan(entries::Tuple, plan_key, reset_state=nothing)
     active_hooks, task_diagnostics, luminosity_tracking = plan_key
     active_set = Set(active_hooks)
     segments = Any[]
@@ -2489,7 +2566,7 @@ function _build_tracking_plan(entries::Tuple, plan_key)
     pending_line_diagnostics = Ref(_count_active_line_diagnostics(entries, active_set))
     _append_tracking_segments!(segments, fused, tracked, entries, active_set,
                                task_diagnostics, pending_line_diagnostics,
-                               luminosity_tracking)
+                               luminosity_tracking, reset_state)
     _flush_fused_segment!(segments, fused, task_diagnostics, luminosity_tracking)
     return Tuple(segments)
 end
@@ -2509,11 +2586,19 @@ end
 function _append_tracking_segments!(segments, fused, tracked, entries::Tuple,
                                     active_hooks::Set, task_diagnostics::Bool,
                                     pending_line_diagnostics::Base.RefValue,
-                                    luminosity_tracking::Symbol=:isolated)
+                                    luminosity_tracking::Symbol=:isolated,
+                                    reset_state=nothing)
     for entry in entries
         if entry isa PhysicsEntry
             elem = entry.element
             push!(tracked, elem)
+            if elem isa PhaseSpaceReset
+                reset_state === nothing && throw(ArgumentError(
+                    "PhaseSpaceReset requires the capture state of a TrackingTask"))
+                _flush_fused_segment!(segments, fused, task_diagnostics, luminosity_tracking)
+                push!(segments, PhaseSpaceResetSegment(reset_state))
+                continue
+            end
             diagnostics_required = task_diagnostics || pending_line_diagnostics[] > 0
             # `luminosity_tracking === :isolated` is the ONLY new conjunct.
             # `requires_isolated_tracking` stays an element-level fact; the

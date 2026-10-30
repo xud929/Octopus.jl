@@ -57,7 +57,7 @@ struct WeakStrongBeamBeamMap <: AbstractTrackingMethod end
     default_method(spec)
 
 Return the preferred tracking method object for an element spec: the kind's
-own override where it has one (the eight kinds whose methods exclude
+own override where it has one (the kinds whose methods exclude
 `Symplectic6DMap`), else `Symplectic6DMap()`.
 
 A registered kind that declares NO tracking method (`tracking_methods =

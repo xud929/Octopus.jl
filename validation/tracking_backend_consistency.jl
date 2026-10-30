@@ -255,10 +255,24 @@ single_pass_line = (
                                gamma0=reference_gamma(51.1e6, 0.511e6)),
 )
 
+# Task-managed reset has to lead its own trial line. Leaving it in the
+# composed lattice's interior is invalid; testing it alone without changing
+# coordinates would only exercise an identity. The kick supplies a visible
+# difference between an evolving trajectory and repeated fixed-input trials.
+reset_line = (PhaseSpaceResetSpec(), HKickerSpec(hkick=2.0e-5))
+reset_turns = max(turns, 2)
+let task_only = Set(Octopus.kind(T) for T in Octopus.registered_element_specs()
+                    if Octopus._requires_tracking_task(T)),
+    witnessed = Set([Octopus.kind(first(reset_line))])
+    task_only == witnessed || error(
+        "task-managed element kinds and executable capture/restore witnesses differ: " *
+        "declared=$(task_only), witnessed=$(witnessed)")
+end
+
 # Declaration↔coverage tripwire (2026-08-05 audit, U21-5), the same rule
 # SymplecticityContract applies to its case list: a kind that declares the
 # contract and is missing from these lines is a silent coverage gap.
-let covered = Set(Octopus.kind(spec) for spec in (line..., single_pass_line...))
+let covered = Set(Octopus.kind(spec) for spec in (line..., single_pass_line..., reset_line...))
     declaring = Symbol[]
     for T in Octopus.registered_element_specs()
         meta = Octopus._element_meta_or_nothing(T)
@@ -350,6 +364,31 @@ for (backend_b, label) in single_pass_backends
         error("accelerating-cavity single-pass consistency compared nothing")
 end
 
+# --- reset, with a reference that does not call the reset implementation ------
+for (backend_b, label) in single_pass_backends
+    result = validate(ElementTrackingBackendConsistencyContract(;
+        line=reset_line, n_particles=N, turns=reset_turns,
+        backend_a=CPUThreadsBackend, backend_b=backend_b,
+        seed=seed, rng_method=:philox, atol=atol, rtol=rtol))
+    _print_result("$(label) phase-space reset consistency", result)
+    if result.status == :skipped
+        require_gpu && error("$(label) phase-space reset consistency was required but skipped")
+        continue
+    end
+    result.passed || error("$(label) phase-space reset consistency failed")
+    base = Octopus._contract_default_initial_rep(N, Float64)
+    trial_rep = Octopus._contract_rep_for_backend(base, backend_b)
+    reference = Octopus._contract_rep_for_backend(base, backend_b)
+    policy = Octopus._contract_policy(backend_b)
+    execute!(TrackingTask(reset_line; policy=policy), trial_rep; turns=reset_turns)
+    execute!(TrackingTask(Base.tail(reset_line); policy=policy), reference; turns=1)
+    all(isequal(Array(a), Array(b)) for (a, b) in
+        zip(coordinate_arrays(trial_rep), coordinate_arrays(reference))) || error(
+        "phase-space reset did not reproduce the independently copied one-turn reference")
+    !isequal(Array(reference.px), Array(base.px)) || error(
+        "phase-space reset witness has no kick: a no-op reset could pass")
+end
+
 # --- the aperture, actually exercised -----------------------------------------
 #
 # `:aperture` is in the line above, and until now that was ALL it was: the
@@ -433,6 +472,7 @@ let violations = String[],
     for spec in single_pass_line
         push!(cases, (string(Octopus.kind(spec)) * " (single pass)", spec, 1))
     end
+    push!(cases, ("phase_space_reset (mutate/restore)", first(reset_line), reset_turns))
     push!(cases, ("aperture (killing)", aperture_line[1], 1))
     gpu_arm = should_run_gpu || require_gpu
     gpu_arm && !_cuda_visible() && require_gpu &&
@@ -446,7 +486,19 @@ let violations = String[],
             run_on(backend) = begin
                 rep = Octopus._contract_rep_for_backend(base, backend)
                 set_global_rng!(seed=seed, method=:philox)
-                execute!(TrackingTask((spec,); policy=Octopus._contract_policy(backend)), rep; turns=nturns)
+                task = TrackingTask((spec,); policy=Octopus._contract_policy(backend))
+                if spec isa ElementSpec{:phase_space_reset}
+                    execute!(task, rep; turns=1)
+                    for (i, array) in enumerate(coordinate_arrays(rep))
+                        array .+= eltype(array)(i + 1)
+                    end
+                    execute!(task, rep; turns=nturns - 1)
+                    all(isequal(Array(a), Array(b)) for (a, b) in
+                        zip(coordinate_arrays(rep), coordinate_arrays(base))) || error(
+                        "$(label): mutation was not undone by an independent saved reference")
+                else
+                    execute!(task, rep; turns=nturns)
+                end
                 rep
             end
             cpu_a = run_on(CPUThreadsBackend)

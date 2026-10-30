@@ -14799,7 +14799,16 @@ end
             @test Octopus._required_beam_eltype(rt32) === Float32
             set_global_rng!(seed=0x5eed, method=:philox)
             r = rep32()
-            execute!(TrackingTask((typed,); policy=cpu), r; turns=1)
+            task = TrackingTask((typed,); policy=cpu)
+            execute!(task, r; turns=1)
+            if Octopus._requires_tracking_task(typeof(typed))
+                expected = map(copy, coordinate_arrays(r))
+                for (i, array) in enumerate(coordinate_arrays(r))
+                    array .+= Float32(i)
+                end
+                execute!(task, r; turns=1)
+                @test all(isequal(a, b) for (a, b) in zip(coordinate_arrays(r), expected))
+            end
             @test finite32(r)
             err = refusal(example, rep32(), cpu)
             @test occursin("the beam's coordinates are Float32 but the element compiled in Float64", message(err))
@@ -14843,13 +14852,22 @@ end
                 @test occursin("the beam's coordinates are Float32 but the element compiled in Float64", message(err))
                 set_global_rng!(seed=0x5eed, method=:philox)
                 g = cuda_rep(rep32())
-                execute!(TrackingTask((typed,); policy=gpu), g; turns=1)
+                task = TrackingTask((typed,); policy=gpu)
+                execute!(task, g; turns=1)
+                if Octopus._requires_tracking_task(typeof(typed))
+                    expected = map(Array, coordinate_arrays(g))
+                    for (i, array) in enumerate(coordinate_arrays(g))
+                        array .+= Float32(i)
+                    end
+                    execute!(task, g; turns=1)
+                    @test all(isequal(Array(a), b) for (a, b) in zip(coordinate_arrays(g), expected))
+                end
                 Octopus.CUDA.synchronize()
                 @test finite32(g)
             end
         end
     else
-        @test_skip "CUDA inactive: the device side of the one rule (31 refusals or runs, 31 typed runs) is not exercised"
+        @test_skip "CUDA inactive: the device side of the one rule ($(length(kinds)) refusals or runs, $(length(kinds)) typed runs) is not exercised"
     end
 
     # (d) The kinds that joined the rule here, each at its own seam. The
@@ -15191,6 +15209,7 @@ end
             @test class isa Octopus.CrossBackendRounding && !isempty(class.why)
         end
         @test mark(table[:marker]) == "------" && mark(table[:aperture]) == "------"
+        @test mark(table[:phase_space_reset]) == "bbbbbb"
         @test mark(table[:drift]) == "u-u-u-" && table[:drift].ulp_bound == 8          # the straight drift writes x, y, z only
         @test mark(table[:quadrupole]) == "uuuuu-" && table[:quadrupole].ulp_bound == 32
         # The bend's body and the solenoid were 8192 and 4096 for the cancellation
@@ -15318,7 +15337,20 @@ end
                     Phase6DRep((Octopus.CUDA.CuArray(copy(a)) for a in coordinate_arrays(base))...) :
                     Phase6DRep((copy(a) for a in coordinate_arrays(base))...)
                 set_global_rng!(seed=0x5eed, method=:philox)
-                execute!(TrackingTask((spec,); policy=policy), rep; turns=turns)
+                task = TrackingTask((spec,); policy=policy)
+                if Octopus._requires_tracking_task(typeof(spec))
+                    # A reset alone would make an identity-only measurement
+                    # vacuous. Change every coordinate after capture, then
+                    # require restoration before classifying its copied bits.
+                    execute!(task, rep; turns=1)
+                    for (i, array) in enumerate(coordinate_arrays(rep))
+                        array .+= Float64(i)
+                    end
+                    execute!(task, rep; turns=max(turns - 1, 1))
+                    @test all(isequal(Array(a), b) for (a, b) in zip(coordinate_arrays(rep), coordinate_arrays(base)))
+                else
+                    execute!(task, rep; turns=turns)
+                end
                 Octopus.CUDA.synchronize()
                 return rep
             end
@@ -16232,7 +16264,9 @@ if _lane_gate("Element parameter effectiveness")
     # composes outside the pitches and turns their longitudinal displacement,
     # which the cavity reads (measured 2.9e-13, six orders above the marker's
     # roundoff class) -- a false exemption of F-107's kind. Net -2 +1.
-    @test r.metrics[:checked] >= 548
+    # 548 -> 549 on 2026-10-29: phase_space_reset.numeric_type is measured
+    # through an actual typed capture/mutate/restore task witness.
+    @test r.metrics[:checked] >= 549
 
     # What the contract does NOT decide has to be visible, and bounded
     # (2026-08-05_b audit, U4-2). 112 of 501 declared parameters used to be
@@ -16258,8 +16292,15 @@ if _lane_gate("Element parameter effectiveness")
     # aperture.shape moved to checked through its declared alternatives.
     # 41 -> 34 on 2026-10-20 (fix batch 2 unit C, F-171): the seven
     # misalign_convention entries above moved to checked.
-    @test r.metrics[:unperturbable] <= 34
-    @test r.metrics[:rejected] <= 23
+    # The new task-only kind contributes one single-choice method and the
+    # eight explicitly unsupported placement requests. Pin their names so
+    # these additions cannot conceal a previously checked parameter's loss.
+    @test Set(filter(startswith("phase_space_reset."), r.metrics[:unperturbable_names])) ==
+          Set(["phase_space_reset.tracking_method"])
+    @test Set(filter(startswith("phase_space_reset."), r.metrics[:rejected_names])) ==
+          Set("phase_space_reset.$key" for key in Octopus._PLACEMENT_PARAM_KEYS)
+    @test r.metrics[:unperturbable] <= 35
+    @test r.metrics[:rejected] <= 23 + length(Octopus._PLACEMENT_PARAM_KEYS)
 
     # `:name` is CARRIED by every kind and consumed by none, so it is exempt
     # kind-independently rather than through thirty copies of one reason in
@@ -16424,11 +16465,13 @@ if _lane_gate("Element parameter effectiveness")
     # a new undeclared enum, to be declared, never appended.
     @test r0.metrics[:undeclared_alternatives] ==
           ["gaussian_strong_beam.slice_method", "thin_strong_beam.virtual_drift"]
-    # every refusal today is the CONSTRUCTOR's, by its message; a candidate
-    # the constructor accepts and the compile or the map then throws on (the
-    # `hvoffset` seam of F-116, refused by name since fix batch 3) would read
-    # "compile_or_map:" here, the seam visible instead of folded into a count
-    @test all(startswith("constructor:"), values(r0.metrics[:rejected_reasons]))
+    # Existing kinds refuse these candidates in their constructors. A
+    # task-only reset refuses unsupported geometry at runtime compilation;
+    # derive exactly that new partition rather than weakening the old pin.
+    task_only_placements = Set("$(kind(T)).$(key)" for T in registered_element_specs()
+        for key in Octopus._PLACEMENT_PARAM_KEYS if Octopus._requires_tracking_task(T))
+    @test all(startswith(reason, name in task_only_placements ? "compile_or_map:" : "constructor:")
+              for (name, reason) in r0.metrics[:rejected_reasons])
     @test occursin("undeclared alternatives", r0.message) &&
           occursin("gaussian_strong_beam.slice_method", r0.message)
 
@@ -19431,6 +19474,540 @@ end # _lane_gate("ForwardDiff differentiates the lattice")
     end
 end
 
+mutable struct _PhaseResetFailureObserver <: Octopus.AbstractBeamObserver
+    failure_turn::Int
+    fail_finalize::Bool
+end
+Octopus.observe!(observer::_PhaseResetFailureObserver, ctx::TrackingContext, rep) =
+    ctx.turn == observer.failure_turn ? error("reset trial observer failure") : nothing
+Octopus.finalize_observer!(observer::_PhaseResetFailureObserver) =
+    observer.fail_finalize ? error("reset trial finalizer failure") : nothing
+
+mutable struct _PhaseResetReentrantObserver <: Octopus.AbstractBeamObserver
+    task::Base.RefValue{Any}
+    execute_errors::Vector{Any}
+    clear_errors::Vector{Any}
+end
+function Octopus.observe!(observer::_PhaseResetReentrantObserver, ctx::TrackingContext, rep)
+    try
+        clear_phase_space_reset!(observer.task[])
+    catch error
+        push!(observer.clear_errors, error)
+    end
+    try
+        execute!(observer.task[], rep; turns=1)
+    catch error
+        push!(observer.execute_errors, error)
+    end
+    return nothing
+end
+
+@testset "Phase-space reset: independent one-turn oracle on CPU and CUDA" begin
+    include(joinpath(pkgdir(Octopus), "test", "phase_space_reset_probe.jl"))
+    policies = Any[CPUThreadsExecutionPolicy(threads=4)]
+    CUDA_TESTS_ACTIVE && push!(policies, CUDAExecutionPolicy())
+    for T in (Float64, Float32)
+        kinds = T === Float64 ? psr_probe_kinds() : (:table, :pink)
+        for kind in kinds
+            line = psr_probe_line(T, kind)
+            cpu_result = nothing
+            for policy in policies
+                @testset let precision=T, noise=kind, execution_policy=typeof(policy)
+                    result = psr_probe_verify(policy, mktempdir(); T=T, kind=kind,
+                                              line_override=line)
+                    @test psr_probe_pass(result)
+                    @test result.coordinates.bitwise
+                    @test result.starts_exact
+                    @test result.noise_equal
+                    @test result.row_count == 68
+                    @test all(==(1.0), result.trials.completed)
+                    @test all(==(1.0), result.trials.folded)
+                    @test all(==(17.0), result.trials.live)
+                    @test result.window_summary.completed_trials == 4
+                    @test result.window_summary.last_trial.completed && result.window_summary.last_trial.folded
+                    operations = filter(r -> r.consumer === :phase_space_reset, result.receipts)
+                    @test [r.values.operation for r in operations] == [:capture, :restore, :restore, :restore]
+                    trial_receipts = filter(r -> r.consumer === :phase_space_reset_trial, result.receipts)
+                    @test length(trial_receipts) == 4
+                    @test all(r -> r.values.flush_mode === :per_trial && !r.values.capacity_applies, trial_receipts)
+                    if kind in (:table, :white, :pink)
+                        @test result.noise_count == 4
+                        @test length(unique(values(result.noise))) > 1
+                    else
+                        @test result.noise_count == 0
+                    end
+                    if policy isa CPUThreadsExecutionPolicy
+                        cpu_result = result
+                    else
+                        # Established tracking-backend tolerance, with a
+                        # Float32 scale derived from the fixture's precision.
+                        comparison = psr_probe_backend_difference(result.rows, cpu_result.rows, T)
+                        @test comparison.equal
+                        @test comparison.identity_equal && comparison.loss_mask_equal
+                        @test result.noise == cpu_result.noise
+                    end
+                end
+            end
+        end
+    end
+    CUDA_TESTS_ACTIVE || @test_skip "CUDA inactive: reset device storage and GPU one-turn oracle were not exercised"
+
+    # Falsify the independent oracle with the two plausible wrong experiments:
+    # evolving the same beam, and reusing the turn-zero noise realization.
+    policy = CPUThreadsExecutionPolicy(threads=4)
+    control = psr_probe_verify(policy, mktempdir(); kind=:table)
+    evolving = psr_probe_copy(control.initial, policy)
+    execute!(TrackingTask(control.line; policy=policy), evolving; turns=4)
+    final_reference = control.rows[control.rows[:, 1] .== 3, 3:8]
+    @test !psr_probe_difference(hcat(coordinate_arrays(evolving)...), final_reference).equal
+    repeated_zero = psr_probe_copy(control.initial, policy)
+    execute!(TrackingTask(control.line; policy=policy), repeated_zero; turns=1, start_turn=0)
+    next_reference = control.rows[control.rows[:, 1] .== 1, 3:8]
+    @test !psr_probe_difference(hcat(coordinate_arrays(repeated_zero)...), next_reference).equal
+    # A micrometre-scale error cannot hide under an unscaled Float32 atol.
+    bad_scale = copy(control.rows)
+    bad_scale[1, 3] += 1e-6
+    @test !psr_probe_backend_difference(bad_scale, control.rows, Float32).equal
+
+    for policy in policies, T in (Float64, Float32)
+        @testset let loss_policy=typeof(policy), precision=T
+            result = psr_probe_verify(policy, mktempdir(); T=T, kind=:table,
+                                      losses=true, chunks=(1, 1, 2))
+            @test psr_probe_pass(result)
+            @test result.losses.bitwise
+            @test result.window_summary.completed_trials == 2
+            @test result.window_summary.last_trial.turn == 3
+            @test all(result.trials.dead .== result.trials.logged)
+            @test all(iszero, result.trials.unattributed)
+            @test sum(result.trials.logged) == size(result.reset_loss_rows, 1)
+            @test any(>(0), result.trials.logged)
+            @test any(iszero, result.trials.logged)
+            # A sample that dies under one table value must be retried and
+            # can survive at a later value, not disappear from the ensemble.
+            @test length(unique(result.reset_loss_rows[:, 2])) < size(result.reset_loss_rows, 1)
+            @test all(isfinite, result.rows[result.rows[:, 1] .== 3, 3:8])
+            @test all(==(17.0), result.trials.particles)
+        end
+    end
+end
+
+@testset "Phase-space reset: lifecycle, ownership, exact restoration and refusals" begin
+    policies = Any[CPUThreadsExecutionPolicy(threads=1), CPUThreadsExecutionPolicy(threads=4)]
+    CUDA_TESTS_ACTIVE && push!(policies, CUDAExecutionPolicy())
+    for policy in policies, T in (Float32, Float64)
+        @testset let policy_type=typeof(policy), precision=T
+            original = psr_probe_initial(T; n=7)
+            original.x[1] = -zero(T)
+            rep = psr_probe_copy(original, policy)
+            task = TrackingTask((PhaseSpaceResetSpec{T}(),); policy=policy)
+            execute!(task, rep; turns=0)
+            @test phase_space_reset_summary(task).completed_trials == 0
+            @test task.phase_space_reset[] === nothing || task.phase_space_reset[].snapshot === nothing
+            first_audit = with_execution_audit() do
+                execute!(task, rep; turns=1, start_turn=3)
+            end
+            capture = only(filter(r -> r.consumer === :phase_space_reset, execution_receipts(first_audit)))
+            @test capture.values.operation === :capture
+            @test capture.values.turn == 3 && capture.values.capture_turn == 3
+            @test capture.values.local_particles == capture.values.global_particles == 7
+            saved = task.phase_space_reset[].snapshot
+            @test all(a !== b for (a, b) in zip(coordinate_arrays(saved), coordinate_arrays(rep)))
+            @test all(typeof(a) === typeof(b) for (a, b) in zip(coordinate_arrays(saved), coordinate_arrays(rep)))
+            @test all(isequal(Array(a), b) for (a, b) in zip(coordinate_arrays(saved), coordinate_arrays(original)))
+            for (i, array) in enumerate(coordinate_arrays(rep))
+                array .+= T(i)
+            end
+            second_audit = with_execution_audit() do
+                execute!(task, rep; turns=1)
+            end
+            restore = only(filter(r -> r.consumer === :phase_space_reset, execution_receipts(second_audit)))
+            @test restore.values.operation === :restore && restore.values.turn == 4
+            @test task.phase_space_reset[].snapshot === saved
+            @test all(isequal(Array(a), b) for (a, b) in zip(coordinate_arrays(rep), coordinate_arrays(original)))
+            @test signbit(Array(rep.x)[1])
+            summary = phase_space_reset_summary(task)
+            @test summary.completed_trials == 1
+            @test summary.last_trial.turn == 4
+            other = psr_probe_copy(original, policy)
+            @test_throws ArgumentError execute!(task, other; turns=1)
+            @test phase_space_reset_summary(task).last_trial.turn == 4
+            replacement = Phase6DRep(copy(rep.x), rep.px, rep.y, rep.py, rep.z, rep.pz)
+            @test_throws ArgumentError execute!(task, replacement; turns=1)
+            execute!(task, rep; turns=1, start_turn=1)
+            @test phase_space_reset_summary(task).last_trial.turn == 1
+            @test task.phase_space_reset[].snapshot === saved
+            seed, method, next_turn = Octopus.global_rng_seed(), Octopus.global_rng_method_code(), task.next_turn[]
+            epoch = task.phase_space_reset[].reference_epoch
+            clear_phase_space_reset!(task)
+            @test task.next_turn[] == next_turn
+            @test Octopus.global_rng_seed() == seed && Octopus.global_rng_method_code() == method
+            @test phase_space_reset_summary(task) === nothing
+            other.x .+= T(0.125)
+            execute!(task, other; turns=1)
+            @test task.phase_space_reset[].reference_epoch > epoch
+            @test all(isequal(Array(a), Array(b)) for (a, b) in
+                      zip(coordinate_arrays(task.phase_space_reset[].snapshot), coordinate_arrays(other)))
+            # Scalar and low-level refusals occur before any particle changes.
+            runtime = compile_runtime(PhaseSpaceResetSpec{T}())
+            @test_throws ArgumentError runtime(ntuple(_ -> zero(T), 6)...)
+            before = map(a -> Array(a), coordinate_arrays(other))
+            @test_throws ArgumentError track!(other, (runtime,), 2; policy=policy)
+            @test all(isequal(Array(a), b) for (a, b) in zip(coordinate_arrays(other), before))
+            @test_throws ArgumentError track!(other, (runtime,), 1; policy=policy,
+                                              context=TrackingContext(turn=9))
+            @test all(isequal(Array(a), b) for (a, b) in zip(coordinate_arrays(other), before))
+            @test_throws ArgumentError track!(other, (compile_runtime(DriftSpec{T}(L=T(1))), runtime),
+                                              1; policy=policy)
+            @test all(isequal(Array(a), b) for (a, b) in zip(coordinate_arrays(other), before))
+        end
+    end
+    @test supported_tracking_methods(PhaseSpaceResetSpec) == [NonSymplectic6DMap]
+    @test Set(T for T in registered_element_specs() if Octopus._requires_tracking_task(T)) ==
+          Set([ElementSpec{:phase_space_reset}])
+    @test !(TwissDispersionAnalysis in supported_analyses(PhaseSpaceResetSpec))
+    @test_throws MethodError compile_runtime(PhaseSpaceResetSpec(tracking_method=Symplectic6DMap()))
+    @test_throws ArgumentError one_turn_matrix((PhaseSpaceResetSpec(),))
+    @test_throws ArgumentError Octopus._split_strong_strong_line((PhaseSpaceResetSpec(),), nothing)
+    # Both beams and a kept-whole nested line must refuse before a live
+    # strong-strong task mutates either ensemble or advances its turn.
+    cpu = CPUThreadsExecutionPolicy(threads=1)
+    makebeam(id) = Beam(8, cpu, Float64; charge=-1.0, mc2=EMASS_EV,
+        E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11, rng_id=id)
+    ip = StrongStrongCollision(:ip)
+    for line in ((PhaseSpaceResetSpec(), ip),
+                 (BeamLine("buried", PhaseSpaceResetSpec(); x_offset=0.01), ip)), reset_beam in (1, 2)
+        line1, line2 = reset_beam == 1 ? (line, (ip,)) : ((ip,), line)
+        task = StrongStrongTask(line1, line2; policy=cpu)
+        beams = (makebeam(0x3211), makebeam(0x3212))
+        initial = map(b -> map(copy, coordinate_arrays(b.rep)), beams)
+        err = try
+            execute!(task, beams...; turns=1)
+            nothing
+        catch error
+            error
+        end
+        @test err isa ArgumentError && occursin("joint reset", sprint(showerror, err))
+        @test task.next_turn[] == 0
+        @test all(isequal(a, b) for (beam, saved) in zip(beams, initial)
+                  for (a, b) in zip(coordinate_arrays(beam.rep), saved))
+    end
+    for key in Octopus._PLACEMENT_PARAM_KEYS
+        value = key === :misalign_convention ? :madx : 0.01
+        @test_throws ArgumentError compile_runtime(PhaseSpaceResetSpec(; NamedTuple{(key,)}((value,))...))
+    end
+    for elements in ((DriftSpec(L=0.1), PhaseSpaceResetSpec()),
+                     (PhaseSpaceResetSpec(), PhaseSpaceResetSpec()),
+                     (BeamLine("hidden", PhaseSpaceResetSpec(); x_offset=0.01),))
+        rep = psr_probe_initial(Float64)
+        original = map(copy, coordinate_arrays(rep))
+        @test_throws ArgumentError execute!(TrackingTask(elements), rep; turns=1)
+        @test all(isequal(a, b) for (a, b) in zip(coordinate_arrays(rep), original))
+    end
+    @test_throws ArgumentError execute!(TrackingTask((PhaseSpaceResetSpec(),); loss_report=false),
+                                        psr_probe_initial(Float64); turns=1)
+    # Recompiling a changed physical map keeps the experimental reference.
+    shared_reset = PhaseSpaceResetSpec()
+    kick = HKickerSpec(hkick=1e-3)
+    original = psr_probe_initial(Float64; n=3)
+    initial_px = copy(original.px)
+    task = TrackingTask((shared_reset, kick))
+    execute!(task, original; turns=1)
+    snapshot = task.phase_space_reset[].snapshot
+    compiled = task.runtime_entries_cache[]
+    kick.hkick = 2e-3
+    execute!(task, original; turns=1)
+    @test task.runtime_entries_cache[] !== compiled
+    @test task.phase_space_reset[].snapshot === snapshot
+    @test original.px == initial_px .+ 2e-3
+    independent = psr_probe_initial(Float64; n=3)
+    independent.x .+= 0.25
+    other_task = TrackingTask((shared_reset,))
+    execute!(other_task, independent; turns=1)
+    @test other_task.phase_space_reset[].snapshot !== snapshot
+    @test other_task.phase_space_reset[].snapshot.x == independent.x
+    @test snapshot.x != independent.x
+    action_called = Ref(false)
+    replacement = psr_probe_initial(Float64)
+    action = BeamSwapAction(() -> (action_called[] = true; replacement))
+    @test_throws ArgumentError execute!(TrackingTask((PhaseSpaceResetSpec(),); hooks=(action,)),
+                                        psr_probe_initial(Float64); turns=1)
+    @test !action_called[]
+    for dim in 1:6
+        rep = psr_probe_initial(Float64)
+        coordinate_arrays(rep)[dim][1] = NaN
+        task = TrackingTask((PhaseSpaceResetSpec(),))
+        @test_throws ArgumentError execute!(task, rep; turns=1)
+        @test phase_space_reset_summary(task) === nothing
+        @test task.phase_space_reset[] === nothing || task.phase_space_reset[].snapshot === nothing
+    end
+    # A coordinate array can be resized in place without changing its owner
+    # identity. Refuse all six length/axes changes before a restore writes x.
+    rep = psr_probe_initial(Float64; n=7)
+    task = TrackingTask((PhaseSpaceResetSpec(),))
+    execute!(task, rep; turns=1)
+    rep.x .+= 1.0
+    before_x = copy(rep.x)
+    resize!(rep.py, 8)
+    @test_throws ArgumentError execute!(task, rep; turns=1)
+    @test isequal(rep.x, before_x)
+    malformed = psr_probe_initial(Float64; n=7)
+    resize!(malformed.pz, 6)
+    @test_throws ArgumentError execute!(TrackingTask((PhaseSpaceResetSpec(),)), malformed; turns=1)
+
+    if CUDA_TESTS_ACTIVE
+        # The host-copy spy is narrower than the production fallback, never
+        # overwrites it, and is removed in finally. Its positive control makes
+        # the check fail if the spy stopped intercepting the old count_dead.
+        device = psr_probe_copy(psr_probe_initial(Float64; n=9), CUDAExecutionPolicy())
+        task = TrackingTask((PhaseSpaceResetSpec(), ApertureSpec(x_limit=5e-4));
+                            policy=CUDAExecutionPolicy())
+        @eval function Octopus._host_coordinate_arrays(rep::Octopus.Phase6DRep{A}) where {A<:Octopus.CUDA.CuArray}
+            error("phase-space reset host-copy spy")
+        end
+        spy_method = which(Octopus._host_coordinate_arrays, (typeof(device),))
+        try
+            @test_throws ErrorException Base.invokelatest(Octopus.count_dead, device)
+            audit = with_execution_audit() do
+                Base.invokelatest(execute!, task, device; turns=3)
+            end
+            flags = task.phase_space_reset[].ledger.live_flags
+            @test flags isa Octopus.CUDA.CuArray
+            Base.invokelatest(execute!, task, device; turns=2)
+            @test task.phase_space_reset[].ledger.live_flags === flags
+            @test phase_space_reset_summary(task).completed_trials == 2
+            checks = filter(r -> r.consumer === :phase_space_reset_liveness, execution_receipts(audit))
+            @test !isempty(checks)
+            @test all(r -> r.values.reduction === :device && r.values.host_coordinate_copies == 0, checks)
+        finally
+            Base.delete_method(spy_method)
+        end
+        @test Base.invokelatest(Octopus.count_dead, device) >= 0
+    end
+end
+
+@testset "Phase-space reset: trial output, replay, recapture and failures" begin
+    # Read-only entry observation may precede the first tracking position.
+    # A named, flattened line keeps the reset's chosen diagnostic identity.
+    mktempdir() do directory
+        path = joinpath(directory, "named.h5")
+        original = psr_probe_initial(Float64; n=3)
+        entry = ScheduledObserver(CoordinateSnapshotObserver(name="entry"))
+        line = BeamLine("experiment", entry, PhaseSpaceResetSpec(name="reference"), HKickerSpec(hkick=1e-3))
+        task = TrackingTask(line; artifact=RunArtifact(path))
+        execute!(task, original; turns=2)
+        rows = psr_probe_snapshot_rows(path, "entry")
+        @test rows[rows[:, 1] .== 1, 4] == rows[rows[:, 1] .== 0, 4] .+ 1e-3
+        @test read(TaskOutput(path), :reset_trials; name="reference").turn == [0.0, 1.0]
+        @test Set(keys(read(TaskOutput(path), :reset_trials))) == Set(["reference"])
+        @test phase_space_reset_summary(task).completed_trials == 2
+    end
+    mktempdir() do directory
+        path = joinpath(directory, "trials.h5")
+        aperture = ApertureSpec(x_limit=5e-4, name="COLL")
+        rep = psr_probe_initial(Float64; n=7)
+        observer = _PhaseResetFailureObserver(1, false)
+        task = TrackingTask((PhaseSpaceResetSpec(), aperture);
+            hooks=(observer,), artifact=RunArtifact(path; append=true, capacity=2))
+        err = try
+            execute!(task, rep; turns=3)
+            nothing
+        catch error
+            error
+        end
+        @test err isa ErrorException && occursin("reset trial observer failure", sprint(showerror, err))
+        summary = phase_space_reset_summary(task)
+        @test summary.completed_trials == 1
+        @test summary.attempted_particle_trials == 7
+        @test !summary.last_trial.completed && !summary.last_trial.folded
+        @test task.next_turn[] == 0
+        stored = read(TaskOutput(path), :reset_trials; name="reset")
+        @test stored.turn == [0.0, 1.0]
+        @test stored.completed == [1.0, 0.0]
+        @test stored.folded == [1.0, 0.0]
+        events = read(TaskOutput(path), :reset_losses; name="reset")
+        @test !isempty(events.turn)
+        @test all(iszero, events.completed[events.turn .== 1])
+        @test all(iszero, events.folded[events.turn .== 1])
+        observer.failure_turn = -1
+        execute!(task, rep; turns=3)
+        stored = read(TaskOutput(path), :reset_trials; name="reset")
+        @test stored.turn == [0.0, 1.0, 2.0]
+        @test all(==(1.0), stored.completed)
+        @test all(==(1.0), stored.folded)
+        @test phase_space_reset_summary(task).completed_trials == 3
+        events = read(TaskOutput(path), :reset_losses; name="reset")
+        @test length(unique(zip(events.turn, events.particle_id))) == length(events.turn)
+        @test all(stored.logged .== stored.logged[1])
+        @test loss_summary(rep, task).logged == stored.logged[end]
+        @test loss_summary(rep, task).logged < sum(stored.logged)
+        @test !haskey(read(TaskOutput(path)), "losses")
+        @test read(TaskOutput(path), :reset_trials; name="reset", column=:turn) == stored.turn
+        @test Set(keys(read(TaskOutput(path), :reset_trials))) == Set(["reset"])
+
+        # Recapture labels the new X0 without touching old rows. A new task
+        # appending to the same artifact receives a third, unique epoch.
+        epoch = maximum(stored.reference_epoch)
+        old_turn = task.next_turn[]
+        clear_phase_space_reset!(task)
+        @test task.next_turn[] == old_turn
+        @test read(TaskOutput(path), :reset_trials; name="reset").turn == stored.turn
+        for array in coordinate_arrays(rep)
+            fill!(array, 0.0)
+        end
+        execute!(task, rep; turns=1)
+        stored = read(TaskOutput(path), :reset_trials; name="reset")
+        @test stored.reference_epoch[end] > epoch
+        @test stored.capture_turn[end] == 3
+        @test stored.logged[end] == 0
+        epoch2 = stored.reference_epoch[end]
+        next_task = TrackingTask((PhaseSpaceResetSpec(), aperture);
+            artifact=RunArtifact(path; append=true))
+        execute!(next_task, psr_probe_initial(Float64; n=7); turns=1, start_turn=4)
+        stored = read(TaskOutput(path), :reset_trials; name="reset")
+        @test stored.reference_epoch[end] > epoch2
+        @test stored.capture_turn[end] == 4
+        @test stored.turn == Float64.(0:4)
+        # Same count with different names cannot reinterpret aperture_i.
+        bad_task = TrackingTask((PhaseSpaceResetSpec(), ApertureSpec(x_limit=5e-4, name="OTHER"));
+            artifact=RunArtifact(path; append=true))
+        @test_throws ArgumentError execute!(bad_task, psr_probe_initial(Float64; n=7);
+                                             turns=1, start_turn=2)
+        @test read(TaskOutput(path), :reset_trials; name="reset").turn == stored.turn
+        @test read(TaskOutput(path), :reset_trials; name="reset").reference_epoch == stored.reference_epoch
+    end
+
+    # A later observer finalizer failure cannot make already-observed turns
+    # partial. This also checks the final trial without a following reset.
+    observer = _PhaseResetFailureObserver(-1, true)
+    task = TrackingTask((PhaseSpaceResetSpec(),); hooks=(observer,))
+    @test_throws ErrorException execute!(task, psr_probe_initial(Float64); turns=2)
+    @test phase_space_reset_summary(task).completed_trials == 2
+    @test phase_space_reset_summary(task).last_trial.completed && phase_space_reset_summary(task).last_trial.folded
+
+    # Domain deaths remain visible before every reset, including no-aperture
+    # lines with no output artifact; finite capture alone cannot certify them.
+    rep = Phase6DRep([0.0], [2.0], [0.0], [0.0], [0.0], [0.0])
+    task = TrackingTask((PhaseSpaceResetSpec(), DriftSpec(L=0.1)))
+    @test_logs (:warn, r"phase-space reset trial") (:warn, r"phase-space reset trial") execute!(task, rep; turns=2)
+    @test phase_space_reset_summary(task).unattributed_loss_events == 2
+    @test phase_space_reset_summary(task).aperture_loss_events == 0
+
+    # In an all-lost trial, aperture attribution and a later domain failure
+    # stay distinct, and both original samples are attempted again.
+    rep = Phase6DRep([0.01, 0.0], [0.0, 2.0], zeros(2), zeros(2), zeros(2), zeros(2))
+    task = TrackingTask((PhaseSpaceResetSpec(), ApertureSpec(x_limit=0.001), DriftSpec(L=0.1)))
+    @test_logs (:warn, r"phase-space reset trial") (:warn, r"phase-space reset trial") execute!(task, rep; turns=2)
+    summary = phase_space_reset_summary(task)
+    @test summary.attempted_particle_trials == 4 && summary.survivor_particle_trials == 0
+    @test summary.aperture_loss_events == 2 && summary.unattributed_loss_events == 2
+    @test summary.last_trial.dead == 2 && summary.last_trial.logged == 1
+end
+
+@testset "Phase-space reset: refused reuse preserves active and prior trials" begin
+    for output in (false, true)
+        @testset let artifact=output
+            observer = _PhaseResetReentrantObserver(Ref{Any}(nothing), Any[], Any[])
+            path = output ? tempname() * ".h5" : nothing
+            task = TrackingTask((PhaseSpaceResetSpec(), DriftSpec(L=0.5));
+                                hooks=(observer,), artifact=path)
+            observer.task[] = task
+            rep = Phase6DRep([1e-4], [2e-4], zeros(1), zeros(1), zeros(1), zeros(1))
+            execute!(task, rep; turns=1)
+            @test length(observer.execute_errors) == length(observer.clear_errors) == 1
+            @test only(observer.execute_errors) isa ArgumentError
+            @test only(observer.clear_errors) isa ArgumentError
+            @test occursin("concurrently or recursively", sprint(showerror, only(observer.execute_errors)))
+            @test occursin("while its task is executing", sprint(showerror, only(observer.clear_errors)))
+            summary = phase_space_reset_summary(task)
+            @test task.next_turn[] == 1
+            @test summary.completed_trials == 1
+            @test summary.last_trial.completed && summary.last_trial.folded
+            if output
+                @test task.artifact.file === nothing && !isfile(path * ".lock")
+                rows = read(TaskOutput(path), :reset_trials; name="reset")
+                @test rows.turn == [0.0] && rows.completed == [1.0] && rows.folded == [1.0]
+            end
+
+            # Rejected same-size beam reuse must leave the prior trial's
+            # attributed loss scratch intact, not just preserve its summary.
+            path = output ? tempname() * ".h5" : nothing
+            aperture = ApertureSpec(x_limit=5e-4, name="COLL")
+            task = TrackingTask((PhaseSpaceResetSpec(), aperture);
+                                artifact=output ? RunArtifact(path; append=true) : nothing)
+            rep = Phase6DRep([1e-3, 1e-4], zeros(2), zeros(2), zeros(2), zeros(2), zeros(2))
+            execute!(task, rep; turns=1)
+            previous_record = loss_record(task)
+            previous_summary = loss_summary(rep, task)
+            previous_window = phase_space_reset_summary(task)
+            previous_coordinates = map(copy, coordinate_arrays(rep))
+            foreign = Phase6DRep(zeros(2), zeros(2), zeros(2), zeros(2), zeros(2), zeros(2))
+            @test_throws ArgumentError execute!(task, foreign; turns=1)
+            @test loss_record(task) === previous_record
+            @test loss_summary(rep, task) == previous_summary
+            @test phase_space_reset_summary(task) == previous_window
+            @test all(isequal(a, b) for (a, b) in zip(coordinate_arrays(rep), previous_coordinates))
+            @test task.next_turn[] == 1
+            if output
+                @test task.artifact.file === nothing && !isfile(path * ".lock")
+                @test read(TaskOutput(path), :reset_trials; name="reset").turn == [0.0]
+                @test read(TaskOutput(path), :reset_losses; name="reset").particle_id == [1.0]
+                # A same-count changed aperture catalogue must not silently
+                # write new trials under the old attribution labels.
+                aperture.name = "OTHER"
+                @test_throws ArgumentError execute!(task, rep; turns=1)
+                @test loss_record(task) === previous_record
+                @test loss_summary(rep, task) == previous_summary
+                @test phase_space_reset_summary(task) == previous_window
+                @test task.next_turn[] == 1
+                @test read(TaskOutput(path), :reset_trials; name="reset").turn == [0.0]
+                @test read(TaskOutput(path), :reset_losses; name="reset").particle_id == [1.0]
+            end
+        end
+    end
+end
+
+@testset "Phase-space reset: refused window preserves resolved spectral noise" begin
+    spectral_reset_table(task) = Octopus._slot_rules(
+        Octopus._physics_line(Octopus._runtime_entries(task))[2].rule)[1][2]
+    saved_seed, saved_method = global_rng_seed(), global_rng_method()
+    try
+        mktempdir() do directory
+            for output in (false, true)
+                @testset let artifact=output
+                    set_global_rng!(seed=1001, method=:philox)
+                    rng_id = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
+                    noise = SpectralNoise(1e-4, (1 / 64, 1 / 4), :flat; rng_id=rng_id, turns=256)
+                    cavity = ThinCrabCavitySpec{1}(394e6; strengthX=(2e-3,), phase=(0.0,), phase_noise=(noise,))
+                    artifact = output ? RunArtifact(joinpath(directory, "spectral.h5"); append=true,
+                                                    record_turn_modulation=true) : nothing
+                    task = TrackingTask((PhaseSpaceResetSpec(), cavity, CrabDispersionSpec(zeta1=0.1));
+                                        artifact=artifact)
+                    rep = Phase6DRep([1e-4], [0.0], [3e-5], [0.0], [1e-2], [0.0])
+                    execute!(task, rep; turns=1)
+                    previous_table = spectral_reset_table(task)
+                    @test previous_table.resolved_seed == UInt64(1001)
+                    previous_summary = phase_space_reset_summary(task)
+                    set_global_rng!(seed=2002, method=:philox)
+                    @test_throws ArgumentError execute!(task, rep; turns=1, start_turn=256)
+                    @test phase_space_reset_summary(task) == previous_summary
+                    @test task.next_turn[] == 1
+                    audit = with_execution_audit() do
+                        execute!(task, rep; turns=1)
+                    end
+                    current_table = spectral_reset_table(task)
+                    @test current_table === previous_table
+                    @test current_table.digest == previous_table.digest
+                    @test current_table.resolved_seed == UInt64(1001)
+                    receipt = only(filter(r -> r.consumer === :turn_modulation, execution_receipts(audit))).values
+                    @test receipt.elements[1].slots[1].digest == previous_table.digest
+                end
+            end
+        end
+    finally
+        set_global_rng!(seed=saved_seed, method=saved_method)
+    end
+end
+
 @testset "Loss accounting reports itself" begin
     # Drained on a task so a full pipe buffer cannot deadlock the capture.
     function capture_stdout(f)
@@ -21785,7 +22362,9 @@ end
     # this ratchet at 607).
     r = validate_element_metadata()
     @test r.passed
-    @test r.default_pairs >= 599
+    # 599 -> 610 on 2026-10-29: the reset kind's eleven defaults are
+    # exercised through its task lifecycle, including exact restoration.
+    @test r.default_pairs >= 610
     @test r.defaults_checked == r.default_pairs
     # The weaker base (the example's required parameters alone) is used exactly
     # where the constructor refuses the declared default beside the example --
@@ -24148,17 +24727,41 @@ end
                 f_po(e) = @allocated Octopus.prepare_line_observers!(e; turns=1, first_turn=0)
                 f_fo(e) = @allocated Octopus._finalize_line_observers!(e)
                 f_hk(e) = @allocated Octopus._line_hook_entries(e)
+                f_pr(e) = @allocated Octopus._has_phase_space_reset(e)
+                f_rt(e) = @allocated Octopus._requires_tracking_task(e)
                 walks = (("_physics_line", () -> f_pl(entries)), ("_strong_beams_of", () -> f_sb(elems)),
                          ("_count_hidden_strong_beams", () -> f_hs(elems)), ("_check_turn_window", () -> f_tw(elems)),
                          ("_turn_modulation_entries", () -> f_te(elems)), ("_turn_modulation_columns!", () -> f_tc(elems)),
                          ("_each_modulated", () -> f_em(elems)), ("_check_beam_eltype", () -> f_be(elems)),
                          ("prepare_line_observers!", () -> f_po(entries)), ("_finalize_line_observers!", () -> f_fo(entries)),
-                         ("_line_hook_entries", () -> f_hk(entries)))
+                         ("_line_hook_entries", () -> f_hk(entries)),
+                         ("_has_phase_space_reset", () -> f_pr(entries)),
+                         ("_requires_tracking_task", () -> f_rt(elems)))
                 for (name, f) in walks
                     f(); f()
                     @testset let walk = name, bytes = f()
                         @test bytes <= 256
                     end
+                end
+                # The reset predicate must stay effective at the end of a
+                # heterogeneous line and through a kept-whole frame wrapper.
+                # Its initial `any` implementation allocated 189824 B on the
+                # no-reset entries above, making an ordinary fast/general
+                # execute allocate 867120/689744 B; limits are unchanged.
+                reset_op = compile_runtime(PhaseSpaceResetSpec())
+                wrapped_reset = compile_runtime(BeamLine("walk_reset", PhaseSpaceResetSpec(); x_offset=1e-4))
+                @test !Octopus._has_phase_space_reset(())
+                @test !Octopus._requires_tracking_task(())
+                @test !Octopus._has_phase_space_reset(entries)
+                @test !Octopus._requires_tracking_task(elems)
+                for op in (reset_op, wrapped_reset)
+                    @test Octopus._has_phase_space_reset((entries..., Octopus.PhysicsEntry(op)))
+                    @test Octopus._requires_tracking_task((elems..., op))
+                    guarded = rep4()
+                    saved = map(copy, coordinate_arrays(guarded))
+                    @test_throws ArgumentError track!(guarded, (elems..., op), 1;
+                                                      policy=CPUThreadsExecutionPolicy())
+                    @test all(isequal(a, b) for (a, b) in zip(coordinate_arrays(guarded), saved))
                 end
                 l6a = Linear6DSpec{Float64}(; beta1=(0.55, 0.056, 12.7), beta2=(0.55, 0.056, 12.7),
                                             alpha1=(0.0, 0.0, 0.0), alpha2=(0.0, 0.0, 0.0), dmu=2pi .* (0.08, 0.14, -0.069))
@@ -25469,16 +26072,27 @@ end
                            [1.0e-2 * sin(0.017i + 0.4) for i in 1:n], [5.0e-4 * cos(0.013i + 0.5) for i in 1:n])
         execute!(TrackingTask((disp(), crab(), strong(), ApertureSpec(x_limit=6.0e-5, name="COLL"), hooks()...);
                               artifact=RunArtifact(pG; capacity=2, record_turn_modulation=true)), rep64; turns=3)
-        written = HDF5.h5open(f -> Set(Symbol(String(k)) for k in keys(f)), pG)
+        # Permanent-loss and reset-trial producers intentionally use distinct
+        # semantics, so cover their product union with two genuine runs.
+        pReset = joinpath(dir, "G_reset.h5")
+        reset_rep = Phase6DRep([0.0, 1.0e-3], zeros(2), zeros(2), zeros(2), zeros(2), zeros(2))
+        execute!(TrackingTask((PhaseSpaceResetSpec(), ApertureSpec(x_limit=5e-4, name="COLL"));
+            artifact=RunArtifact(pReset)), reset_rep; turns=2)
+        producer_paths = (pG, pReset)
+        written = union((HDF5.h5open(f -> Set(Symbol(String(k)) for k in keys(f)), path)
+                         for path in producer_paths)...)
         @test written == Set(Octopus._RA_KINDS)
-        @test Set(propertynames(read(TaskOutput(pG), :all))) == Set(Octopus._RA_KINDS)
-        @test Set(Symbol.(keys(read(TaskOutput(pG))))) == Set(Octopus._RA_KINDS)
-        HDF5.h5open(pG, "r") do f
-            for (k, shape) in pairs(Octopus._RA_GROUPS)
-                children = [f[String(k)][c] for c in keys(f[String(k)])]
-                @testset let group = k
-                    # a named or slotted kind holds groups, a single kind datasets
-                    @test all(c -> c isa HDF5.Group, children) == (shape !== :single)
+        @test union((Set(propertynames(read(TaskOutput(path), :all))) for path in producer_paths)...) == Set(Octopus._RA_KINDS)
+        @test union((Set(Symbol.(keys(read(TaskOutput(path))))) for path in producer_paths)...) == Set(Octopus._RA_KINDS)
+        for path in producer_paths
+            HDF5.h5open(path, "r") do f
+                for (k, shape) in pairs(Octopus._RA_GROUPS)
+                    haskey(f, String(k)) || continue
+                    children = [f[String(k)][c] for c in keys(f[String(k)])]
+                    @testset let group = k
+                        # a named or slotted kind holds groups, a single kind datasets
+                        @test all(c -> c isa HDF5.Group, children) == (shape !== :single)
+                    end
                 end
             end
         end
@@ -25488,7 +26102,7 @@ end
         Octopus.prepare_run_artifact!(artG, String[], 0, 1)
         errB = refusal(() -> Octopus._ra_bind_probe!(artG, "state", "x", ["turn"], 0))
         @test errB isa ArgumentError && occursin("cannot bind under /state", sprint(showerror, errB)) &&
-              occursin("luminosity, moments, snapshot, bpm", sprint(showerror, errB))
+              occursin(join(string.(Octopus._RA_NAMED_KINDS), ", "), sprint(showerror, errB))
         Octopus.finalize_run_artifact!(artG)
         # The `:turn_modulation` receipt's shape at all three levels, and the
         # artifact reader's (the slot entry alone was pinned before, S4-9).
@@ -29386,6 +30000,14 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             @test occursin("MPI-CHECK rank=1 nranks=2 resolved_by=mpi_communicator OK", out2)
             @test !occursin("MPI-CHECK FAIL", out1)
             @test !occursin("MPI-CHECK FAIL", out2)
+            for (output, ranks) in ((out1, 1), (out2, 2), (out4, 4))
+                receipts = filter(line -> startswith(line, "MPI-RESET "), split(output, '\n'))
+                @test length(receipts) == ranks
+                @test occursin("MPI-RESET-ORACLE nranks=$(ranks) cases=3 scalar_exact=true OK", output)
+                for rank in 0:(ranks - 1)
+                    @test "MPI-RESET rank=$(rank) nranks=$(ranks) cases=3 finite_refused=true OK" in receipts
+                end
+            end
 
             # --- CPU vs MPI: BITWISE ----------------------------------
             #

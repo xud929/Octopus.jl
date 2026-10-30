@@ -392,6 +392,9 @@ const ALLOWED_PHYSICS_KEYWORDS = Set{Symbol}([
     :placeholder,
     :collimation,
     :particle_loss,
+    # A task-managed experimental reset for repeated fixed-input noise trials.
+    :phase_space_reset,
+    :noise_response,
     # An element kind that declares turn-by-turn modulation rule parameters;
     # see src/elements/turn_modulated.jl.
     :turn_modulation,
@@ -1197,6 +1200,12 @@ function _compiled_matches_runtime(compiled, rt::Type)
     return false
 end
 
+# Metadata and parameter-effectiveness probes share the real execution entry.
+# Ordinary maps are scalar-callable; a task-managed operation specializes this
+# helper with a capture/mutate/restore witness, never an identity fallback.
+_element_metadata_probe(spec, coordinates) = collect(compile_runtime(spec)(coordinates...))
+_element_probe_placement_supported(::Type) = true
+
 """
 Compare each declared `ParamMeta.default` against the runtime it produces, for
 EVERY non-required key that declares one.
@@ -1209,6 +1218,11 @@ the 608 declared defaults, every one on `:drift` and `:marker`, and the very
 `quadrupole.nst` an earlier version of this docstring cited as its
 discriminating example (2026-10-18 comprehensive audit, F-168: `drift.h`
 redeclared from 0 to 6 validated clean while the compiled map moved).
+
+Ordinary maps use a scalar coordinate probe. A task-managed operation uses
+`_element_metadata_probe` to exercise its real lifecycle; phase-space reset
+captures, mutates every coordinate, and restores through `TrackingTask`.
+Unsupported scalar tracking is never substituted with an identity map.
 
 Two bases, and no silent skip:
 
@@ -1254,7 +1268,7 @@ function _check_declared_defaults!(errors, T, meta, example)
                                      if haskey(schema, k) && schema[k] isa ParamMeta &&
                                         schema[k].required)
     u = (1.0e-3, 2.0e-4, -5.0e-4, 1.0e-4, 1.0e-3, 3.0e-4)
-    track(p) = collect(compile_runtime(ctor(; p...))(u...))
+    track(p) = _element_metadata_probe(ctor(; p...), u)
     arms(b, key, default) = begin
         without = copy(b); delete!(without, key)
         withdef = copy(b); withdef[key] = default

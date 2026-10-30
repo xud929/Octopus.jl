@@ -23,17 +23,20 @@ export ApertureSpec, Aperture, LossRecord, loss_counts, loss_records, aperture_n
     LossRecord
 
 Where apertures record what they killed. One per **beam**, shared by every
-aperture in the lattice, because a particle is lost at most once and a
-per-element copy would be `O(N)` per aperture.
+aperture in the lattice, because a particle is lost at most once during
+ordinary tracking and a per-element copy would be `O(N)` per aperture.
+A `PhaseSpaceResetSpec` task reuses this record as per-trial scratch: it
+finalizes each trial's outcomes before clearing the record for restoration.
 
 Two mechanisms at two different rates, which is the point:
 
 - `counts` -- one running total per aperture, bumped on the loss transition.
   `O(1)` per loss. Losses are rare relative to particles, so even an atomic
   increment is negligible here.
-- `slots` -- one row per particle, `8` values wide, written at most once. No
+- `slots` -- one row per particle, `8` values wide, written at most once
+  between resets of the record. No
   atomics and no cursor: each particle owns its slot, and the loss transition
-  fires once ever, so there is no contention. `nothing` when no log path was
+  fires once per lifetime (once per reset trial), so there is no contention. `nothing` when no log path was
   requested, in which case an aperture counts and kills without recording.
 
 The per-particle slot costs `~64 N` bytes per beam and is why it is allocated
@@ -285,11 +288,13 @@ end
     _aperture_newly_lost(elem, x, px, y, py, z, pz)
 
 Whether this call is the moment the particle dies: alive on entry, outside on
-exit. True exactly once per particle for the whole run, at one aperture.
+exit. True exactly once per particle for ordinary tracking, or once within
+each phase-space-reset trial, at one aperture.
 
 Detecting the **transition** rather than the condition is what makes logging
 idempotent without a per-particle flag. A particle killed on turn `n` stays
-`NaN`, and every comparison against `NaN` is false, so on turn `n+1` it reads as
+`NaN` until an explicit phase-space reset, and every comparison against `NaN`
+is false, so without a reset on turn `n+1` it reads as
 outside the aperture again -- the naive test would re-log it forever. The same
 property supplies the fix: a dead particle also fails `isfinite`, so
 `was_alive & !inside` is true only on the edge.

@@ -238,6 +238,69 @@ let rank = child_rank(), nranks = MPI.Comm_size(MPI.COMM_WORLD)
     @printf("MPI-BOUNDINIT rank=%d nranks=%d cases=%d OK\n", rank, nranks, checked)
 end
 
+# --- repeated reset trials: real sharded tracking and loss revival ------
+include(joinpath(@__DIR__, "phase_space_reset_probe.jl"))
+let rank = child_rank(), nranks = MPI.Comm_size(MPI.COMM_WORLD)
+    policy = MultiProcessExecutionPolicy(threads=1, ranks=nranks)
+    checked = 0
+    for (T, kind, losses) in ((Float64, :table, true), (Float32, :table, true),
+                               (Float64, :radiation, false))
+        result = psr_probe_verify(policy, _ARTIFACT_DIR; T=T, kind=kind, losses=losses,
+            n=17, turns=4, chunks=(1, 3), rank=rank, nranks=nranks,
+            prefix="reset_$(T)_$(kind)")
+        psr_probe_pass(result) || fail("phase-space reset differs from repeated one-turn tracking")
+        if rank == 0
+            # A second, undivided scalar oracle does not share the MPI
+            # policy's shard-offset path. Radiation therefore checks the
+            # actual global particle RNG keys, not just agreement between
+            # two calls that could both have used the same wrong offset.
+            runtime = map(compile_runtime, result.line)
+            rows = Matrix{Float64}(undef, 17 * 4, 8)
+            for turn in 0:3
+                ctx = TrackingContext(turn=turn, seed=psr_probe_seed(),
+                                      rng_method=:philox, index_offset=0)
+                updated = Octopus.update_line(runtime, ctx)
+                for particle in 1:17
+                    coordinates = ntuple(i -> coordinate_arrays(result.initial)[i][particle], 6)
+                    response = Octopus.fusedTrack(ctx, updated, particle, coordinates...)
+                    rows[turn * 17 + particle, :] .= (Float64(turn), Float64(particle), response...)
+                end
+            end
+            psr_probe_difference(result.rows, rows).equal ||
+                fail("phase-space reset MPI result differs from undivided global-ID scalar oracle")
+        end
+        state = result.task.phase_space_reset[]
+        expected = Octopus._mp_shard_range(17, nranks, rank)
+        state.signature.global_n == 17 && state.signature.n == length(expected) ||
+            fail("phase-space reset snapshot did not remain rank-local")
+        state.signature.offset == first(expected) - 1 ||
+            fail("phase-space reset changed the global particle index interval")
+        initial = psr_probe_initial(T; n=17)
+        for (saved, whole) in zip(coordinate_arrays(state.snapshot), coordinate_arrays(initial))
+            isequal(saved, whole[expected]) || fail("phase-space reset snapshot is not this rank's original shard")
+        end
+        summary = phase_space_reset_summary(result.task)
+        summary.completed_trials == 3 && summary.attempted_particle_trials == 51 ||
+            fail("phase-space reset summary is not the last global execution window")
+        summary.last_trial.folded || fail("phase-space reset successful summary was not folded")
+        if rank == 0 && losses
+            result.losses.bitwise || fail("reset repeated-loss events differ from reference")
+            sum(result.trials.logged) == size(result.reset_loss_rows, 1) ||
+                fail("reset loss rows disagree with per-trial global counters")
+        end
+        checked += 1
+    end
+    # Only one rank has an invalid capture. Every rank must refuse before a
+    # later collective, rather than the finite ranks entering the turn loop.
+    local_rep = psr_probe_copy(psr_probe_initial(Float64; n=17), policy; rank=rank, nranks=nranks)
+    rank == 0 && (local_rep.z[1] = NaN)
+    refused = refusal_direction(() -> execute!(TrackingTask((PhaseSpaceResetSpec(),); policy=policy),
+                                               local_rep; turns=2), "finite initial coordinates")
+    refused || fail("phase-space reset accepted a nonfinite reference on another rank")
+    rank == 0 && @printf("MPI-RESET-ORACLE nranks=%d cases=%d scalar_exact=true OK\n", nranks, checked)
+    @printf("MPI-RESET rank=%d nranks=%d cases=%d finite_refused=%s OK\n", rank, nranks, checked, refused)
+end
+
 # --- sharded tracking (step 3a) -----------------------------------------
 #
 # Built and tracked exactly as a user would, through the public constructor

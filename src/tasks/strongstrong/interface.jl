@@ -3784,6 +3784,8 @@ function _split_strong_strong_line(line::Tuple, record=nothing)
     collisions = Any[]
     hook_counter = Ref(0)
     _append_strong_strong_line!(entries, cuts, collisions, line, hook_counter)
+    _has_phase_space_reset(Tuple(entries)) && throw(ArgumentError(
+        "PhaseSpaceReset is supported by TrackingTask only; StrongStrongTask would need a joint reset of both live beams and solver state"))
     bound, binding = _bind_line_entries(Tuple(entries), line, record)
     blocks = Any[]
     start = 1

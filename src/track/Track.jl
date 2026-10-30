@@ -59,6 +59,12 @@ tracking kernels and are produced from structured element specs by
 """
 abstract type AbstractTrackOp end
 
+# A beam-level operation owns capture/loss lifecycle in TrackingTask. Passing a
+# context alone cannot make a scalar tracking entry supply that lifecycle.
+_requires_tracking_task(::Any) = false
+_requires_tracking_task(spec::AbstractElementSpec) = _requires_tracking_task(typeof(spec))
+_requires_tracking_task(elems::Tuple) = any(_requires_tracking_task, elems)
+
 """
     _required_beam_eltype(op) -> Union{Nothing,Type}
 

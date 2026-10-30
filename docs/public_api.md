@@ -515,6 +515,30 @@ coordinates of each kind agree bitwise between the CPU and CUDA kernels and
 which agree to a stated number of ulps (`_cross_backend_rounding`, checked by
 measurement in the suite and by `validation/tracking_backend_consistency.jl`).
 
+## Repeated Noise Trials
+
+Put `PhaseSpaceResetSpec()` first in a `TrackingTask` line to capture each
+particle's initial coordinates once and restore them before subsequent turns.
+Noise still follows the absolute turn. CPU/CUDA snapshots stay on their own
+backend, and MPI ranks retain their own shards. Record the response after the
+physical lattice. One reset per task is supported, with `loss_report=true`.
+
+```julia
+?PhaseSpaceResetSpec
+?clear_phase_space_reset!
+?phase_space_reset_summary
+```
+
+The summary contains bounded totals for the latest execution window and its
+last trial; `clear_phase_space_reset!` explicitly rearms capture without
+rewinding turns or RNG streams. An artifact writes each trial under
+`read(TaskOutput(path), :reset_trials; name="reset")` and repeated aperture
+events under `:reset_losses`. Use `RunArtifact(path; append=true)` to retain
+earlier execution windows; replay replaces rows at or beyond its starting
+turn. These are trial outcomes, distinct from the
+permanent-loss `/losses` product. Detailed lifecycle, restrictions and the
+independent tracking oracle are in [the design note](design/phase_space_reset.md).
+
 ## Particle Loss
 
 A non-finite coordinate means a **bug** by default, and every solver chokepoint

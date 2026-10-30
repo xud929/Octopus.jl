@@ -255,6 +255,14 @@ constructor names remain the user-facing way to build those specs.
   - Runtime mappings: `[]`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
+- `ElementSpec{:phase_space_reset}` via `PhaseSpaceResetSpec`
+  - Physics keywords: `:phase_space_reset`, `:noise_response`
+  - Supported tracking methods: `NonSymplectic6DMap`
+  - Required contracts: `ElementTrackingBackendConsistencyContract`
+  - Supported analyses: `PlaceholderAnalysis`
+  - Runtime mappings: `NonSymplectic6DMap => PhaseSpaceReset`
+  - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
+
 - `ElementSpec{:aperture}` via `ApertureSpec`
   - Physics keywords: `:thin_element`, `:collimation`, `:particle_loss`
   - Supported tracking methods: `NonSymplectic6DMap`
@@ -383,6 +391,7 @@ live under `src/track/`.
 - `Patch`
 - `ThinRFCavity`
 - `ThinAcceleratingCavity`
+- `PhaseSpaceReset`
 - `Aperture`
 - `BeamParams`
 - `Phase6DRep`

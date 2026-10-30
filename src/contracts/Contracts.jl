@@ -3480,6 +3480,11 @@ thin elements accept `x_offset` and drop it while `validate_element_metadata`
 still passed. Metadata validation checks that a parameter is declared and
 documented, not that anything reads it; this closes that gap mechanically.
 
+Task-managed elements use the same executable probe hook as metadata
+validation. Phase-space reset captures a reference, changes every coordinate,
+and restores through a task; unsupported placements are tested as explicit
+refusals rather than used to construct an invalid baseline.
+
 Construction goes through the friendly constructor on purpose. Several
 parameters are construction-time sugar -- `k1` folds into `kn`, `angle` into
 `h`/`b0` -- and setting them on a raw `ElementSpec` correctly does nothing, so a
@@ -4077,11 +4082,13 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
         # show a declared alternative would report the parameter ignored when
         # it is only unasked. Central, so the example-derived fallback probes
         # are enriched identically to the curated ones.
-        for (k, v) in pairs(_PLACEMENT_PROBE_DOF)
-            haskey(probe, k) || (probe[k] = v)
+        if _element_probe_placement_supported(T)
+            for (k, v) in pairs(_PLACEMENT_PROBE_DOF)
+                haskey(probe, k) || (probe[k] = v)
+            end
         end
         baseline = try
-            collect(compile_runtime(ctor(; probe...))(u...))
+            _element_metadata_probe(ctor(; probe...), u)
         catch err
             # A throwing baseline is a BROKEN kind, not an unprobeable one:
             # silently skipping it converted a defect on the probe path into
@@ -4151,7 +4158,7 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
                 end
                 spec === nothing && continue
                 moved = try
-                    collect(compile_runtime(spec)(u...))
+                    _element_metadata_probe(spec, u)
                 catch err
                     push!(refusals, "compile_or_map: " * first(split(sprint(showerror, err), '\n')))
                     nothing

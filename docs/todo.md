@@ -13,7 +13,7 @@ When an item below closes: move its row (with the closing measurements) to the
 archive under a dated note, and if it taught something reusable, add the
 lesson to `experiences.md`.
 
-Latest closure: [bounded beam initialization, 2026-10-29](history/audit_beam_initialization_2026_10_29.md).
+Latest closure: [phase-space reset for noise-response trials, gated 2026-10-29; recorded 2026-10-30](history/audit_phase_space_reset_2026_10_29.md).
 
 ## Open, most actionable first
 

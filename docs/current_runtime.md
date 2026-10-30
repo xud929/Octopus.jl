@@ -26,6 +26,18 @@ See `?Beam`, `?beam_initialization_option_schema`, and
 
 ## Current Tracking Interface
 
+`PhaseSpaceResetSpec` compiles to a task-only sentinel, classified as
+`NonSymplectic6DMap`. `TrackingTask` gives it an isolated capture/restore
+segment and keeps its snapshot outside compiled-line and plan caches. The six
+coordinate copies reside on the beam's existing backend; MPI stores one local
+snapshot per rank. A reset task retains bounded per-window loss totals and
+the last trial, while optional artifact products `reset_trials` and
+`reset_losses` store per-trial history. Retaining earlier execution windows
+requires `RunArtifact(path; append=true)`; replay replaces rows from its
+starting turn onward. Ordinary tracking keeps its cumulative
+loss record unchanged. See [the design](design/phase_space_reset.md) and
+`?PhaseSpaceResetSpec` for lifecycle and placement restrictions.
+
 The current `Symplectic6DMap` tracking primitive is:
 
 ```julia

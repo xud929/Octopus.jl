@@ -102,6 +102,13 @@ The artifact carries every product of the run:
   incoming window's first turn and drops the rows at or beyond it, this
   window's record is appended, and `aperture_counts` follows the rows; the
   `summary_*` attributes are the writing `execute!`'s beam (`_ra_write_losses!`).
+- `/reset_trials/<name>`, `/reset_losses/<name>`: a phase-space reset task's
+  per-trial outcomes and aperture events. Each row identifies the absolute
+  turn, reference epoch and capture turn; repeated losses of one particle are
+  separate trials. `completed` distinguishes partial trials and `folded`
+  distinguishes global success output from rank-local failure output. These
+  named row-matrix groups use the same cursor and replay rules as probes;
+  reset tasks do not write the permanent-loss `/losses` group.
 - `/execution`: one row per `execute!` — `start_turn`, planned `turns`,
   `current_turn` and wall-clock `elapsed`, the last two updated at every
   flush, and since 2026-10-16 `rng_seed` and `rng_method`, the global
@@ -209,8 +216,13 @@ Snapshots are the deliberate exception: a phase-space block is already
 large (N particles x 8 columns), so each fire writes its block immediately
 — the per-write cost the capacity exists to amortize is negligible against
 the block itself, and buffering blocks would multiply host memory for
-nothing. A snapshot's volume knobs are its SCHEDULE and `npart`. The file
-handle is held open for the whole `execute!`, so flushing costs no
+nothing. A snapshot's volume knobs are its SCHEDULE and `npart`.
+Reset trial summaries and loss blocks also flush once per trial, so their
+outcomes are durable before the next restoration clears the loss scratch.
+`capacity` is inactive for those two products; their trial receipt says
+`flush_mode=:per_trial` and `capacity_applies=false`. This diagnostic I/O is
+optional through the presence of an artifact and has no throughput guarantee.
+The file handle is held open for the whole `execute!`, so flushing costs no
 open/close.
 
 `record_turn_modulation=false` (default) leaves the per-turn offsets of the
@@ -361,7 +373,9 @@ run_artifact_option_schema() = (
     capacity=ConfigurationOptionMeta(Int, 64,
         "Rows per group buffered between flushes, the ONE batching knob for every " *
         "row-shaped producer (luminosity, moments, BPM readings, the turn-modulation " *
-        "series); snapshots write their block per fire. At least 1, refused by name " *
+        "series); snapshots write their block per fire, and phase-space reset " *
+        "trial summaries and loss blocks flush per trial before restoration, so " *
+        "capacity is inactive for those products. At least 1, refused by name " *
         "otherwise. Carried as applied by the :run_artifact_output receipt and by " *
         "the :observer_output receipts of the probes that batch by it.";
         category=:output, consumer=:run_artifact_output),
@@ -2004,6 +2018,94 @@ function _ra_push_probe_rows!(art::RunArtifact, key::String, rows::AbstractMatri
     return nothing
 end
 
+"""
+Choose a fresh reset-reference epoch above both the task's prior epoch and
+the continued artifact's recorded epochs. Only the root reads the file; a
+small broadcast carries either its epoch or its refusal to every rank before
+the next collective. Reading respects the row cursor and never changes the
+file. A new task continuing a file therefore cannot relabel another task's
+reference as its own epoch 1.
+"""
+function _next_reset_reference_epoch(art, name::AbstractString, previous_epoch::Integer)
+    result = Int64[0, 0]
+    root_error = nothing
+    if _mp_is_root()
+        try
+            largest = Int64(previous_epoch)
+            if art !== nothing && art.file !== nothing
+                identity = isempty(name) ? "reset" : String(name)
+                for kind in ("reset_trials", "reset_losses")
+                    key = kind * "/" * identity
+                    haskey(art.file, key) || continue
+                    group = art.file[key]
+                    columns = String.(read(group["column_names"]))
+                    column = findfirst(==("reference_epoch"), columns)
+                    column === nothing && throw(ArgumentError(
+                        "continued reset output $(key) has no reference_epoch column"))
+                    data = group["data"]
+                    valid = _ra_row_cursor(group, size(data, 1), String(HDF5.name(group)), art.path)
+                    if valid > 0
+                        for value in data[1:valid, column]
+                            isfinite(value) && isinteger(value) && value >= 1 ||
+                                throw(ArgumentError("continued reset output has an invalid reference epoch"))
+                            largest = max(largest, Int64(value))
+                        end
+                    end
+                end
+            end
+            # Probe matrices store Float64: reject before an epoch ceases to
+            # have an exact representation in its output row.
+            0 <= largest < 2^53 || throw(ArgumentError(
+                "phase-space reset reference epoch exceeds the exact output range"))
+            result[2] = largest + 1
+        catch err
+            root_error = err
+            result[1] = 1
+        end
+    end
+    _mp_bcast!(result)
+    if result[1] != 0
+        root_error === nothing || throw(root_error)
+        throw(ArgumentError("the root rank refused the next phase-space reset reference epoch"))
+    end
+    return result[2]
+end
+
+"""
+Write one reset trial's event block and summary through the shared row-cursor
+protocol. Replacing this turn first makes a second attempt after a partial
+write idempotent. Only the groups of this reset and this turn are touched;
+earlier completed trials retain their rows. Failure callers pass local rows
+with `folded=false`; this helper itself never issues a collective.
+"""
+function _ra_write_reset_trial!(art::RunArtifact, trial_key::String, loss_key::String,
+                                trial_rows::AbstractMatrix, loss_rows::AbstractMatrix,
+                                turn::Int64)
+    art.file === nothing && return nothing
+    art.committed || throw(ArgumentError(
+        "phase-space reset trial output arrived before the run artifact committed"))
+    for key in (trial_key, loss_key)
+        isempty(key) && throw(ArgumentError("phase-space reset trial output was not bound"))
+        group = art.file[key]
+        data = group["data"]
+        valid = _ra_row_cursor(group, size(data, 1), String(HDF5.name(group)), art.path)
+        last_turn = Int64(_ra_get_attr(group, _RA_TURN_CURSOR, _RA_NO_TURN))
+        if last_turn >= turn
+            _ra_truncate_probe!(group, turn - 1)
+        elseif size(data, 1) > valid
+            # A failed append may have enlarged the dataset without advancing
+            # its cursor. Drop that tail by ROW, without rereading all earlier
+            # turns. The normal monotone append path is O(1) in history size.
+            HDF5.set_extent_dims(data, (valid, size(data, 2)))
+        end
+    end
+    # Events first: the complete summary never precedes its event block. If
+    # either append fails, the failure finalizer replaces this turn's rows.
+    _ra_push_probe_rows!(art, loss_key, loss_rows)
+    _ra_push_probe_rows!(art, trial_key, trial_rows)
+    return nothing
+end
+
 
 # ---------------------------------------------------------------------------
 # Readers (step 4): the convenience surface for the one-file-per-task
@@ -2137,8 +2239,10 @@ end
 # of every producer (2026-10-16 neighbour audit, S4-8: the hand list was
 # correct and had no tripwire).
 const _RA_GROUPS = (luminosity=:named, moments=:named, snapshot=:named, bpm=:named,
+                    reset_trials=:named, reset_losses=:named,
                     losses=:single, execution=:single, turn_modulation=:slotted)
 const _RA_NAMED_KINDS = Tuple(k for (k, shape) in pairs(_RA_GROUPS) if shape === :named)
+const _RA_PROBE_KINDS = Tuple(k for k in _RA_NAMED_KINDS if k !== :luminosity)
 const _RA_KINDS = keys(_RA_GROUPS)
 
 function _ra_require_group(f, out::TaskOutput, kind::Symbol)
@@ -2572,7 +2676,8 @@ turn_modulation_provenance(path::AbstractString) =
          orders=nothing, extra=(), exclude=())
 
 One product of the artifact. `kind` is one of `:luminosity`, `:moments`,
-`:snapshot`, `:bpm`, `:losses`, `:execution`, `:turn_modulation` -- or `:all`
+`:snapshot`, `:bpm`, `:reset_trials`, `:reset_losses`, `:losses`, `:execution`,
+`:turn_modulation` -- or `:all`
 for every product present, nested by kind (named kinds as
 `Dict{String,NamedTuple}`; reads the WHOLE file, snapshots included).
 
@@ -2598,6 +2703,15 @@ beside the columns (`nothing` for task-hook probes and pre-attribute files),
 and `attrs`, the group's own attributes beyond the protocol's (the BPM's
 device model, `x_offset` to `y_noise` and `rng_id`; F-90, 2026-10-21), an
 empty NamedTuple where none are stamped.
+
+`:reset_trials` returns one outcome row per attempted phase-space reset trial,
+with its particle counts, completion and fold flags, reference epoch and
+capture turn. `:reset_losses` returns that experiment's aperture events,
+including repeated losses of the same particle on different turns. Both are
+named probe groups; their `attrs.aperture_name_<i>` labels the indexed aperture
+counts and event IDs. These products are present only for reset tasks and
+replace the permanent-loss product for those tasks. A partial failed trial
+has `completed == 0`; its local failure accounting has `folded == 0`.
 
 `:losses` returns the per-loss rows as column vectors (pre-kill coordinates),
 the per-aperture names/counts/arc positions, and the reconciliation summary
@@ -2650,7 +2764,7 @@ function Base.read(out::TaskOutput, kind::Symbol;
     end
     turn === nothing || kind === :snapshot || throw(ArgumentError(
         "turn selects a snapshot block; it does not apply to $(kind)"))
-    column === nothing || kind in (:moments, :snapshot, :bpm) || throw(ArgumentError(
+    column === nothing || kind in _RA_PROBE_KINDS || throw(ArgumentError(
         "column selects from a probe group; it does not apply to $(kind)"))
     _ra_open(out.path) do f
         # The single-product kinds take their group through `_ra_require_group`

@@ -11,9 +11,13 @@ compiled wrapper (`inner === base`), the last realised one for a wrapper that
 went through `update_line` by hand or was read back out of a task's plan: the
 rules are realised only by a task's `execute!`, which calls `update_line`
 before each turn (design decision D5, `docs/design/turn_modulation.md`).
+Task-managed operations such as [`PhaseSpaceResetSpec`](@ref) require
+[`TrackingTask`](@ref); this entry rejects them before tracking starts,
+including when they are nested in a runtime wrapper or composite line.
 """
 function track!(rep, elems, turns; policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
                 context::TrackingContext=TrackingContext())
+	_reject_task_only_tracking(elems)
 	resolved = _resolve_execution_policy(policy, rep)
 	_with_execution_policy(resolved) do
 		# Inside the policy scope, because the shard is a property of the
@@ -45,6 +49,7 @@ end
 
 function track!(rep, elems, turns, policy::ResolvedCPUExecutionPolicy,
 				ctx::TrackingContext)
+	_reject_task_only_tracking(elems)
 	for turn in 1:turns
 		turn_ctx = with_turn(ctx, ctx.turn + Int64(turn - 1))
 		_run_logical_workers(policy.threads) do worker, nworkers
@@ -59,6 +64,7 @@ function track!(rep, elems, turns, policy::ResolvedCPUExecutionPolicy,
 end
 
 function track!(rep, elems, turns, policy::ResolvedCPUExecutionPolicy)
+	_reject_task_only_tracking(elems)
 	_reject_contextless_tracking(elems)
 	for turn in 1:turns
 		_run_logical_workers(policy.threads) do worker, nworkers
@@ -69,6 +75,17 @@ function track!(rep, elems, turns, policy::ResolvedCPUExecutionPolicy)
 	end
 	return nothing
 end
+
+# The host preflight applies even to context-aware tracking: a TrackingContext
+# carries stochastic keys, not the beam-level capture and loss lifecycle.
+function _reject_task_only_tracking(elems)
+	_requires_tracking_task(elems) || return nothing
+	throw(ArgumentError(_PHASE_SPACE_RESET_TASK_REQUIRED))
+end
+
+_requires_tracking_task(w::Union{MisalignedElement,RefTilted,TurnModulated}) =
+	_requires_tracking_task(w.inner)
+_requires_tracking_task(c::CompositeLine) = _requires_tracking_task(c.ops)
 
 """
 Refuse a context-free `track!` for a line that cannot run without a context.
@@ -382,6 +399,7 @@ if _HAS_CUDA
 
 		function track!(rep, elems, turns, policy::ResolvedCUDAExecutionPolicy;
 						stream=nothing)
+			_reject_task_only_tracking(elems)
 			_reject_contextless_tracking(elems)
 			if _requires_cuda_elementwise(elems)
 				# Build the context ONCE and advance its turn, exactly as the
@@ -415,6 +433,7 @@ if _HAS_CUDA
 
 		function track!(rep, elems, turns, policy::ResolvedCUDAExecutionPolicy,
 						ctx::TrackingContext; stream=nothing)
+			_reject_task_only_tracking(elems)
 			if _requires_cuda_elementwise(elems, ctx)
 				for turn in 1:turns
 					turn_ctx = with_turn(ctx, ctx.turn + Int64(turn - 1))

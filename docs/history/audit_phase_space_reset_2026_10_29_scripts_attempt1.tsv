@@ -1,0 +1,9 @@
+script	exit_code	seconds
+examples/crab_cavity_noise.jl	0	98.9
+examples/knob_control.jl	0	58.7
+examples/strong_strong_tracking.jl	0	127.8
+examples/twiss_dispersion_dba_ring.jl	0	86.1
+examples/weak_strong_tracking.jl	0	92.4
+test/examples/crab_cavity_noise.jl	0	70.8
+test/examples/strong_strong_tracking.jl	0	88.3
+test/examples/weak_strong_tracking.jl	0	60.8

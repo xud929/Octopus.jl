@@ -35,6 +35,20 @@ cites the theory it builds on and the alternatives it rejected; it does not
 duplicate derivations. (`knob_control.md` above is also a design note; it
 predates this folder and stays top-level because `AGENTS.md` links it.)
 
+- [`phase_space_reset.md`](design/phase_space_reset.md) — repeated noise trials
+  from a captured phase-space ensemble, backend-local snapshots, task lifecycle,
+  per-trial losses and the independent repeated-tracking validation oracle.
+  Implementation and neighbour review:
+  [campaign record](history/audit_phase_space_reset_2026_10_29.md),
+  [U1 architecture](history/audit_phase_space_reset_2026_10_29_unit_reports/U1_report.md),
+  [U2 lifecycle/output](history/audit_phase_space_reset_2026_10_29_unit_reports/U2_report.md),
+  [U3 validation](history/audit_phase_space_reset_2026_10_29_unit_reports/U3_report.md),
+  [ordinary-path reproducer](history/audit_phase_space_reset_2026_10_29_baseline.jl),
+  [allocation/profile reproducer](history/audit_phase_space_reset_2026_10_29_allocation_probe.jl),
+  [full-gate testsets](history/audit_phase_space_reset_2026_10_29_gate.tsv) and
+  [script receipts](history/audit_phase_space_reset_2026_10_29_scripts.tsv), with
+  [first-attempt testsets](history/audit_phase_space_reset_2026_10_29_gate_attempt1.tsv)
+  and [first-attempt scripts](history/audit_phase_space_reset_2026_10_29_scripts_attempt1.tsv).
 - [`beam_initialization.md`](design/beam_initialization.md) — bounded uniform
   random and Cartesian-grid beam construction: physical bounds, grid sizing,
   Gaussian compatibility, RNG and backend behavior, and verification plan.

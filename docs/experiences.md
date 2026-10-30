@@ -2138,6 +2138,40 @@ policy needed a `description` method even though it lived in `Main`. The
 unchanged registry checks caught that omission. Run the registry checks with
 new fixtures loaded, not only against a clean package session.
 
+## Resetting coordinates also resets the meaning of loss scratch
+
+The phase-space reset feature (2026-10-29) revives the finite reference ensemble
+for each noise trial. A cumulative aperture count cannot be reconciled with
+that trial's dead count: finalize trial diagnostics before restoring, flush the
+last trial explicitly, and retain aggregate counts plus the last summary in
+memory. Optional artifact rows carry turn and reference epoch. An early vector
+of summaries was rejected because it grew with turn count even without output.
+On CUDA, the ordinary host-based liveness helper would copy all six coordinate
+arrays each trial; a persistent device mask and scalar reduction preserve the
+backend-local loop. The [record](history/audit_phase_space_reset_2026_10_29.md)
+contains the checks and the deliberately explicit per-trial output flush rule.
+
+A refusal also has state. Failure cleanup for a rejected recursive call belonged
+to the outer active trial; moving the guard before that cleanup fixed the
+corruption. Candidate compilation could replace the last accepted loss record,
+so pre-admission rollback restores both record and owner. Clearing the runtime
+cache during that rollback introduced another neighbour defect: an unchanged
+resolved spectral table was regenerated under a newly selected global seed.
+Restore the accepted cache, whose existing key still detects actual spec/knob
+changes, and clear only derived plans. Test a valid continuation after refusal,
+not merely the exception itself.
+
+The full reset gate caught the same heterogeneous-tuple trap documented above:
+an ordinary `any` scan for a task-only reset allocated 189824 bytes on the
+40-cavity/eight-type line. Repeating it during admission and finalization broke
+both existing per-execution allocation limits, even though the numerical
+baseline and focused reset tests passed. The rollback wrapper was excluded by
+measurement. Use the established unrolled entry walk and include new guard
+predicates in the existing per-walk allocation checks; a tiny one-element
+reset fixture cannot reveal overhead on an ordinary long line. The final full
+CUDA-active gate passed 449 testsets and 158918 assertions, with the two
+pre-existing expected-broken checks recorded separately.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

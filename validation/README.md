@@ -71,6 +71,7 @@ whole arm:
 | `lattice_cells.jl` | 512 particles, 2 turns, 200 drift turns, GPU leg required | 184.6 s |
 | `moment_observer_backend_consistency.jl` | 20000 particles | 13.4 s |
 | `near_round_gaussian_transition.jl` | the full sweep, parity required | 70.6 s |
+| `phase_space_reset_consistency.jl` | 17 particles, 4 trials, both precisions, GPU leg required | 103.4 s (2026-10-29 full gate) |
 | `pic_option_consistency.jl` | GPU, 4 turns, 2000 particles, grid 32, 5 slices, tag `cuda_arm_gate` | 90.2 s |
 | `public_configuration_effectiveness.jl` | the contract's own fixtures, GPU leg required (joined 2026-10-22; measured alone, not under the arm's concurrency) | 209 s |
 | `soft_gaussian_pic_comparison.jl` | 4000 particles, 5 slices, grid 32 | 62.9 s |
@@ -89,6 +90,26 @@ The two benchmarks' timings at these sizes are run receipts, not performance
 records. The arm's total above is the 2026-10-20 measurement of 18 scripts;
 the nineteenth, the effectiveness script, adds its own time and has not been
 re-measured under the arm.
+
+## Phase-Space Reset Consistency
+
+`phase_space_reset_consistency.jl` compares a multi-turn reset-element run
+against independent explicit copies of the same initial beam, each tracked for
+one matching absolute turn through the original lattice. It checks every
+particle's six coordinates, actual noise values, exact restoration, and repeated
+aperture loss events. Cases include no noise, prescribed values, white and pink
+noise, and per-particle radiation excitation, on CPU and CUDA in Float32 and
+Float64. The shared oracle is `test/phase_space_reset_probe.jl`; real MPI
+one/two/four-rank checks run in `test/mpi_seam_check.jl`.
+
+```bash
+OCTOPUS_REQUIRE_GPU_CONTRACT=1 julia --project=. --threads=4 validation/phase_space_reset_consistency.jl
+```
+
+The script header declares its particle and turn controls, tolerances and
+reduced full-gate invocation. The [design](../docs/design/phase_space_reset.md)
+states the lifecycle, loss semantics and negative controls. A CUDA-unavailable
+run prints its skipped arm; requiring CUDA turns that skip into a failure.
 
 ## Near-Round Gaussian Transition
 
