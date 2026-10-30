@@ -26,6 +26,13 @@ See `?Beam`, `?beam_initialization_option_schema`, and
 
 ## Current Tracking Interface
 
+`TrackingTask` admits one execution or explicit state-clear operation at a
+time, guarded atomically before compilation. Distinct tasks can execute
+independently. Tune/reset bindings and loss records identify mutable coordinate
+arrays weakly; immutable array views and their parents are retained until that
+owner is cleared or replaced, so garbage collection cannot invalidate a live
+view's particle identity.
+
 `PhaseSpaceResetSpec` compiles to a task-only sentinel, classified as
 `NonSymplectic6DMap`. `TrackingTask` gives it an isolated capture/restore
 segment and keeps its snapshot outside compiled-line and plan caches. The six
@@ -199,6 +206,28 @@ the other (the thick-magnet family, both strong beams, the accelerating cavity,
 the RF cavity, the radiation element, and `:line` through its drift); fix D put
 the two modulated cavities and the radiation element behind the refusal, the
 owner's decision put every kind.
+
+The optics form of `Linear6DSpec` has an optional particle-tune runtime,
+`ParticleLinear6D`, declared beside its ordinary `Linear6D` runtime in element
+metadata. `runtime_examples` enumerates representatives of both. The active
+form supports Float32 and Float64; the ordinary map retains its wider numeric
+support. A task owns persistent bindings keyed by compiled placement, outside
+runtime and plan caches. Each binding holds shared entrance/exit normalization
+matrices, three local tune arrays and six cached sine/cosine arrays. CPU arrays
+stay on host; CUDA arrays stay on device after one-time host source evaluation
+and upload. Bound segments use the ordinary backend tracking kernels without
+per-turn source evaluation, trigonometry, or host coordinate copies.
+
+The per-particle distribution RNG is keyed by seed, RNG method, stream ID,
+preparation epoch, global particle ID and the named source's plane mask/draw
+ordinal. The initialization epoch starts at zero and advances only on an
+explicit clear of initialized bindings. Counter component high bits separate
+the new stream namespace; the draw ordinal is checked before exhaustion.
+Receipts expose the resolved `rng_method` symbol. MPI ranks hold their own
+stable global-ID interval and validate/commit preparation collectively. The
+current task route is `TrackingTask`; unsupported wrappers and strong-strong
+lines refuse before tracking. The lifecycle and initial-loss rules are in
+[the particle-tune design](design/particle_tunes.md).
 
 Cross-backend rounding: which quantities agree BITWISE between the CPU and
 CUDA kernels and which agree to a few ulps is declared per element kind on its

@@ -110,6 +110,13 @@ line = (
         alpha2=(0.01, -0.02, 0.0),
         dmu=(0.08, 0.12, 0.02),
     ),
+    # Same registered kind, distinct indexed runtime: a kind-only census
+    # cannot prove that this variant reaches the CPU/CUDA consumer.
+    Linear6DSpec{Float64}(;
+        beta1=(0.82, 0.075, 91.0), beta2=(0.8, 0.072, 90.0),
+        alpha1=(0.01, -0.02, 0.0), alpha2=(0.0, 0.0, 0.0),
+        dmu=(0.08, 0.12, 0.02), particle_tunes=(nux=0.0127, nuz=-0.0031),
+    ),
     CrabDispersionSpec{Float64}(zeta1=0.02, zeta2=-0.01, zeta3=0.004, zeta4=0.002),
     MomentumDispersionSpec{Float64}(eta1=0.03, eta2=-0.006, eta3=0.002, eta4=0.01),
     XYCouplingSpec{Float64}(r1=0.01, r2=-0.003, r3=0.002, r4=0.004),
@@ -465,7 +472,8 @@ let violations = String[],
     cases = Tuple{String,Any,Int}[]
     for spec in line
         runtime = compile_runtime(spec)
-        tag = runtime isa Octopus.TurnModulated ? " (modulated)" :
+        tag = runtime isa Octopus.ParticleLinear6D ? " (particle tunes)" :
+              runtime isa Octopus.TurnModulated ? " (modulated)" :
               runtime isa Octopus.MisalignedElement ? " (misaligned)" : ""
         push!(cases, (string(Octopus.kind(spec)) * tag, spec, turns))
     end

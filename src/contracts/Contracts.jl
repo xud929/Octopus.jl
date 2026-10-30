@@ -744,6 +744,121 @@ function _beam_initialization_effectiveness(backend; constructor=Beam,
         join(errors, "; "); metrics=metrics)
 end
 
+"""
+    _particle_tune_effectiveness(backend; spec_transform=identity,
+                                 receipt_transform=identity)
+
+Exercise every nonempty plane subset at the TrackingTask consumer, comparing
+six coordinates with independent unit-optics rotations. Two distinct streams
+must also change histogram assignments and tracked coordinates. Internal
+transforms provide failing-control seams; these are not public options.
+"""
+function _particle_tune_effectiveness(backend; spec_transform=identity,
+                                      receipt_transform=identity)
+    metrics = Dict{Symbol,Any}(:backend => backend, :subsets_checked => 0,
+                              :receipts_checked => 0)
+    errors = String[]
+    n = 4
+    initial = ([0.002, 0.003, -0.001, -0.004], [0.001, -0.002, 0.003, 0.001],
+               [-0.003, 0.002, 0.004, -0.001], [0.002, 0.001, -0.002, 0.003],
+               [0.004, -0.001, 0.002, 0.003], [-0.001, 0.002, 0.001, -0.002])
+    base = Phase6DRep(map(copy, initial)...)
+    planes = (:nux, :nuy, :nuz)
+    nominal = (0.05, 0.07, -0.01)
+    phase = map(nu -> 2pi * nu, nominal)
+    minimum_movement = Inf
+    worst_error = 0.0
+    tolerance = 256eps(Float64) * maximum(maximum(abs, a) for a in initial)
+    try
+        for mask in 1:7
+            selected = Tuple(planes[k] for k in 1:3 if !iszero(mask & (1 << (k-1))))
+            sources = NamedTuple{selected}(Tuple(
+                [0.17 + 0.03k + 0.011i for i in 1:n]
+                for k in 1:3 if !iszero(mask & (1 << (k-1)))))
+            spec = spec_transform(Linear6DSpec(beta1=(1.0, 1.0, 1.0), dmu=phase,
+                                               particle_tunes=sources))
+            rep = _contract_rep_for_backend(base, backend)
+            audit = with_execution_audit() do
+                execute!(TrackingTask((spec,); policy=_contract_policy(backend)), rep; turns=1)
+            end
+            actual = map(Array, coordinate_arrays(rep))
+            receipts = filter(r -> r.consumer === :particle_tune_initialization,
+                              receipt_transform(execution_receipts(audit)))
+            if length(receipts) != 1
+                push!(errors, "mask $(mask): missing unique particle-tune initialization receipt")
+            else
+                receipt = only(receipts).values
+                (Set(receipt.planes) == Set(selected) && receipt.n_local == n &&
+                 receipt.global_n == n && receipt.index_offset == 0 && receipt.epoch == 0) ||
+                    push!(errors, "mask $(mask): receipt does not describe the consumed tune assignment")
+                metrics[:receipts_checked] += 1
+            end
+            for k in 1:3, i in 1:n
+                active = planes[k] in selected
+                tune = active ? getproperty(sources, planes[k])[i] : nominal[k]
+                c, sn = cos(2pi * tune), sin(2pi * tune)
+                x, p = initial[2k-1][i], initial[2k][i]
+                expected_x, expected_p = c*x + sn*p, -sn*x + c*p
+                worst_error = max(worst_error, abs(actual[2k-1][i]-expected_x),
+                                  abs(actual[2k][i]-expected_p))
+                if active
+                    cn, snn = cos(phase[k]), sin(phase[k])
+                    movement = hypot(actual[2k-1][i]-(cn*x+snn*p),
+                                     actual[2k][i]-(-snn*x+cn*p))
+                    minimum_movement = min(minimum_movement, movement)
+                end
+            end
+            metrics[:subsets_checked] += 1
+        end
+        worst_error <= tolerance || push!(errors,
+            "particle_tunes did not reach every selected plane or changed an omitted plane")
+        minimum_movement > 1.0e-5 || push!(errors,
+            "an active particle_tunes override did not move the tracked coordinates")
+
+        histogram = TuneHistogram([0.11, 0.18, 0.26], [1.0, 3.0])
+        stream_outputs = Any[]
+        stream_ids = UInt64[]
+        for trial in 1:2
+            # The registry query avoids a literal id shared with another suite fixture.
+            stream = _unheld_rng_id(_GLOBAL_RNG_ID_COUNTER[] + 1_000_000)
+            push!(stream_ids, stream)
+            spec = spec_transform(Linear6DSpec(beta1=(1.0, 1.0, 1.0), dmu=phase,
+                particle_tunes=(nux=TuneDistribution(histogram),), rng_id=stream))
+            rep = _contract_rep_for_backend(base, backend)
+            audit = with_execution_audit() do
+                execute!(TrackingTask((spec,); policy=_contract_policy(backend)), rep; turns=1)
+            end
+            push!(stream_outputs, map(Array, coordinate_arrays(rep)))
+            receipts = filter(r -> r.consumer === :particle_tune_initialization,
+                              receipt_transform(execution_receipts(audit)))
+            if length(receipts) != 1
+                push!(errors, "stream $(trial): missing unique particle-tune initialization receipt")
+            else
+                receipt = only(receipts).values
+                (receipt.rng_id == stream && receipt.seed == global_rng_seed() &&
+                 receipt.rng_method == global_rng_method() && receipt.epoch == 0 &&
+                 receipt.n_local == n && receipt.global_n == n) || push!(errors,
+                    "rng_id/seed/method did not reach the particle-tune initialization consumer")
+                metrics[:receipts_checked] += 1
+            end
+        end
+        stream_movement = maximum(maximum(abs.(stream_outputs[1][k] .- stream_outputs[2][k]))
+                                  for k in 1:2)
+        stream_movement > 1.0e-8 || push!(errors,
+            "distinct particle-tune rng_id values did not change tracked coordinates")
+        metrics[:rng_id] = stream_movement
+        metrics[:streams] = Tuple(stream_ids)
+    catch err
+        push!(errors, sprint(showerror, err))
+    end
+    metrics[:particle_tunes] = minimum_movement
+    metrics[:max_coordinate_error] = worst_error
+    metrics[:coordinate_tolerance] = tolerance
+    return ContractResult(isempty(errors), isempty(errors) ?
+        "All seven particle-tune subsets and distinct stochastic streams reached tracking." :
+        join(errors, "; "); metrics=metrics)
+end
+
 function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
     _reject_unknown_validate_kwargs(contract, kwargs)
     metrics = Dict{Symbol,Any}()
@@ -777,6 +892,11 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
     metrics[:beam_initialization_cpu] = initialization_cpu.metrics
     initialization_cpu.passed || return ContractResult(false,
         "CPU Beam initialization effectiveness failed: $(initialization_cpu.message)"; metrics=metrics)
+
+    tunes_cpu = _particle_tune_effectiveness(CPUThreadsBackend)
+    metrics[:particle_tunes_cpu] = tunes_cpu.metrics
+    tunes_cpu.passed || return ContractResult(false,
+        "CPU particle tune effectiveness failed: $(tunes_cpu.message)"; metrics=metrics)
 
     base = _contract_default_initial_rep(contract.n_particles, Float64)
     line = (CrabDispersionSpec{Float64}(zeta1=0.02, zeta3=-0.01),)
@@ -1155,6 +1275,11 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
     metrics[:beam_initialization_cuda] = initialization_cuda.metrics
     initialization_cuda.passed || return ContractResult(false,
         "CUDA Beam initialization effectiveness failed: $(initialization_cuda.message)"; metrics=metrics)
+
+    tunes_cuda = _particle_tune_effectiveness(CUDABackend)
+    metrics[:particle_tunes_cuda] = tunes_cuda.metrics
+    tunes_cuda.passed || return ContractResult(false,
+        "CUDA particle tune effectiveness failed: $(tunes_cuda.message)"; metrics=metrics)
 
     cuda_threads_sweep = (64, 128, 256, 512)
     cuda_launch_receipts = Dict{Tuple{Int,Any},Int}()
@@ -2227,10 +2352,10 @@ end
 Finite-difference symplecticity of the six-dimensional runtime maps: for each
 checked element the Jacobian `J` of the map at a reference phase-space point
 must satisfy `norm(J' * S * J - S, Inf) <= max(case tolerance, default_tolerance)`.
-Covers the `Symplectic6DMap` elements (`Linear6D`, `CrabDispersion`,
-`MomentumDispersion`, `XYCoupling`, `ThinCrabCavity`, `ChromaticityKick`), the
-thick lattice magnets, the thin kickers and multipoles, the marker and the thin
-RF cavity (27 cases since the 2026-08-05_b audit) and the weak-strong beam-beam maps
+Covers the declared `Symplectic6DMap` runtime variants, including ordinary
+`Linear6D` and `ParticleLinear6D` with its coordinate source evaluated once
+before finite differences. The lattice maps include thick magnets, thin
+kickers and multipoles, markers, RF cavities and the weak-strong beam-beam maps
 (`ThinStrongBeam`, `GaussianStrongBeam`, whose synchro-beam slingshot term
 exists precisely to keep the sliced 6D kick symplectic). Hirata's crossing
 Lorentz maps are checked separately as *quasi*-symplectic: exact inverse
@@ -2304,6 +2429,33 @@ function _contract_fd_jacobian6(map, q0, step)
     return jacobian
 end
 
+"""Bind one particle once; finite differences below keep its tune labels frozen."""
+function _particle_tune_symplecticity_fixture(q0)
+    calls = Ref(0)
+    source = TuneFunction((x, px, y, py, z, pz) -> begin
+        calls[] += 1
+        (0.21 + 0.4x, 0.32 + 0.3y, -0.04 + 0.2z)
+    end; planes=(:nux, :nuy, :nuz))
+    spec = Linear6DSpec(beta1=(0.8, 0.072, 90.0), beta2=(0.82, 0.075, 91.0),
+        alpha1=(0.03, -0.02, 0.01), alpha2=(0.01, -0.03, 0.02),
+        dmu=(0.08, 0.12, 0.02), particle_tunes=source,
+        zeta1=(0.002, -0.001, 0.0, 0.0), eta1=(0.001, 0.0, -0.001, 0.0),
+        R1=(0.001, -0.0005, 0.0003, 0.0007),
+        zeta2=(0.001, 0.0005, -0.0003, 0.0002),
+        eta2=(-0.0004, 0.0001, 0.0002, -0.0001),
+        R2=(0.0006, 0.0002, -0.0001, 0.0005))
+    rep = Phase6DRep(ntuple(k -> [q0[k]], 6)...)
+    task = TrackingTask((spec,); policy=CPUThreadsExecutionPolicy(threads=1))
+    execute!(task, rep; turns=1)
+    op = only(values(task.particle_tunes[].bindings)).op
+    return (name=:ParticleLinear6D, element=op, q0=q0, tolerance=2.0e-11,
+            context=TrackingContext(), source_calls=calls)
+end
+
+"""Apply a symplecticity case with its prepared label/context, when present."""
+_symplecticity_case_track(case, q) = hasproperty(case, :context) ?
+    case.element(case.context, 1, q...) : case.element(q...)
+
 function _symplecticity_contract_cases()
     linear = Linear6D(Linear6DSpec{Float64}(;
         beta1=(0.8, 0.072, 90.0), beta2=(0.82, 0.075, 91.0),
@@ -2352,6 +2504,7 @@ function _symplecticity_contract_cases()
     # docstring explains, and keep their value.
     return (
         (name=:Linear6D, element=linear, q0=q0, tolerance=2.0e-11),
+        _particle_tune_symplecticity_fixture(q0),
         (name=:CrabDispersion,
          element=CrabDispersion(CrabDispersionSpec{Float64}(
              zeta1=0.02, zeta2=-0.01, zeta3=0.004, zeta4=0.002)),
@@ -2468,12 +2621,16 @@ function validate(contract::SymplecticityContract; kwargs...)
     all_passed = true
     cases = _symplecticity_contract_cases()
     for case in cases
-        J = _contract_fd_jacobian6(q -> case.element(q...), case.q0, contract.step)
+        J = _contract_fd_jacobian6(q -> _symplecticity_case_track(case, q), case.q0, contract.step)
         residual = norm(transpose(J) * S * J - S, Inf)
         tolerance = max(case.tolerance, contract.default_tolerance)
         metrics[Symbol(case.name, :_residual)] = residual
         worst_ratio = max(worst_ratio, residual / tolerance)
         all_passed &= residual <= tolerance
+        if hasproperty(case, :source_calls)
+            metrics[Symbol(case.name, :_source_calls)] = case.source_calls[]
+            all_passed &= case.source_calls[] == 1
+        end
     end
 
     # Hirata Lorentz crossing maps: quasi-symplectic pair.
@@ -2507,20 +2664,29 @@ function validate(contract::SymplecticityContract; kwargs...)
     # how the element says how it tracks. That took the guarded set from 1 kind
     # to 22, of which 7 had a case.
     uncovered = Symbol[]
+    uncovered_variants = String[]
     for T in registered_element_specs()
         meta = _element_meta_or_nothing(T)
         meta === nothing && continue
         any(M -> M === Symplectic6DMap, meta.tracking_methods) || continue
-        RT = meta.runtime_type
-        (RT !== nothing && any(case -> case.element isa RT, cases)) ||
-            push!(uncovered, meta.kind)
+        variants = runtime_variants(T, Symplectic6DMap)
+        isempty(variants) && push!(uncovered, meta.kind)
+        for runtime in variants
+            if !(runtime isa Type && any(case -> case.element isa runtime, cases))
+                push!(uncovered, meta.kind)
+                push!(uncovered_variants, "$(meta.kind).$(runtime)")
+            end
+        end
     end
+    unique!(uncovered)
     metrics[:kinds_declaring_without_case] = length(uncovered)
+    metrics[:runtime_variants_declaring_without_case] = length(uncovered_variants)
     all_passed &= isempty(uncovered)
 
     message = if !isempty(uncovered)
         "kinds tracking with Symplectic6DMap have no case in the contract's list: " *
-        join(sort(uncovered), ", ")
+        join(sort(uncovered), ", ") * "; uncovered runtime variants: " *
+        join(sort(uncovered_variants), ", ")
     elseif all_passed
         "All 6D runtime maps are finite-difference symplectic within tolerance; the Lorentz crossing pair is exact-inverse quasi-symplectic."
     else
@@ -4044,6 +4210,7 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
     deviations = Dict{String,Float64}()             # pair => the largest movement an accepted candidate made (F-112)
     carried = String[]         # carried by every kind, consumed by none (see CARRIED_ELEMENT_PARAMS)
     exemptions_seen = Set{Tuple{Symbol,Symbol}}()   # U4-17: which `inactive` entries applied
+    tune_effectiveness = nothing
     for T in registered_element_specs()
         meta = _element_meta_or_nothing(T)
         meta === nothing && continue
@@ -4114,6 +4281,22 @@ function validate(contract::ElementParameterEffectivenessContract; kwargs...)
             end
             if haskey(contract.inactive, (meta.kind, key))
                 push!(exemptions_seen, (meta.kind, key))
+                continue
+            end
+            # Stateful source options need their actual task consumer, with a
+            # probe that covers every plane and observes the initialization receipt.
+            # The ordinary optics probe deliberately carries placement parameters,
+            # which this variant rejects rather than silently sampling another frame.
+            if meta.kind === :linear6d && key in (:particle_tunes, :rng_id)
+                if tune_effectiveness === nothing
+                    tune_effectiveness = _particle_tune_effectiveness(CPUThreadsBackend)
+                end
+                if tune_effectiveness.passed
+                    checked += 1
+                    deviations["$(meta.kind).$(key)"] = tune_effectiveness.metrics[key]
+                else
+                    push!(broken, "$(meta.kind).$(key): $(tune_effectiveness.message)")
+                end
                 continue
             end
             # The raw default, INCLUDING `nothing`. Substituting 0.0 here threw

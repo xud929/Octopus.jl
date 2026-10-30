@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "campaign": "audit_particle_tunes_2026_10_30",
+  "base_commit": "529d8e9ddea111ad4c1b95d7d1b43132d3d452ad",
+  "julia_version": "1.12.4",
+  "julia_threads": 4,
+  "gpu": "NVIDIA RTX 4500 Ada Generation",
+  "record_kind": "targeted measurements; final full-gate receipt belongs to campaign report",
+  "source_logs": [
+    {
+      "path": "result/particle_tunes_baseline_before.log",
+      "sha256": "2864d18763893e84dbbabbcc7360024f6bdfdb2333c1b4c90d06a0f0b4faa9f0"
+    },
+    {
+      "path": "result/particle_tunes_root_final_checks.log",
+      "sha256": "a8dcec6d39fe53567dfe43b67ee84acd336d3026dbc7c1ad9de0e8a656511d23"
+    },
+    {
+      "path": "result/particle_tunes_validation_bundle.log",
+      "sha256": "ede6f9992710bc932a7379a657f3d72fd25fad41fb9a160882042b2a6a9280e9"
+    }
+  ],
+  "reproducers": {
+    "baseline": "docs/history/audit_particle_tunes_2026_10_30_baseline.jl",
+    "profile": "docs/history/audit_particle_tunes_2026_10_30_allocation_probe.jl",
+    "numerical": "validation/particle_tunes_consistency.jl"
+  },
+  "notes": [
+    "All eight before/after fingerprints and the four loss-count/next-turn pairs match exactly.",
+    "Profile rows are one warmed measurement per configuration, not statistical confidence intervals. Initialization includes first source preparation and one turn; steady rows include 32 turns after a 32-turn warmup. CUDA timings synchronize before completion.",
+    "Host allocation columns count Julia allocations; owned_coefficient_bytes counts 3 tune and 6 sine/cosine arrays (9*N*8 for Float64), not device allocator reservations.",
+    "Numerical policy_threads denotes CPU logical workers or requested CUDA block threads; actual corresponding execution counts were asserted in the later 113-check dense testset. receipt_backend is read from the numerical run.",
+    "Dense reference uses explicit BigFloat canonical matrices and 3 turns. Response uses 24 turns and direct complex-power/convolution sums.",
+    "max_ratio is error divided by 128*eps(T)*turns*reference scale. Response scale is |initial normalized amplitude|+sum|kicks|; output_scaled_ratio_diagnostic is the earlier cancellation-sensitive scale and is not an acceptance threshold.",
+    "For kicks=true, action_relative and phasor_gap are not applicable and the harness reports 0; forced trajectories are checked by convolution, centroid and covariance.",
+    "coordinate absolute errors and centroid gaps use their coordinate units; normalized action/phasor metrics are dimensionless; covariance gaps use the corresponding products of coordinate units.",
+    "Numerical and profile rows were collected on the feature working tree during targeted validation; these rows do not claim that the final full gate ran."
+  ],
+  "baseline": {
+    "columns": ["scenario", "precision", "backend", "before_sha256", "after_sha256", "equal", "before_loss_count", "after_loss_count", "before_next_turn", "after_next_turn"],
+    "rows": [
+      ["BASELINE", "Float32", "CPUThreadsBackend", "5b05776ff0cc70dca8d59eb4519a16d9d0b26183651b5e817ed2e525d77e17af", "5b05776ff0cc70dca8d59eb4519a16d9d0b26183651b5e817ed2e525d77e17af", true, 85, 85, 3, 3],
+      ["BASELINE", "Float32", "CUDABackend", "d20fa9493aa7717a0bbe0bd79a0527543c982dfed2b8afcc344a5708ab9bfb0e", "d20fa9493aa7717a0bbe0bd79a0527543c982dfed2b8afcc344a5708ab9bfb0e", true, 85, 85, 3, 3],
+      ["BASELINE", "Float64", "CPUThreadsBackend", "fe1095d9bd8767f83fd51c0d96b48513349bdd1b8d176c19b260b545d0853dab", "fe1095d9bd8767f83fd51c0d96b48513349bdd1b8d176c19b260b545d0853dab", true, 85, 85, 3, 3],
+      ["BASELINE", "Float64", "CUDABackend", "122c828e15e44cfc95cf867d5fc983fb9edcace4318cca766a9d03b3086fc3c2", "122c828e15e44cfc95cf867d5fc983fb9edcace4318cca766a9d03b3086fc3c2", true, 85, 85, 3, 3],
+      ["LINEAR_BASELINE", "Float32", "CPUThreadsBackend", "ac5e802c646d77fb0c72935001b27f0d7821521197a7f3f120a4aae5f02223e2", "ac5e802c646d77fb0c72935001b27f0d7821521197a7f3f120a4aae5f02223e2", true, null, null, null, null],
+      ["LINEAR_BASELINE", "Float32", "CUDABackend", "8296681adcddc7fae54bd587327b3197be2a25c81463896b2440b56f17f747e7", "8296681adcddc7fae54bd587327b3197be2a25c81463896b2440b56f17f747e7", true, null, null, null, null],
+      ["LINEAR_BASELINE", "Float64", "CPUThreadsBackend", "f52de17f43f87f3fc87c30e2425eae977a214a99d659a74abdcc39a0a75261df", "f52de17f43f87f3fc87c30e2425eae977a214a99d659a74abdcc39a0a75261df", true, null, null, null, null],
+      ["LINEAR_BASELINE", "Float64", "CUDABackend", "e5bfe2cf743ac9f18aa8df558a6eb29a2e3fd4f4d126730221a7c6233662b5e3", "e5bfe2cf743ac9f18aa8df558a6eb29a2e3fd4f4d126730221a7c6233662b5e3", true, null, null, null, null]
+    ]
+  },
+  "profile": {
+    "columns": ["policy", "particles", "initialization_seconds", "initialization_host_bytes", "steady_turns", "steady_seconds", "steady_host_bytes", "owned_coefficient_bytes"],
+    "rows": [
+      ["CPUThreadsExecutionPolicy", 128, 0.00088395, 182816, 32, 0.001136955, 237216, 9216],
+      ["CPUThreadsExecutionPolicy", 8192, 0.001976637, 1537576, 32, 0.026881573, 237392, 589824],
+      ["CUDAExecutionPolicy", 128, 0.000691638, 183872, 32, 0.001139286, 170096, 9216],
+      ["CUDAExecutionPolicy", 8192, 0.001274196, 1538760, 32, 0.001375703, 171296, 589824]
+    ]
+  },
+  "dense": {
+    "columns": ["precision", "backend", "policy_threads", "particles", "turns", "max_abs", "max_ratio", "owned_buffers_persist", "receipt_backend"],
+    "rows": [
+      ["Float64", "CPUThreadsBackend", 1, 17, 3, 3.469446951953614e-18, 0.011829078612328323, true, "CPUThreadsBackend"],
+      ["Float64", "CPUThreadsBackend", 2, 17, 3, 3.469446951953614e-18, 0.011829078612328323, true, "CPUThreadsBackend"],
+      ["Float64", "CPUThreadsBackend", 4, 17, 3, 3.469446951953614e-18, 0.011829078612328323, true, "CPUThreadsBackend"],
+      ["Float64", "CUDABackend", 64, 17, 3, 3.469446951953614e-18, 0.011829078612328323, true, "CUDABackend"],
+      ["Float64", "CUDABackend", 256, 17, 3, 3.469446951953614e-18, 0.011829078612328323, true, "CUDABackend"],
+      ["Float32", "CPUThreadsBackend", 1, 17, 3, 1.7503769440818662e-09, 0.010624531582178024, true, "CPUThreadsBackend"],
+      ["Float32", "CPUThreadsBackend", 2, 17, 3, 1.7503769440818662e-09, 0.010624531582178024, true, "CPUThreadsBackend"],
+      ["Float32", "CPUThreadsBackend", 4, 17, 3, 1.7503769440818662e-09, 0.010624531582178024, true, "CPUThreadsBackend"],
+      ["Float32", "CUDABackend", 64, 17, 3, 1.7503769440818662e-09, 0.010624531582178024, true, "CUDABackend"],
+      ["Float32", "CUDABackend", 256, 17, 3, 1.7503769440818662e-09, 0.010624531582178024, true, "CUDABackend"]
+    ]
+  },
+  "response": {
+    "columns": ["precision", "backend", "policy_threads", "kicks", "spread", "particles", "turns", "max_ratio", "action_relative", "output_scaled_ratio_diagnostic", "phasor_gap", "centroid_gap", "covariance_gap"],
+    "rows": [
+      ["Float64", "CPUThreadsBackend", 1, false, false, 17, 24, 0.0032168351849043574, 1.9984014443252818e-15, 0.0631875732542705, 1.1157603309187458e-15, 6.938893903907228e-18, 1.2037062152420224e-35],
+      ["Float64", "CPUThreadsBackend", 1, false, true, 17, 24, 0.004825252777356535, 2.886579864025407e-15, 0.010330184332590935, 1.4432899320127035e-15, 4.336808689942018e-19, 6.776263578034403e-21],
+      ["Float64", "CPUThreadsBackend", 1, true, false, 17, 24, 0.003119048053686631, 0.0, 0.7255104560575182, 0.0, 6.938893903907228e-18, 1.2037062152420224e-35],
+      ["Float64", "CPUThreadsBackend", 1, true, true, 17, 24, 0.00479053926568472, 0.0, 0.010330184332590935, 0.0, 4.336808689942018e-19, 6.776263578034403e-21],
+      ["Float64", "CPUThreadsBackend", 2, false, false, 17, 24, 0.0032168351849043574, 1.9984014443252818e-15, 0.0631875732542705, 1.1157603309187458e-15, 6.938893903907228e-18, 1.2037062152420224e-35],
+      ["Float64", "CPUThreadsBackend", 2, false, true, 17, 24, 0.004825252777356535, 2.886579864025407e-15, 0.010330184332590935, 1.4432899320127035e-15, 4.336808689942018e-19, 6.776263578034403e-21],
+      ["Float64", "CPUThreadsBackend", 2, true, false, 17, 24, 0.003119048053686631, 0.0, 0.7255104560575182, 0.0, 6.938893903907228e-18, 1.2037062152420224e-35],
+      ["Float64", "CPUThreadsBackend", 2, true, true, 17, 24, 0.00479053926568472, 0.0, 0.010330184332590935, 0.0, 4.336808689942018e-19, 6.776263578034403e-21],
+      ["Float64", "CPUThreadsBackend", 4, false, false, 17, 24, 0.0032168351849043574, 1.9984014443252818e-15, 0.0631875732542705, 1.1157603309187458e-15, 6.938893903907228e-18, 1.2037062152420224e-35],
+      ["Float64", "CPUThreadsBackend", 4, false, true, 17, 24, 0.004825252777356535, 2.886579864025407e-15, 0.010330184332590935, 1.4432899320127035e-15, 4.336808689942018e-19, 6.776263578034403e-21],
+      ["Float64", "CPUThreadsBackend", 4, true, false, 17, 24, 0.003119048053686631, 0.0, 0.7255104560575182, 0.0, 6.938893903907228e-18, 1.2037062152420224e-35],
+      ["Float64", "CPUThreadsBackend", 4, true, true, 17, 24, 0.00479053926568472, 0.0, 0.010330184332590935, 0.0, 4.336808689942018e-19, 6.776263578034403e-21],
+      ["Float64", "CUDABackend", 64, false, false, 17, 24, 0.0032168351849043574, 1.9984014443252818e-15, 0.0631875732542705, 1.1157603309187458e-15, 6.938893903907228e-18, 1.2037062152420224e-35],
+      ["Float64", "CUDABackend", 64, false, true, 17, 24, 0.004825252777356535, 2.886579864025407e-15, 0.010330184332590935, 1.4432899320127035e-15, 4.336808689942018e-19, 6.776263578034403e-21],
+      ["Float64", "CUDABackend", 64, true, false, 17, 24, 0.003119048053686631, 0.0, 0.7255104560575182, 0.0, 6.938893903907228e-18, 1.2037062152420224e-35],
+      ["Float64", "CUDABackend", 64, true, true, 17, 24, 0.00479053926568472, 0.0, 0.010330184332590935, 0.0, 4.336808689942018e-19, 6.776263578034403e-21],
+      ["Float64", "CUDABackend", 256, false, false, 17, 24, 0.0032168351849043574, 1.9984014443252818e-15, 0.0631875732542705, 1.1157603309187458e-15, 6.938893903907228e-18, 1.2037062152420224e-35],
+      ["Float64", "CUDABackend", 256, false, true, 17, 24, 0.004825252777356535, 2.886579864025407e-15, 0.010330184332590935, 1.4432899320127035e-15, 4.336808689942018e-19, 6.776263578034403e-21],
+      ["Float64", "CUDABackend", 256, true, false, 17, 24, 0.003119048053686631, 0.0, 0.7255104560575182, 0.0, 6.938893903907228e-18, 1.2037062152420224e-35],
+      ["Float64", "CUDABackend", 256, true, true, 17, 24, 0.00479053926568472, 0.0, 0.010330184332590935, 0.0, 4.336808689942018e-19, 6.776263578034403e-21],
+      ["Float32", "CPUThreadsBackend", 1, false, false, 17, 24, 0.005613339292289203, 7.681373777046474e-07, 0.44771125226356706, 2.069545336555791e-06, 6.500587524218074e-09, 1.951563910473908e-18],
+      ["Float32", "CPUThreadsBackend", 1, false, true, 17, 24, 0.006722037755137576, 1.7685815243417835e-06, 0.010053658391909812, 2.3888387946362613e-06, 8.468913579570794e-10, 6.03796585915822e-12],
+      ["Float32", "CPUThreadsBackend", 1, true, false, 17, 24, 0.004463724053415073, 0.0, 10.252636067832936, 0.0, 5.835359063359816e-09, 1.951563910473908e-18],
+      ["Float32", "CPUThreadsBackend", 1, true, true, 17, 24, 0.006663400830089071, 0.0, 0.010053658391909812, 0.0, 8.207163237272188e-10, 6.03796585915822e-12],
+      ["Float32", "CPUThreadsBackend", 2, false, false, 17, 24, 0.005613339292289203, 7.681373777046474e-07, 0.44771125226356706, 2.069545336555791e-06, 6.500587524218074e-09, 1.951563910473908e-18],
+      ["Float32", "CPUThreadsBackend", 2, false, true, 17, 24, 0.006722037755137576, 1.7685815243417835e-06, 0.010053658391909812, 2.3888387946362613e-06, 8.468913579570794e-10, 6.03796585915822e-12],
+      ["Float32", "CPUThreadsBackend", 2, true, false, 17, 24, 0.004463724053415073, 0.0, 10.252636067832936, 0.0, 5.835359063359816e-09, 1.951563910473908e-18],
+      ["Float32", "CPUThreadsBackend", 2, true, true, 17, 24, 0.006663400830089071, 0.0, 0.010053658391909812, 0.0, 8.207163237272188e-10, 6.03796585915822e-12],
+      ["Float32", "CPUThreadsBackend", 4, false, false, 17, 24, 0.005613339292289203, 7.681373777046474e-07, 0.44771125226356706, 2.069545336555791e-06, 6.500587524218074e-09, 1.951563910473908e-18],
+      ["Float32", "CPUThreadsBackend", 4, false, true, 17, 24, 0.006722037755137576, 1.7685815243417835e-06, 0.010053658391909812, 2.3888387946362613e-06, 8.468913579570794e-10, 6.03796585915822e-12],
+      ["Float32", "CPUThreadsBackend", 4, true, false, 17, 24, 0.004463724053415073, 0.0, 10.252636067832936, 0.0, 5.835359063359816e-09, 1.951563910473908e-18],
+      ["Float32", "CPUThreadsBackend", 4, true, true, 17, 24, 0.006663400830089071, 0.0, 0.010053658391909812, 0.0, 8.207163237272188e-10, 6.03796585915822e-12],
+      ["Float32", "CUDABackend", 64, false, false, 17, 24, 0.005613339292289203, 7.681373777046474e-07, 0.44771125226356706, 2.069545336555791e-06, 6.500587524218074e-09, 1.951563910473908e-18],
+      ["Float32", "CUDABackend", 64, false, true, 17, 24, 0.006722037755137576, 1.7685815243417835e-06, 0.010053658391909812, 2.3888387946362613e-06, 8.468913579570794e-10, 6.03796585915822e-12],
+      ["Float32", "CUDABackend", 64, true, false, 17, 24, 0.004463724053415073, 0.0, 10.252636067832936, 0.0, 5.835359063359816e-09, 1.951563910473908e-18],
+      ["Float32", "CUDABackend", 64, true, true, 17, 24, 0.006663400830089071, 0.0, 0.010053658391909812, 0.0, 8.207163237272188e-10, 6.03796585915822e-12],
+      ["Float32", "CUDABackend", 256, false, false, 17, 24, 0.005613339292289203, 7.681373777046474e-07, 0.44771125226356706, 2.069545336555791e-06, 6.500587524218074e-09, 1.951563910473908e-18],
+      ["Float32", "CUDABackend", 256, false, true, 17, 24, 0.006722037755137576, 1.7685815243417835e-06, 0.010053658391909812, 2.3888387946362613e-06, 8.468913579570794e-10, 6.03796585915822e-12],
+      ["Float32", "CUDABackend", 256, true, false, 17, 24, 0.004463724053415073, 0.0, 10.252636067832936, 0.0, 5.835359063359816e-09, 1.951563910473908e-18],
+      ["Float32", "CUDABackend", 256, true, true, 17, 24, 0.006663400830089071, 0.0, 0.010053658391909812, 0.0, 8.207163237272188e-10, 6.03796585915822e-12]
+    ]
+  }
+}

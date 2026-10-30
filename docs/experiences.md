@@ -2172,6 +2172,53 @@ reset fixture cannot reveal overhead on an ordinary long line. The final full
 CUDA-active gate passed 449 testsets and 158918 assertions, with the two
 pre-existing expected-broken checks recorded separately.
 
+## Persistent labels require an admission boundary independent of compilation
+
+The [particle-tune campaign](history/audit_particle_tunes_2026_10_30.md)
+keeps sampled tunes outside compiled caches and coordinate-reset references.
+Two neighbours matter: a cleared manager can still exist after its feature is
+removed, and a rejected caller must not release another caller's execution
+guard. The removed-feature failure witness restored an earlier beam's loss
+record until the ordinary fast path also advanced admission. A forced two-thread
+race admitted both callers under the later Boolean guard; a task-owned atomic
+at public entry admitted one and refused one. Both clear APIs use that same
+guard, including the interval before a feature manager exists. Test the
+inactive transition and the earliest mutation, not only the initialized loop.
+
+MPI presence is part of admission too. A local early return before collective
+agreement mixed ordinary tracking collectives with initialization collectives.
+The injected old method sometimes changed peers' coordinates and reported
+impossible shard counts, and sometimes aborted with a truncated `Allgather`.
+The initial negative-control prediction of a hang was too narrow. Require all
+ranks to enter the experiment and identify the actual collective failure;
+generic launch or compilation failures are not evidence. Agree feature/state
+presence before choosing a collective path, then agree the observable source
+schema before evaluating callbacks.
+
+## A live immutable array wrapper is not a live weak-reference box
+
+The same campaign's first concurrency fixture used an immutable array wrapper.
+Its post-GC refusal did not prove a race: the WeakRef referred to a temporary
+box, even while the beam retained the wrapper and parent storage. Standard
+`SubArray` views reproduced the real ownership defect in tunes, coordinate
+reset, ordinary loss and the shared strong-strong loss owner. Use weak owners
+for mutable arrays and retained owners for immutable wrappers; document that
+the latter retain parent storage until clearing or replacement. Re-walk all
+consumers of the shared owner type. The corrected mutable-wrapper race and
+the independent GC ownership regression establish different properties.
+
+## A fixed-label derivative must not resample its labels
+
+An amplitude-dependent preparation function defines fixed particle labels,
+not a coordinate-dependent force evaluated at each turn. The symplecticity
+probe initializes once, then differentiates the bound indexed map while
+holding its tunes fixed. Otherwise it measures a different map. Metadata
+coverage must also enumerate alternate runtime types of the same spec:
+checking only its default runtime silently omitted the new map. A declared
+extra variant without a case now fails coverage. When probing a non-default
+tracking method, compile and execute the same method in the representative
+spec; testing compilation alone can leave the actual consumer unexamined.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

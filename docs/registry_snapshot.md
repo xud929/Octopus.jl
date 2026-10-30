@@ -1,6 +1,6 @@
 # Octopus Registry Snapshot
 
-This file is generated from the live Octopus registry and element metadata.
+This file is generated from the live Octopus registry, element metadata, and module exports.
 
 Regenerate it from the project root with:
 
@@ -44,7 +44,7 @@ constructor names remain the user-facing way to build those specs.
   - Supported tracking methods: `Symplectic6DMap`
   - Required contracts: `ElementTrackingBackendConsistencyContract`
   - Supported analyses: `TwissDispersionAnalysis`
-  - Runtime mappings: `Symplectic6DMap => Linear6D`
+  - Runtime mappings: `Symplectic6DMap => Linear6D`, `Symplectic6DMap => ParticleLinear6D`
   - Construction metadata: `parameter_schema`, `example_spec`, `construction_help`
 
 - `ElementSpec{:thin_crab_cavity}` via `ThinCrabCavitySpec`
@@ -377,6 +377,7 @@ live under `src/track/`.
 - `MomentumDispersion`
 - `XYCoupling`
 - `Linear6D`
+- `ParticleLinear6D`
 - `ThinCrabCavity`
 - `LorentzBoost`
 - `RevLorentzBoost`
@@ -400,3 +401,77 @@ live under `src/track/`.
 - `RefTilted`
 - `CompositeLine`
 - `TurnModulated`
+
+## Exported API
+
+This alphabetical index includes every exported name, including source helpers,
+queries, and lifecycle functions outside the architectural type registry.
+
+- `@element_spec`, `@knob`, `@knob_expr`, `@sel_str`, `AMBIGUITY_KINDS`, `ANALYSIS_STATUSES`
+- `AbstractAnalysis`, `AbstractAnalysisResult`, `AbstractBackendConsistencyContract`, `AbstractBeamAction`, `AbstractBeamObserver`, `AbstractContract`
+- `AbstractElementSpec`, `AbstractExample`, `AbstractExecutionBackend`, `AbstractExecutionPolicy`, `AbstractGPUExecutionPolicy`, `AbstractImplementationContract`
+- `AbstractKnobExpression`, `AbstractLinearizationMethod`, `AbstractOctopusObject`, `AbstractPhaseRep`, `AbstractPhysicsContract`, `AbstractPoissonSolver`
+- `AbstractSchedule`, `AbstractTask`, `AbstractTrackOp`, `AbstractTrackingMethod`, `AbstractVirtualDrift`, `AlwaysSchedule`
+- `AmbiguitySet`, `AnalysisOptionEffectivenessContract`, `Aperture`, `ApertureSpec`, `AtTurns`, `BPMObserver`
+- `Beam`, `BeamLine`, `BeamParams`, `BeamSwapAction`, `BenchmarkExample`, `CLIGHT`
+- `CPUThreadsBackend`, `CPUThreadsExecutionPolicy`, `CUDABackend`, `CUDAExecutionPolicy`, `CUDALaunchConfig`, `CUDAPICLaunchConfig`
+- `ChromaticDrift`, `ChromaticityKick`, `ChromaticityKickSpec`, `CoherentModePhysicsContract`, `ComplexStepLinearization`, `ConfigurationEntry`
+- `ConfigurationOptionMeta`, `ContractResult`, `CoordinateSnapshotObserver`, `CrabDispersion`, `CrabDispersionSpec`, `DETERMINATION_REASONS`
+- `DETERMINATION_STATUSES`, `Damping6DMap`, `Determined`, `DiagnosticsOptionMeta`, `Diffusion6DMap`, `DriftSpec`
+- `EMASS_EV`, `ElementMeta`, `ElementParameterEffectivenessContract`, `ElementSpec`, `ElementTrackingBackendConsistencyContract`, `EveryNSteps`
+- `ExactHamiltonianDrift`, `ExecutionAudit`, `ExecutionAuditReceipt`, `FiniteDifferenceLinearization`, `FloorFrame`, `ForwardDiffLinearization`
+- `GPUExecutionPolicy`, `GaussianPICPoissonSolver`, `GaussianPoissonSolver`, `GaussianStrongBeam`, `GaussianStrongBeamSpec`, `HKickerSpec`
+- `HighEnergyWeakStrongLimitContract`, `HirataParaxialDrift`, `KickerSpec`, `KnobCall`, `KnobConst`, `KnobEffectivenessContract`
+- `KnobNamespace`, `KnobRef`, `LATTICE_INTEGRATOR_ORDERS`, `LatticeMagnet`, `LineEntry`, `Linear6D`
+- `Linear6DSpec`, `LinearizationProvenance`, `LinearizedMap`, `LongitudinalConvention`, `LongitudinalSlicing`, `LorentzBoost`
+- `LorentzBoostSpec`, `LossRecord`, `LumpedRad`, `LumpedRadSpec`, `MADXSurveyConsistencyContract`, `ME0`
+- `Marker`, `MarkerSpec`, `MisalignedElement`, `Moment`, `MomentFile`, `MomentObserver`
+- `MomentOutput`, `MomentOutputFile`, `MomentumDispersion`, `MomentumDispersionSpec`, `MultiProcessExecutionPolicy`, `MultipoleSpec`
+- `NonSymplectic6DMap`, `NormalMode`, `OctopusRegistry`, `OctupoleSpec`, `OpticsAnalysisError`, `OutputFile`
+- `PATHLENGTH_DELTA`, `PICPoissonSolver`, `PMASS_EV`, `PTCConsistencyContract`, `ParamMeta`, `ParticleLinear6D`
+- `Patch`, `PatchSpec`, `PathLengthDelta`, `Phase6DRep`, `PhaseSpaceReset`, `PhaseSpaceResetSpec`
+- `PinkNoise`, `PlaceholderAnalysis`, `PlaceholderPolicy`, `PredicateSchedule`, `PublicConfigurationEffectivenessContract`, `QuadrupoleSpec`
+- `RBendSpec`, `RE`, `RNG_PHILOX`, `RNG_SPLITMIX`, `Radiation6DMap`, `RefTilted`
+- `ReferenceExample`, `ResearchStudyExample`, `RevLorentzBoost`, `RevLorentzBoostSpec`, `RunArtifact`, `SBendSpec`
+- `SIGMA_PSIGMA`, `SQRT2`, `SQRT2PI`, `SQRTPI`, `ScheduledAction`, `ScheduledObserver`
+- `Selector`, `SextupoleSpec`, `SigmaPsigma`, `Solenoid`, `SolenoidSpec`, `SolverOptionEffectivenessContract`
+- `SolverOptionMeta`, `SpectralNoise`, `SpectralPoissonSolver`, `StrongStrongCollision`, `StrongStrongDiagnostics`, `StrongStrongGaussianBackendConsistencyContract`
+- `StrongStrongGaussianPoissonSolver`, `StrongStrongPICBackendConsistencyContract`, `StrongStrongPICMultiProcessConsistencyContract`, `StrongStrongTask`, `StrongTransverseMoments`, `Symplectic6DMap`
+- `SymplecticityContract`, `TIME_DELTA`, `TIME_ENERGY`, `TWOPI`, `TaskOutput`, `ThinAcceleratingCavity`
+- `ThinAcceleratingCavitySpec`, `ThinCrabCavity`, `ThinCrabCavitySpec`, `ThinDipoleSpec`, `ThinMultipole`, `ThinMultipoleSpec`
+- `ThinQuadrupoleSpec`, `ThinRFCavity`, `ThinRFCavitySpec`, `ThinSextupoleSpec`, `ThinStrongBeam`, `ThinStrongBeamSpec`
+- `TimeDelta`, `TimeEnergy`, `TrackingContext`, `TrackingTask`, `TuneDistribution`, `TuneFunction`
+- `TuneHistogram`, `TurnModulated`, `TurnTable`, `TwissDispersionAnalysis`, `TwissDispersionIdentityContract`, `TwissDispersionResult`
+- `TwissExternalReferenceContract`, `UndeterminedQuantityError`, `UnsafeVirtualDrift`, `VKickerSpec`, `WeakStrongBeamBeamMap`, `WhiteNoise`
+- `XYCoupling`, `XYCouplingMode`, `XYCouplingSpec`, `XY_MODEA`, `XY_MODEB`, `XY_UNDEF`
+- `activate_policy!`, `add_offset!`, `allow_lost_particles`, `allowed_param_units`, `allowed_physics_keywords`, `ambiguity_set`
+- `analysis_option_schema`, `analyze`, `aperture_names`, `apply_action!`, `backend_type`, `beam_initialization_option_schema`
+- `beam_statistics`, `bpm_reading`, `build_registry`, `claim_rng_id!`, `clear_particle_tunes!`, `clear_phase_space_reset!`
+- `collide!`, `collision_pair_batches`, `column_names`, `compile_runtime`, `configuration_report`, `construction_help`
+- `convention_number`, `convert_longitudinal`, `coordinate_array`, `coordinate_arrays`, `count_dead`, `count_live`
+- `counter_normal`, `counter_normal_pair`, `counter_philox4x32`, `counter_uint64`, `counter_uniform01`, `cuda_pic_launch_option_schema`
+- `default_method`, `description`, `determined_value`, `diagnostic_summary`, `diagnostics_help`, `diagnostics_option_schema`
+- `dispersion_interval`, `element_help`, `element_meta`, `entry_path`, `entry_tags`, `example_catalog`
+- `example_script_path`, `example_spec`, `execute!`, `execution_receipts`, `faddeeva_w`, `faddeeva_w_approx`
+- `faddeeva_w_approx_reim`, `faddeeva_w_upper_reim`, `finalize_observers!`, `find_entries`, `fusedTrack`, `fusedTrackLuminous`
+- `gaussian_beambeam_kick`, `gaussian_slice_centers`, `gaussian_strong_beam_covariance`, `getparam`, `global_rng_method`, `global_rng_method_code`
+- `global_rng_seed`, `hasparam`, `inverse_erf`, `is_ambiguous`, `is_determined`, `is_live`
+- `kind`, `knob_dependencies`, `knob_dependents`, `knob_derivative`, `knob_epoch`, `knob_expression`
+- `knob_from_symbolic`, `knob_report`, `knob_symbolic`, `knob_symbolics_available`, `knob_to_expr`, `knob_value`
+- `knobs`, `line_entries`, `line_name`, `list_knobs`, `longitudinal_slices`, `loss_counts`
+- `loss_record`, `loss_records`, `loss_summary`, `luminosity`, `matched_covariance`, `name`
+- `next_rng_id!`, `normal_mode`, `numeric_type`, `observe!`, `observer_option_schema`, `octopus_normal`
+- `octopus_normal_pair`, `octopus_uint64`, `octopus_uniform01`, `one_turn_matrix`, `param`, `parameter_schema`
+- `params`, `particle_beta`, `particle_tune_tables`, `passed`, `phase_space_reset_summary`, `philox4x32_self_test`
+- `physics_keywords`, `pic_phase_timings`, `policy_option_schema`, `prepare_line_observers!`, `prepare_observers!`, `read_beam_coordinates`
+- `read_loss_record`, `readings`, `realize`, `reference_beta`, `reference_beta_gamma`, `reference_gamma`
+- `reference_pair_residual`, `register_element_meta!`, `register_element_spec!`, `register_friendly_alias!`, `registered_element_specs`, `registry_snapshot_markdown`
+- `required_contracts`, `requires_elementwise_tracking`, `reset_knobs!`, `reset_rng_id_counter!`, `resolve_knobs`, `rf_strength`
+- `run_actions!`, `run_artifact_option_schema`, `run_observers!`, `runtime_examples`, `runtime_type`, `runtime_variants`
+- `s_positions`, `schedule_option_schema`, `set_global_rng!`, `set_knob!`, `set_param!`, `should_run`
+- `slicing_option_schema`, `solver_configuration`, `solver_help`, `solver_option_schema`, `spectral_turn_table`, `splitmix_normal`
+- `splitmix_normal_pair`, `splitmix_uint64`, `splitmix_uniform01`, `strong_strong_task_option_schema`, `summarize_registry`, `supported_analyses`
+- `supported_tracking_methods`, `survey`, `symbol`, `track!`, `track_particle`, `tracking_convention`
+- `tracking_method`, `tracking_task_option_schema`, `transverse_covariance`, `turn_modulation_provenance`, `turn_timings`, `update`
+- `update_line`, `validate`, `validate_configuration_metadata`, `validate_element_metadata`, `with_execution_audit`, `with_index_offset`
+- `with_turn`, `write_beam_coordinates`, `write_loss_record`, `write_registry_snapshot`

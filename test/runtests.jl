@@ -15174,7 +15174,7 @@ end
         end
         registry_runtimes = Set{Any}(Base.unwrap_unionall(rt).name.wrapper
                                      for meta in values(Octopus.ELEMENT_META_BY_KIND)
-                                     for rt in values(meta.runtime_types) if rt isa Type)
+                                     for rt in Octopus._declared_runtime_types(meta) if rt isa Type)
         containers = Set{Any}([Octopus.MisalignedElement, Octopus.RefTilted, Octopus.TurnModulated, Octopus.CompositeLine])
         @test Set{Any}(Base.unwrap_unionall(S).name.wrapper for S in concrete_ops) == union(registry_runtimes, containers)
         @test isempty(intersect(registry_runtimes, containers))
@@ -19502,6 +19502,687 @@ function Octopus.observe!(observer::_PhaseResetReentrantObserver, ctx::TrackingC
     return nothing
 end
 
+@testset "Particle tunes: independent dense maps, runtime variants and backend precision" begin
+    include(joinpath(pkgdir(Octopus), "test", "particle_tunes_probe.jl"))
+    policies = Any[CPUThreadsExecutionPolicy(threads=n) for n in (1, 2, 4)]
+    if CUDA_TESTS_ACTIVE
+        append!(policies, [CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=n)) for n in (64, 256)])
+    end
+    @test Set(runtime_variants(Linear6DSpec, Symplectic6DMap)) == Set([Linear6D, ParticleLinear6D])
+    examples = runtime_examples(Linear6DSpec)
+    @test Set(row.runtime for row in examples) == Set([Linear6D, ParticleLinear6D])
+    for T in (Float64, Float32)
+        baseline = nothing
+        for policy in policies
+            @testset let precision=T, execution_policy=policy
+                result = pt_probe_dense(policy; T=T)
+                @test result.comparison.equal
+                @test result.execution.threads == (policy isa CUDAExecutionPolicy ? policy.launch.threads : policy.threads)
+                table = only(result.tables)
+                @test table.bound && table.epoch == 0
+                @test table.global_range == 1:17 && table.global_particles == 17
+                @test table.tunes == result.labels
+                @test all(a -> eltype(a) === T, values(table.tunes))
+                @test runtime_type(Linear6DSpec{T}(; result.optics..., particle_tunes=result.labels), Symplectic6DMap) === ParticleLinear6D
+                if baseline === nothing
+                    baseline = result.rows
+                else
+                    @test pt_probe_difference(result.rows, baseline, T; turns=3).equal
+                end
+                # Zero spread must agree with the original dense runtime,
+                # including different entrance and exit optics.
+                nominal = map(v -> T(v / T(2pi)), result.optics.dmu)
+                fixed = NamedTuple{pt_probe_planes()}(map(v -> fill(v, 17), nominal))
+                old = pt_probe_copy(result.initial, policy)
+                new = pt_probe_copy(result.initial, policy)
+                execute!(TrackingTask((Linear6DSpec{T}(; result.optics...),); policy=policy), old; turns=3)
+                execute!(TrackingTask((Linear6DSpec{T}(; result.optics..., particle_tunes=fixed),); policy=policy), new; turns=3)
+                @test pt_probe_difference(pt_probe_rows(new), pt_probe_rows(old), T; turns=3).equal
+                # The typed active runtime must refuse a different beam
+                # precision before any particle or callback moves.
+                other_T = T === Float64 ? Float32 : Float64
+                bad = pt_probe_copy(pt_probe_initial(other_T), policy)
+                original = pt_probe_rows(bad)
+                @test_throws ArgumentError execute!(TrackingTask((Linear6DSpec{T}(; result.optics..., particle_tunes=result.labels),); policy=policy), bad; turns=1)
+                @test isequal(pt_probe_rows(bad), original)
+            end
+        end
+    end
+    CUDA_TESTS_ACTIVE || @test_skip "CUDA inactive: particle-tune device storage and launch-shape cases were not exercised"
+    # The oracle distinguishes three plausible incorrect implementations.
+    control = pt_probe_dense(CPUThreadsExecutionPolicy(threads=1); turns=1)
+    swapped = (nux=reverse(control.labels.nux), nuy=control.labels.nuy, nuz=control.labels.nuz)
+    ignored = (nux=fill(control.optics.dmu[1]/2pi, 17), nuy=control.labels.nuy, nuz=control.labels.nuz)
+    @test !pt_probe_difference(control.rows, pt_probe_reference(control.optics, swapped, control.initial), Float64).equal
+    @test !pt_probe_difference(control.rows, pt_probe_reference(control.optics, ignored, control.initial), Float64).equal
+    @test !pt_probe_difference(control.rows, pt_probe_reference(control.optics, control.labels, control.initial; wrong_basis=true), Float64).equal
+end
+
+@testset "Particle tunes: all plane subsets, entrance sources and preparation errors" begin
+    n = 7
+    initial = pt_probe_initial(Float64; n=n)
+    optics = pt_probe_optics(Float64)
+    labels = pt_probe_labels(Float64, n)
+    # Every subset uses exact index-labelled arrays; omitted planes carry the
+    # declared phase advance converted to cycles, including signed nuz.
+    for planes in pt_probe_subsets()
+        source = NamedTuple{planes}(Tuple(getproperty(labels, p) for p in planes))
+        task = TrackingTask((Linear6DSpec(; optics..., particle_tunes=source),))
+        rep = pt_probe_copy(initial, CPUThreadsExecutionPolicy())
+        execute!(task, rep; turns=1)
+        table = only(particle_tune_tables(task))
+        for (k, plane) in enumerate(pt_probe_planes())
+            expected = plane in planes ? labels[k] : fill(optics.dmu[k]/2pi, n)
+            @test getproperty(table.tunes, plane) == expected
+        end
+        @test pt_probe_difference(pt_probe_rows(rep), pt_probe_reference(optics, table.tunes, initial), Float64).equal
+        # Joint function output names are independent of declaration order.
+        f = let selected=planes
+            (x, px, y, py, z, pz) -> begin
+                values = (nux=0.21 + x + 2px, nuy=0.32 + y - 3py, nuz=-0.015 + z + 4pz)
+                length(selected) == 1 ? getproperty(values, only(selected)) :
+                    NamedTuple{reverse(selected)}(Tuple(getproperty(values, p) for p in reverse(selected)))
+            end
+        end
+        joint = TrackingTask((Linear6DSpec(; optics..., particle_tunes=TuneFunction(f; planes=planes)),))
+        rep2 = pt_probe_copy(initial, CPUThreadsExecutionPolicy())
+        execute!(joint, rep2; turns=1)
+        joint_table = only(particle_tune_tables(joint)).tunes
+        for p in planes, i in 1:n
+            coordinates = ntuple(k -> coordinate_arrays(initial)[k][i], 6)
+            all_values = (nux=0.21 + coordinates[1] + 2coordinates[2],
+                nuy=0.32 + coordinates[3] - 3coordinates[4], nuz=-0.015 + coordinates[5] + 4coordinates[6])
+            @test getproperty(joint_table, p)[i] == getproperty(all_values, p)
+        end
+    end
+    # A known upstream kick distinguishes task entrance, physical element
+    # entrance and normalized coordinates without reusing any map helper.
+    calls = Ref(0)
+    source = (nuy=(x, px, y, py, z, pz) -> (calls[] += 1; 0.3 + x + 2px + 3y + 4py + 5z + 6pz),)
+    spec = Linear6DSpec(; optics..., particle_tunes=source)
+    kick = HKickerSpec(hkick=0.007)
+    task = TrackingTask((kick, spec))
+    rep = pt_probe_copy(initial, CPUThreadsExecutionPolicy())
+    execute!(task, rep; turns=0)
+    @test calls[] == 0
+    @test all(t -> !t.bound && t.tunes === nothing, particle_tune_tables(task))
+    execute!(task, rep; turns=1)
+    expected = [0.3 + initial.x[i] + 2(initial.px[i]+0.007) + 3initial.y[i] + 4initial.py[i] + 5initial.z[i] + 6initial.pz[i] for i in 1:n]
+    @test only(particle_tune_tables(task)).tunes.nuy == expected
+    @test calls[] == n
+    execute!(task, rep; turns=3)
+    @test calls[] == n
+    callable = TrackingTask((Linear6DSpec(; optics..., particle_tunes=(nuz=TuneFunction(PTProbeCallable()),)),))
+    execute!(callable, pt_probe_copy(initial, CPUThreadsExecutionPolicy()); turns=1)
+    @test only(particle_tune_tables(callable)).tunes.nuz ==
+          [PTProbeCallable()((coordinate_arrays(initial)[j][i] for j in 1:6)...) for i in 1:n]
+    # A second placement of one source sees the output of the first map.
+    twice_calls = Ref(0)
+    shared = Linear6DSpec(; optics..., particle_tunes=(nux=(x, px, y, py, z, pz) -> (twice_calls[] += 1; 0.2 + x),))
+    twice = TrackingTask((shared, shared))
+    twice_rep = pt_probe_copy(initial, CPUThreadsExecutionPolicy())
+    execute!(twice, twice_rep; turns=1)
+    tables = particle_tune_tables(twice)
+    @test length(tables) == 2 && twice_calls[] == 2n
+    @test tables[1].placement != tables[2].placement
+    @test tables[1].tunes.nux != tables[2].tunes.nux
+    first_rows = pt_probe_reference(optics, tables[1].tunes, initial)
+    @test tables[2].tunes.nux ≈ 0.2 .+ first_rows[:, 1] atol=16eps() rtol=16eps()
+    # Structure and preparation validation do not claim successful tables.
+    for source in ((;), (), (bad=0.2,), (nux=true,), (nux=1+0im,), (nux=Inf,),
+                   ((nux=0.2,), (nux=0.3,)), TuneFunction(identity),
+                   (nux=TuneFunction((args...) -> 0.2; planes=(:nuy,)),))
+        @test_throws ArgumentError Linear6DSpec(; optics..., particle_tunes=source)
+    end
+    @test_throws ArgumentError Linear6DSpec(; optics..., particle_tunes=(nux=0.2,), rng_id=13)
+    @test_throws ArgumentError Linear6DSpec(matrix=Matrix{Float64}(I, 6, 6), particle_tunes=(nux=0.2,))
+    for source in ((nux=[0.2],), (nux=fill(NaN, n),), (nux=fill(true, n),))
+        bad = TrackingTask((HKickerSpec(hkick=0.01), Linear6DSpec(; optics..., particle_tunes=source)))
+        trial = pt_probe_copy(initial, CPUThreadsExecutionPolicy())
+        before = pt_probe_rows(trial)
+        @test_throws ArgumentError execute!(bad, trial; turns=1)
+        @test isequal(pt_probe_rows(trial), before)
+        @test all(t -> !t.bound, particle_tune_tables(bad))
+    end
+    for f in ((args...) -> NaN, (args...) -> true, (args...) -> 1+0im,
+              (args...) -> (0.2,), x -> 0.2, (args...) -> error("deliberate callback failure"))
+        bad = TrackingTask((Linear6DSpec(; optics..., particle_tunes=(nux=f,)),))
+        trial = pt_probe_copy(initial, CPUThreadsExecutionPolicy())
+        before = pt_probe_rows(trial)
+        @test_throws ArgumentError execute!(bad, trial; turns=1)
+        @test isequal(pt_probe_rows(trial), before)
+        @test all(t -> !t.bound, particle_tune_tables(bad))
+    end
+    for f in ((args...) -> (0.2,), (args...) -> (nux=0.2, nuy=0.3), (args...) -> [0.2, Inf])
+        bad = TrackingTask((Linear6DSpec(; optics..., particle_tunes=TuneFunction(f; planes=(:nux, :nuz))),))
+        @test_throws ArgumentError execute!(bad, pt_probe_copy(initial, CPUThreadsExecutionPolicy()); turns=1)
+        @test all(t -> !t.bound, particle_tune_tables(bad))
+    end
+    overflow = TrackingTask((Linear6DSpec{Float32}(; pt_probe_optics(Float32)...,
+        particle_tunes=(nux=(args...) -> 1e300,)),))
+    @test_throws ArgumentError execute!(overflow, pt_probe_initial(Float32); turns=1)
+    bad_sampler = TrackingTask((Linear6DSpec(; optics..., particle_tunes=(nux=TuneDistribution(PTProbeBadDistribution()),)),))
+    @test_throws ArgumentError execute!(bad_sampler, pt_probe_copy(initial, CPUThreadsExecutionPolicy()); turns=1)
+    @test all(t -> !t.bound, particle_tune_tables(bad_sampler))
+    # An error at an interior entrance commits no tune table or particle map,
+    # but the deliberately documented upstream kick has already run.
+    bad = TrackingTask((HKickerSpec(hkick=0.01), Linear6DSpec(; optics..., particle_tunes=(nux=(args...) -> NaN,))))
+    trial = pt_probe_copy(initial, CPUThreadsExecutionPolicy())
+    @test_throws ArgumentError execute!(bad, trial; turns=1)
+    @test trial.px == initial.px .+ 0.01
+    @test trial.x == initial.x
+    @test all(t -> !t.bound, particle_tune_tables(bad))
+end
+
+@testset "Particle tunes: distributions, histogram masses and keyed preparation" begin
+    policy = CPUThreadsExecutionPolicy(threads=4)
+    optics = pt_probe_optics(Float64; unit=true)
+    n = 8192
+    draw(spec; start=0) = begin
+        task = TrackingTask((spec,); policy=policy)
+        execute!(task, pt_probe_initial(Float64; n=n); turns=1, start_turn=start)
+        task, only(particle_tune_tables(task)).tunes
+    end
+    set_global_rng!(seed=pt_probe_seed(), method=:philox)
+    distribution = TuneDistribution(PTProbeUniform(0.17, 0.23))
+    spec = Linear6DSpec(; optics..., particle_tunes=(nux=distribution, nuy=distribution))
+    task, labels = draw(spec)
+    @test all(x -> 0.17 <= x < 0.23, labels.nux)
+    @test abs(sum(labels.nux)/n - 0.2) < 7 * 0.06 / sqrt(12n)
+    centered_x = labels.nux .- sum(labels.nux)/n
+    centered_y = labels.nuy .- sum(labels.nuy)/n
+    @test abs(sum(centered_x .* centered_y) / sqrt(sum(abs2, centered_x)*sum(abs2, centered_y))) < 7/sqrt(n)
+    _, repeated = draw(spec; start=97)
+    @test repeated == labels
+    swapped = Linear6DSpec(; optics..., particle_tunes=(nuy=distribution, nux=distribution), rng_id=spec.rng_id)
+    _, reordered = draw(swapped)
+    @test reordered == labels
+    variable = Linear6DSpec(; optics..., particle_tunes=(nux=TuneDistribution(PTProbeVariableDraws()), nuy=distribution), rng_id=spec.rng_id)
+    _, variable_labels = draw(variable)
+    @test variable_labels.nuy == labels.nuy
+    @test variable_labels.nux != labels.nux
+    _, adapter_labels = draw(Linear6DSpec(; optics..., particle_tunes=(nuy=TuneDistribution(PTProbeAdapterDraws()),)))
+    @test all(isfinite, adapter_labels.nuy)
+    @test length(unique(adapter_labels.nuy)) > n ÷ 2
+    for planes in pt_probe_subsets()
+        joint = Linear6DSpec(; optics..., particle_tunes=TuneDistribution(PTProbeJointN(length(planes)); planes=planes))
+        _, table = draw(joint)
+        base = getproperty(table, first(planes))
+        @test all(v -> 0.1 <= v < 0.11, base)
+        for (j, plane) in enumerate(planes)
+            @test getproperty(table, plane) == j .* base
+        end
+    end
+    composite = Linear6DSpec(; optics..., particle_tunes=(TuneDistribution(PTProbeJoint(); planes=(:nux, :nuy)), (nuz=-0.007,)))
+    _, composed = draw(composite)
+    @test all(==(-0.007), composed.nuz)
+    @test maximum(abs, (composed.nuy .+ 0.02) .- 0.2 .* (composed.nux .- 0.17)) < 8eps()
+    # Shared joint draws preserve exact prescribed correlation in named planes.
+    for planes in ((:nux, :nuy), (:nux, :nuz), (:nuy, :nuz))
+        joint = Linear6DSpec(; optics..., particle_tunes=TuneDistribution(PTProbeJoint(); planes=planes))
+        _, table = draw(joint)
+        x, y = getproperty(table, planes[1]), getproperty(table, planes[2])
+        @test maximum(abs, (y .+ 0.02) .- 0.2 .* (x .- 0.17)) < 8eps()
+    end
+    edges, weights = [0.1, 0.11, 0.14, 0.20], [1.0, 0.0, 3.0]
+    histogram = TuneHistogram(edges, weights)
+    edges[2] = 999; weights[1] = 0
+    _, hist = draw(Linear6DSpec(; optics..., particle_tunes=(nuz=TuneDistribution(histogram),)))
+    first_bin = count(x -> 0.1 <= x < 0.11, hist.nuz)
+    @test all(x -> 0.1 <= x < 0.11 || 0.14 <= x < 0.20, hist.nuz)
+    @test abs(first_bin/n - 0.25) < 7sqrt(0.25*0.75/n)
+    # E[X]=sum p*(a+b)/2; E[X²]=sum p*(a²+ab+b²)/3.
+    mean_ref = 0.25*0.105 + 0.75*0.17
+    second_ref = 0.25*(0.1^2+0.1*0.11+0.11^2)/3 + 0.75*(0.14^2+0.14*0.20+0.20^2)/3
+    @test abs(sum(hist.nuz)/n - mean_ref) < 7sqrt((second_ref-mean_ref^2)/n)
+    low = filter(<(0.11), hist.nuz)
+    high = filter(>=(0.14), hist.nuz)
+    @test abs(sum(low)/length(low) - 0.105) < 7*0.01/sqrt(12length(low))
+    @test abs(sum(high)/length(high) - 0.17) < 7*0.06/sqrt(12length(high))
+    # Joint masses occupy two diagonal cells, with known positive covariance.
+    h2 = TuneHistogram(([0.1, 0.2, 0.3], [0.4, 0.5, 0.6]), [1.0 0.0; 0.0 1.0])
+    _, pair = draw(Linear6DSpec(; optics..., particle_tunes=TuneDistribution(h2; planes=(:nux, :nuy))))
+    @test all((pair.nux .< 0.2) .== (pair.nuy .< 0.5))
+    covariance = sum((pair.nux .- 0.2).*(pair.nuy .- 0.5))/n
+    @test abs(covariance - 0.0025) < 7*0.01/sqrt(n)
+    joint_weights = zeros(2, 2, 2)
+    joint_weights[1, 1, 1] = 1
+    joint_weights[2, 2, 2] = 3
+    h3 = TuneHistogram(([0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [-0.03, -0.02, -0.01]), joint_weights)
+    _, triple = draw(Linear6DSpec(; optics..., particle_tunes=TuneDistribution(h3; planes=(:nux, :nuy, :nuz))))
+    @test all((triple.nux .< 0.2) .== (triple.nuy .< 0.5))
+    @test all((triple.nux .< 0.2) .== (triple.nuz .< -0.02))
+    @test abs(count(<(0.2), triple.nux)/n - 0.25) < 7sqrt(0.25*0.75/n)
+    # A rounded cumulative sum below one must not give a trailing zero-mass
+    # bin any probability. Separate bin selection from the interior draw.
+    edge_histogram = TuneHistogram([0.0, 1.0, 2.0, 3.0, 4.0], [1.0, 4.0, 1.0, 0.0])
+    @test rand(PTProbeBoundaryRNG(true), edge_histogram) == 2.5
+    for (edges, weights) in (([0.0, 0.0], [1.0]), ([0.0, Inf], [1.0]),
+                            ([0.0, 1.0], [-1.0]), ([0.0, 1.0], [0.0]),
+                            ([0.0, 1.0], [NaN]), ([0.0, 1.0, 2.0], [1.0]))
+        @test_throws ArgumentError TuneHistogram(edges, weights)
+    end
+    @test_throws ArgumentError Linear6DSpec(; optics..., particle_tunes=(nux=TuneDistribution(h2),))
+end
+
+@testset "Particle tunes: persistent ownership, coordinate resets and refusal recovery" begin
+    policies = Any[CPUThreadsExecutionPolicy(threads=4)]
+    CUDA_TESTS_ACTIVE && push!(policies, CUDAExecutionPolicy())
+    for policy in policies, T in (Float64, Float32)
+        @testset let precision=T, execution_policy=policy
+            n = 9
+            optics = pt_probe_optics(T; periodic=true)
+            initial = pt_probe_initial(T; n=n)
+            input = pt_probe_labels(T, n)
+            spec = Linear6DSpec{T}(; optics..., particle_tunes=input)
+            rep = pt_probe_copy(initial, policy)
+            task = TrackingTask((spec,); policy=policy)
+            @test isempty(particle_tune_tables(task))
+            audit = with_execution_audit() do
+                execute!(task, rep; turns=1, start_turn=7)
+            end
+            receipt = only(filter(r -> r.consumer === :particle_tune_initialization, execution_receipts(audit)))
+            @test receipt.values.global_n == n && receipt.values.n_local == n
+            @test receipt.values.epoch == 0 && receipt.values.initialization_turn == 7
+            @test Set(receipt.values.planes) == Set(pt_probe_planes())
+            @test receipt.backend === (policy isa CUDAExecutionPolicy ? CUDABackend : CPUThreadsBackend)
+            table = only(particle_tune_tables(task))
+            @test table.initialization_turn == 7 && table.epoch == 0
+            binding = only(values(task.particle_tunes[].bindings))
+            owned = binding.tunes
+            rotations = binding.rotations
+            @test all(a -> typeof(a) === typeof(rep.x), owned)
+            @test all(a -> typeof(a) === typeof(rep.x), rotations)
+            @test all(a !== b for (a, b) in zip(owned, values(input)))
+            # The accessor and original arrays are both independent of tracking.
+            input.nux .+= T(0.05)
+            table.tunes.nuy .+= T(0.07)
+            @test only(particle_tune_tables(task)).tunes.nux != input.nux
+            @test only(particle_tune_tables(task)).tunes.nuy != table.tunes.nuy
+            original_labels = only(particle_tune_tables(task)).tunes
+            # Physical-coordinate changes and a changed shared basis preserve
+            # labels, buffers and initialization provenance through recompilation.
+            rep.x .+= T(0.001)
+            spec.beta1 = T.(1.1 .* optics.beta1)
+            spec.beta2 = T.(1.1 .* optics.beta2)
+            later = with_execution_audit() do
+                execute!(task, rep; turns=2)
+            end
+            @test isempty(filter(r -> r.consumer === :particle_tune_initialization, execution_receipts(later)))
+            @test binding.tunes === owned && binding.rotations === rotations
+            @test only(particle_tune_tables(task)).tunes == original_labels
+            @test only(particle_tune_tables(task)).initialization_turn == 7
+            # A replacement ensemble of the same length is not the same owner.
+            other = pt_probe_copy(initial, policy)
+            other_before = pt_probe_rows(other)
+            prior_next = task.next_turn[]
+            @test_throws ArgumentError execute!(task, other; turns=1)
+            @test isequal(pt_probe_rows(other), other_before)
+            @test task.next_turn[] == prior_next
+            @test only(particle_tune_tables(task)).tunes == original_labels
+            execute!(task, rep; turns=1)
+            @test binding.tunes === owned
+            # One replaced coordinate array also refuses, before touching any.
+            replacement = Phase6DRep(copy(rep.x), rep.px, rep.y, rep.py, rep.z, rep.pz)
+            saved = pt_probe_rows(rep)
+            @test_throws ArgumentError execute!(task, replacement; turns=1)
+            @test isequal(pt_probe_rows(rep), saved)
+            # Clear leaves position, turn and global RNG unchanged, then consumes
+            # the edited input in a new epoch on a new explicitly accepted owner.
+            seed, method, next_turn = Octopus.global_rng_seed(), Octopus.global_rng_method_code(), task.next_turn[]
+            clear_particle_tunes!(task)
+            @test isequal(pt_probe_rows(rep), saved)
+            @test task.next_turn[] == next_turn
+            @test Octopus.global_rng_seed() == seed && Octopus.global_rng_method_code() == method
+            @test all(t -> !t.bound && t.epoch == 1, particle_tune_tables(task))
+            execute!(task, other; turns=1)
+            @test only(particle_tune_tables(task)).tunes == input
+            @test only(particle_tune_tables(task)).epoch == 1
+            # Reusing the declarative spec in another task creates another owner.
+            independent = TrackingTask((spec,); policy=policy)
+            execute!(independent, pt_probe_copy(initial, policy); turns=1)
+            @test only(values(independent.particle_tunes[].bindings)).tunes !== only(values(task.particle_tunes[].bindings)).tunes
+        end
+    end
+    # One call versus continuation chunks, under both coordinate-dependent
+    # labels and an interior map, gives the same fixed experiment.
+    for policy in policies
+        calls = Ref(0)
+        f = (x, px, y, py, z, pz) -> (calls[] += 1; 0.2 + 0.7x - 0.3px)
+        spec = Linear6DSpec(; pt_probe_optics(Float64; periodic=true)..., particle_tunes=(nux=f,))
+        line = (HKickerSpec(hkick=0.001), spec)
+        whole = TrackingTask(line; policy=policy)
+        chunks = TrackingTask(line; policy=policy)
+        initial = pt_probe_initial(Float64; n=11)
+        a, b = pt_probe_copy(initial, policy), pt_probe_copy(initial, policy)
+        execute!(whole, a; turns=5)
+        for count in (1, 2, 2)
+            execute!(chunks, b; turns=count)
+        end
+        @test calls[] == 22
+        @test isequal(pt_probe_rows(a), pt_probe_rows(b))
+        @test only(particle_tune_tables(whole)).tunes == only(particle_tune_tables(chunks)).tunes
+        # Reset and tune state have separate clear operations. In particular,
+        # this checks that task-only does not accidentally mean reset-only.
+        reset_calls = Ref(0)
+        reset_spec = Linear6DSpec(; pt_probe_optics(Float64; periodic=true)...,
+            particle_tunes=(nuy=(x, px, y, py, z, pz) -> (reset_calls[] += 1; 0.3 + y),))
+        reset = TrackingTask((PhaseSpaceResetSpec(), HKickerSpec(hkick=0.001), reset_spec); policy=policy)
+        r = pt_probe_copy(initial, policy)
+        execute!(reset, r; turns=1)
+        first_response = pt_probe_rows(r)
+        saved_tunes = only(particle_tune_tables(reset))
+        snapshot = reset.phase_space_reset[].snapshot
+        execute!(reset, r; turns=3)
+        @test reset_calls[] == 11
+        @test isequal(pt_probe_rows(r), first_response)
+        @test only(particle_tune_tables(reset)).tunes == saved_tunes.tunes
+        clear_phase_space_reset!(reset)
+        @test only(particle_tune_tables(reset)).epoch == saved_tunes.epoch
+        execute!(reset, r; turns=1)
+        @test reset_calls[] == 11
+        new_snapshot = reset.phase_space_reset[].snapshot
+        @test new_snapshot !== snapshot
+        clear_particle_tunes!(reset)
+        @test reset.phase_space_reset[].snapshot === new_snapshot
+        execute!(reset, r; turns=1)
+        @test reset_calls[] == 22
+        @test only(particle_tune_tables(reset)).epoch == saved_tunes.epoch + 1
+    end
+    # Negative experiment: deliberately constructing a fresh task each turn
+    # redraws an amplitude-dependent source. Its final response must disagree
+    # with the fixed-label continuation it could otherwise masquerade as.
+    redraw_calls = Ref(0)
+    redraw_spec = Linear6DSpec(; pt_probe_optics(Float64; periodic=true)...,
+        particle_tunes=(nux=(x, px, y, py, z, pz) -> (redraw_calls[] += 1; 0.2 + 2x),))
+    fixed_rep = pt_probe_initial(Float64; n=7)
+    redrawn_rep = pt_probe_copy(fixed_rep, CPUThreadsExecutionPolicy())
+    fixed_task = TrackingTask((redraw_spec,))
+    execute!(fixed_task, fixed_rep; turns=3)
+    @test redraw_calls[] == 7
+    for _ in 1:3
+        execute!(TrackingTask((redraw_spec,)), redrawn_rep; turns=1)
+    end
+    @test redraw_calls[] == 28
+    @test !pt_probe_difference(pt_probe_rows(redrawn_rep), pt_probe_rows(fixed_rep), Float64; turns=3).equal
+    # A distribution's epoch changes on explicit clear only. Global seed
+    # changes do not affect an already bound table.
+    stochastic = Linear6DSpec(; pt_probe_optics(Float64)..., particle_tunes=(nuz=TuneDistribution(PTProbeUniform(-0.02, -0.01)),))
+    task = TrackingTask((stochastic,))
+    rep = pt_probe_initial(Float64; n=17)
+    set_global_rng!(seed=pt_probe_seed(), method=:philox)
+    execute!(task, rep; turns=1)
+    first = only(particle_tune_tables(task))
+    set_global_rng!(seed=pt_probe_seed()+1, method=:splitmix)
+    execute!(task, rep; turns=1)
+    @test only(particle_tune_tables(task)).tunes == first.tunes
+    set_global_rng!(seed=pt_probe_seed(), method=:philox)
+    clear_particle_tunes!(task)
+    execute!(task, rep; turns=1)
+    @test only(particle_tune_tables(task)).tunes.nuz != first.tunes.nuz
+    @test only(particle_tune_tables(task)).epoch == 1
+    # A nominal phase is inert only in an explicitly overridden plane. A
+    # changed omitted-plane nominal or changed source requires explicit rearm.
+    optics = pt_probe_optics(Float64)
+    partial_spec = Linear6DSpec(; optics..., particle_tunes=(nux=0.21,))
+    partial_task = TrackingTask((HKickerSpec(hkick=0.001), partial_spec))
+    partial_rep = pt_probe_initial(Float64; n=5)
+    execute!(partial_task, partial_rep; turns=1)
+    partial_labels = only(particle_tune_tables(partial_task)).tunes
+    partial_spec.dmu = (optics.dmu[1]+0.1, optics.dmu[2], optics.dmu[3])
+    execute!(partial_task, partial_rep; turns=1)
+    @test only(particle_tune_tables(partial_task)).tunes == partial_labels
+    accepted_dmu = partial_spec.dmu
+    partial_spec.dmu = (accepted_dmu[1], accepted_dmu[2]+0.1, accepted_dmu[3])
+    before_refusal = pt_probe_rows(partial_rep)
+    @test_throws ArgumentError execute!(partial_task, partial_rep; turns=1)
+    @test isequal(pt_probe_rows(partial_rep), before_refusal)
+    partial_spec.dmu = accepted_dmu
+    execute!(partial_task, partial_rep; turns=1)
+    original_source = partial_spec.particle_tunes
+    partial_spec.particle_tunes = (nux=0.24,)
+    before_refusal = pt_probe_rows(partial_rep)
+    @test_throws ArgumentError execute!(partial_task, partial_rep; turns=1)
+    @test isequal(pt_probe_rows(partial_rep), before_refusal)
+    partial_spec.particle_tunes = original_source
+    execute!(partial_task, partial_rep; turns=1)
+    @test only(particle_tune_tables(partial_task)).tunes == partial_labels
+    # A failed clear/recursive operation inside user preparation cannot erase
+    # the outer execution's ownership guard or install a half table.
+    active_task = Ref{Any}(nothing)
+    attempt_clear = Ref(true)
+    f = (args...) -> (attempt_clear[] && clear_particle_tunes!(active_task[]); 0.2)
+    active_task[] = TrackingTask((Linear6DSpec(; optics..., particle_tunes=(nux=f,)),))
+    active_rep = pt_probe_initial(Float64; n=5)
+    @test_throws ArgumentError execute!(active_task[], active_rep; turns=1)
+    @test all(t -> !t.bound, particle_tune_tables(active_task[]))
+    attempt_clear[] = false
+    execute!(active_task[], active_rep; turns=1)
+    @test only(particle_tune_tables(active_task[])).bound
+    # Invalid first callback entrance is refused before any callback, even
+    # when the invalid particle is late in the array. Coordinate-independent
+    # labels still cover dead slots and survive subsequent losses.
+    for policy in policies
+        calls = Ref(0)
+        spec = Linear6DSpec(; pt_probe_optics(Float64)..., particle_tunes=(nux=(args...) -> (calls[] += 1; 0.2),))
+        bad = TrackingTask((spec,); policy=policy)
+        dead = pt_probe_initial(Float64; n=5)
+        dead.x[end] = NaN
+        rep = pt_probe_copy(dead, policy)
+        @test_throws ArgumentError execute!(bad, rep; turns=1)
+        @test calls[] == 0
+        @test all(t -> !t.bound, particle_tune_tables(bad))
+        # Recover on the same storage after deliberately restoring coordinates.
+        copyto!(rep.x, pt_probe_initial(Float64; n=5).x)
+        execute!(bad, rep; turns=1)
+        @test calls[] == 5 && only(particle_tune_tables(bad)).bound
+        labels = pt_probe_labels(Float64, 5)
+        independent = TrackingTask((Linear6DSpec(; pt_probe_optics(Float64)..., particle_tunes=labels),); policy=policy)
+        rep2 = pt_probe_copy(dead, policy)
+        execute!(independent, rep2; turns=1)
+        @test only(particle_tune_tables(independent)).tunes == labels
+        @test isnan(Array(rep2.x)[end])
+    end
+end
+
+@testset "Particle tunes: fixed-label symplecticity and analytic phase-mixing response" begin
+    policies = Any[CPUThreadsExecutionPolicy(threads=4)]
+    CUDA_TESTS_ACTIVE && push!(policies, CUDAExecutionPolicy())
+    for policy in policies, T in (Float64, Float32)
+        optics = pt_probe_optics(T)
+        labels = pt_probe_labels(T, 3)
+        task = TrackingTask((Linear6DSpec{T}(; optics..., particle_tunes=labels),); policy=policy)
+        rep = pt_probe_copy(pt_probe_initial(T; n=3), policy)
+        execute!(task, rep; turns=1)
+        matrices = [zeros(Float64, 6, 6) for _ in 1:3]
+        # Apply the actual fixed-label runtime to each coordinate basis vector;
+        # no callback is re-evaluated while measuring the linear Jacobian.
+        for column in 1:6
+            for (j, array) in enumerate(coordinate_arrays(rep))
+                fill!(array, T(j == column))
+            end
+            execute!(task, rep; turns=1)
+            rows = pt_probe_rows(rep)
+            for particle in 1:3
+                matrices[particle][:, column] = rows[particle, :]
+            end
+        end
+        J = zeros(6, 6)
+        for j in 1:3
+            J[2j-1, 2j] = 1
+            J[2j, 2j-1] = -1
+        end
+        for (i, M) in enumerate(matrices)
+            @test norm(transpose(M)*J*M - J, Inf) <= 128eps(T)*max(1, norm(M, Inf)^2)
+            reference = Float64.(pt_probe_matrix(optics, labels, i))
+            @test pt_probe_difference(M, reference, T).equal
+        end
+        periodic = pt_probe_optics(T; periodic=true)
+        stable = pt_probe_copy(pt_probe_initial(T; n=3), policy)
+        start = BigFloat.(transpose(pt_probe_rows(stable)))
+        A = pt_probe_basis(periodic.beta1, periodic.alpha1, periodic.zeta1, periodic.eta1, periodic.R1)
+        q0 = inv(A) * start
+        periodic_task = TrackingTask((Linear6DSpec{T}(; periodic..., particle_tunes=labels),); policy=policy)
+        execute!(periodic_task, stable; turns=256)
+        q1 = inv(A) * BigFloat.(transpose(pt_probe_rows(stable)))
+        for plane in 1:3, particle in 1:3
+            before = abs2(q0[2plane-1, particle]) + abs2(q0[2plane, particle])
+            after = abs2(q1[2plane-1, particle]) + abs2(q1[2plane, particle])
+            @test abs(after/before - 1) <= 256eps(T)*256
+        end
+        for kicks in (false, true), spread in (false, true)
+            @testset let precision=T, execution_policy=policy, prescribed_kicks=kicks, tune_spread=spread
+                response = pt_probe_response(policy; T=T, turns=kicks ? 24 : 128, kicks=kicks, spread=spread)
+                @test response.max_ratio <= 1
+                @test response.centroid_gap <= 128eps(T)*response.turns*0.01
+                @test response.covariance_gap <= 256eps(T)*response.turns*0.01^2
+                if !kicks
+                    @test response.action_relative <= 128eps(T)*response.turns
+                    @test response.phasor_gap <= 128eps(T)*response.turns
+                end
+            end
+        end
+    end
+    # Unsupported routes refuse without invoking a source or advancing a beam.
+    calls = Ref(0)
+    spec = Linear6DSpec(; pt_probe_optics(Float64)..., particle_tunes=(nux=(args...) -> (calls[] += 1; 0.2),))
+    op = compile_runtime(spec)
+    @test_throws ArgumentError Matrix(op)
+    @test_throws ArgumentError op(zeros(6)...)
+    @test_throws ArgumentError one_turn_matrix((spec,))
+    @test_throws ArgumentError analyze(TwissDispersionAnalysis(), (spec,))
+    @test calls[] == 0
+    rep = pt_probe_initial(Float64)
+    initial = pt_probe_rows(rep)
+    @test_throws ArgumentError track!(rep, (compile_runtime(HKickerSpec(hkick=0.1)), op), 1)
+    @test isequal(pt_probe_rows(rep), initial)
+    for line in ((BeamLine("nested_tunes", spec; x_offset=0.01),),
+                 (Linear6DSpec(; pt_probe_optics(Float64)..., particle_tunes=(nux=0.2,), x_offset=0.01),))
+        @test_throws ArgumentError execute!(TrackingTask(line), rep; turns=1)
+        @test isequal(pt_probe_rows(rep), initial)
+    end
+    action_called = Ref(false)
+    action = BeamSwapAction(() -> (action_called[] = true; rep))
+    @test_throws ArgumentError execute!(TrackingTask((spec,); hooks=(action,)), rep; turns=1)
+    @test !action_called[] && calls[] == 0
+    # Both strong-strong line entrances refuse before either beam moves.
+    cpu = CPUThreadsExecutionPolicy(threads=1)
+    makebeam(id) = Beam(5, cpu, Float64; charge=-1.0, mc2=EMASS_EV,
+        E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11, rng_id=id)
+    ip = StrongStrongCollision(:ip)
+    for side in (1, 2)
+        line1, line2 = side == 1 ? ((spec, ip), (ip,)) : ((ip,), (spec, ip))
+        strong = StrongStrongTask(line1, line2; policy=cpu)
+        beams = (makebeam(0x505401), makebeam(0x505402))
+        before = map(b -> pt_probe_rows(b.rep), beams)
+        @test_throws ArgumentError execute!(strong, beams...; turns=1)
+        @test strong.next_turn[] == 0
+        @test all(isequal(pt_probe_rows(b.rep), rows) for (b, rows) in zip(beams, before))
+    end
+end
+
+@testset "Particle tunes: shared stochastic source-band warnings" begin
+    optics = pt_probe_optics(Float64)
+    distribution = TuneDistribution(PTProbeUniform(0.2, 0.21))
+    shared = Linear6DSpec(; optics..., particle_tunes=(nux=distribution,))
+    @test_logs (:warn, r"multiple particle-tune placements share an rng_id and named source band") TrackingTask((shared, shared))
+    stream = Octopus._unheld_rng_id(next_rng_id!() + 1_000_000)
+    x = Linear6DSpec(; optics..., particle_tunes=(nux=distribution,), rng_id=stream)
+    other_x = Linear6DSpec(; optics..., particle_tunes=(nux=distribution,), rng_id=stream)
+    y = Linear6DSpec(; optics..., particle_tunes=(nuy=distribution,), rng_id=stream)
+    @test_logs (:warn, r"multiple particle-tune placements share an rng_id and named source band") TrackingTask((x, other_x))
+    @test_logs TrackingTask((x, y))
+    ordinary = Linear6DSpec(; optics..., particle_tunes=(nux=0.2,))
+    @test_logs TrackingTask((ordinary, ordinary))
+    fresh_stream = Octopus._unheld_rng_id(stream + 1)
+    changed = Linear6DSpec(; optics..., particle_tunes=(nux=distribution,), rng_id=fresh_stream)
+    override = Octopus.LineEntry(changed, [("tunes", 1)], Set{Symbol}(), Dict{Symbol,Any}(:rng_id => stream))
+    @test_logs (:warn, r"multiple particle-tune placements share an rng_id and named source band") TrackingTask((x, override))
+end
+
+@testset "Particle tunes: clearing and disabling preserves an admitted failed run" begin
+    enabled = Ref(false)
+    spec = Linear6DSpec(beta1=(1.0, 1.0, 1.0), dmu=(0.3, 0.4, -0.05), particle_tunes=(nux=0.21,))
+    aperture = ApertureSpec(shape=:rectangle, x_limit=1.0, y_limit=1.0, name="removed_tunes_loss")
+    task = TrackingTask((spec, aperture, PTProbeFailSecond(enabled)); policy=CPUThreadsExecutionPolicy(threads=1))
+    previous = Phase6DRep(ntuple(_ -> fill(0.001, 2), 6)...)
+    execute!(task, previous; turns=1)
+    old_record = loss_record(task)
+    clear_particle_tunes!(task)
+    spec.particle_tunes = nothing
+    enabled[] = true
+    current = Phase6DRep([2.0, 0.001], zeros(2), zeros(2), zeros(2), zeros(2), zeros(2))
+    @test_throws Exception execute!(task, current; turns=1)
+    @test !isfinite(current.x[1])
+    @test task.loss_owner[].value === current.x
+    @test loss_record(task) !== old_record
+    @test sum(Octopus.loss_counts(loss_record(task))) == 1
+end
+
+@testset "Particle tunes: concurrent admission is atomic and releases its guard" begin
+    @test Threads.nthreads(:default) >= 2
+    result = pt_probe_concurrent_admission()
+    @test result.arrived == 1
+    @test length(result.results) == 2
+    @test count(r -> r.ok, result.results) == 1
+    @test count(r -> !r.ok && occursin("concurrently or recursively", r.error), result.results) == 1
+    @test !result.running_before_clear
+    @test length(result.clear_errors) == 2
+    @test all(error -> error isa ArgumentError && occursin("while", sprint(showerror, error)), result.clear_errors)
+    @test result.guards_after_clear == [1, 1]
+    @test result.clears_after_run == (true, true)
+    @test only(particle_tune_tables(result.task)).bound
+end
+
+@testset "Particle tunes: immutable coordinate views retain identity across GC" begin
+    view_rep() = Phase6DRep(map(a -> view(a, 2:7), ntuple(_ -> zeros(8), 6))...)
+    policy = CPUThreadsExecutionPolicy(threads=1)
+    for kind in (:particle_tunes, :phase_space_reset)
+        spec = kind === :particle_tunes ?
+            Linear6DSpec(beta1=(1.0, 1.0, 1.0), dmu=(0.3, 0.4, -0.05), particle_tunes=(nux=0.21,)) :
+            PhaseSpaceResetSpec()
+        task = TrackingTask((spec,); policy=policy)
+        rep = view_rep()
+        execute!(task, rep; turns=1)
+        previous = kind === :particle_tunes ? only(particle_tune_tables(task)).tunes : phase_space_reset_summary(task)
+        GC.gc()
+        @test execute!(task, rep; turns=1) !== nothing
+        if kind === :particle_tunes
+            @test only(particle_tune_tables(task)).tunes == previous
+        else
+            current = phase_space_reset_summary(task)
+            @test current.completed_trials == previous.completed_trials == 1
+            @test current.last_trial.reference_epoch == previous.last_trial.reference_epoch
+            @test current.last_trial.capture_turn == previous.last_trial.capture_turn
+        end
+        @test_throws ArgumentError execute!(task, view_rep(); turns=1)
+    end
+    aperture = ApertureSpec(shape=:rectangle, x_limit=1.0, y_limit=1.0, name="view_loss")
+    task = TrackingTask((aperture,); policy=policy, loss_report=false)
+    rep = view_rep()
+    rep.x[1] = 2.0
+    execute!(task, rep; turns=1)
+    previous = loss_record(task)
+    GC.gc()
+    @test task.loss_owner[].value === rep.x
+    execute!(task, rep; turns=1)
+    @test loss_record(task) === previous
+    @test loss_counts(previous) == [1]
+    @test loss_summary(rep, task).unattributed == 0
+    # StrongStrongTask uses the same owner discriminator per beam. Exercise
+    # that binding boundary directly, without adding a collision to this test.
+    ip = StrongStrongCollision(:ip)
+    strong = StrongStrongTask((aperture, ip), (ip,); policy=policy)
+    strong_rep = view_rep()
+    strong_previous = Octopus._ensure_loss_record!(strong, 1, strong_rep)
+    strong_previous.counts[1] = 1
+    GC.gc()
+    @test strong.loss_owners[1][].value === strong_rep.x
+    @test Octopus._ensure_loss_record!(strong, 1, strong_rep) === strong_previous
+    @test loss_counts(strong_previous) == [1]
+    @test Octopus._ensure_loss_record!(strong, 1, view_rep()) !== strong_previous
+end
+
 @testset "Phase-space reset: independent one-turn oracle on CPU and CUDA" begin
     include(joinpath(pkgdir(Octopus), "test", "phase_space_reset_probe.jl"))
     policies = Any[CPUThreadsExecutionPolicy(threads=4)]
@@ -22321,10 +23002,12 @@ end
     # Each registry mutation is restored in a `finally` and the registry is
     # re-validated at the end, as the K3/K6 controls above do.
     rebuild(m; parameters=m.parameters, runtime_types=m.runtime_types,
+            runtime_variants=m.runtime_variants, variant_examples=m.variant_examples,
             tracking_methods=m.tracking_methods, description=m.description,
             keywords=m.keywords, construction_help=m.construction_help, example=m.example) =
         Octopus.ElementMeta(m.kind, m.spec_type, m.friendly_constructor, m.runtime_type,
-                            runtime_types, description, keywords, tracking_methods,
+                            runtime_types, runtime_variants, variant_examples,
+                            description, keywords, tracking_methods,
                             m.contracts, m.analyses, parameters, example, construction_help)
     withmeta(p; required=p.required, unit=p.unit, default=p.default, meaning=p.meaning,
              alternatives=p.alternatives) =
@@ -22348,6 +23031,50 @@ end
     drift = Octopus.ELEMENT_META_BY_KIND[:drift]
     quad = Octopus.ELEMENT_META_BY_KIND[:quadrupole]
     line = Octopus.ELEMENT_META_BY_KIND[:line]
+
+    @testset "runtime variant declarations have independent failing controls" begin
+        linear = Octopus.ELEMENT_META_BY_KIND[:linear6d]
+        @test runtime_variants(:linear6d, Symplectic6DMap) == (Linear6D, ParticleLinear6D)
+        rows = runtime_examples(:linear6d)
+        @test Set(row.runtime for row in rows) == Set((Linear6D, ParticleLinear6D))
+        missing = copy(linear.variant_examples)
+        delete!(missing, ParticleLinear6D)
+        with_replaced_meta(:linear6d, rebuild(linear; variant_examples=missing)) do
+            result = validate_element_metadata()
+            @test !result.passed
+            @test !isempty(naming(result, "ParticleLinear6D", "needs a representative"))
+        end
+        wrong = copy(linear.variant_examples)
+        wrong[ParticleLinear6D] = linear.example
+        with_replaced_meta(:linear6d, rebuild(linear; variant_examples=wrong)) do
+            result = validate_element_metadata()
+            @test !result.passed
+            @test !isempty(naming(result, "ParticleLinear6D", "representative compiles"))
+        end
+        absent_default = copy(linear.runtime_variants)
+        absent_default[Symplectic6DMap] = (ParticleLinear6D,)
+        with_replaced_meta(:linear6d, rebuild(linear; runtime_variants=absent_default)) do
+            result = validate_element_metadata()
+            @test !result.passed
+            @test !isempty(naming(result, "default runtime", "absent"))
+        end
+        restored = validate_element_metadata()
+        @test restored.passed
+        @test restored.runtime_variant_pairs == restored.runtime_variants_checked
+        @test restored.runtime_variant_pairs > 0
+        # A row's method reaches the executable probe, not only compilation.
+        # Excitation is disabled: the original Radiation method damps, while
+        # the selected Diffusion method is exactly inert. Retaining the
+        # original representative's method therefore fails the identity pin.
+        representative = LumpedRadSpec(damping_turns=(4.0, 5.0, 6.0),
+                                        is_excitation=false)
+        method_probe = Octopus._runtime_variant_probe_spec(representative, Diffusion6DMap)
+        q = (0.002, 0.001, -0.003, 0.002, 0.004, -0.001)
+        diffusion = Octopus._element_metadata_probe(method_probe, q)
+        @test diffusion == collect(q)
+        @test Octopus._element_metadata_probe(representative, q) != diffusion
+        @test tracking_method(representative) isa Radiation6DMap
+    end
 
     # F-168 (a), the real tree: EVERY declared default compared, none skipped.
     # The old `haskey(base, key)` gate compared 77 of 608; the identity below
@@ -24341,9 +25068,34 @@ end
     @test err_x isa ArgumentError && occursin("exhausted", msg_x) && occursin("typemax(UInt64)", msg_x)
     Octopus.reset_rng_id_counter!(before_max + 2)
     @test Octopus.next_rng_id!() == before_max + 3
-    # (f) The tripwire: every claim site in src/ (outside the registry file)
-    # names its consumer class, and the classes are exactly the four this
-    # block exercised by name above -- a fifth consumer fails here by name.
+    # (f) Particle tunes follow the same construction-time stream policy.
+    # Deterministic sources reserve nothing; stochastic zero ids reserve once,
+    # explicit same-class reuse is silent, and recompilation preserves the id.
+    tune_optics = (beta1=(1.0, 1.0, 1.0), dmu=(0.2, 0.3, -0.1))
+    tune_distribution = TuneDistribution(TuneHistogram([0.2, 0.3], [1.0]))
+    deterministic_before = Octopus._GLOBAL_RNG_ID_COUNTER[]
+    Linear6DSpec(; tune_optics..., particle_tunes=(nux=0.23,))
+    @test Octopus._GLOBAL_RNG_ID_COUNTER[] == deterministic_before
+    tune_a = Linear6DSpec(; tune_optics..., particle_tunes=(nux=tune_distribution,), rng_id=0)
+    tune_b = Linear6DSpec(; tune_optics..., particle_tunes=(nux=tune_distribution,))
+    tune_a_id = getparam(tune_a, :rng_id)
+    tune_b_id = getparam(tune_b, :rng_id)
+    @test tune_a_id isa UInt64 && tune_b_id isa UInt64 && tune_a_id != tune_b_id
+    compile_before = Octopus._GLOBAL_RNG_ID_COUNTER[]
+    @test compile_runtime(tune_a).rng_id == compile_runtime(tune_a).rng_id == tune_a_id
+    @test Octopus._GLOBAL_RNG_ID_COUNTER[] == compile_before
+    tune_explicit = Octopus._unheld_rng_id(compile_before + 1_000_000)
+    @test isempty(rng_warns(() -> (
+        Linear6DSpec(; tune_optics..., particle_tunes=(nux=tune_distribution,), rng_id=tune_explicit),
+        Linear6DSpec(; tune_optics..., particle_tunes=(nux=tune_distribution,), rng_id=tune_explicit))))
+    tune_cross = rng_warns(() -> Beam(8, CPUThreadsExecutionPolicy(); rng_id=tune_a_id))
+    @test length(tune_cross) == 1 && occursin("particle_tunes", only(tune_cross)) &&
+          occursin("beam", only(tune_cross))
+    raw_tune_params = copy(params(tune_a))
+    raw_tune_params[:rng_id] = 0
+    @test_throws ArgumentError compile_runtime(ElementSpec{:linear6d}(raw_tune_params))
+    # (g) The tripwire: every claim site in src/ (outside the registry file)
+    # names its consumer class, and each expected class is exercised above.
     claim_sites = Tuple{String,Int,String}[]
     for (root, _, files) in walkdir(joinpath(pkgdir(Octopus), "src")), file in files
         endswith(file, ".jl") || continue
@@ -24362,7 +25114,7 @@ end
     end
     claim_classes = Set(Symbol(m.captures[1]) for s in claim_sites
                         for m in eachmatch(r"consumer\s*=\s*:([a-z_]+)", s[3]))
-    @test claim_classes == Set([:beam, :lumped_radiation, :turn_rule, :bpm_observer])
+    @test claim_classes == Set([:beam, :lumped_radiation, :turn_rule, :bpm_observer, :particle_tunes])
     set_global_rng!(seed=0x5eed, method=:philox)
 end
 
@@ -24728,6 +25480,7 @@ end
                 f_fo(e) = @allocated Octopus._finalize_line_observers!(e)
                 f_hk(e) = @allocated Octopus._line_hook_entries(e)
                 f_pr(e) = @allocated Octopus._has_phase_space_reset(e)
+                f_pt(e) = @allocated Octopus._has_particle_tunes(e)
                 f_rt(e) = @allocated Octopus._requires_tracking_task(e)
                 walks = (("_physics_line", () -> f_pl(entries)), ("_strong_beams_of", () -> f_sb(elems)),
                          ("_count_hidden_strong_beams", () -> f_hs(elems)), ("_check_turn_window", () -> f_tw(elems)),
@@ -24736,6 +25489,7 @@ end
                          ("prepare_line_observers!", () -> f_po(entries)), ("_finalize_line_observers!", () -> f_fo(entries)),
                          ("_line_hook_entries", () -> f_hk(entries)),
                          ("_has_phase_space_reset", () -> f_pr(entries)),
+                         ("_has_particle_tunes", () -> f_pt(entries)),
                          ("_requires_tracking_task", () -> f_rt(elems)))
                 for (name, f) in walks
                     f(); f()
@@ -24763,6 +25517,19 @@ end
                                                       policy=CPUThreadsExecutionPolicy())
                     @test all(isequal(a, b) for (a, b) in zip(coordinate_arrays(guarded), saved))
                 end
+                # The second task-only runtime must neither masquerade as a
+                # reset nor charge an ordinary heterogeneous line a tuple walk.
+                tune_op = compile_runtime(Linear6DSpec(beta1=(1.0, 1.0, 1.0),
+                    dmu=(0.1, 0.2, -0.03), particle_tunes=(nux=0.21,)))
+                @test !Octopus._has_particle_tunes(())
+                @test !Octopus._has_particle_tunes(entries)
+                @test Octopus._has_particle_tunes((entries..., Octopus.PhysicsEntry(tune_op)))
+                @test !Octopus._has_phase_space_reset((entries..., Octopus.PhysicsEntry(tune_op)))
+                @test Octopus._requires_tracking_task((elems..., tune_op))
+                tune_guarded = rep4()
+                tune_saved = map(copy, coordinate_arrays(tune_guarded))
+                @test_throws ArgumentError track!(tune_guarded, (elems..., tune_op), 1)
+                @test all(isequal(a, b) for (a, b) in zip(coordinate_arrays(tune_guarded), tune_saved))
                 l6a = Linear6DSpec{Float64}(; beta1=(0.55, 0.056, 12.7), beta2=(0.55, 0.056, 12.7),
                                             alpha1=(0.0, 0.0, 0.0), alpha2=(0.0, 0.0, 0.0), dmu=2pi .* (0.08, 0.14, -0.069))
                 ss_h = StrongStrongTask((ip, hetero..., l6a), (ip, hetero..., l6a))
@@ -28187,6 +28954,28 @@ end
     end
 end
 
+@testset "Every exported API name appears in the registry snapshot" begin
+    # Source helpers and lifecycle/query functions are public objects too, but
+    # are neither Core Objects nor tracking runtimes. The export-derived index
+    # publishes them without inventing an architectural category for them.
+    exported = Set(string(n) for n in names(Octopus) if n !== :Octopus)
+    snapshot = registry_snapshot_markdown()
+    tokens(text) = Set(String(m.captures[1]) for m in eachmatch(r"`([^`\r\n]+)`", text))
+    missing(text) = setdiff(exported, tokens(text))
+    @test occursin("## Exported API", snapshot)
+    @test isempty(missing(snapshot))
+    for name in (:TuneFunction, :TuneDistribution, :TuneHistogram,
+                 :runtime_variants, :runtime_examples,
+                 :clear_particle_tunes!, :particle_tune_tables)
+        @test string(name) in exported
+        @test string(name) in tokens(snapshot)
+    end
+    # Deleting every exact occurrence must be detected even if a name also
+    # appears in another section (for example through an example catalogue).
+    omitted = replace(snapshot, "`TuneFunction`" => "`removed-public-name`")
+    @test missing(omitted) == Set(["TuneFunction"])
+end
+
 @testset "The Runtime Objects section is complete" begin
     # 2026-08-05_b audit, U12-19. `_runtime_object_types` derives most of its
     # content from element metadata and then hand-appends a list of types with no
@@ -30001,6 +30790,12 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             @test !occursin("MPI-CHECK FAIL", out1)
             @test !occursin("MPI-CHECK FAIL", out2)
             for (output, ranks) in ((out1, 1), (out2, 2), (out4, 4))
+                tune_receipts = filter(line -> startswith(line, "MPI-TUNES "), split(output, '\n'))
+                @test length(tune_receipts) == ranks
+                for rank in 0:(ranks - 1)
+                    schema_checks = ranks > 1 ? 8 : 0
+                    @test "MPI-TUNES rank=$(rank) nranks=$(ranks) cases=6 schema_checks=$(schema_checks) one_rank_failure=true empty_shards=true OK" in tune_receipts
+                end
                 receipts = filter(line -> startswith(line, "MPI-RESET "), split(output, '\n'))
                 @test length(receipts) == ranks
                 @test occursin("MPI-RESET-ORACLE nranks=$(ranks) cases=3 scalar_exact=true OK", output)
@@ -31297,6 +32092,9 @@ if _lane_gate("Contract coverage guards: declared kinds, solver tree, broken bas
     r = validate(SymplecticityContract())
     @test r.passed
     @test r.metrics[:kinds_declaring_without_case] == 0
+    @test r.metrics[:runtime_variants_declaring_without_case] == 0
+    @test haskey(r.metrics, :ParticleLinear6D_residual)
+    @test r.metrics[:ParticleLinear6D_source_calls] == 1
     @test haskey(r.metrics, :Solenoid_residual)
     @test haskey(r.metrics, :SolenoidCurvedMultipole_residual)
 

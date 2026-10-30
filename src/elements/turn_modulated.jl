@@ -124,6 +124,13 @@ abstract type AbstractTurnRule end
 #     (>= 1), components 1-6;
 #   - the BPM reading noise (`src/tasks/BPMObserver.jl`): particle slot = the
 #     reading's occurrence within the turn (0, 1, ...), components 1-2;
+#   - fixed particle tunes (`src/elements/particle_tunes.jl`): particle slot
+#     = global particle id (>= 1), turn = explicit initialization epoch, and
+#     component high bit set, plane mask in bits 56:58, draw ordinal in low
+#     56 bits (`_PARTICLE_TUNE_COMPONENT_BASE`, `_PARTICLE_TUNE_DRAW_MAX`).
+#     The checked ordinal cannot cross into another named source's band.
+#     Coordinate reset and ordinary continuation do not advance this epoch;
+#     clear_particle_tunes! explicitly rearms with a fresh epoch.
 #   - the turn-modulation rules (this file): particle slot 0, components in
 #     the band `_RULE_COMPONENT_BASE + slot` (white) and
 #     `_RULE_COMPONENT_BASE + slot + _PINK_COMPONENT_STRIDE * (k + 1)` (pink

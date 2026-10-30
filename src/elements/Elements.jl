@@ -1,4 +1,5 @@
 include("linear_maps.jl")
+include("particle_tunes.jl")
 include("linear6d.jl")
 include("crab_cavity.jl")
 include("lorentz_boost.jl")

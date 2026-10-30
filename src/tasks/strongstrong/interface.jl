@@ -2539,7 +2539,7 @@ struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: Abstrac
     # R) the task had no record at all: an aperture in a strong-strong line
     # killed with no count, no row and no /losses group.
     loss_records::NTuple{2,Base.RefValue{Any}}
-    loss_owners::NTuple{2,Base.RefValue{WeakRef}}
+    loss_owners::NTuple{2,Base.RefValue{Any}}
     # What the constructor's sharing warnings named over both lines, read by
     # the resolved-line equal-digest check so one cause warns once
     # (`ReportedSharing`, src/tasks/Tasks.jl; 2026-10-16, fix group F).
@@ -2654,7 +2654,7 @@ function StrongStrongTask(line1, line2;
         Dict{Any,Any}(),
         Dict{Any,Any}(),
         (Ref{Any}(nothing), Ref{Any}(nothing)),
-        (Ref(WeakRef(nothing)), Ref(WeakRef(nothing))),
+        (Ref{Any}(WeakRef(nothing)), Ref{Any}(WeakRef(nothing))),
         reported_sharing,
     )
 end
@@ -3786,6 +3786,8 @@ function _split_strong_strong_line(line::Tuple, record=nothing)
     _append_strong_strong_line!(entries, cuts, collisions, line, hook_counter)
     _has_phase_space_reset(Tuple(entries)) && throw(ArgumentError(
         "PhaseSpaceReset is supported by TrackingTask only; StrongStrongTask would need a joint reset of both live beams and solver state"))
+    _has_particle_tunes(Tuple(entries)) && throw(ArgumentError(
+        "ParticleLinear6D is supported by TrackingTask only; StrongStrongTask has no persistent particle-tune binding lifecycle"))
     bound, binding = _bind_line_entries(Tuple(entries), line, record)
     blocks = Any[]
     start = 1

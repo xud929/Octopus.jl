@@ -10,7 +10,7 @@ Controls:
     OCTOPUS_SYMPLECTICITY_STEP=3e-7
     OCTOPUS_SYMPLECTICITY_TOL=1e-11
 
-The script checks the 27 cases `SymplecticityContract` declares -- it derives
+The script checks the cases `SymplecticityContract` declares -- it derives
 that list rather than copying it: the `Symplectic6DMap` elements, the weak-strong
 beam-beam maps, the Lorentz pair and, since the 2026-08-05_b audit, the whole
 thick lattice-magnet family (drift, quadrupole, sextupole, octupole, multipole,
@@ -131,7 +131,7 @@ end
 
 function run_symplecticity_validation(; step=DEFAULT_STEP, default_tolerance=DEFAULT_TOL)
     results = map(symplecticity_cases()) do case
-        residual = symplecticity_residual(q -> case.element(q...), case.q0; step=step)
+        residual = symplecticity_residual(q -> Octopus._symplecticity_case_track(case, q), case.q0; step=step)
         tolerance = max(case.tolerance, default_tolerance)
         return (name=case.name, residual=residual, tolerance=tolerance,
                 passed=residual <= tolerance)

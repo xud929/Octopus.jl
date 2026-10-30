@@ -122,6 +122,7 @@ include("tasks/Tasks.jl")
 include("tasks/BeamObservers.jl")
 include("tasks/PhaseSpaceResetTrials.jl")
 include("tasks/PhaseSpaceReset.jl")
+include("tasks/ParticleTunes.jl")
 include("tasks/BPMObserver.jl")
 include("tasks/StrongStrong.jl")
 # Stage 4b: the analysis option effectiveness contract (needs

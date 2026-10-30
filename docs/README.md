@@ -35,6 +35,32 @@ cites the theory it builds on and the alternatives it rejected; it does not
 duplicate derivations. (`knob_control.md` above is also a design note; it
 predates this folder and stays top-level because `AGENTS.md` links it.)
 
+- [`particle_tunes.md`](design/particle_tunes.md) — persistent particle tune
+  labels in the existing `Linear6DSpec`, entrance-coordinate functions,
+  distributions and supplied arrays, and the reviewed CPU/CUDA/MPI lifecycle.
+  The [campaign record](history/audit_particle_tunes_2026_10_30.md) records
+  validation and the neighbour audit; the
+  [ordinary-path baseline](history/audit_particle_tunes_2026_10_30_baseline.jl)
+  reproduces the numerical and allocation comparison, and the
+  [allocation probe](history/audit_particle_tunes_2026_10_30_allocation_probe.jl)
+  separates initialization from steady tracking. The
+  [task/MPI neighbour review](history/audit_particle_tunes_2026_10_30_unit_reports/U1.md),
+  [source/metadata/design review](history/audit_particle_tunes_2026_10_30_unit_reports/U2.md),
+  [independent validation report](history/audit_particle_tunes_2026_10_30_unit_reports/U3.md),
+  [coordinate-view probe](history/audit_particle_tunes_2026_10_30_unit_reports/U3_views.jl)
+  and [measurement tables](history/audit_particle_tunes_2026_10_30_measurements.json)
+  retain the numerical, lifecycle and performance evidence.
+  The [gate source hashes](history/audit_particle_tunes_2026_10_30_source_hashes.json) identify the executable inputs and registry snapshot.
+  Checkpoint receipts: [testsets](history/audit_particle_tunes_2026_10_30_fast.tsv) and [fast-lane skips](history/audit_particle_tunes_2026_10_30_fast_skips.txt).
+  Full-gate receipts: [testsets](history/audit_particle_tunes_2026_10_30_gate.tsv) and [29 script runs](history/audit_particle_tunes_2026_10_30_scripts.tsv).
+  Reproducers: [concurrent admission](history/audit_particle_tunes_2026_10_30_unit_reports/U1_concurrent_admission.jl),
+  [removed-feature failure](history/audit_particle_tunes_2026_10_30_unit_reports/U1_removed_failure.jl),
+  [MPI mismatch witness](history/audit_particle_tunes_2026_10_30_unit_reports/U1_mpi_mismatch.jl),
+  [MPI negative-control launcher](history/audit_particle_tunes_2026_10_30_unit_reports/U1_mpi_negative_controls.jl),
+  [MPI receipt witness](history/audit_particle_tunes_2026_10_30_unit_reports/U1_mpi_control_witness.jl),
+  [old-admission injection](history/audit_particle_tunes_2026_10_30_unit_reports/U1_inject_old_admission.jl),
+  [old admission method](history/audit_particle_tunes_2026_10_30_unit_reports/U1_old_admission.jl),
+  [metadata/contract runner](history/audit_particle_tunes_2026_10_30_unit_reports/U2_checks.jl).
 - [`phase_space_reset.md`](design/phase_space_reset.md) — repeated noise trials
   from a captured phase-space ensemble, backend-local snapshots, task lifecycle,
   per-trial losses and the independent repeated-tracking validation oracle.

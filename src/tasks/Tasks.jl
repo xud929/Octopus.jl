@@ -39,6 +39,17 @@ struct ReportedSharing
 end
 ReportedSharing() = ReportedSharing(Set{UInt64}(), Set{UInt64}())
 
+# Mutable storage has a stable object identity and can be held weakly.
+# Immutable array wrappers (notably SubArray) may be boxed afresh when passed
+# to WeakRef; that otherwise-unowned box vanishes at GC although the beam is
+# still alive. Retain such wrappers, and their parents, until the binding is
+# cleared or replaced. Both owner forms intentionally expose `.value`.
+struct _RetainedCoordinateOwner{A}
+    value::A
+end
+_coordinate_storage_owner(array) = ismutabletype(typeof(array)) ?
+    WeakRef(array) : _RetainedCoordinateOwner(array)
+
 """
     TrackingTask
 
@@ -83,11 +94,11 @@ struct TrackingTask <: AbstractTask
     # by its own docstring, but the reuse test compared only shape (count
     # length, backend, slot eltype, slot width), so a second beam of the same
     # size silently inherited the first beam's cumulative counters and
-    # per-particle slots (2026-08-05_b audit, U15-5). Held weakly: this is an
-    # identity check, not ownership, and a task must not keep a finished beam
-    # alive. A collected referent reads as `nothing`, which simply fails the
-    # match and builds a fresh record -- the safe direction.
-    loss_owner::Base.RefValue{WeakRef}
+    # per-particle slots (2026-08-05_b audit, U15-5). Mutable arrays are held
+    # weakly. Immutable storage wrappers and their parents must be retained
+    # until replacement: a weak reference to their temporary box dies while
+    # the user's beam is still live.
+    loss_owner::Base.RefValue{Any}
     # Per-turn wall-clock timing (2026-09-07), the `TrackingTask` twin of
     # `StrongStrongDiagnostics.record_turn_times`. Same keyword, same meaning,
     # same accessor (`turn_timings`) -- one keyword, one meaning, now on both
@@ -111,6 +122,11 @@ struct TrackingTask <: AbstractTask
     # Capture state is independent of compilation and plan caches. In particular,
     # a knob update must not silently redefine the reference for noise trials.
     phase_space_reset::Base.RefValue{Any}
+    # Frozen particle labels survive disposable compile and execution plans.
+    particle_tunes::Base.RefValue{Any}
+    # Admission and explicit state clears share one atomic owner, including
+    # the interval before either feature's per-window state is prepared.
+    execution_guard::Threads.Atomic{Int}
 end
 
 """Routes `luminosity_tracking` accepts."""
@@ -264,15 +280,16 @@ function TrackingTask(elements;
         "deprecation warning): seed the counter RNG with " *
         "set_global_rng!(seed=$(seed)) before constructing the task"))
     _warn_duplicate_radiation_streams(element_tuple)
+    _warn_duplicate_particle_tune_streams(element_tuple)
     reported_sharing = _warn_duplicate_turn_modulation_streams(element_tuple)
     action_tuple, observer_tuple = classify_task_hooks(hooks, actions, observers)
     art = artifact === nothing ? nothing :
           artifact isa RunArtifact ? artifact : RunArtifact(String(artifact))
     return TrackingTask(element_tuple, policy, action_tuple, observer_tuple, contracts, analyses,
                         Ref{Int64}(0), Ref{Any}(nothing), Dict{Any,Any}(),
-                        loss_report, Ref{Any}(nothing), art, Ref(WeakRef(nothing)),
+                        loss_report, Ref{Any}(nothing), art, Ref{Any}(WeakRef(nothing)),
                         record_turn_times, Float64[], luminosity_tracking, reported_sharing,
-                        Ref{Any}(nothing))
+                        Ref{Any}(nothing), Ref{Any}(nothing), Threads.Atomic{Int}(0))
 end
 
 """
@@ -1024,25 +1041,52 @@ stored only once the call has completed in full, and an artifact a failure
 leaves open is closed, its lock released, before the error propagates
 (2026-10-18 comprehensive audit, F-77).
 
+A task cannot execute concurrently or recursively: its compilation caches,
+particle bindings and loss/output state have one owner. Construct independent
+tasks for parallel runs. Explicit particle-tune and reset clears acquire the
+same guard and refuse while execution is in progress.
+
 Returns `rep`.
 """
 execute!(task::TrackingTask, beam::Beam; turns::Integer=1, start_turn=nothing) =
     (execute!(task, beam.rep; turns=turns, start_turn=start_turn); beam)
 
 function execute!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
+    _begin_tracking_task_mutation!(task,
+        "a TrackingTask cannot execute concurrently or recursively; use independent tasks for parallel runs")
+    try
+        return _execute_tracking_with_cleanup!(task, rep; turns=turns, start_turn=start_turn)
+    finally
+        _end_tracking_task_mutation!(task)
+    end
+end
+
+function _begin_tracking_task_mutation!(task, message)
+    Threads.atomic_cas!(task.execution_guard, 0, 1) == 0 || throw(ArgumentError(message))
+    return nothing
+end
+_end_tracking_task_mutation!(task) = (task.execution_guard[] = 0; nothing)
+
+function _execute_tracking_with_cleanup!(task, rep; turns::Integer=1, start_turn=nothing)
     # Refuse a nested call before compilation and, crucially, outside the
     # failure cleanup below: that cleanup belongs to the outer pending trial.
     existing_reset_state = task.phase_space_reset[]
     existing_reset_state !== nothing && existing_reset_state.running && throw(ArgumentError(
         "a PhaseSpaceReset task cannot execute concurrently or recursively"))
+    existing_tune_state = task.particle_tunes[]
+    existing_tune_state !== nothing && existing_tune_state.running && throw(ArgumentError(
+        "a particle-tune task cannot execute concurrently or recursively"))
     previous_record, previous_owner = task.loss_record[], task.loss_owner[]
     previous_runtime_entries = task.runtime_entries_cache[]
     previous_admission = existing_reset_state === nothing ? 0 : existing_reset_state.admission
+    previous_tune_admission = existing_tune_state === nothing ? 0 : existing_tune_state.admission
     try
         return _execute_tracking_window!(task, rep; turns=turns, start_turn=start_turn)
     catch
         state = task.phase_space_reset[]
-        if state !== nothing && state.admission == previous_admission
+        tune_state = task.particle_tunes[]
+        if (state !== nothing && state.admission == previous_admission) ||
+           (tune_state !== nothing && tune_state.admission == previous_tune_admission)
             # Compilation can allocate a candidate beam's loss scratch before
             # ownership or artifact validation refuses it. An unadmitted call
             # must preserve the last accepted trial's public loss diagnostics.
@@ -1118,14 +1162,17 @@ function _execute_tracking_window!(task::TrackingTask, rep; turns::Integer=1, st
             # collective, and every fold inside the run reads it from here
             # instead of paying for its own.
             _with_shard(rep, _mp_resolve_shard(length(rep))) do
+                tune_state = _prepare_particle_tunes!(task, rep, runtime_entries)
                 reset_state = _prepare_phase_space_reset!(task, rep, runtime_entries; turns=nturns)
                 reset_state === nothing || (reset_state.running = true)
+                tune_state === nothing || (tune_state.running = true)
                 try
                     _execute_tracking_task!(
                         task, rep, runtime_entries, runtime_elems, nturns, first_turn, policy;
                         turn_modulation=prov)
                 finally
                     reset_state === nothing || (reset_state.running = false)
+                    tune_state === nothing || (tune_state.running = false)
                 end
             end
         end
@@ -1451,7 +1498,7 @@ neighbour audit (lead U3-5) the four-clause conjunction was written out twice.
 _fast_tracking_path(task, runtime_entries) =
     isempty(task.actions) && isempty(task.observers) &&
     !_has_line_hooks(runtime_entries) && task.artifact === nothing &&
-    !_has_phase_space_reset(runtime_entries)
+    !_has_phase_space_reset(runtime_entries) && !_has_particle_tunes(runtime_entries)
 
 """
     _record_tracking_receipts!(task, runtime_entries, policy, turns, first_turn, prov)
@@ -1494,6 +1541,12 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     # `_reject_unsharded_tracking_features` ran in `execute!` (U1-5); the fast
     # loop has no refusal of its own, so the receipts come right before it.
     if _fast_tracking_path(task, runtime_entries)
+        # Clearing and disabling particle_tunes can leave its epoch manager
+        # on an otherwise ordinary line. This is still an admitted execution:
+        # a later failure must retain losses from this beam, not restore the
+        # previous owner's record as though tracking never began.
+        tune_state = task.particle_tunes[]
+        tune_state === nothing || (tune_state.admission += 1)
         # The task's output receipt (S4-10): no artifact on this path (it is a
         # term of the fast-path gate), so it records the output disabled and
         # the loss-report switch the accounting below reads.
@@ -1628,6 +1681,8 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
         reset_state.admission += 1
         _start_reset_trial_window!(reset_state.ledger)
     end
+    tune_state = task.particle_tunes[]
+    tune_state === nothing || (tune_state.admission += 1)
     # The task's output receipt (2026-10-16 fix batch, S4-1/S4-10): the path
     # and the luminosity channels the artifact opened with, and the
     # loss-report switch; the artifact's own resolution is the
@@ -1687,7 +1742,7 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
             # whole line every turn (U1-3).
             plan = get(task.plan_cache, plan_key, nothing)
             if plan === nothing
-                plan = _build_tracking_plan(runtime_entries, plan_key, reset_state)
+                plan = _build_tracking_plan(runtime_entries, plan_key, reset_state, tune_state)
                 task.plan_cache[plan_key] = plan
             end
             # The ledger's live-progress column, set BEFORE any channel push
@@ -2062,14 +2117,14 @@ per-particle slots are indexed by particle and live on the beam's device.
 `want_slots`: per-particle slots feed the artifact's /losses rows; without an
 artifact only the per-aperture counters are kept.
 """
-function _ensure_loss_record!(record_ref::Base.RefValue{Any}, owner::Base.RefValue{WeakRef},
+function _ensure_loss_record!(record_ref::Base.RefValue{Any}, owner::Base.RefValue{Any},
                               elements::Tuple, rep, want_slots::Bool;
                               match_names::Bool=false)
     rep === nothing && return record_ref[]
     storage = first(coordinate_arrays(rep))
     specs = _aperture_specs(elements)
     if isempty(specs)
-        owner[] = WeakRef(storage)
+        owner[] = _coordinate_storage_owner(storage)
         return nothing
     end
     names = match_names ? _loss_record_aperture_names(specs) : nothing
@@ -2090,7 +2145,8 @@ function _ensure_loss_record!(record_ref::Base.RefValue{Any}, owner::Base.RefVal
         # (cumulative counts zeroed, the earlier losses reported unattributed
         # with a warning) and recompiled the line, re-synthesising every
         # spectral table under the then-current seed (2026-10-16 neighbour
-        # audit, S5-1). The arrays are what the user's beam holds.
+        # audit, S5-1). Immutable array views have the same boxing issue;
+        # `_coordinate_storage_owner` retains those wrappers deliberately.
         fits = owner[].value === storage &&
                length(loss_counts(existing)) == length(specs) &&
                _loss_record_matches_rep(existing, rep) &&
@@ -2102,7 +2158,7 @@ function _ensure_loss_record!(record_ref::Base.RefValue{Any}, owner::Base.RefVal
     names === nothing && (names = _loss_record_aperture_names(specs))
     record = LossRecord(names, length(rep), rep; log=want_slots)
     record_ref[] = record
-    owner[] = WeakRef(storage)
+    owner[] = _coordinate_storage_owner(storage)
     return record
 end
 
@@ -2557,7 +2613,7 @@ _active_plan_key(entries::Tuple, ctx, task_diagnostics::Bool,
                  luminosity_tracking::Symbol=:isolated) =
     _active_plan_key(_line_hook_entries(entries), ctx, task_diagnostics, luminosity_tracking)
 
-function _build_tracking_plan(entries::Tuple, plan_key, reset_state=nothing)
+function _build_tracking_plan(entries::Tuple, plan_key, reset_state=nothing, tune_state=nothing)
     active_hooks, task_diagnostics, luminosity_tracking = plan_key
     active_set = Set(active_hooks)
     segments = Any[]
@@ -2566,7 +2622,7 @@ function _build_tracking_plan(entries::Tuple, plan_key, reset_state=nothing)
     pending_line_diagnostics = Ref(_count_active_line_diagnostics(entries, active_set))
     _append_tracking_segments!(segments, fused, tracked, entries, active_set,
                                task_diagnostics, pending_line_diagnostics,
-                               luminosity_tracking, reset_state)
+                               luminosity_tracking, reset_state, tune_state)
     _flush_fused_segment!(segments, fused, task_diagnostics, luminosity_tracking)
     return Tuple(segments)
 end
@@ -2587,8 +2643,8 @@ function _append_tracking_segments!(segments, fused, tracked, entries::Tuple,
                                     active_hooks::Set, task_diagnostics::Bool,
                                     pending_line_diagnostics::Base.RefValue,
                                     luminosity_tracking::Symbol=:isolated,
-                                    reset_state=nothing)
-    for entry in entries
+                                    reset_state=nothing, tune_state=nothing)
+    for (entry_index, entry) in enumerate(entries)
         if entry isa PhysicsEntry
             elem = entry.element
             push!(tracked, elem)
@@ -2597,6 +2653,13 @@ function _append_tracking_segments!(segments, fused, tracked, entries::Tuple,
                     "PhaseSpaceReset requires the capture state of a TrackingTask"))
                 _flush_fused_segment!(segments, fused, task_diagnostics, luminosity_tracking)
                 push!(segments, PhaseSpaceResetSegment(reset_state))
+                continue
+            end
+            if elem isa ParticleLinear6D
+                tune_state === nothing && throw(ArgumentError(
+                    "ParticleLinear6D requires the binding state of a TrackingTask"))
+                _flush_fused_segment!(segments, fused, task_diagnostics, luminosity_tracking)
+                push!(segments, ParticleTuneSegment(tune_state.bindings[entry_index]))
                 continue
             end
             diagnostics_required = task_diagnostics || pending_line_diagnostics[] > 0

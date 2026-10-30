@@ -93,13 +93,15 @@ end
     registry_snapshot_markdown([registry])
 
 Generate the Markdown content for `docs/registry_snapshot.md` from the live
-registry and `ElementMeta` table.
+registry, `ElementMeta` table, and module exports. The exported API index also
+publishes source helpers and query/lifecycle functions that are not Core
+Objects or tracking runtimes.
 """
 function registry_snapshot_markdown(reg::OctopusRegistry=build_registry())
     io = IOBuffer()
     println(io, "# Octopus Registry Snapshot")
     println(io)
-    println(io, "This file is generated from the live Octopus registry and element metadata.")
+    println(io, "This file is generated from the live Octopus registry, element metadata, and module exports.")
     println(io)
     println(io, "Regenerate it from the project root with:")
     println(io)
@@ -178,6 +180,18 @@ function registry_snapshot_markdown(reg::OctopusRegistry=build_registry())
         println(io, "- `", nameof(T), "`")
     end
 
+    println(io)
+    println(io, "## Exported API")
+    println(io)
+    println(io, "This alphabetical index includes every exported name, including source helpers,")
+    println(io, "queries, and lifecycle functions outside the architectural type registry.")
+    println(io)
+    exported = sort!([n for n in names(@__MODULE__) if n !== nameof(@__MODULE__)]; by=string)
+    for start in 1:6:length(exported)
+        group = exported[start:min(start + 5, length(exported))]
+        println(io, "- ", join(("`" * string(n) * "`" for n in group), ", "))
+    end
+
     return String(take!(io))
 end
 
@@ -234,7 +248,9 @@ function _runtime_mapping_string(meta)
     pairs = String[]
     for method in meta.tracking_methods
         haskey(meta.runtime_types, method) || continue
-        push!(pairs, "`$(nameof(method)) => $(nameof(meta.runtime_types[method]))`")
+        for runtime in get(meta.runtime_variants, method, ())
+            push!(pairs, "`$(nameof(method)) => $(nameof(runtime))`")
+        end
     end
     return join(pairs, ", ")
 end
@@ -246,7 +262,7 @@ function _runtime_object_types(reg::OctopusRegistry)
     out = Any[]
     for T in reg.elements
         meta = element_meta(T)
-        append!(out, values(meta.runtime_types))
+        append!(out, _declared_runtime_types(meta))
     end
     # Hand-appended, deliberately: these are runtime objects with no owning
     # element meta. BeamParams/Phase6DRep/Beam are the beam layer; the three

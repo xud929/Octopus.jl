@@ -8,6 +8,7 @@ abstract type Linear6DSpec{T} end
                              alpha2=alpha1, zeta1=(0,0,0,0),
                              eta1=(0,0,0,0), R1=(0,0,0,0),
                              zeta2=zeta1, eta2=eta1, R2=R1,
+                             particle_tunes=nothing, rng_id=0,
                              tracking_method=Symplectic6DMap(), kwargs...)
 
 Create an `ElementSpec{:linear6d}` for a six-dimensional linear transfer map.
@@ -33,17 +34,40 @@ each exit parameter defaults to its entrance partner (`beta2 = beta1`,
 `alpha2 = alpha1`, `zeta2 = zeta1`, `eta2 = eta1`, `R2 = R1`), through the
 friendly constructor and the raw form alike, and the schema says so instead of
 declaring a literal default the constructor never applied.
+
+With `particle_tunes`, the optics form compiles to [`ParticleLinear6D`](@ref),
+which uses one fixed tune triple per particle and shared entrance/exit
+normalizations. Supply any nonempty subset of `nux`, `nuy`, `nuz` as a
+NamedTuple of arrays, six-argument entrance-coordinate functions, finite real
+constants, or [`TuneDistribution`](@ref) values. Joint named sources use
+[`TuneFunction`](@ref) or `TuneDistribution` with `planes`; disjoint groups may
+be composed in a tuple. Omitted planes retain `dmu/(2pi)`. Arrays contain one
+entry per global particle (MPI ranks copy their own intervals). Tunes are
+signed absolute advances in cycles per passage, initialized at actual first
+passage and retained across continuation and coordinate reset.
+
+This active form requires a `TrackingTask` with Float32 or Float64 precision
+and an ordinary, unwrapped placement; explicit matrices, non-default
+placement transforms, bare tracking and contextless optics analysis are
+refused. CPU/CUDA/MPI keep owned local labels on their tracking backend.
+`rng_id=0` allocates a named stream only for distribution sources; nonzero
+`rng_id` without a distribution is refused. A raw stochastic `ElementSpec`
+must provide a resolved nonzero stream. `clear_particle_tunes!` explicitly
+rearms assignments with a fresh sampling epoch; `particle_tune_tables` returns
+independent copies of assigned values and preparation provenance.
 """
 Linear6DSpec(; matrix=nothing, beta1=nothing, dmu=nothing, beta2=nothing,
               alpha1=nothing, alpha2=nothing,
               zeta1=nothing, eta1=nothing, R1=nothing,
-              zeta2=nothing, eta2=nothing, R2=nothing, numeric_type=nothing, kwargs...) =
+              zeta2=nothing, eta2=nothing, R2=nothing,
+              particle_tunes=nothing, rng_id=0, numeric_type=nothing, kwargs...) =
     _floor_form(Linear6DSpec{something(numeric_type,
                                        _linear_map_eltype(matrix, beta1, dmu, beta2, alpha1, alpha2,
                                                           zeta1, eta1, R1, zeta2, eta2, R2))}(;
         matrix=matrix, beta1=beta1, dmu=dmu, beta2=beta2,
         alpha1=alpha1, alpha2=alpha2, zeta1=zeta1, eta1=eta1, R1=R1,
-        zeta2=zeta2, eta2=eta2, R2=R2, kwargs...), numeric_type)
+        zeta2=zeta2, eta2=eta2, R2=R2, particle_tunes=particle_tunes, rng_id=rng_id,
+        kwargs...), numeric_type)
 # The optics form's keys, in one place for the two refusals of "both forms at
 # once" (the typed constructor and `Linear6D(spec)` on a raw spec).
 const _LINEAR6D_OPTICS_KEYS = (:beta1, :dmu, :beta2, :alpha1, :alpha2,
@@ -67,12 +91,19 @@ function (::Type{Linear6DSpec{T}})(; matrix=nothing,
                                   zeta2=nothing,
                                   eta2=nothing,
                                   R2=nothing,
+                                  particle_tunes=nothing,
+                                  rng_id=0,
                                   tracking_method=Symplectic6DMap(),
                                   kwargs...) where {T}
     params = _stamp_numeric_type!(_spec_params(; tracking_method=tracking_method, kwargs...), T)
+    sources = _normalize_particle_tunes(particle_tunes)
+    sources === nothing || T in (Float32, Float64) || throw(ArgumentError(
+        "particle_tunes supports Float32 or Float64; ordinary Linear6DSpec supports other Number types"))
     optics = (; beta1, dmu, beta2, alpha1, alpha2, zeta1, eta1, R1, zeta2, eta2, R2)
     @assert keys(optics) == _LINEAR6D_OPTICS_KEYS
     if matrix !== nothing
+        sources === nothing || throw(ArgumentError(
+            "particle_tunes requires the Linear6DSpec optics form, not an explicit matrix"))
         given = [k for (k, v) in pairs(optics) if v !== nothing]
         isempty(given) || throw(_linear6d_both_forms(given))
         typed_matrix = _matrix66_tuple(matrix, T)
@@ -107,6 +138,11 @@ function (::Type{Linear6DSpec{T}})(; matrix=nothing,
         params[:eta2] = _linear6d_tuple(eta2, 4, T)
         params[:R2] = _linear6d_tuple(R2, 4, T)
     end
+    resolved_rng_id = _particle_tune_rng_id(sources, rng_id; claim=true)
+    if sources !== nothing
+        params[:particle_tunes] = sources
+        params[:rng_id] = resolved_rng_id
+    end
     return ElementSpec{:linear6d}(params)
 end
 
@@ -137,6 +173,9 @@ Base.Matrix(elem::Linear6D{M,T}) where {M,T} =
 
 function Linear6D(spec::ElementSpec{:linear6d},
                   method::AbstractTrackingMethod=tracking_method(spec))
+    getparam(spec, :particle_tunes, nothing) === nothing ||
+        return ParticleLinear6D(spec, method)
+    _particle_tune_rng_id(nothing, getparam(spec, :rng_id, 0))
     # A raw spec carrying both forms is refused here as the constructor refuses
     # them: the matrix would win and the optics keys would never be read.
     stored_optics = [k for k in _LINEAR6D_OPTICS_KEYS if hasparam(spec, k)]
@@ -411,6 +450,9 @@ end
     spec_type = ElementSpec{:linear6d}
     friendly_constructor = Linear6DSpec
     runtime_type = Linear6D
+    runtime_variants = Dict(Symplectic6DMap => (Linear6D, ParticleLinear6D))
+    variant_examples = Dict(ParticleLinear6D => Linear6DSpec(
+        beta1=(1.0, 1.0, 1.0), dmu=(0.2, 0.3, 0.4), particle_tunes=(nux=0.23,)))
     description = "Flexible canonical-symplectic six-dimensional linear map specification."
     keywords = [:coordinate_transform]
     tracking_methods = [Symplectic6DMap]
@@ -423,6 +465,10 @@ end
         alpha1=ParamMeta(meaning="initial alpha functions for optics construction; defaults to (0, 0, 0) in the optics form (no schema default: the matrix form has no such parameter, and matrix beside any optics keyword is refused)"),
         alpha2=ParamMeta(meaning="final alpha functions for optics construction; defaults to alpha1 (the constructor and the raw form alike, so no literal default is declared)"),
         dmu=ParamMeta(meaning="phase advances in radians"),
+        particle_tunes=ParamMeta(default=nothing,
+            meaning="optional fixed per-particle absolute tunes in cycles per passage, consumed by ParticleLinear6D at first TrackingTask passage; named nux/nuy/nuz sources accept arrays, entrance-coordinate functions, constants or TuneDistribution, with omitted planes frozen at dmu/(2pi); nothing selects ordinary Linear6D, explicit matrices and wrapped placements are refused when active"),
+        rng_id=ParamMeta(default=0,
+            meaning="counter RNG stream consumed by particle-tune distributions at first passage and explicit rearm; zero allocates/claims a fresh stream at friendly construction, a raw stochastic spec requires a resolved nonzero ID, and nonzero without distributions is refused as inactive"),
         zeta1=ParamMeta(meaning="initial crab dispersion coefficients; defaults to zeros in the optics form (see alpha1). " * _CANONICAL_DISPERSION_NOTE),
         eta1=ParamMeta(meaning="initial momentum dispersion coefficients; defaults to zeros in the optics form (see alpha1). " * _CANONICAL_DISPERSION_NOTE),
         R1=ParamMeta(meaning="initial x-y coupling coefficients; defaults to zeros in the optics form (see alpha1)"),
@@ -433,5 +479,5 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = Linear6DSpec(matrix=Matrix{Float64}(I, 6, 6))
-    construction_help = "Friendly constructor: Linear6DSpec{T}(; matrix, tracking_method=Symplectic6DMap(), kwargs...), where matrix must be canonical symplectic, or Linear6DSpec{T}(; beta1, dmu, beta2=beta1, alpha1=(0,0,0), alpha2=alpha1, zeta1=(0,0,0,0), eta1=(0,0,0,0), R1=(0,0,0,0), zeta2=zeta1, eta2=eta1, R2=R1, tracking_method=Symplectic6DMap(), kwargs...). The two forms are exclusive: matrix beside any optics keyword is refused by name, at construction and when a raw spec carrying both compiles. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form Linear6DSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "Friendly constructor: Linear6DSpec{T}(; matrix, tracking_method=Symplectic6DMap(), kwargs...), where matrix must be canonical symplectic, or Linear6DSpec{T}(; beta1, dmu, beta2=beta1, alpha1=(0,0,0), alpha2=alpha1, zeta1=(0,0,0,0), eta1=(0,0,0,0), R1=(0,0,0,0), zeta2=zeta1, eta2=eta1, R2=R1, tracking_method=Symplectic6DMap(), kwargs...). The two forms are exclusive: matrix beside any optics keyword is refused by name, at construction and when a raw spec carrying both compiles. The optics form additionally accepts particle_tunes=nothing and rng_id=0: any named subset of nux/nuy/nuz can use global per-particle arrays, six-argument entrance-coordinate functions, finite real constants, or TuneDistribution; joint named sources use TuneFunction/TuneDistribution with planes, and disjoint groups compose in a tuple. Omitted tunes remain dmu/(2pi). The active ParticleLinear6D variant supports Float32/Float64 TrackingTask execution on CPU/CUDA/MPI, persists across continuation and coordinate reset, and refuses explicit matrices, non-default placement transforms, bare tracking and contextless Matrix/Twiss queries. rng_id is consumed only by distributions; zero assigns a fresh stream at friendly construction, raw stochastic specs require a resolved nonzero stream, and nonzero without distributions is refused. clear_particle_tunes! explicitly rearms with a fresh epoch; particle_tune_tables returns independent local copies and provenance. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form Linear6DSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end

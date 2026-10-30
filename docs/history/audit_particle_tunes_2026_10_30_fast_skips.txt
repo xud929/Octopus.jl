@@ -1,0 +1,37 @@
+LANE SKIP [fast]: Element parameter effectiveness
+LANE SKIP [fast]: Solver option effectiveness
+LANE SKIP [fast]: script mode picks up the ForwardDiff rules
+LANE SKIP [fast]: ForwardDiff differentiates the lattice
+LANE SKIP [fast]: Curved frame x transverse field: every routing is a gradient
+LANE SKIP [fast]: Every example script runs against the current interface
+LANE SKIP [fast]: Turn modulation: the one-particle probe, two-rank arm
+LANE SKIP [fast]: The multi-process seam runs under an MPI launcher
+LANE SKIP [fast]: The developer harnesses run divided under an MPI launcher
+LANE SKIP [fast]: Contract coverage guards: declared kinds, solver tree, broken baselines, unrun contracts
+LANE SKIP [fast]: Lattice cells track and stay symplectic
+LANE SKIP [fast]: CUDA GaussianPIC coupled subtraction matches CPU
+LANE SKIP [fast]: Physics contracts
+LANE SKIP [fast]: PIC green_type=:lattice
+LANE SKIP [fast]: Green-cache expansion preserves the grid alignment its kernels require
+LANE SKIP [fast]: PIC-family luminosity returns Float64 on every backend and precision
+LANE SKIP [fast]: CUDA-requiring validation scripts run in the gate's CUDA arm
+  skipped: Element parameter effectiveness
+  skipped: Solver option effectiveness
+  skipped: script mode picks up the ForwardDiff rules
+  skipped: ForwardDiff differentiates the lattice
+  skipped: Curved frame x transverse field: every routing is a gradient
+  skipped: Every example script runs against the current interface
+  skipped: Turn modulation: the one-particle probe, two-rank arm
+  skipped: The multi-process seam runs under an MPI launcher
+  skipped: The developer harnesses run divided under an MPI launcher
+  skipped: Contract coverage guards: declared kinds, solver tree, broken baselines, unrun contracts
+  skipped: Lattice cells track and stay symplectic
+  skipped: CUDA GaussianPIC coupled subtraction matches CPU
+  skipped: Physics contracts
+  skipped: PIC green_type=:lattice
+  skipped: Green-cache expansion preserves the grid alignment its kernels require
+  skipped: PIC-family luminosity returns Float64 on every backend and precision
+  skipped: CUDA-requiring validation scripts run in the gate's CUDA arm
+
+Explicit @test_skip inside Turn modulation: the RF cavity by the same wrap:
+fast lane: the effectiveness contract runs only in its lane-gated testset

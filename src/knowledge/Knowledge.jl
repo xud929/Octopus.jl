@@ -4,7 +4,7 @@ export AbstractOctopusObject,
        AbstractBackendConsistencyContract, AbstractAnalysis, AbstractExample, AbstractTask,
        name, physics_keywords, supported_tracking_methods, tracking_method,
        supported_analyses,
-       required_contracts, runtime_type, description, compile_runtime,
+       required_contracts, runtime_type, runtime_variants, runtime_examples, description, compile_runtime,
        ElementSpec, kind, params, param, getparam, hasparam, numeric_type,
        ParamMeta, ElementMeta, element_meta, register_element_meta!, @element_spec,
        register_element_spec!, register_friendly_alias!, registered_element_specs,
@@ -312,12 +312,15 @@ end
 
 """
     ElementMeta(; kind, spec_type, friendly_constructor, runtime_type, runtime_types,
-                 description, keywords, tracking_methods, contracts, analyses,
+                 runtime_variants, variant_examples, description, keywords, tracking_methods, contracts, analyses,
                  parameters, example, construction_help)
 
 Single declarative metadata record for an element kind. Human-maintained
 element metadata should live in one `ElementMeta` declaration, usually through
-the `@element_spec` macro.
+the `@element_spec` macro. `runtime_types` selects the default runtime per
+tracking method; `runtime_variants` declares every allowed runtime under that
+method. Non-default variants supply representative specs in `variant_examples`,
+so reflection and validation cannot silently cover only the default.
 """
 struct ElementMeta
     kind::Symbol
@@ -325,6 +328,8 @@ struct ElementMeta
     friendly_constructor::Any
     runtime_type::Any
     runtime_types::Dict{DataType,Any}
+    runtime_variants::Dict{DataType,Tuple}
+    variant_examples::Dict{Any,Any}
     description::String
     keywords::Vector{Symbol}
     tracking_methods::Vector{DataType}
@@ -337,6 +342,7 @@ end
 
 function ElementMeta(; kind::Symbol, spec_type, friendly_constructor=nothing,
                      runtime_type=nothing, runtime_types=nothing,
+                     runtime_variants=nothing, variant_examples=Dict{Any,Any}(),
                      description="", keywords=Symbol[],
                      tracking_methods=DataType[], contracts=DataType[], analyses=DataType[],
                      parameters=NamedTuple(), example=nothing,
@@ -349,6 +355,10 @@ function ElementMeta(; kind::Symbol, spec_type, friendly_constructor=nothing,
         friendly_constructor,
         runtime_type,
         runtime_map,
+        runtime_variants === nothing ?
+            Dict{DataType,Tuple}(m => (rt,) for (m, rt) in runtime_map) :
+            Dict{DataType,Tuple}(m => Tuple(variants) for (m, variants) in pairs(runtime_variants)),
+        Dict{Any,Any}(pairs(variant_examples)),
         String(description),
         Symbol[keywords...],
         method_vec,
@@ -366,6 +376,29 @@ function _runtime_types_dict(runtime_type, runtime_types, methods::Vector{DataTy
     end
     runtime_type === nothing && return Dict{DataType,Any}()
     return Dict{DataType,Any}(method => runtime_type for method in methods)
+end
+
+"""All runtime variants declared by one element's metadata, in method order."""
+function _declared_runtime_types(meta::ElementMeta)
+    result = Any[]
+    for method in meta.tracking_methods
+        append!(result, get(meta.runtime_variants, method, ()))
+    end
+    return unique(result)
+end
+
+"""Representative rows derived from the same declarations as runtime ownership."""
+function _runtime_example_rows(meta::ElementMeta)
+    rows = NamedTuple[]
+    for method in meta.tracking_methods
+        default = get(meta.runtime_types, method, nothing)
+        for runtime in get(meta.runtime_variants, method, ())
+            spec = get(meta.variant_examples, runtime,
+                       runtime === default ? meta.example : nothing)
+            push!(rows, (; method, runtime, spec))
+        end
+    end
+    return Tuple(rows)
 end
 
 const REGISTERED_ELEMENT_SPECS = Any[]
@@ -539,6 +572,12 @@ end
 Register one declarative metadata block for an element kind. Use `runtime_type`
 for one supported tracking method, or `runtime_types` for a per-method runtime
 mapping when one accelerator element type supports multiple tracking methods.
+When one method has configuration-dependent runtimes, also declare
+`runtime_variants = Dict(Method => (DefaultRuntime, OtherRuntime))` and
+`variant_examples = Dict(OtherRuntime => representative_spec)`. The default
+runtime remains in `runtime_types`; an instance-level `runtime_type` method
+selects its declared variant. Every additional variant must compile and run
+its representative through the metadata probe.
 
 Minimal pattern for a new accelerator element type:
 
@@ -977,6 +1016,34 @@ function example_spec(T::Type)
 end
 
 """
+    runtime_variants(query, tracking_method)
+
+Return the tuple of runtime types an element kind declares under a tracking
+method, including its default. `query` may be a spec, a registered type, or a
+kind symbol. Unlike `runtime_type(spec, method)`, this enumerates every allowed
+configuration variant; it does not select one or initialize particle state.
+"""
+function runtime_variants(query, method)
+    meta = _element_meta_or_nothing(query)
+    meta === nothing && return ()
+    return get(meta.runtime_variants, _tracking_method_type(method), ())
+end
+
+"""
+    runtime_examples(query)
+
+Return a tuple of `(method, runtime, spec)` representative rows for every
+runtime variant declared by an element kind. `query` accepts the same forms
+as `runtime_variants`. Rows derive from `ElementMeta.runtime_variants` and
+`variant_examples`, with the ordinary example used for each default runtime.
+No tracking or particle initialization occurs during this query.
+"""
+function runtime_examples(query)
+    meta = _element_meta_or_nothing(query)
+    return meta === nothing ? () : _runtime_example_rows(meta)
+end
+
+"""
     construction_help(spec_type)
     construction_help(spec)
 
@@ -1056,6 +1123,10 @@ function element_help(query; io::IO=stdout)
 
     println(io, "Physics keywords: ", physics_keywords(T))
     println(io, "Supported tracking methods: ", _type_list_string(supported_tracking_methods(T)))
+    for method in supported_tracking_methods(T)
+        println(io, "Runtime variants for ", nameof(method), ": ",
+                _type_list_string(runtime_variants(T, method)))
+    end
     println(io, "Required contracts: ", _type_list_string(required_contracts(T)))
     println(io, "Supported analyses: ", _type_list_string(supported_analyses(T)))
     println(io, "Related queries:")
@@ -1205,6 +1276,78 @@ end
 # helper with a capture/mutate/restore witness, never an identity fallback.
 _element_metadata_probe(spec, coordinates) = collect(compile_runtime(spec)(coordinates...))
 _element_probe_placement_supported(::Type) = true
+
+"""Copy a representative with its row's tracking method, without mutating metadata."""
+function _runtime_variant_probe_spec(spec::ElementSpec, method)
+    values = copy(params(spec))
+    values[:tracking_method] = method()
+    return ElementSpec{kind(spec)}(values)
+end
+
+"""Validate variant declarations against actual compilation and non-default execution."""
+function _check_runtime_variants!(errors, meta::ElementMeta)
+    pairs_checked = 0
+    pairs_declared = 0
+    for method in keys(meta.runtime_variants)
+        method in meta.tracking_methods || push!(errors,
+            "ElementMeta $(meta.kind) declares runtime variants for undeclared method $(method)")
+    end
+    declared_types = _declared_runtime_types(meta)
+    for runtime in keys(meta.variant_examples)
+        runtime in declared_types || push!(errors,
+            "ElementMeta $(meta.kind) supplies an example for undeclared runtime variant $(runtime)")
+    end
+    for method in meta.tracking_methods
+        variants = get(meta.runtime_variants, method, ())
+        isempty(variants) && push!(errors,
+            "ElementMeta $(meta.kind) has no runtime variants for $(method)")
+        length(unique(variants)) == length(variants) || push!(errors,
+            "ElementMeta $(meta.kind) repeats a runtime variant for $(method)")
+        default = get(meta.runtime_types, method, nothing)
+        default in variants || push!(errors,
+            "ElementMeta $(meta.kind) default runtime $(default) is absent from its $(method) variants")
+        for runtime in variants
+            pairs_declared += 1
+            if !(runtime isa Type)
+                push!(errors, "ElementMeta $(meta.kind) runtime variant $(runtime) is not a type")
+                continue
+            end
+            spec = get(meta.variant_examples, runtime,
+                       runtime === default ? meta.example : nothing)
+            if !(spec isa ElementSpec) || kind(spec) !== meta.kind
+                push!(errors,
+                    "ElementMeta $(meta.kind) runtime variant $(runtime) needs a representative spec of its kind")
+                continue
+            end
+            compiled = try
+                compile_runtime(spec, method())
+            catch err
+                push!(errors,
+                    "ElementMeta $(meta.kind) runtime variant $(runtime) does not compile: $(sprint(showerror, err))")
+                continue
+            end
+            if !_compiled_matches_runtime(compiled, runtime)
+                push!(errors,
+                    "ElementMeta $(meta.kind) runtime variant $(runtime) representative compiles to $(typeof(compiled))")
+                continue
+            end
+            if runtime !== default
+                try
+                    values = _element_metadata_probe(_runtime_variant_probe_spec(spec, method),
+                        (1.0e-3, 2.0e-4, -5.0e-4, 1.0e-4, 1.0e-3, 3.0e-4))
+                    length(values) == 6 && all(isfinite, values) || throw(ArgumentError(
+                        "variant representative must produce six finite coordinates"))
+                catch err
+                    push!(errors,
+                        "ElementMeta $(meta.kind) runtime variant $(runtime) does not execute: $(sprint(showerror, err))")
+                    continue
+                end
+            end
+            pairs_checked += 1
+        end
+    end
+    return (; declared=pairs_declared, checked=pairs_checked)
+end
 
 """
 Compare each declared `ParamMeta.default` against the runtime it produces, for
@@ -1408,6 +1551,8 @@ function validate_element_metadata(; throw_on_error::Bool=false)
     seen_kinds = Set{Symbol}()
     default_pairs = 0
     defaults_checked = 0
+    runtime_variant_pairs = 0
+    runtime_variants_checked = 0
     defaults_on_required_base = Tuple{Symbol,Symbol}[]
 
     for T in registered_element_specs()
@@ -1668,6 +1813,10 @@ function validate_element_metadata(; throw_on_error::Bool=false)
             end
         end
 
+        variant_result = _check_runtime_variants!(errors, meta)
+        runtime_variant_pairs += variant_result.declared
+        runtime_variants_checked += variant_result.checked
+
         # The registry's method ANSWERS agree with its method LIST: a declared
         # method from `default_method(T)` and `tracking_method(example)` on a
         # kind that declares methods, a refusal by name on a kind that declares
@@ -1734,6 +1883,8 @@ function validate_element_metadata(; throw_on_error::Bool=false)
 
     result = (passed=isempty(errors), errors=errors, default_pairs=default_pairs,
               defaults_checked=defaults_checked,
+              runtime_variant_pairs=runtime_variant_pairs,
+              runtime_variants_checked=runtime_variants_checked,
               defaults_on_required_base=defaults_on_required_base)
     if throw_on_error && !result.passed
         throw(ArgumentError("element metadata validation failed:\n" * join(errors, "\n")))
@@ -1769,8 +1920,10 @@ _tracking_method_object(method::AbstractTrackingMethod) = method
     runtime_type(spec_type, tracking_method)
     runtime_type(spec, tracking_method)
 
-Return the concrete runtime tracking type produced for an element spec under a
-tracking method. Execution policies select where a compiled runtime object is
+Return the runtime tracking type produced for an element spec under a
+tracking method. A type-level query returns the declared default; an instance
+may select another member of `runtime_variants` from its configuration.
+Execution policies select where a compiled runtime object is
 tracked; they should not change the runtime type unless a future method
 explicitly models that as metadata.
 """

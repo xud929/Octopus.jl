@@ -50,6 +50,13 @@ end
 function track!(rep, elems, turns, policy::ResolvedCPUExecutionPolicy,
 				ctx::TrackingContext)
 	_reject_task_only_tracking(elems)
+	return _track_admitted!(rep, elems, turns, policy, ctx)
+end
+
+# Only a task that has checked storage ownership may admit a bound
+# particle-tune runtime. Public tracking keeps its lifecycle guard.
+function _track_admitted!(rep, elems, turns, policy::ResolvedCPUExecutionPolicy,
+						 ctx::TrackingContext; stream=nothing)
 	for turn in 1:turns
 		turn_ctx = with_turn(ctx, ctx.turn + Int64(turn - 1))
 		_run_logical_workers(policy.threads) do worker, nworkers
@@ -80,7 +87,7 @@ end
 # carries stochastic keys, not the beam-level capture and loss lifecycle.
 function _reject_task_only_tracking(elems)
 	_requires_tracking_task(elems) || return nothing
-	throw(ArgumentError(_PHASE_SPACE_RESET_TASK_REQUIRED))
+	throw(ArgumentError("task-managed PhaseSpaceReset or ParticleLinear6D requires TrackingTask; bare track! cannot bind its particle state"))
 end
 
 _requires_tracking_task(w::Union{MisalignedElement,RefTilted,TurnModulated}) =
@@ -230,6 +237,7 @@ if _HAS_ADAPT
 		Adapt.adapt_structure(to, e::MisalignedElement) =
 			MisalignedElement(Adapt.adapt(to, e.inner), e.qin, e.oin, e.qout, e.oout)
 		Adapt.adapt_structure(to, e::RefTilted) = RefTilted(Adapt.adapt(to, e.inner), e.c, e.s)
+		Adapt.adapt_structure(to, e::ParticleLinear6D) = _adapt_particle_linear6d(to, e)
 	end
 end
 
@@ -434,6 +442,11 @@ if _HAS_CUDA
 		function track!(rep, elems, turns, policy::ResolvedCUDAExecutionPolicy,
 						ctx::TrackingContext; stream=nothing)
 			_reject_task_only_tracking(elems)
+			return _track_admitted!(rep, elems, turns, policy, ctx; stream=stream)
+		end
+
+		function _track_admitted!(rep, elems, turns, policy::ResolvedCUDAExecutionPolicy,
+								 ctx::TrackingContext; stream=nothing)
 			if _requires_cuda_elementwise(elems, ctx)
 				for turn in 1:turns
 					turn_ctx = with_turn(ctx, ctx.turn + Int64(turn - 1))

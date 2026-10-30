@@ -13,7 +13,7 @@ When an item below closes: move its row (with the closing measurements) to the
 archive under a dated note, and if it taught something reusable, add the
 lesson to `experiences.md`.
 
-Latest closure: [phase-space reset for noise-response trials, gated 2026-10-29; recorded 2026-10-30](history/audit_phase_space_reset_2026_10_29.md).
+Latest closure: [persistent particle tunes in Linear6DSpec, full CUDA-active gate 2026-10-30](history/audit_particle_tunes_2026_10_30.md).
 
 ## Open, most actionable first
 

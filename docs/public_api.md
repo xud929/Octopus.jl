@@ -483,6 +483,8 @@ Use Julia help:
 ?track_particle
 ?compile_runtime
 ?runtime_type
+?runtime_variants
+?runtime_examples
 ?tracking_method
 ?TrackingContext
 ?with_turn
@@ -514,6 +516,57 @@ Backends", with the 31-kind measurement). The same section states which
 coordinates of each kind agree bitwise between the CPU and CUDA kernels and
 which agree to a stated number of ulps (`_cross_backend_rounding`, checked by
 measurement in the suite and by `validation/tracking_backend_consistency.jl`).
+
+## Fixed Particle Tunes
+
+`Linear6DSpec` accepts `particle_tunes` in its optics form. For example,
+`particle_tunes=(nux=measured_nux,)` assigns one horizontal tune per global
+particle and retains the nominal `dmu/(2pi)` values in the other planes.
+Any nonempty subset of `nux`, `nuy`, and `nuz` is supported. Each named value
+may be a finite scalar, a global-length array, a six-argument coordinate
+function, or `TuneDistribution(d)`. `TuneFunction(f; planes=...)` and
+`TuneDistribution(d; planes=...)` supply joint sources over a named subset;
+a tuple of disjoint declarations can combine a joint pair and the third plane.
+
+```julia
+?Linear6DSpec
+?ParticleLinear6D
+?TuneFunction
+?TuneDistribution
+?TuneHistogram
+?clear_particle_tunes!
+?particle_tune_tables
+```
+
+A function receives physical `(x, px, y, py, z, pz)` at the element entrance,
+after upstream maps and before linear normalization. A distribution implements
+`rand(rng, distribution)` using the supplied RNG; no additional distribution
+package is required. `TuneHistogram(edges, weights)` treats weights as bin
+masses and samples uniformly within the selected bin. Sources assign signed
+absolute tunes, not offsets. First passage binds the table, and continuation,
+cache rebuilding and coordinate reset retain it. `clear_particle_tunes!`
+requests a fresh preparation epoch without moving coordinates or clearing a
+saved reset reference. `particle_tune_tables` returns independent host copies
+of local labels, placement identities, global shard ranges and preparation
+provenance; MPI callers must retain global index correspondence when reusing
+those arrays.
+
+The compiled `ParticleLinear6D` keeps tunes and cached rotations on the beam's
+CPU or CUDA backend. The active form supports Float32/Float64 `TrackingTask`
+tracking, including the CPU multi-process policy. First-version restrictions
+are explicit: no arbitrary-matrix form, scalar/contextless tracking,
+StrongStrongTask, nontrivial placement wraps, kept-whole nested placement, or
+arbitrary action hooks. Coordinate functions require a finite entrance
+ensemble; arrays and distributions assign labels even to lost slots. An
+active particle-tune map has no unique matrix or Twiss analysis; construct an
+ordinary optics-form `Linear6DSpec` from a selected stored triple to analyze
+that particle's fixed map. See the [reviewed design](design/particle_tunes.md)
+for transaction boundaries, random-stream semantics and validation.
+
+`runtime_type(spec, method)` selects the configured runtime, while a type-level
+query returns the default. `runtime_variants(query, method)` and
+`runtime_examples(query)` enumerate declared variants and representative specs
+from the same metadata used by the registry and validator.
 
 ## Repeated Noise Trials
 

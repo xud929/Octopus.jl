@@ -160,7 +160,7 @@ function _typed_form_names(op)
     for meta in values(ELEMENT_META_BY_KIND)
         meta.friendly_constructor === nothing && continue
         any(rt -> rt isa Type && Base.unwrap_unionall(rt).name.wrapper === W,
-            values(meta.runtime_types)) || continue
+            _declared_runtime_types(meta)) || continue
         push!(names, string(nameof(meta.friendly_constructor)))
     end
     return sort!(unique!(names))

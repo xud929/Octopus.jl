@@ -238,6 +238,120 @@ let rank = child_rank(), nranks = MPI.Comm_size(MPI.COMM_WORLD)
     @printf("MPI-BOUNDINIT rank=%d nranks=%d cases=%d OK\n", rank, nranks, checked)
 end
 
+# --- persistent particle tunes: global slots, empty shards, all-rank refusal ---
+include(joinpath(@__DIR__, "particle_tunes_probe.jl"))
+let rank = child_rank(), nranks = MPI.Comm_size(MPI.COMM_WORLD)
+    policy = MultiProcessExecutionPolicy(threads=1, ranks=nranks)
+    checked = 0
+    for T in (Float64, Float32), n in (17, 2)
+        result = pt_probe_dense(policy; T=T, n=n, turns=3, rank=rank, nranks=nranks)
+        result.comparison.equal || fail("particle-tune dense oracle differs on rank $(rank): $(result.comparison)")
+        table = only(result.tables)
+        interval = Octopus._mp_shard_range(n, nranks, rank)
+        table.global_range == interval && table.global_particles == n || fail("particle-tune global interval is wrong")
+        table.local_particles == length(interval) || fail("particle-tune local count is wrong")
+        for (local_labels, global_labels) in zip(values(table.tunes), values(result.labels))
+            local_labels == global_labels[interval] || fail("particle-tune global direct-array slice is wrong")
+        end
+        receipts = filter(r -> r.consumer === :particle_tune_initialization, result.receipts)
+        length(receipts) == 1 || fail("particle-tune preparation did not record exactly once")
+        receipt = only(receipts)
+        receipt.values.global_n == n && receipt.values.n_local == length(interval) &&
+            receipt.values.index_offset == first(interval)-1 || fail("particle-tune MPI receipt does not match the actual shard")
+        checked += 1
+    end
+    # Uneven shards compare the same keyed sampler against an undivided task.
+    # The serial reference runs outside the MPI policy scope on each rank, so
+    # it cannot inherit the shard-offset route it is intended to check.
+    for T in (Float64, Float32)
+        n = 17
+        spec = Linear6DSpec{T}(; pt_probe_optics(T)...,
+            particle_tunes=(nux=TuneDistribution(PTProbeVariableDraws()),
+                            nuz=TuneDistribution(PTProbeUniform(-0.02, -0.01))),
+            rng_id=UInt64(0x5054554e) + UInt64(T === Float32))
+        initial = pt_probe_initial(T; n=n)
+        local_rep = pt_probe_copy(initial, policy; rank=rank, nranks=nranks)
+        sharded = TrackingTask((spec,); policy=policy)
+        set_global_rng!(seed=pt_probe_seed(), method=:philox)
+        execute!(sharded, local_rep; turns=1, start_turn=11)
+        saved = only(particle_tune_tables(sharded))
+        execute!(sharded, local_rep; turns=2)
+        only(particle_tune_tables(sharded)).tunes == saved.tunes || fail("particle tunes redrew across MPI continuation")
+        serial = TrackingTask((spec,); policy=CPUThreadsExecutionPolicy(threads=1))
+        whole = pt_probe_copy(initial, CPUThreadsExecutionPolicy(threads=1))
+        set_global_rng!(seed=pt_probe_seed(), method=:philox)
+        execute!(serial, whole; turns=3, start_turn=0)
+        reference = only(particle_tune_tables(serial))
+        interval = Octopus._mp_shard_range(n, nranks, rank)
+        for (local_labels, global_labels) in zip(values(saved.tunes), values(reference.tunes))
+            local_labels == global_labels[interval] || fail("MPI RNG used local rather than global particle IDs")
+        end
+        pt_probe_difference(pt_probe_rows(local_rep), pt_probe_rows(whole)[interval, :], T; turns=3).equal || fail("MPI sampled map differs from undivided response")
+        checked += 1
+    end
+    # A sampler failure on exactly one rank must make every rank refuse before
+    # installing a table. Four ranks, in the suite launcher, cover asymmetric
+    # failures that a two-rank mutual-mismatch fixture cannot represent.
+    n = 17
+    initial = pt_probe_initial(Float64; n=n)
+    calls = Ref(0)
+    source = (nux=(args...) -> (calls[] += 1; rank == nranks-1 && calls[] == 2 ? NaN : 0.2),)
+    refusing = TrackingTask((Linear6DSpec(; pt_probe_optics(Float64)..., particle_tunes=source),); policy=policy)
+    rep = pt_probe_copy(initial, policy; rank=rank, nranks=nranks)
+    before = pt_probe_rows(rep)
+    refusal_direction(() -> execute!(refusing, rep; turns=1), "particle-tune initialization failed") || fail("one-rank callback failure was accepted")
+    all(t -> !t.bound, particle_tune_tables(refusing)) || fail("one-rank callback failure partially committed labels")
+    isequal(pt_probe_rows(rep), before) || fail("one-rank callback failure applied a map")
+    # On retry, the same source no longer fails (its call counter passed two).
+    execute!(refusing, rep; turns=1)
+    only(particle_tune_tables(refusing)).bound || fail("valid MPI retry did not initialize")
+    finite_calls = Ref(0)
+    finite = TrackingTask((Linear6DSpec(; pt_probe_optics(Float64)...,
+        particle_tunes=(nuy=(args...) -> (finite_calls[] += 1; 0.3),)),); policy=policy)
+    dead = pt_probe_copy(initial, policy; rank=rank, nranks=nranks)
+    rank == nranks-1 && (dead.z[end] = NaN)
+    refusal_direction(() -> execute!(finite, dead; turns=1), "entrance validation failed") || fail("nonfinite entrance on one rank was accepted")
+    finite_calls[] == 0 || fail("callback ran before collective finite-entrance verdict")
+    schema_checks = 0
+    if nranks > 1
+        for case in (:presence, :planes, :stream, :nominal, :seed, :method, :optics, :precision)
+            optics = pt_probe_optics(Float64)
+            spec = if case === :presence
+                rank == 0 ? Linear6DSpec(; optics..., particle_tunes=(nux=0.21,)) : Linear6DSpec(; optics...)
+            elseif case === :planes
+                Linear6DSpec(; optics..., particle_tunes=rank == 0 ? (nux=0.21,) : (nuy=0.21,))
+            elseif case === :stream
+                Linear6DSpec(; optics..., particle_tunes=(nux=TuneDistribution(PTProbeUniform(0.2, 0.21)),),
+                    rng_id=rank == 0 ? 0x505470 : 0x505471)
+            elseif case === :nominal
+                changed = merge(optics, (dmu=rank == 0 ? optics.dmu : (optics.dmu[1], optics.dmu[2]+0.1, optics.dmu[3]),))
+                Linear6DSpec(; changed..., particle_tunes=(nux=0.21,))
+            elseif case === :optics
+                changed = merge(optics, (beta2=rank == 0 ? optics.beta2 : (2.3, optics.beta2[2], optics.beta2[3]),))
+                Linear6DSpec(; changed..., particle_tunes=(nux=0.21,))
+            elseif case === :precision
+                T = rank == 0 ? Float64 : Float32
+                Linear6DSpec{T}(; pt_probe_optics(T; unit=true)...,
+                    particle_tunes=(nux=T(0.25), nuy=T(0.375), nuz=T(-0.03125)))
+            else
+                Linear6DSpec(; optics..., particle_tunes=(nux=TuneDistribution(PTProbeUniform(0.2, 0.21)),), rng_id=0x505472)
+            end
+            set_global_rng!(seed=case === :seed && rank != 0 ? pt_probe_seed()+1 : pt_probe_seed(),
+                method=case === :method && rank != 0 ? :splitmix : :philox)
+            inconsistent = TrackingTask((spec,); policy=policy)
+            fixture = case === :precision && rank != 0 ? pt_probe_initial(Float32; n=n) : initial
+            trial = pt_probe_copy(fixture, policy; rank=rank, nranks=nranks)
+            saved_rows = pt_probe_rows(trial)
+            token = case === :presence ? "presence or task state differs" : "differ across MPI ranks"
+            refusal_direction(() -> execute!(inconsistent, trial; turns=1), token) || fail("MPI particle-tune $(case) mismatch was accepted")
+            isequal(pt_probe_rows(trial), saved_rows) || fail("MPI particle-tune $(case) mismatch moved coordinates")
+            all(t -> !t.bound, particle_tune_tables(inconsistent)) || fail("MPI particle-tune $(case) mismatch installed a table")
+            schema_checks += 1
+        end
+    end
+    @printf("MPI-TUNES rank=%d nranks=%d cases=%d schema_checks=%d one_rank_failure=true empty_shards=true OK\n", rank, nranks, checked, schema_checks)
+end
+
 # --- repeated reset trials: real sharded tracking and loss revival ------
 include(joinpath(@__DIR__, "phase_space_reset_probe.jl"))
 let rank = child_rank(), nranks = MPI.Comm_size(MPI.COMM_WORLD)

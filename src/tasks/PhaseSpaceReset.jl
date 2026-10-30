@@ -5,7 +5,7 @@ export clear_phase_space_reset!, phase_space_reset_summary
 mutable struct _PhaseSpaceResetState
     name::String
     snapshot::Any
-    owners::NTuple{6,WeakRef}
+    owners::NTuple{6,Any}
     signature::Any
     reference_epoch::Int64
     pending_epoch::Int64
@@ -35,11 +35,17 @@ function _has_phase_space_reset(entries::Tuple)
     found = Ref(false)
     _foreach_unrolled(entries) do entry
         found[] || (found[] = entry isa PhysicsEntry &&
-                              _requires_tracking_task(entry.element))
+                              _contains_phase_space_reset(entry.element))
         nothing
     end
     return found[]
 end
+
+_contains_phase_space_reset(::Any) = false
+_contains_phase_space_reset(::PhaseSpaceReset) = true
+_contains_phase_space_reset(w::Union{MisalignedElement,RefTilted,TurnModulated}) =
+    _contains_phase_space_reset(w.inner)
+_contains_phase_space_reset(c::CompositeLine) = any(_contains_phase_space_reset, c.ops)
 
 function _reset_name(task)
     events = Tuple{Float64,Float64,Any}[]
@@ -64,7 +70,7 @@ function _prepare_phase_space_reset!(task, rep, entries; turns=1)
     physics = _physics_line(entries)
     length(physics) > 0 && first(physics) isa PhaseSpaceReset || throw(ArgumentError(
         "PhaseSpaceReset must be the first tracking element; rotate the line to choose its reference point"))
-    count(_requires_tracking_task, physics) == 1 || throw(ArgumentError(
+    count(_contains_phase_space_reset, physics) == 1 || throw(ArgumentError(
         "a TrackingTask supports exactly one PhaseSpaceReset, with no reset hidden in a composite or wrapper"))
     isempty(task.actions) && !_has_line_actions(entries) || throw(ArgumentError(
         "PhaseSpaceReset does not support action hooks that can replace or reorder the saved ensemble"))
@@ -116,7 +122,7 @@ function _execute_tracking_segment_turn!(rep, segment::PhaseSpaceResetSegment, p
     operation = if state.snapshot === nothing
         # copy(CuArray) allocates on the device; no host staging or RNG is used.
         state.snapshot = Phase6DRep(map(copy, coordinate_arrays(rep))...)
-        state.owners = map(WeakRef, coordinate_arrays(rep))
+        state.owners = map(_coordinate_storage_owner, coordinate_arrays(rep))
         state.signature = _reset_storage_signature(rep)
         state.reference_epoch = state.pending_epoch
         state.capture_turn = ctx.turn
@@ -159,6 +165,16 @@ unchanged; existing artifact rows are retained under their reference epochs.
 A later capture receives a new epoch. Refused while this task is executing.
 """
 function clear_phase_space_reset!(task::TrackingTask)
+    _begin_tracking_task_mutation!(task,
+        "cannot clear the PhaseSpaceReset reference while its task is executing or changing state")
+    try
+        return _clear_phase_space_reset!(task)
+    finally
+        _end_tracking_task_mutation!(task)
+    end
+end
+
+function _clear_phase_space_reset!(task::TrackingTask)
     state = task.phase_space_reset[]
     state === nothing && return task
     state.running && throw(ArgumentError(
