@@ -218,8 +218,26 @@ touched, and a `storage=:file` artifact takes the code path it took before
 ## 5 The gate
 
 Public configuration is a full-gate class (AGENTS.md matrix); CUDA is active
-on the development machine. [native arm: pending]. [AVX2 arm: pending; owed
-before the push, not before the commit.]
+on the development machine.
+
+**Native arm, CUDA active, on ff54b2a** (the feature commit's tree, 0 dirty
+files; host acnlinj4, 2026-11-03 20:04:23 to 21:30:29 EST, 86 min, four
+threads): green, "Testing Octopus tests passed", exit 0. 460 testset
+summaries, 159754 passing assertions summed over them; the one testset with
+a Broken column is "Misalignment maps" (26 passed, 2 broken, 28 total), the
+two pre-existing expected-broken checks every gate records separately. No
+lane skip (the full lane); the CUDA arm of the validation scripts ran inside
+it, 21 scripts, every exit 0, 492.2 s wall four at a time
+(`validation/tracking_backend_consistency.jl` 154.1 s among them). Nothing
+was unrunnable: the machine has a functional device and the MPI launcher
+sections ran.
+
+**AVX2 arm** (`OPENBLAS_CORETYPE=Haswell julia -C haswell`, the CI-runner
+parity arm of the two-arm pre-push gate): not run in this session. It is
+owed before the push that carries this batch, not before the commit (the
+owner's gate-before-push decision, `../experiences.md`, "Process habits that
+earned their place"); the script `result/in_memory_artifact/run_full_gate_avx2.sh`
+is prepared for it. Nothing in this batch is pushed.
 
 ## 6 Ledger
 
