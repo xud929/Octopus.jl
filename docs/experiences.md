@@ -2219,6 +2219,36 @@ extra variant without a case now fails coverage. When probing a non-default
 tracking method, compile and execute the same method in the representative
 spec; testing compilation alone can leave the actual consumer unexamined.
 
+## A new mode of a sink is a storage, not a second sink
+
+The [in-memory run artifact](history/in_memory_run_artifact_2026_11_03.md)
+(2026-11-03) could have been a second artifact type implementing the probe,
+channel, ledger and loss API over Julia containers. Measured first: 32 of the
+76 functions of `RunArtifact.jl` touch the HDF5 file directly and the
+turn-modulation recorder holds an `HDF5.File`, so that type would have
+re-implemented the cursor, replay and ledger protocol -- the maintained-twice
+shape the artifact design exists to remove -- and widened nine
+`Union{Nothing,RunArtifact}` annotations. The library's core driver gave the
+same artifact in memory for one open call, and every producer, cursor and
+reader stayed one implementation; the saved file is the image byte for byte.
+Before choosing a mechanism for a new mode, count the functions the
+alternative would duplicate.
+
+Two rules the mode needed. A handle that outlives the operation it served
+must not be the flag that says the operation is in flight: `file !== nothing`
+meant "an `execute!` is in flight" at six sites, so the image kept between
+windows lives in a slot of its own and `file` keeps its meaning in both
+storages. And a dependency's exports are part of your namespace: JLD2, which
+Octopus loads, exports `save`, so the companion is `save_run_artifact`, named
+like the artifact's other verbs -- check `names(Dep)` for a common verb before
+exporting it, because the user who loads both packages pays for the clash. A
+scratch probe settled each design question before the design was written
+(the driver touches no file under a create; it loads an existing file for a
+continuation and never writes it back; the growth step is a factor of two on
+tens of milliseconds per 64 MB): the probes are cheap and the decisions they
+decided -- `append` keeping its file meaning, the step a constant and not an
+option -- would otherwise have been guessed.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

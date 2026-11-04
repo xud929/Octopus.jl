@@ -132,6 +132,7 @@ Use Julia help:
 ?symbol
 ?RunArtifact
 ?run_artifact_option_schema
+?save_run_artifact
 ?TaskOutput
 ```
 
@@ -179,6 +180,22 @@ read(out, :snapshot; name = "inj", turn = 100)
 read(out, :losses)                        # rows + apertures + summary
 read(out, :execution)                     # per-execute! ledger
 read(out, :all)                           # everything, nested by kind
+```
+
+The same artifact can live in process memory instead of on disk
+(`storage = :memory`, 2026-11-03; `?RunArtifact`, "In memory", and
+`?save_run_artifact`): nothing is written, not even the sidecar lock, until
+the explicit save, the path given beside the keyword keeps its meanings as
+label, append source and default save target, and the artifact object itself
+is the reader's handle:
+
+```julia
+art = RunArtifact("result/pic_hcc.h5"; storage = :memory)   # or RunArtifact(; storage = :memory)
+# ... run the task with artifact = art
+read(TaskOutput(art), :moments; name = "proton")   # the live image, during or after the run
+read(MomentOutput(art; name = "proton"))
+save_run_artifact(art)                             # the image to result/pic_hcc.h5, byte for byte
+save_run_artifact(art, "elsewhere.h5")             # or to another path
 ```
 
 Moment names are canonical strings such as `m100000`; if any exponent is

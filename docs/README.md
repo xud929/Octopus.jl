@@ -104,7 +104,10 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
   dissolve the mixed-IP row-drop machinery), name identities from provenance
   paths, the three buffer shapes behind one protocol, the device-write
   constraints, capacity posture, crash-recovery cursor, live text mirror,
-  and the migration order behind the current APIs.
+  the migration order behind the current APIs, and the in-memory storage
+  mode (`storage = :memory` with the explicit `save_run_artifact`, decided
+  and landed 2026-11-03; record
+  [`in_memory_run_artifact_2026_11_03.md`](history/in_memory_run_artifact_2026_11_03.md)).
 - [`twiss_dispersion_analysis.md`](design/twiss_dispersion_analysis.md) — the
   first analysis (decided 2026-09-11; stages 1 to 8 landed 2026-09-11 to
   2026-09-15): one non-parametric `AbstractAnalysis` object
@@ -586,6 +589,19 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   phase, randomised initial coordinates with the seed logged, the three
   comparisons under CPU threads, CUDA and the MPI policy with two ranks) and
   its numbers; the examples update; the gate; the ledger.
+- [`in_memory_run_artifact_2026_11_03.md`](history/in_memory_run_artifact_2026_11_03.md) —
+  the in-memory storage mode of the run artifact (`design/run_artifact.md`,
+  "Artifact options", `storage`; decided and landed 2026-11-03): the owner's
+  decisions with their reasons (a mode of the one artifact through the HDF5
+  core driver, never a second storage type; the keyword decides only where
+  the rows live; nothing saved automatically; the explicit
+  `save_run_artifact`), the probes that decided the design (the driver
+  touches no file, loads an existing one for `append=true`, dumps a
+  byte-identical image; the growth-step measurement), what landed (the
+  option, the `image` slot beside the in-flight `file`, the reader
+  constructors `TaskOutput(artifact)` and `MomentOutput(artifact; name)`,
+  the save), the red run before the feature and the green runs after it,
+  the effectiveness contract's memory fixture, the gate and the ledger.
 - [`spectral_turn_table_2026_10_16.md`](history/spectral_turn_table_2026_10_16.md) —
   stage 1 of `design/spectral_turn_table.md`, the spectral producer for
   `TurnTable` (landed as c3c6c2c, gated and pushed 2026-10-16): the exported factory

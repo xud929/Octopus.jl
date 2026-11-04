@@ -1,4 +1,5 @@
-export RunArtifact, TaskOutput, turn_modulation_provenance, run_artifact_option_schema
+export RunArtifact, TaskOutput, turn_modulation_provenance, run_artifact_option_schema,
+       save_run_artifact
 
 # ---------------------------------------------------------------------------
 # The run artifact: one HDF5 output file per task, one group per producer.
@@ -77,10 +78,13 @@ struct PendingProbeBind
 end
 
 """
-    RunArtifact(path; append=false, capacity=64, record_turn_modulation=false)
+    RunArtifact(path; append=false, capacity=64, record_turn_modulation=false, storage=:file)
 
 The one-output-file-per-task sink (docs/design/run_artifact.md): an HDF5 file
-with one group per producer, owned by the task that carries it.
+with one group per producer, owned by the task that carries it. With
+`storage=:memory` the same artifact lives as an HDF5 image in process memory
+and reaches disk only through [`save_run_artifact`](@ref) (the paragraph
+"In memory" below).
 
 The artifact carries every product of the run:
 
@@ -247,7 +251,7 @@ Structured metadata: [`run_artifact_option_schema`](@ref).
 **What the prepare resolved** is on record once per `execute!` as the
 `:run_artifact_output` receipt (`with_execution_audit`; 2026-10-16 fix batch,
 S4-1/S4-2), recorded by `prepare_run_artifact!` itself -- the one consumer
-boundary of these three options, reached from both task kinds -- after its
+boundary of these options, reached from both task kinds -- after its
 last refusal: `task` (the carrying task's kind), `artifact` (the path),
 `append` (the request) beside `continued` (what happened: an existing file
 was continued, or the file was created fresh), `capacity` (the batching every
@@ -258,18 +262,59 @@ records its own output receipt beside it (`:tracking_output`,
 `:strong_strong_output`) with the artifact path and the luminosity channels
 it opened.
 
+**In memory** (2026-11-03, owner decisions): `storage=:memory` keeps the
+whole artifact -- every group, cursor and ledger row above, written by the
+same code -- as an HDF5 image in process memory (the library's core driver
+with no backing store) and writes nothing to disk, not even the sidecar
+lock, until [`save_run_artifact`](@ref)`(artifact[, path])` copies the image
+to a file, byte for byte what a file run would have written. Nothing is
+saved automatically. The keyword decides only where the rows live during
+the run: a `path` given beside it keeps every other meaning -- the label,
+the file `append=true` loads into memory and continues (the disk copy stays
+as found until saved), the default target of `save_run_artifact` -- and the
+path-less `RunArtifact(; storage=:memory)` can be saved to an explicit path
+only. `append=true` continues the image across `execute!` calls within the
+process, `append=false` discards the previous image when the next
+`execute!` begins, exactly as the file is continued or recreated. A
+refusal leaves the image as found, a failed run keeps it, and a crash keeps
+the rows through the last save only (a file run keeps them through its last
+flush). Read it live or finished through `TaskOutput(artifact)` and
+`MomentOutput(artifact; name)`; the path readers serve the saved file. The
+`:run_artifact_output` receipt carries `storage` as applied. Measured on
+landing (CPU, one particle, the three probes, 5 turns): the memory run's
+moment, snapshot and BPM rows equal the file run's exactly, and the saved
+file reads as the image does ("The run artifact in memory ..." in the
+suite).
+
 Pass it to the task (`StrongStrongTask(...; artifact=RunArtifact(path))`, or
 a bare path as sugar). The artifact path is registered by artifact identity,
 so the same task continuing is silent while a second writer on the path
 draws the collision warning.
 """
 mutable struct RunArtifact <: AbstractRunArtifact
+    # The file's path under file storage. Under `storage = :memory` it keeps
+    # every other meaning -- the label, the file `append = true` loads and the
+    # default target of `save_run_artifact` -- or is `_RA_MEMORY_LABEL` for an
+    # artifact constructed without one (`_ra_has_path`).
     path::String
     append::Bool
     capacity::Int
     record_turn_modulation::Bool
+    # Where the rows live during the run (2026-11-03, owner decision): `:file`,
+    # the HDF5 file at `path` written at every flush, or `:memory`, an HDF5
+    # image in process memory (the library's core driver without a backing
+    # store) that reaches disk only through `save_run_artifact`.
+    storage::Symbol
     # execute!-scoped state
     file::Union{Nothing,HDF5.File}
+    # Memory storage only: the image the last `execute!` left, kept between
+    # windows for `TaskOutput(artifact)` and `save_run_artifact`, continued by
+    # the next window under `append = true`, discarded by it under
+    # `append = false`. A slot of its own on purpose: `file !== nothing` means
+    # "an execute! is in flight" at six sites (both task crash paths,
+    # `_path_writer_is_live`, the finalize, the reset-trials bind) and keeps
+    # meaning exactly that in both storages.
+    image::Union{Nothing,HDF5.File}
     # The series recorders of the current execute!, one per beam whose line
     # has a modulated element; empty unless `record_turn_modulation` is on,
     # and on rank 0 only (the other ranks hold no file). Built at prepare,
@@ -307,7 +352,23 @@ mutable struct RunArtifact <: AbstractRunArtifact
 end
 
 function RunArtifact(path::AbstractString; append=false, capacity=64,
-                     record_turn_modulation=false)
+                     record_turn_modulation=false, storage=:file)
+    return _run_artifact(String(path), append, capacity, record_turn_modulation, storage)
+end
+
+"""
+    RunArtifact(; storage=:memory, append=false, capacity=64, record_turn_modulation=false)
+
+The path-less form, in-memory storage only (`storage = :file` needs a path and
+is refused by name): the artifact's label is `"<memory>"`, `append = true`
+continues the image within the process only, and `save_run_artifact(artifact,
+path)` needs its path spelled out.
+"""
+function RunArtifact(; append=false, capacity=64, record_turn_modulation=false, storage=:file)
+    return _run_artifact(nothing, append, capacity, record_turn_modulation, storage)
+end
+
+function _run_artifact(path::Union{Nothing,String}, append, capacity, record_turn_modulation, storage)
     # Refused BY NAME (2026-10-16 neighbour audit, S4-6): `append=1` used to
     # die in a TypeError that named no keyword, and `capacity=true` was
     # accepted as 1 because `Integer` admits `Bool`.
@@ -323,29 +384,84 @@ function RunArtifact(path::AbstractString; append=false, capacity=64,
     record_turn_modulation isa Bool || throw(ArgumentError(
         "RunArtifact record_turn_modulation must be true or false; got " *
         "$(repr(record_turn_modulation))."))
-    return RunArtifact(String(path), Bool(append), cap, record_turn_modulation, nothing,
+    # Refused BY NAME, as the three above (2026-11-03): `storage = "memory"` is
+    # not a request this option understands, and a path-less artifact can only
+    # live in memory -- there is no file to write otherwise.
+    (storage isa Symbol && storage in (:file, :memory)) || throw(ArgumentError(
+        "RunArtifact storage must be :file or :memory; got $(repr(storage))."))
+    if path === nothing
+        storage === :memory || throw(ArgumentError(
+            "RunArtifact storage=:file needs a path: construct RunArtifact(path; ...) for a " *
+            "file on disk, or RunArtifact(; storage=:memory) to keep the run in memory."))
+        path = _RA_MEMORY_LABEL
+    elseif path == _RA_MEMORY_LABEL
+        throw(ArgumentError(
+            "RunArtifact: the path $(repr(_RA_MEMORY_LABEL)) is reserved as the label of an " *
+            "in-memory artifact constructed without a path."))
+    end
+    return RunArtifact(path, Bool(append), cap, record_turn_modulation, storage, nothing, nothing,
                        TurnModulationRecorder[],
                        Dict{String,Vector{Int64}}(), Dict{String,Vector{Float64}}(),
                        0, UInt64(0), false, Int64(0), Set{String}(), nothing, false,
                        Int64(0), false, PendingProbeBind[])
 end
 
+# The label of an in-memory artifact constructed without a path, refused as a
+# path; `_ra_has_path` reads it.
+const _RA_MEMORY_LABEL = "<memory>"
+# The core driver's growth step for an in-memory image. Measured 2026-11-03 on
+# this machine, 64 MB appended in 1000 blocks of 1000 x 8 Float64: 41.9 ms at
+# the library's 8 KiB default, 38.8 ms at 1 MiB, 19.8 ms at 64 MiB -- a factor
+# of two on tens of milliseconds per 64 MB, against 27.6 ms for one default
+# moment row (todo row "The every-turn MomentObserver and artifact row ..."),
+# so a fixed value and not a public option.
+const _RA_MEMORY_INCREMENT = 4 << 20
+
+_ra_has_path(art::RunArtifact) = art.path != _RA_MEMORY_LABEL
+_ra_in_memory(art::RunArtifact) = art.storage === :memory
+"""
+The handle a reader of `art` uses: the file of the `execute!` in flight, else
+an in-memory artifact's retained image, else `nothing` (a file artifact between
+windows, which its readers open by path; an in-memory one nothing has executed
+with).
+"""
+_ra_image(art::RunArtifact) = art.file !== nothing ? art.file : art.image
+_ra_memory_driver() = HDF5.Drivers.Core(; increment=_RA_MEMORY_INCREMENT, backing_store=false)
+# The name HDF5 files a fresh image under. The core driver with no backing
+# store opens, creates and stats nothing under a create (measured 2026-11-03:
+# an existing file at the name stays byte-identical, a name in a directory
+# that does not exist works), so the name is only an identity: unique per
+# object, so two images never compare equal in the library's table of open
+# files, and distinct from `path`, so the file a memory artifact may later
+# save to is never confused with its image.
+_ra_image_name(art::RunArtifact) = "octopus-memory-artifact-" * string(objectid(art); base=16) * ".h5"
+function _ra_discard_image!(art::RunArtifact)
+    img = art.image
+    img === nothing && return nothing
+    art.image = nothing
+    close(img)
+    return nothing
+end
+
 """
     run_artifact_option_schema() -> NamedTuple
 
-Public configuration options of [`RunArtifact`](@ref) -- `append`, `capacity`
-and `record_turn_modulation` -- as `ConfigurationOptionMeta`, the twin of
-`tracking_task_option_schema()`. Checked by `validate_configuration_metadata()`:
-every key is a field of the type, every declared default equals what the
-constructor builds, and every option names the runtime boundary that applies
-it. All three name the `:run_artifact_output` receipt, which
+Public configuration options of [`RunArtifact`](@ref) -- `append`, `capacity`,
+`record_turn_modulation` and `storage` -- as `ConfigurationOptionMeta`, the
+twin of `tracking_task_option_schema()`. Checked by
+`validate_configuration_metadata()`: every key is a field of the type, every
+declared default equals what the constructor builds, and every option names
+the runtime boundary that applies it. All four name the `:run_artifact_output`
+receipt, which
 `prepare_run_artifact!` -- the one boundary that applies them, reached from
 both task kinds -- records once per `execute!` after its last refusal, with
 what it RESOLVED beside each request: `append` beside `continued` (an
 existing file continued, or created fresh), `capacity` as every row-shaped
 producer and recorder batches by it, `record_turn_modulation` beside
 `recording` (recorders built: the switch on AND the line has a modulated
-element), and the ledger row `execution`. Before the 2026-10-16 fix batch
+element), `storage` as the mode the rows live in (`:file` or `:memory`; the
+image a memory run keeps reaches disk only through `save_run_artifact`), and
+the ledger row `execution`. Before the 2026-10-16 fix batch
 (neighbour audit S4-1, S4-2) `append` and `record_turn_modulation` named the
 `:strong_strong_output` receipt, unreachable from a `TrackingTask` and
 carrying the REQUEST, and `capacity` the `:observer_output` receipts, recorded
@@ -396,6 +512,25 @@ run_artifact_option_schema() = (
         "Resolved at prepare: the :run_artifact_output receipt's `recording` says " *
         "whether recorders were built (the switch on AND a modulated element).";
         category=:output, consumer=:run_artifact_output),
+    storage=ConfigurationOptionMeta(Symbol, :file,
+        "Where the rows live during the run. `:file` (default) writes the HDF5 file at " *
+        "`path` as rows flush. `:memory` keeps the whole artifact as an HDF5 image in " *
+        "process memory (the library's core driver, no backing store) and writes nothing " *
+        "to disk until `save_run_artifact(artifact[, path])` copies the image to a file; " *
+        "the path, when given, keeps every other meaning -- the label, the file `append=true` " *
+        "loads and continues in memory, the default save target -- and a path-less " *
+        "RunArtifact(; storage=:memory) can only be saved to an explicit path. Rows, cursors, " *
+        "ledger and readers are identical in both modes: `append=true` continues the image " *
+        "across execute! calls within the process, loading a saved file at the path first when " *
+        "one exists; `append=false` discards the previous image when the next execute! begins. " *
+        "No sidecar lock is taken while a memory run is live (nothing on disk to protect); " *
+        "save_run_artifact takes it for the duration of the write. A crash keeps the rows " *
+        "through the last save only. Read a live or finished memory run through " *
+        "TaskOutput(artifact) and MomentOutput(artifact; name); the path readers serve the " *
+        "saved file. Nothing is saved automatically (owner decision 2026-11-03). A value other " *
+        "than :file or :memory is refused by name. Carried as applied by the " *
+        ":run_artifact_output receipt's `storage`.";
+        category=:output, consumer=:run_artifact_output),
 )
 
 # ---------------------------------------------------------------------------
@@ -414,7 +549,8 @@ run_artifact_option_schema() = (
     _ra_output_receipt(art, task_kind, turn_modulation) -> NamedTuple
 
 The values of the `:run_artifact_output` receipt for `art` after this rank's
-prepare: `task`, `artifact`, `append` and `continued`, `capacity`,
+prepare: `task`, `artifact` (the path; `nothing` for an in-memory artifact
+constructed without one), `append` and `continued`, `capacity`, `storage`,
 `record_turn_modulation` and `recording`, `execution`. On rank 0 `continued`
 and `execution` are what the prepare decided; a non-root rank opens no file
 and decides neither, so it carries `nothing` for both (said, not guessed),
@@ -425,10 +561,14 @@ function _ra_output_receipt(art::RunArtifact, task_kind::AbstractString, turn_mo
     root = _mp_is_root()
     recording = root ? !isempty(art.turn_modulation_recorders) :
                        (art.record_turn_modulation && !isempty(turn_modulation))
-    return (task=Symbol(task_kind), artifact=art.path,
+    # `artifact` is the path, `nothing` for an in-memory artifact constructed
+    # without one (its label is not a path anyone could read); `storage` is the
+    # mode the rows live in, as applied (2026-11-03).
+    return (task=Symbol(task_kind), artifact=_ra_has_path(art) ? art.path : nothing,
             append=art.append, continued=root ? art.continued : nothing,
             capacity=art.capacity,
             record_turn_modulation=art.record_turn_modulation, recording=recording,
+            storage=art.storage,
             execution=root ? art.execution_slot : nothing)
 end
 
@@ -446,7 +586,7 @@ refusal leaves no output receipt claiming a run.
 _ra_task_output_receipt(::Nothing, channels; extra...) =
     (; artifact=nothing, channels=nothing, extra...)
 _ra_task_output_receipt(art::RunArtifact, channels; extra...) =
-    (; artifact=art.path, channels=collect(String, channels), extra...)
+    (; artifact=_ra_has_path(art) ? art.path : nothing, channels=collect(String, channels), extra...)
 
 """
     _ra_artifact_entry(art, consumer) -> ConfigurationEntry
@@ -466,7 +606,14 @@ function _ra_artifact_entry(art::Union{Nothing,RunArtifact}, consumer::Symbol)
     art === nothing && return ConfigurationEntry(:artifact, nothing, nothing, :inactive_dependency,
                                                  "run-artifact output disabled", consumer)
     pending = art.append || art.record_turn_modulation
-    reason = (art.append ? "continuing" : "rewriting") * " the run artifact at " * art.path *
+    # File storage names the path as it always has; memory storage says so, and
+    # names the path only where one was given (the file `append` loads and
+    # `save_run_artifact` writes), 2026-11-03.
+    location = _ra_in_memory(art) ?
+               "in memory" * (_ra_has_path(art) ?
+                              " (" * art.path * " is the file append=true loads and save_run_artifact writes)" : "") :
+               "at " * art.path
+    reason = (art.append ? "continuing" : "rewriting") * " the run artifact " * location *
              (art.append ? " (whether an existing file is continued is decided at prepare: " *
                            "the :run_artifact_output receipt's `continued`)" : "") *
              (art.record_turn_modulation ?
@@ -756,7 +903,16 @@ taken over automatically. A lock created whose line could not be written is
 removed again before the error propagates, so a failed take leaves no lock.
 """
 function _ra_take_lock!(art::RunArtifact, task_kind::AbstractString)
-    lock = _ra_lock_path(art.path)
+    art.lock_line = _ra_create_lock(art.path, task_kind)
+    return nothing
+end
+
+# The lock's create and remove on a PATH, shared by the artifact's own take and
+# release and by `save_run_artifact`, which holds the lock of its target for
+# the write (2026-11-03). `refused` names the operation the refusal stops.
+function _ra_create_lock(path::AbstractString, task_kind::AbstractString;
+                         refused::AbstractString="this execute!")
+    lock = _ra_lock_path(path)
     line = "host=$(gethostname()) pid=$(getpid()) since=" *
            Libc.strftime("%Y-%m-%dT%H:%M:%S%z", time()) * " task=$(task_kind)"
     flags = Base.Filesystem.JL_O_WRONLY | Base.Filesystem.JL_O_CREAT | Base.Filesystem.JL_O_EXCL
@@ -764,12 +920,12 @@ function _ra_take_lock!(art::RunArtifact, task_kind::AbstractString)
         Base.Filesystem.open(lock, flags, 0o644)
     catch err
         if err isa Base.IOError && err.code == Base.UV_EEXIST
-            held = _ra_lock_info(art.path)
+            held = _ra_lock_info(path)
             throw(ArgumentError(
-                "RunArtifact at $(art.path): another Octopus writer holds its lock $(lock) " *
+                "RunArtifact at $(path): another Octopus writer holds its lock $(lock) " *
                 "($(held === nothing ? "its line could not be read: the lock was removed or " *
                 "emptied in the meantime" : held)); a second writer on one path would silently " *
-                "lose one run's output, so this execute! is refused. If that process is gone, " *
+                "lose one run's output, so $(refused) is refused. If that process is gone, " *
                 "remove $(lock)."))
         end
         rethrow()
@@ -782,8 +938,7 @@ function _ra_take_lock!(art::RunArtifact, task_kind::AbstractString)
         close(fd)
         written || rm(lock; force=true)
     end
-    art.lock_line = line
-    return nothing
+    return line
 end
 
 """
@@ -800,20 +955,60 @@ function _ra_release_lock!(art::RunArtifact)
     line = art.lock_line
     line === nothing && return nothing
     art.lock_line = nothing
-    lock = _ra_lock_path(art.path)
-    held = _ra_lock_info(art.path)
+    _ra_remove_lock(art.path, line)
+    return nothing
+end
+
+function _ra_remove_lock(path::AbstractString, line::AbstractString)
+    lock = _ra_lock_path(path)
+    held = _ra_lock_info(path)
     if held === nothing
         @warn "the run artifact's lock file was removed while this writer held it; another " *
               "writer may have written the path in the meantime, and the two runs' rows " *
-              "may interleave" path = art.path lock = lock
+              "may interleave" path = path lock = lock
     elseif held != line
         @warn "the run artifact's lock file no longer carries this writer's line: it was " *
               "removed and retaken by another writer while this run was live; that " *
-              "writer's lock is left in place" path = art.path lock = lock held = held
+              "writer's lock is left in place" path = path lock = lock held = held
     else
         rm(lock; force=true)
     end
     return nothing
+end
+
+# The refusal of a continued path that exists and is not HDF5, shared by the
+# file open in `prepare_run_artifact!` and the memory load below.
+_ra_not_hdf5_error(path::AbstractString) = ArgumentError(
+    "RunArtifact(append=true): $(path) exists ($(filesize(path)) bytes) and is " *
+    "not an HDF5 file, so it is not a run artifact this writer can continue; use a " *
+    "new path or append=false")
+
+"""
+    _ra_open_memory_image!(art) -> (file, fresh, reused)
+
+The open of one `execute!` under memory storage (2026-11-03), no lock: under
+`append=true` the image the previous window retained is continued (`reused`;
+the handle is moved out of `art.image` so a refusal of the prepare can put it
+back untouched), else a saved file at the path is loaded into memory by the
+core driver (the disk copy is never written back; a non-HDF5 file is refused
+by name as in file storage), else a fresh image is created under
+`_ra_image_name`; under `append=false` the previous image is discarded
+first, as a file would be truncated. The file-storage open stays inline in
+`prepare_run_artifact!`, where the suite's structural pin reads it.
+"""
+function _ra_open_memory_image!(art::RunArtifact)
+    if art.append && art.image !== nothing
+        file = art.image
+        art.image = nothing
+        return file, false, true
+    end
+    _ra_discard_image!(art)
+    load = art.append && _ra_has_path(art) && isfile(art.path) && filesize(art.path) > 0
+    if load
+        HDF5.ishdf5(art.path) || throw(_ra_not_hdf5_error(art.path))
+        return HDF5.h5open(art.path, "r+"; driver=_ra_memory_driver()), false, false
+    end
+    return HDF5.h5open(_ra_image_name(art), "w"; driver=_ra_memory_driver()), true, false
 end
 
 """
@@ -887,31 +1082,36 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
                            _ra_output_receipt(art, task_kind, turn_modulation))
         return nothing
     end
-    # The lock first, for a fresh open as for a continued one: whether the
-    # file is to be truncated or appended is decided under exclusion, and a
-    # path another process holds is refused before anything touches it --
-    # before the in-process registry too (written after the last refusal
-    # below), so a refused writer is not registered as a live one.
-    _ra_take_lock!(art, task_kind)
-    fresh = !art.append || !isfile(art.path) || filesize(art.path) == 0
-    # An existing file that is not HDF5 cannot be a run artifact: refused by
-    # name BEFORE the open, which would otherwise fail first with HDF5's own
-    # "unable to determine if ... is accessible in the HDF5 format" and make
-    # the by-name refusal below unreachable (2026-10-16 neighbour audit, S5-7).
-    if !fresh && !HDF5.ishdf5(art.path)
-        _ra_release_lock!(art)
-        throw(ArgumentError(
-            "RunArtifact(append=true): $(art.path) exists ($(filesize(art.path)) bytes) and is " *
-            "not an HDF5 file, so it is not a run artifact this writer can continue; use a " *
-            "new path or append=false"))
-    end
-    file = try
-        HDF5.h5open(art.path, fresh ? "w" : "r+")
-    catch
-        # The open itself failed (a handle this process holds, an unwritable
-        # path): the lock goes with it, or the path would stay refused.
-        _ra_release_lock!(art)
-        rethrow()
+    if _ra_in_memory(art)
+        # Memory storage (2026-11-03): the retained image continued, the saved
+        # file loaded, or a fresh image -- and no lock, nothing on disk to
+        # protect (`_ra_open_memory_image!`).
+        file, fresh, reused = _ra_open_memory_image!(art)
+    else
+        reused = false
+        # The lock first, for a fresh open as for a continued one: whether the
+        # file is to be truncated or appended is decided under exclusion, and a
+        # path another process holds is refused before anything touches it --
+        # before the in-process registry too (written after the last refusal
+        # below), so a refused writer is not registered as a live one.
+        _ra_take_lock!(art, task_kind)
+        fresh = !art.append || !isfile(art.path) || filesize(art.path) == 0
+        # An existing file that is not HDF5 cannot be a run artifact: refused by
+        # name BEFORE the open, which would otherwise fail first with HDF5's own
+        # "unable to determine if ... is accessible in the HDF5 format" and make
+        # the by-name refusal below unreachable (2026-10-16 neighbour audit, S5-7).
+        if !fresh && !HDF5.ishdf5(art.path)
+            _ra_release_lock!(art)
+            throw(_ra_not_hdf5_error(art.path))
+        end
+        file = try
+            HDF5.h5open(art.path, fresh ? "w" : "r+")
+        catch
+            # The open itself failed (a handle this process holds, an unwritable
+            # path): the lock goes with it, or the path would stay refused.
+            _ra_release_lock!(art)
+            rethrow()
+        end
     end
     try
         if fresh
@@ -986,16 +1186,25 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
         empty!(art.probe_names)
         HDF5.flush(file)
     catch
-        # A refusal leaves the path as it found it: file closed, lock gone,
-        # and -- the registry being written only below -- not registered.
-        close(file)
+        # A refusal leaves the artifact as it found it: a file closed, its
+        # lock gone and -- the registry being written only below -- not
+        # registered; a memory artifact's continued image put back where it
+        # was (the checks above touch nothing: validation before mutation), a
+        # loaded or fresh image discarded.
+        if reused
+            art.image = file
+        else
+            close(file)
+        end
         _ra_release_lock!(art)
         rethrow()
     end
     # The in-process registry AFTER the last refusal (unit A's open point,
     # 2026-10-16): a writer refused inside the body above stayed registered as
-    # a live one until the process ended when this sat before the open.
-    if !art.registered
+    # a live one until the process ended when this sat before the open. A
+    # memory artifact holds no path open and is not registered: the registry
+    # guards a path two live writers would interleave into.
+    if !art.registered && !_ra_in_memory(art)
         _register_observer_path!(art, art.path)
         art.registered = true
     end
@@ -1824,7 +2033,15 @@ function finalize_run_artifact!(art::RunArtifact)
         _ra_stamp_ledger!(art)
         HDF5.flush(art.file)
     finally
-        close(art.file)
+        if _ra_in_memory(art)
+            # The image stays with the artifact -- for `TaskOutput(artifact)`,
+            # `save_run_artifact`, and the next window under `append=true`;
+            # discarded by the next window under `append=false` -- where a
+            # file is closed and its lock released.
+            art.image = art.file
+        else
+            close(art.file)
+        end
         art.file = nothing
         empty!(art.turn_modulation_recorders)
         art.committed = false
@@ -1832,6 +2049,76 @@ function finalize_run_artifact!(art::RunArtifact)
         _ra_release_lock!(art)
     end
     return nothing
+end
+
+"""
+    save_run_artifact(artifact) -> path
+    save_run_artifact(artifact, path) -> path
+
+Write an in-memory run artifact (`RunArtifact(...; storage=:memory)`) to
+disk: the HDF5 image as it stands, byte for byte (`H5Fget_file_image` after
+a flush), so the file is exactly what a `storage=:file` run would have
+written -- ledger, cursors and every group -- and reads back through
+`TaskOutput(path)` and `MomentOutput(path; name)` and continues under
+`RunArtifact(path; append=true)` in either storage. Without `path` the
+artifact's own path is the target, so an artifact constructed without one
+(`RunArtifact(; storage=:memory)`) must be given one and is refused by name
+otherwise. The target is replaced, as `append=false` replaces a file
+artifact's file at every `execute!`: the bytes land in a sibling temporary
+file first and are renamed into place, so a reader never sees a torn target.
+The sidecar lock of the target is held for the write (`<path>.lock`, the
+rule of [`RunArtifact`](@ref)): a path another Octopus writer holds is
+refused by name and nothing is written.
+
+Nothing is saved automatically (owner decision 2026-11-03): a memory run
+that is not saved is gone with the process. Allowed at any time after the
+first `execute!` began -- between windows, after a run that failed (the image
+is kept), or from an observer while a run is live, when the image holds the
+rows flushed so far (the batched tail is not yet in it, as a file reader of a
+live file sees). Before any `execute!` there is no image and the call is
+refused by name; so is a `storage=:file` artifact, whose file is already on
+disk. Under the multi-process policy rank 0 holds the image and writes;
+every other rank returns `nothing`.
+"""
+function save_run_artifact(art::RunArtifact)
+    _ra_has_path(art) || throw(ArgumentError(
+        "save_run_artifact: this in-memory RunArtifact was constructed without a path; " *
+        "give one: save_run_artifact(artifact, path)"))
+    return save_run_artifact(art, art.path)
+end
+
+function save_run_artifact(art::RunArtifact, path::AbstractString)
+    _ra_in_memory(art) || throw(ArgumentError(
+        "save_run_artifact applies to storage=:memory; RunArtifact at $(art.path) is a " *
+        "storage=:file artifact and is already on disk, written at every flush -- copy the " *
+        "file to keep another copy"))
+    _mp_is_root() || return nothing
+    h = _ra_image(art)
+    h === nothing && throw(ArgumentError(
+        "save_run_artifact: the in-memory RunArtifact $(art.path) holds no image yet; " *
+        "nothing has executed with it, so there is nothing to save"))
+    p = String(path)
+    # The image after a flush is the file a file-storage run would hold at
+    # this moment; the library sizes it first, then fills the buffer.
+    HDF5.flush(h)
+    n = HDF5.API.h5f_get_file_image(h, C_NULL, Csize_t(0))
+    buf = Vector{UInt8}(undef, n)
+    HDF5.API.h5f_get_file_image(h, buf, Csize_t(n))
+    line = _ra_create_lock(p, "save_run_artifact"; refused="this save_run_artifact")
+    try
+        # A sibling temporary renamed into place: a reader of the target never
+        # sees a partial file (the generated-artifact rule, experiences.md).
+        tmp = p * ".saving-" * string(getpid())
+        try
+            write(tmp, buf)
+            Base.Filesystem.rename(tmp, p)
+        finally
+            rm(tmp; force=true)
+        end
+    finally
+        _ra_remove_lock(p, line)
+    end
+    return p
 end
 
 # ---------------------------------------------------------------------------
@@ -2166,6 +2453,7 @@ end
 
 """
     TaskOutput(path)
+    TaskOutput(artifact)
 
 Lightweight handle for reading a task's run artifact -- the one-HDF5-per-task
 output (`docs/design/run_artifact.md`). One `read` serves everything, from
@@ -2192,6 +2480,14 @@ Moment groups additionally read through the full `MomentOutput` machinery
 (`MomentOutput(path; name="IP6")` -- `read(out)`/`read(out, item)`/
 `column_names` work as they always did).
 
+`TaskOutput(artifact)` reads the [`RunArtifact`](@ref) object itself
+(2026-11-03): an in-memory artifact (`storage=:memory`) is read from its
+live image, during a run (the rows flushed so far) or after it, with every
+`read` form above and without any file; a file artifact is read from its
+path. An in-memory artifact nothing has executed with is refused by name;
+once saved with `save_run_artifact`, its file reads through `TaskOutput(path)`
+as any other.
+
 Reading never takes the artifact's sidecar lock (`<path>.lock`, held by a
 live writer; see [`RunArtifact`](@ref)): a file another process is writing
 reads as of its last flush, with its rows valid through each group's
@@ -2208,23 +2504,47 @@ with the lock information in it (2026-10-16).
 """
 struct TaskOutput
     path::String
+    # The in-memory artifact read live, or `nothing` for a path on disk
+    # (2026-11-03); `TaskOutput(artifact)` on a file artifact reads its path.
+    artifact::Union{Nothing,RunArtifact}
 end
-TaskOutput(path::AbstractString) = TaskOutput(String(path))
+TaskOutput(path::AbstractString) = TaskOutput(String(path), nothing)
+TaskOutput(art::RunArtifact) = TaskOutput(art.path, art)
+
+"""
+    _ra_open(f, out::TaskOutput)
+
+The reader's handle for `out` (2026-11-03): the path on disk, lock-aware
+(`_ra_open(f, path)` above), for a path handle or a file artifact; the live
+image for an in-memory artifact (`_ra_image`: the file of the `execute!` in
+flight, else the retained image), which is the artifact's own handle and is
+not closed here. An in-memory artifact nothing has executed with holds no
+image and is refused by name.
+"""
+function _ra_open(f::Function, out::TaskOutput)
+    art = out.artifact
+    (art === nothing || !_ra_in_memory(art)) && return _ra_open(f, out.path)
+    h = _ra_image(art)
+    h === nothing && throw(ArgumentError(
+        "the in-memory RunArtifact $(art.path) holds no image yet: nothing has executed " *
+        "with it, so there is nothing to read"))
+    return f(h)
+end
 
 """The table of contents: each product kind present, with its group names."""
-function _ra_contents(path::AbstractString)
-    _ra_open(path) do f
-        out = Dict{String,Vector{String}}()
-        for kind in keys(f)
-            obj = f[kind]
-            # Named-group kinds list their probe/channel names; single
-            # products (losses, execution) are present with no names.
-            subs = obj isa HDF5.Group ?
-                [String(k) for k in keys(obj) if obj[k] isa HDF5.Group] : String[]
-            out[String(kind)] = sort(subs)
-        end
-        out
+_ra_contents(path::AbstractString) = _ra_open(_ra_contents, path)
+_ra_contents(out::TaskOutput) = _ra_open(_ra_contents, out)
+function _ra_contents(f::HDF5.File)
+    out = Dict{String,Vector{String}}()
+    for kind in keys(f)
+        obj = f[kind]
+        # Named-group kinds list their probe/channel names; single
+        # products (losses, execution) are present with no names.
+        subs = obj isa HDF5.Group ?
+            [String(k) for k in keys(obj) if obj[k] isa HDF5.Group] : String[]
+        out[String(kind)] = sort(subs)
     end
+    return out
 end
 
 # The artifact's product groups, ONE table: every top-level group a producer
@@ -2248,14 +2568,14 @@ const _RA_KINDS = keys(_RA_GROUPS)
 function _ra_require_group(f, out::TaskOutput, kind::Symbol)
     haskey(f, String(kind)) || throw(ArgumentError(
         "$(out.path) carries no $(kind); present: " *
-        join(sort(collect(keys(_ra_contents(out.path)))), ", ")))
+        join(sort(collect(keys(_ra_contents(out)))), ", ")))
     return f[String(kind)]
 end
 
 function _ra_named_group(g, out::TaskOutput, kind::Symbol, name)
     haskey(g, String(name)) || throw(ArgumentError(
         "$(out.path) has no $(kind) group named $(repr(String(name))); " *
-        "present: " * join(_ra_contents(out.path)[String(kind)], ", ")))
+        "present: " * join(_ra_contents(out)[String(kind)], ", ")))
     return g[String(name)]
 end
 
@@ -2588,6 +2908,7 @@ _ra_turn_modulation_or_empty(f; data::Bool=true) =
 
 """
     turn_modulation_provenance(path::AbstractString) -> Vector{NamedTuple}
+    turn_modulation_provenance(artifact::RunArtifact) -> Vector{NamedTuple}
 
 The turn-by-turn modulation provenance a run artifact recorded -- its
 `/turn_modulation/<slot>` groups (docs/design/turn_modulation.md, D7: the
@@ -2670,6 +2991,10 @@ name. `read(out, :turn_modulation)` on a
 """
 turn_modulation_provenance(path::AbstractString) =
     _ra_open(_ra_turn_modulation_or_empty, path)
+# The artifact object: an in-memory artifact's live image, a file artifact's
+# path (2026-11-03, with `TaskOutput(artifact)`).
+turn_modulation_provenance(art::RunArtifact) =
+    _ra_open(_ra_turn_modulation_or_empty, TaskOutput(art))
 
 """
     read(out::TaskOutput, kind::Symbol; name=nothing, column=nothing, turn=nothing,
@@ -2758,7 +3083,7 @@ function Base.read(out::TaskOutput, kind::Symbol;
             throw(ArgumentError("$(kind) is not a named group: name/column/turn do not apply"))
     end
     if kind === :all
-        present = _ra_contents(out.path)
+        present = _ra_contents(out)
         items = [Symbol(k) => read(out, Symbol(k)) for k in sort(collect(keys(present)))]
         return (; items...)
     end
@@ -2766,7 +3091,7 @@ function Base.read(out::TaskOutput, kind::Symbol;
         "turn selects a snapshot block; it does not apply to $(kind)"))
     column === nothing || kind in _RA_PROBE_KINDS || throw(ArgumentError(
         "column selects from a probe group; it does not apply to $(kind)"))
-    _ra_open(out.path) do f
+    _ra_open(out) do f
         # The single-product kinds take their group through `_ra_require_group`
         # like the named kinds, so a file lacking the group answers "carries no
         # <kind>; present: ..." rather than a raw HDF5 KeyError (pre-existing;
@@ -2823,7 +3148,7 @@ tells you how to write every subsequent `read(out, kind; ...)`;
 `read(out, :all)` returns the same nesting with the data in it.
 """
 function Base.read(out::TaskOutput)
-    _ra_open(out.path) do f
+    _ra_open(out) do f
         toc = Dict{String,Any}()
         for kind in keys(f)
             obj = f[kind]

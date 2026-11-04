@@ -25872,7 +25872,7 @@ Octopus.prepare_observer!(::ThrowingPrepareObserver, runtime_elems) =
     @test RunArtifact(tempname() * ".h5").record_turn_modulation === false
     @test RunArtifact(tempname() * ".h5"; record_turn_modulation=true).record_turn_modulation === true
     schema = run_artifact_option_schema()
-    @test Set(keys(schema)) == Set((:append, :capacity, :record_turn_modulation))
+    @test Set(keys(schema)) == Set((:append, :capacity, :record_turn_modulation, :storage))   # :storage since 2026-11-03
     @test Set(keys(schema)) ⊆ Set(fieldnames(RunArtifact))
     @test schema.record_turn_modulation.option_type === Bool
     @test schema.record_turn_modulation.default === false
@@ -26269,6 +26269,231 @@ Octopus.prepare_observer!(::ThrowingPrepareObserver, runtime_elems) =
                                       p_st, p_cols, p_old))
 end
 
+# The in-memory run artifact (2026-11-03): the observer the testset below
+# fails a run with, at top level like the suite's other test observers.
+struct _MemArtifactThrowAtTurn <: Octopus.AbstractBeamObserver
+    turn::Int
+end
+Octopus.observe!(o::_MemArtifactThrowAtTurn, ctx::Octopus.TrackingContext, rep) =
+    (ctx.turn == o.turn && error("the observer failed at turn $(o.turn)"); nothing)
+
+@testset "The run artifact in memory: storage=:memory keeps the HDF5 image in the process, save_run_artifact writes it, file mode is untouched" begin
+    # 2026-11-03 (docs/design/run_artifact.md, "Artifact options", `storage`;
+    # record history/in_memory_run_artifact_2026_11_03.md). Owner decisions: the
+    # keyword `storage=:memory` only decides where the rows live during the
+    # run; a path given beside it keeps every other meaning (the label, the
+    # file `append=true` loads, the default save target); nothing is saved
+    # automatically; the explicit `save_run_artifact(artifact[, path])`
+    # writes the image. Shown RED on the tree before the option existed
+    # (MethodError on the keyword, recorded in the history file), green here.
+    mktempdir() do dir
+        rep() = Phase6DRep([1.0e-4], [2.0e-5], [3.0e-5], [0.0], [1.0e-3], [0.0])
+        drift = DriftSpec(L=1.0)
+        probes() = (ScheduledObserver(MomentObserver(; name="m", orders=1)),
+                    ScheduledObserver(CoordinateSnapshotObserver(; name="s", npart=1)),
+                    ScheduledObserver(BPMObserver("b"; artifact=true)))
+        pfile, pmem = joinpath(dir, "file.h5"), joinpath(dir, "mem.h5")
+        audited(f) = (a = ExecutionAudit(); with_execution_audit(f, a); execution_receipts(a))
+        one(rs, c) = only(filter(r -> r.consumer === c, rs)).values
+        columns(t) = (; (k => v for (k, v) in pairs(t) if v isa AbstractVector)...)   # the BPM's attrs carry its own rng_id
+        schemas = Pair{Symbol,Any}[:RunArtifact => run_artifact_option_schema(),
+                                   :TrackingTask => tracking_task_option_schema(),
+                                   :MomentObserver => observer_option_schema(MomentObserver),
+                                   :CoordinateSnapshotObserver => observer_option_schema(CoordinateSnapshotObserver),
+                                   :BPMObserver => observer_option_schema(BPMObserver)]
+
+        # (a) The constructor and the metadata: `storage` is a field and a schema
+        # key naming the artifact's receipt, `:file` by default, refused by name
+        # otherwise; a path-less artifact needs `:memory` and carries the
+        # reserved label, which a path may not spell.
+        @test RunArtifact(pfile).storage === :file
+        @test RunArtifact(pmem; storage=:memory).storage === :memory && RunArtifact(pmem; storage=:memory).path == pmem
+        mem0 = RunArtifact(; storage=:memory)
+        @test mem0.storage === :memory && mem0.path == Octopus._RA_MEMORY_LABEL && !Octopus._ra_has_path(mem0)
+        for kw in (:(storage = :disk), :(storage = "memory"), :(storage = true))
+            err = try; eval(:(RunArtifact($pfile; $kw))); "did not throw" catch e; sprint(showerror, e) end
+            @test occursin("RunArtifact storage must be :file or :memory", err)
+        end
+        err0 = try; RunArtifact(); "did not throw" catch e; sprint(showerror, e) end
+        @test occursin("RunArtifact storage=:file needs a path", err0)
+        @test_throws ArgumentError RunArtifact(; storage=:file)
+        @test_throws ArgumentError RunArtifact(Octopus._RA_MEMORY_LABEL)
+        @test_throws ArgumentError RunArtifact(; storage=:memory, capacity=0)
+        schema = run_artifact_option_schema()
+        @test schema.storage.default === :file && schema.storage.option_type === Symbol
+        @test schema.storage.category === :output && schema.storage.consumer === :run_artifact_output
+        @test :storage in fieldnames(RunArtifact) && :image in fieldnames(RunArtifact)
+
+        # (b) The same run in both modes: every row equal, the memory run leaves
+        # nothing on disk (no file, no sidecar lock), its receipts say :memory
+        # and carry the path, the file run's say :file; every output option is
+        # carried by its receipt under memory storage too.
+        set_global_rng!(seed=0x5eed, method=:philox)
+        tf = TrackingTask((drift, probes()...); artifact=RunArtifact(pfile; capacity=2))
+        rs_f = audited(() -> execute!(tf, rep(); turns=5))
+        set_global_rng!(seed=0x5eed, method=:philox)
+        am = RunArtifact(pmem; storage=:memory, capacity=2)
+        tm = TrackingTask((drift, probes()...); artifact=am)
+        rs_m = audited(() -> execute!(tm, rep(); turns=5))
+        @test !isfile(pmem) && !isfile(pmem * ".lock") && isfile(pfile)
+        @test one(rs_f, :run_artifact_output).storage === :file
+        ra_m = one(rs_m, :run_artifact_output)
+        @test ra_m.storage === :memory && ra_m.artifact == pmem && ra_m.continued === false && ra_m.execution == 1
+        @test ra_m.capacity == 2 && ra_m.append === false
+        @test one(rs_m, :tracking_output).artifact == pmem
+        @test isempty(Octopus._output_receipt_gaps(rs_m, schemas))
+        of, om = TaskOutput(pfile), TaskOutput(am)
+        @test om.artifact === am && om.path == pmem && of.artifact === nothing
+        for (kind, name) in ((:moments, "m"), (:snapshot, "s"), (:bpm, "b"))
+            rf, rm_ = read(of, kind; name=name), read(om, kind; name=name)
+            @test keys(rf) == keys(rm_)
+            @test columns(rf) == columns(rm_)
+            @test rf.s == rm_.s                                     # line-placed: the arc position stamped in both
+        end
+        @test read(om, :moments; name="m").turn == collect(0.0:4.0)
+        @test read(om, :execution).turns == [5] && read(om, :execution).current_turn == [4]
+        toc_f, toc_m = read(of), read(om)
+        @test Set(keys(toc_f)) == Set(keys(toc_m))
+        @test all(toc_f[k] == toc_m[k] for k in ("moments", "snapshot", "bpm"))
+        @test read(om, :all).moments["m"].turn == read(of, :all).moments["m"].turn
+        @test read(MomentOutput(am; name="m")) == read(MomentOutput(pfile; name="m"))
+        @test read(MomentOutput(am; name="m"), :turn) == collect(0.0:4.0)
+        @test read(MomentOutput(am; name="m"), Moment(; x=1)) == read(MomentOutput(pfile; name="m"), Moment(; x=1))
+        @test read(MomentOutput(am; name="m"); orders=1) == read(MomentOutput(pfile; name="m"); orders=1)
+        @test column_names(MomentOutput(am; name="m")) == column_names(MomentOutput(pfile; name="m"))
+        @test read(MomentOutput(am; name="m"), :record_count) == 5
+        # After the run the artifact is closed for writing, is not a live
+        # writer, and holds its image.
+        @test am.file === nothing && am.image !== nothing && !Octopus._path_writer_is_live(am)
+        # A reader of an image that was never written says so by name.
+        err_r = try; read(TaskOutput(RunArtifact(; storage=:memory))); "did not throw" catch e; sprint(showerror, e) end
+        @test occursin("holds no image yet", err_r)
+
+        # (c) The configuration report names the mode; the file-mode text is untouched.
+        rep_m = configuration_report(tm, rep())
+        @test rep_m.output[1].status === :resolved && occursin("rewriting the run artifact in memory", rep_m.output[1].reason) &&
+              occursin(pmem, rep_m.output[1].reason)
+        @test startswith(configuration_report(tf, rep()).output[1].reason, "rewriting the run artifact at " * pfile)
+        rep_0 = configuration_report(TrackingTask((drift,); artifact=mem0), rep())
+        @test occursin("in memory", rep_0.output[1].reason) && !occursin("save_run_artifact", rep_0.output[1].reason)
+
+        # (d) save_run_artifact: refused before anything ran, refused on a file
+        # artifact, refused path-less without a path; writes the constructor
+        # path by default and an explicit path otherwise; the saved file reads
+        # exactly as the live image; a lock another writer holds on the target
+        # refuses by name, writes nothing and leaves that lock in place; the
+        # saved file is a complete artifact a file-mode writer continues.
+        err_n = try; save_run_artifact(RunArtifact(joinpath(dir, "never.h5"); storage=:memory)); "did not throw" catch e; sprint(showerror, e) end
+        @test occursin("holds no image yet", err_n) && !isfile(joinpath(dir, "never.h5"))
+        err_f = try; save_run_artifact(tf.artifact); "did not throw" catch e; sprint(showerror, e) end
+        @test occursin("storage=:file", err_f) && occursin("already on disk", err_f)
+        err_0 = try; save_run_artifact(mem0); "did not throw" catch e; sprint(showerror, e) end
+        @test occursin("constructed without a path", err_0)
+        @test save_run_artifact(am) == pmem && isfile(pmem) && !isfile(pmem * ".lock")
+        @test Octopus.HDF5.ishdf5(pmem)
+        for (kind, name) in ((:moments, "m"), (:snapshot, "s"), (:bpm, "b"))
+            @test read(TaskOutput(pmem), kind; name=name) == read(om, kind; name=name)
+        end
+        @test read(TaskOutput(pmem), :execution).turns == [5]
+        @test read(TaskOutput(pmem)) == toc_m
+        pother = joinpath(dir, "other.h5")
+        @test save_run_artifact(am, pother) == pother && isfile(pother)
+        @test read(TaskOutput(pother), :moments; name="m") == read(om, :moments; name="m")
+        @test read(pother) == read(pmem)                           # one image, byte-identical copies
+        plocked = joinpath(dir, "locked.h5")
+        held = "host=elsewhere pid=1 since=2026-11-03T00:00:00+0000 task=TrackingTask"
+        write(plocked * ".lock", held * "\n")
+        err_l = try; save_run_artifact(am, plocked); "did not throw" catch e; sprint(showerror, e) end
+        @test occursin("another Octopus writer holds its lock", err_l) && occursin(held, err_l)
+        @test !isfile(plocked) && isfile(plocked * ".lock") && isempty(filter(f -> occursin(".saving", f), readdir(dir)))
+        rm(plocked * ".lock")
+        set_global_rng!(seed=0x5eed, method=:philox)
+        tcont = TrackingTask((drift, probes()...); artifact=RunArtifact(pother; append=true, capacity=2))
+        execute!(tcont, rep(); turns=2, start_turn=5)
+        @test read(TaskOutput(pother), :execution).start_turn == [0, 5]
+        @test read(TaskOutput(pother), :moments; name="m").turn == collect(0.0:6.0)
+
+        # (e) append in memory: append=false discards the previous image when the
+        # next execute! begins; append=true continues the image in the process
+        # (`continued` false then true, ledger rows 1 then 2, rows spanning
+        # both windows); with a saved file at the path a NEW artifact object
+        # loads it into memory and continues it, and the disk copy stays as
+        # found until saved; a non-HDF5 file at the path is refused by name
+        # and left alone, as in file mode.
+        set_global_rng!(seed=0x5eed, method=:philox)
+        rs_m2 = audited(() -> execute!(tm, rep(); turns=3, start_turn=5))
+        @test one(rs_m2, :run_artifact_output).continued === false && one(rs_m2, :run_artifact_output).execution == 1
+        @test read(om, :execution).start_turn == [5] && read(om, :moments; name="m").turn == collect(5.0:7.0)
+        @test read(TaskOutput(pmem), :execution).turns == [5]            # the saved file is not the image
+        pa = joinpath(dir, "append.h5")
+        aa = RunArtifact(pa; storage=:memory, append=true, capacity=2)
+        ta = TrackingTask((drift, probes()...); artifact=aa)
+        rs_a1 = audited(() -> execute!(ta, rep(); turns=3))
+        rs_a2 = audited(() -> execute!(ta, rep(); turns=3))
+        @test one(rs_a1, :run_artifact_output).continued === false && one(rs_a2, :run_artifact_output).continued === true
+        @test (one(rs_a1, :run_artifact_output).execution, one(rs_a2, :run_artifact_output).execution) == (1, 2)
+        @test read(TaskOutput(aa), :execution).start_turn == [0, 3]
+        @test read(TaskOutput(aa), :moments; name="m").turn == collect(0.0:5.0)
+        @test !isfile(pa)
+        save_run_artifact(aa)
+        bytes = read(pa)
+        ab = RunArtifact(pa; storage=:memory, append=true, capacity=2)
+        tb = TrackingTask((drift, probes()...); artifact=ab)
+        rs_b = audited(() -> execute!(tb, rep(); turns=2, start_turn=6))
+        @test one(rs_b, :run_artifact_output).continued === true && one(rs_b, :run_artifact_output).execution == 3
+        @test read(TaskOutput(ab), :moments; name="m").turn == collect(0.0:7.0)
+        @test read(pa) == bytes
+        @test read(TaskOutput(pa), :execution).turns == [3, 3]
+        save_run_artifact(ab)
+        @test read(TaskOutput(pa), :execution).turns == [3, 3, 2]
+        @test !isfile(pa * ".lock")
+        pbad = joinpath(dir, "bad.h5")
+        write(pbad, "not hdf5")
+        err_b = try; execute!(TrackingTask((drift,); artifact=RunArtifact(pbad; storage=:memory, append=true)), rep(); turns=1); "did not throw" catch e; sprint(showerror, e) end
+        @test occursin("not an HDF5 file", err_b) && read(pbad, String) == "not hdf5"
+
+        # (f) A failing run keeps its image (the task's best-effort finalize
+        # retains it in memory as it closes a file), nothing reaches disk, and
+        # the image can still be saved.
+        pc = joinpath(dir, "crash.h5")
+        ac = RunArtifact(pc; storage=:memory, capacity=1)
+        tc = TrackingTask((drift, ScheduledObserver(_MemArtifactThrowAtTurn(2)),
+                           ScheduledObserver(MomentObserver(; name="m", orders=1))); artifact=ac)
+        @test_throws ErrorException execute!(tc, rep(); turns=5)
+        @test ac.file === nothing && ac.image !== nothing && !isfile(pc) && !isfile(pc * ".lock")
+        @test read(TaskOutput(ac), :moments; name="m").turn == [0.0, 1.0]
+        @test read(TaskOutput(ac), :execution).turns == [5] && 1 <= only(read(TaskOutput(ac), :execution).current_turn) <= 2
+        @test save_run_artifact(ac) == pc && read(TaskOutput(pc), :moments; name="m").turn == [0.0, 1.0]
+
+        # (g) The strong-strong task: the luminosity channel lives in the image,
+        # nothing on disk; a refused continuation (another collision label on
+        # the same object) leaves the live image as found.
+        mkb(rng_id, charge, mc2, E0) = begin
+            set_global_rng!(seed=5, method=:philox)
+            Beam(64, CPUThreadsExecutionPolicy(), Float64;
+                 beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
+                 sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
+                 charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+        end
+        rid = Octopus.next_rng_id!() + 3_000_000
+        b1, b2 = mkb(rid + 1, -1.0, EMASS_EV, 10.0e9), mkb(rid + 2, 1.0, PMASS_EV, 275.0e9)
+        pss = joinpath(dir, "ss.h5")
+        ass = RunArtifact(pss; storage=:memory, append=true, capacity=2)
+        ip = StrongStrongCollision(:ip)
+        rs_ss = audited(() -> execute!(StrongStrongTask((ip, drift), (ip, drift); artifact=ass), b1, b2; turns=2))
+        @test one(rs_ss, :run_artifact_output).storage === :memory
+        @test one(rs_ss, :strong_strong_output) == (artifact=pss, channels=["ip"])
+        @test !isfile(pss) && !isfile(pss * ".lock")
+        lum = read(TaskOutput(ass), :luminosity; name="ip")
+        @test lum.turn == [0, 1] && length(lum.value) == 2 && all(isfinite, lum.value)
+        ip2 = StrongStrongCollision(:elsewhere)
+        @test_throws ArgumentError execute!(StrongStrongTask((ip2, drift), (ip2, drift); artifact=ass), b1, b2; turns=1)
+        @test ass.file === nothing && !isfile(pss)
+        @test read(TaskOutput(ass), :luminosity; name="ip").turn == [0, 1] && read(TaskOutput(ass), :execution).turns == [2]
+        @test save_run_artifact(ass) == pss && read(TaskOutput(pss), :luminosity; name="ip").turn == [0, 1]
+    end
+end
+
 @testset "Run artifact exclusion and seed provenance: the sidecar lock, lock-aware readers, the ledger's rng columns" begin
     # 2026-10-16 crab-cavity noise neighbour audit, S5-2 and S5-4
     # (docs/design/run_artifact.md, the two dated paragraphs). Measured on
@@ -26592,15 +26817,26 @@ end
         pA = joinpath(dir, "A.h5")
         tA = TrackingTask((disp(), crab(), hooks()...); loss_report=false,
                           artifact=RunArtifact(pA; append=true, capacity=3, record_turn_modulation=true))
+        # The memory sibling (2026-11-03): `storage=:memory` is the one option
+        # the file fixture must leave at its default (every reader and lock
+        # check below opens pA on disk), so the carries-every-option rule is
+        # read over BOTH fixtures, each gap-checked below: every option is
+        # away from its default in at least one artifact whose receipts this
+        # testset checks.
+        pM = joinpath(dir, "M.h5")
+        tM = TrackingTask((disp(), hooks()...); loss_report=false,
+                          artifact=RunArtifact(pM; storage=:memory, append=true, capacity=3,
+                                               record_turn_modulation=true))
         for (k, m) in pairs(run_artifact_option_schema())
-            @test getproperty(tA.artifact, k) != m.default
+            @test any(a -> getproperty(a, k) != m.default, (tA.artifact, tM.artifact))
         end
         @test tA.loss_report != tracking_task_option_schema().loss_report.default
         rsA = audited(() -> execute!(tA, mkp(); turns=4))
         @test isempty(Octopus._output_receipt_gaps(rsA, tracking_schemas))
         ra = one(rsA, :run_artifact_output)
         @test propertynames(ra) == (:task, :artifact, :append, :continued, :capacity,
-                                    :record_turn_modulation, :recording, :execution)
+                                    :record_turn_modulation, :recording, :storage, :execution)   # :storage since 2026-11-03
+        @test ra.storage === :file
         @test ra.task === :TrackingTask && ra.artifact == pA && ra.execution == 1
         @test ra.append === true && ra.continued === false
         @test ra.capacity == 3
@@ -26613,6 +26849,18 @@ end
         ra2 = one(rsA2, :run_artifact_output)
         @test ra2.append === true && ra2.continued === true && ra2.execution == 2 && ra2.recording === true
         @test ex_rows(pA) == 2
+        # The memory sibling's receipts: every output option carried, `storage`
+        # as applied, the path kept as the label, nothing on disk, no registry
+        # entry (nothing for two writers to interleave into), the ledger read
+        # from the live image (2026-11-03).
+        rsM = audited(() -> execute!(tM, mkp(); turns=2))
+        @test isempty(Octopus._output_receipt_gaps(rsM, tracking_schemas))
+        raM = one(rsM, :run_artifact_output)
+        @test raM.storage === :memory && raM.artifact == pM && raM.continued === false && raM.execution == 1
+        @test raM.append === true && raM.capacity == 3 && raM.record_turn_modulation === true && raM.recording === false
+        @test !isfile(pM) && !isfile(pM * ".lock") && !haskey(Octopus._OBSERVER_PATH_REGISTRY, abspath(pM))
+        @test one(rsM, :tracking_output).artifact == pM
+        @test read(TaskOutput(tM.artifact), :execution).turns == [2]
         # The observers' receipts carry the fields their metadata names, the
         # request under the option's name and what was applied beside it: the
         # moment probe's `name`, `moments` and the ARTIFACT's capacity; the
@@ -26775,7 +27023,7 @@ end
         fake(c, v) = ExecutionAuditReceipt(c, CPUThreadsBackend, v)
         g1 = Octopus._output_receipt_gaps([fake(:run_artifact_output, (task=:TrackingTask, artifact="x", append=true,
                                                                        continued=false, capacity=1, recording=false,
-                                                                       execution=1))], [art_schema])
+                                                                       storage=:file, execution=1))], [art_schema])   # one field missing: storage carried since 2026-11-03
         @test length(g1) == 1 && occursin("RunArtifact.record_turn_modulation", g1[1]) &&
               occursin("no field named record_turn_modulation", g1[1])
         @test Octopus._output_receipt_gaps(ExecutionAuditReceipt[], [art_schema]) ==

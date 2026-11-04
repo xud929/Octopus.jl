@@ -248,8 +248,9 @@ nominals.
 
 ### Artifact options
 
-`RunArtifact(path; append=false, capacity=64, record_turn_modulation=false)`
--- the sink's options, each documented in full in `?RunArtifact`; everything
+`RunArtifact(path; append=false, capacity=64, record_turn_modulation=false,
+storage=:file)`, and the path-less `RunArtifact(; storage=:memory, ...)` --
+the sink's options, each documented in full in `?RunArtifact`; everything
 else about a run's output is decided on the producers ("What each party
 owns" above).
 
@@ -296,15 +297,117 @@ owns" above).
   every 64 turns amortised; at `capacity = 1024` off 0.161 s, on 0.159 s,
   within noise; the file grew from 158607 to 295778 bytes, 68.6 bytes per
   turn for 8 columns (64 of data). Structured metadata:
-  `run_artifact_option_schema()` (exported; `append`, `capacity` and
-  `record_turn_modulation` as `ConfigurationOptionMeta`, category `:output`,
-  all three naming the `:run_artifact_output` receipt, below), checked by a
+  `run_artifact_option_schema()` (exported; `append`, `capacity`,
+  `record_turn_modulation` and, since 2026-11-03, `storage` as
+  `ConfigurationOptionMeta`, category `:output`, all four naming the
+  `:run_artifact_output` receipt, below), checked by a
   `RunArtifact` block of `validate_configuration_metadata()` (every key a
   field of the type, every declared default equal to a constructed
   artifact's, every option naming its consumer). As every public option
   (AGENTS.md Invariants), it lands with its runtime consumer, its structured
   metadata, its inactive and invalid behaviour and its effectiveness test at
   the consumer boundary.
+
+- `storage` (decided 2026-11-03, owner discussion; landed the same day,
+  record [`../history/in_memory_run_artifact_2026_11_03.md`](../history/in_memory_run_artifact_2026_11_03.md)):
+  where the rows live during the run. `:file` (default) is the artifact as
+  described in this note, the HDF5 file at `path` written at every flush.
+  `:memory` keeps the SAME artifact -- every group, cursor, ledger row and
+  probe view above, written by the same code -- as an HDF5 image in process
+  memory, the library's core driver with no backing store, and writes
+  nothing to disk, not even the sidecar lock, until the explicit
+  `save_run_artifact(artifact[, path])` copies the image to a file
+  (`H5Fget_file_image` after a flush: byte for byte what a file run holds at
+  that moment, written to a sibling temporary and renamed into place, the
+  target's sidecar lock held for the write). The owner's decisions, each
+  with its reason:
+  - **A mode of the one artifact, never a second storage type.** The
+    producer side is written against HDF5 objects (32 of the 76 functions
+    of `RunArtifact.jl` touch the file directly; the turn-modulation
+    recorder holds an `HDF5.File`), so a pure-Julia memory store would have
+    re-implemented the cursor, replay and ledger protocol a second time --
+    the maintained-twice shape "The problem" above exists to remove -- and
+    widened the nine `Union{Nothing,RunArtifact}` annotations of the task
+    structs and option metadata. With the core driver the mode is one open
+    call plus a lifetime rule.
+  - **The keyword decides only where the rows live.** A `path` given beside
+    `storage=:memory` keeps every other meaning: the label, the file
+    `append=true` loads into memory and continues (the disk copy stays as
+    found until saved; the driver reads an existing file into memory and
+    never writes it back), and the default target of `save_run_artifact`.
+    A path-less `RunArtifact(; storage=:memory)` carries the label
+    `"<memory>"`, continues within the process only, and can be saved to an
+    explicit path only. The reading "a path switches the artifact back to
+    file mode" was rejected: it would make `:memory` a request the code
+    ignores whenever a path is present, which the Invariants call a defect,
+    and warning about it is worse than honouring it.
+  - **Nothing is saved automatically.** A memory run that is not saved is
+    gone with the process; `save_run_artifact` is the only way to disk.
+    (An auto-save at the end of `execute!` would have made the mode
+    "buffer everything, one write at the end", attractive on the NFS
+    mount but a different meaning; the owner declined it.)
+  - **`append` means what it means on a file.** `append=true` continues the
+    image across `execute!` calls within the process and, at the first
+    window of a process, loads the saved file at the path if one exists;
+    `append=false` discards the previous image when the next `execute!`
+    begins, as the file is recreated. The one difference left is
+    durability: a file run keeps its rows through the last flush after a
+    crash, a memory run through the last save.
+  - **Refusals and failures keep the image.** The prepare's by-name
+    refusals run before any mutation (the window protocol under Crash
+    recovery), so a refused continuation of a live image puts the handle
+    back untouched; a failed run's best-effort finalize retains the image
+    where it closes a file. A memory artifact is not entered in the
+    in-process path registry (nothing on disk for two writers to interleave
+    into).
+  - **Reading.** `TaskOutput(artifact)` and `MomentOutput(artifact; name)`
+    read the artifact object -- an in-memory one from its live image, during
+    a run (the rows flushed so far) or after it, a file artifact from its
+    path -- with every `read` form; `turn_modulation_provenance(artifact)`
+    likewise. The path readers serve the saved file. A second process cannot
+    watch an unsaved memory run; there is nothing to open.
+  - **The name.** `save_run_artifact`, parallel to the artifact's other
+    verbs (`prepare_run_artifact!`, `commit_run_artifact!`,
+    `finalize_run_artifact!`, `run_artifact_option_schema`), because JLD2,
+    which Octopus loads, exports `save`: an Octopus export of that name
+    would have made a bare `save` ambiguous for every session that also
+    loads JLD2 or FileIO.
+  - **The driver's growth step** is an internal constant
+    (`_RA_MEMORY_INCREMENT`, 4 MiB), not an option: measured 2026-11-03 on
+    the development machine, 64 MB appended in 1000 blocks of 1000 x 8
+    `Float64` took 41.9 ms at the library's 8 KiB default, 38.8 ms at
+    1 MiB, 19.8 ms at 64 MiB -- a factor of two on tens of milliseconds per
+    64 MB against 27.6 ms for one default moment row (todo row "The
+    every-turn `MomentObserver` and artifact row ...").
+
+  Lifetime, the one place the implementation had to be careful: `file !==
+  nothing` means "an `execute!` is in flight" at six sites (both task crash
+  paths, `_path_writer_is_live`, the finalize, the reset-trials bind) and a
+  retained image must not look like one, so the image between windows lives
+  in a slot of its own, `image`, and `file` keeps its meaning in both
+  storages; `_ra_image` is the reader's rule (the file in flight, else the
+  image). Probes before the decision: the core driver creates, opens and
+  stats nothing under a create (an existing file at the name stays
+  byte-identical, a name in a nonexistent directory works), so a fresh image
+  is filed under a per-object dummy name and only `append=true` loading
+  touches the real path, read-only. Inactive: `:file` is a run exactly as
+  before (the option's receipt field says `:file`; every other receipt field,
+  the configuration report's file-mode text and the file-mode refusals are
+  unchanged, and the suite's file-mode pins did not move). Invalid: a value
+  other than `:file` or `:memory`, and `storage=:file` without a path, are
+  refused by name at construction. Metadata: the fourth entry of
+  `run_artifact_option_schema()`, consumer `:run_artifact_output`, whose
+  receipt carries `storage` as applied; the configuration report's
+  `:artifact` entry says "in memory" and names the path only where one was
+  given. Effectiveness: the memory fixture of
+  `PublicConfigurationEffectivenessContract` (every artifact option away
+  from its default, two windows continuing the image, nothing on disk until
+  the save, the saved file's moments equal to the live image's) and the
+  suite's "The run artifact in memory ..." testset (the same run in both
+  storages row for row, the append and refusal semantics, the crash path,
+  the lock on a save target, the strong-strong task). The mode changes
+  nothing in the tracking: the rows a memory run records are those of the
+  file run, compared exactly.
 
 **The output receipts (decided 2026-10-16, fix batch of the crab-noise
 neighbour audit; leads S4-1, S4-2, S4-3, S4-10).** Measured on ac3fbb2:
@@ -329,7 +432,8 @@ option's own name and what was applied beside it -- `append` beside
 `continued` (an existing file continued, or the path created fresh),
 `capacity` (the batching every row producer and recorder uses),
 `record_turn_modulation` beside `recording` (recorders built: the switch on
-AND the line has a modulated element) -- and `execution`, the ledger row
+AND the line has a modulated element), `storage` as applied (`:file` or
+`:memory`, since 2026-11-03) -- and `execution`, the ledger row
 appended; a non-root rank, which opens no file, carries `nothing` for
 `continued` and `execution`. Each task kind records its own output receipt
 beside it, also after the prepare, so a prepare refusal leaves neither:
@@ -723,3 +827,8 @@ against the outputs it replaces where determinism permits:
   axes; text's virtues (tail -f) survive as the live mirror instead.
 - **One buffer type for everything**: the three shapes are physically
   different; flattening them buys uniformity of words, not of code.
+- **A second storage type for the in-memory mode** (2026-11-03): a
+  pure-Julia store behind the producer API would re-implement the cursor,
+  replay and ledger protocol and widen every `Union{Nothing,RunArtifact}`
+  annotation; the HDF5 core driver keeps one implementation and one type
+  ("Artifact options", `storage`).

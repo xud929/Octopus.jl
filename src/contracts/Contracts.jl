@@ -1057,7 +1057,8 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
     # continues its own file; `record_turn_modulation=true` resolves to
     # `recording=true` with a modulated element in the line and `false`
     # without one (the strong-strong fixture). Every artifact option is away
-    # from its default, as is the task's `loss_report`.
+    # from its default across the fixtures -- `storage` in the memory fixture
+    # below (2026-11-03) -- as is the task's `loss_report`.
     output_gaps, output_pairs, output_resolution = mktempdir() do dir
         cpu = CPUThreadsExecutionPolicy(threads=first(worker_sweep))
         # The rule's and the BPM's stream ids sit above the registry's counter
@@ -1097,6 +1098,37 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
         with_execution_audit(audit_ss) do
             execute!(ss_task, ss_beam1, ss_beam2; turns=1)
         end
+        # The in-memory storage (2026-11-03): the one artifact option the two
+        # fixtures above leave at its default, away from it here beside every
+        # other -- `append=true` continuing the image in the process,
+        # `capacity=2`, `record_turn_modulation=true` with a modulated
+        # element, the three probes -- under a TrackingTask. Its receipts must
+        # carry `storage=:memory` and resolve the continuation as the file
+        # fixture's do, nothing may reach disk until `save_run_artifact`, and
+        # the saved file must read as the image does.
+        mem_path = joinpath(dir, "output_memory.h5")
+        mem_modulated = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,),
+                                              phase_noise=(WhiteNoise(1.0e-3;
+                                                  rng_id=_unheld_rng_id(_GLOBAL_RNG_ID_COUNTER[] + 1_000_000)),))
+        mem_hooks = (ScheduledObserver(MomentObserver(; name="m", orders=1)),
+                     ScheduledObserver(CoordinateSnapshotObserver(; name="s", npart=2)),
+                     ScheduledObserver(BPMObserver("b"; artifact=true,
+                                                   rng_id=_unheld_rng_id(_GLOBAL_RNG_ID_COUNTER[] + 1_000_000))))
+        mem_task = TrackingTask((line..., mem_modulated, mem_hooks...); policy=cpu, loss_report=false,
+                                artifact=RunArtifact(mem_path; storage=:memory, append=true,
+                                                     capacity=2, record_turn_modulation=true))
+        mem_rep = _contract_rep_for_backend(base, CPUThreadsBackend)
+        audit_mem_fresh, audit_mem_continued = ExecutionAudit(), ExecutionAudit()
+        with_execution_audit(audit_mem_fresh) do
+            execute!(mem_task, mem_rep; turns=3)
+        end
+        with_execution_audit(audit_mem_continued) do      # the same task continues its image
+            execute!(mem_task, mem_rep; turns=3)
+        end
+        mem_nothing_on_disk = !isfile(mem_path) && !isfile(mem_path * ".lock")
+        mem_live = read(TaskOutput(mem_task.artifact), :moments; name="m")
+        mem_saved_path = save_run_artifact(mem_task.artifact)
+        mem_saved = read(TaskOutput(mem_saved_path), :moments; name="m")
         # The schema owners are DERIVED: the artifact, the task kind, and every
         # concrete observer Octopus defines (F-52; the three observer names were
         # a hand list). A fourth observer kind lands here without an edit, and
@@ -1113,6 +1145,8 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
                                                  :StrongStrongTask => strong_strong_task_option_schema()]
         gaps = vcat(_output_receipt_gaps(execution_receipts(audit_fresh), tracking_schemas),
                     _output_receipt_gaps(execution_receipts(audit_continued), tracking_schemas),
+                    _output_receipt_gaps(execution_receipts(audit_mem_fresh), tracking_schemas),
+                    _output_receipt_gaps(execution_receipts(audit_mem_continued), tracking_schemas),
                     _output_receipt_gaps(execution_receipts(audit_ss), strong_strong_schemas))
         # What the gap check COVERED, per fixture (tracking fresh, tracking
         # continued, strong-strong): the pairs it judged, not only its misses.
@@ -1122,7 +1156,23 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
         ra_fresh, ra_continued, ra_ss = one(audit_fresh, :run_artifact_output),
                                         one(audit_continued, :run_artifact_output),
                                         one(audit_ss, :run_artifact_output)
+        ra_mem_fresh, ra_mem_continued = one(audit_mem_fresh, :run_artifact_output),
+                                         one(audit_mem_continued, :run_artifact_output)
         resolution = (
+            # `storage` as applied: the file fixtures' receipts say `:file`,
+            # the memory fixture's `:memory`; the image continued in the
+            # process resolves `continued` as a continued file does and
+            # records with the modulated element; disk holds nothing until the
+            # save, which writes the artifact's own path; the saved file's
+            # moments equal the live image's (2026-11-03).
+            storage_resolved=ra_fresh.storage === :file && ra_ss.storage === :file &&
+                             ra_mem_fresh.storage === :memory && ra_mem_continued.storage === :memory,
+            memory_continued=ra_mem_fresh.continued === false && ra_mem_continued.continued === true &&
+                             (ra_mem_fresh.execution, ra_mem_continued.execution) == (1, 2) &&
+                             ra_mem_fresh.recording === true && ra_mem_fresh.artifact == mem_path,
+            memory_on_disk_only_when_saved=mem_nothing_on_disk && mem_saved_path == mem_path &&
+                                           isfile(mem_path) && !isfile(mem_path * ".lock"),
+            memory_rows_equal_saved=mem_live.turn == collect(0.0:5.0) && mem_live == mem_saved,
             append_resolved=ra_fresh.append === true && ra_fresh.continued === false &&
                             ra_continued.continued === true,
             recording_resolved=ra_fresh.record_turn_modulation === true && ra_fresh.recording === true &&
@@ -1137,7 +1187,9 @@ function validate(contract::PublicConfigurationEffectivenessContract; kwargs...)
         return gaps, pairs, resolution
     end
     metrics[:output_receipt_gaps] = output_gaps
-    metrics[:output_receipt_pairs_checked] = 2 * output_pairs.tracking + output_pairs.strong_strong
+    # Four tracking audits (the file fixture's two windows, the memory
+    # fixture's two) and one strong-strong.
+    metrics[:output_receipt_pairs_checked] = 4 * output_pairs.tracking + output_pairs.strong_strong
     metrics[:output_receipt_pairs_by_task] = output_pairs
     metrics[:output_receipt_resolution] = output_resolution
     (output_pairs.tracking > 0 && output_pairs.strong_strong > 0) || return ContractResult(false,

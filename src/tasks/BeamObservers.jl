@@ -1598,9 +1598,11 @@ if _HAS_CUDA
 end
 
 """
-    MomentOutput(path)
+    MomentOutput(path; name=nothing)
+    MomentOutput(artifact::RunArtifact; name)
 
-Lightweight handle for reading a `MomentObserver` output file.
+Lightweight handle for reading a `MomentObserver` output file -- a path, or
+a [`RunArtifact`](@ref) object (an in-memory one from its live image).
 
 For HDF5 files written by `MomentObserver`, `read(file)` returns the full
 written `/data` matrix up to the record count -- the `record_count` dataset
@@ -1632,10 +1634,36 @@ struct MomentOutput
     # layout, still readable); "moments/<name>" reads that probe's group
     # inside a run artifact (docs/design/run_artifact.md).
     group::String
+    # The in-memory artifact read live, or `nothing` for a path on disk
+    # (2026-11-03); `MomentOutput(artifact; name)` on a file artifact reads
+    # its path.
+    artifact::Union{Nothing,RunArtifact}
 end
 
 MomentOutput(path::AbstractString; name::Union{Nothing,AbstractString}=nothing) =
-    MomentOutput(String(path), name === nothing ? "" : "moments/" * String(name))
+    MomentOutput(String(path), name === nothing ? "" : "moments/" * String(name), nothing)
+MomentOutput(path::AbstractString, group::AbstractString) =
+    MomentOutput(String(path), String(group), nothing)
+
+"""
+    MomentOutput(artifact::RunArtifact; name)
+
+The moment probe `/moments/<name>` of a [`RunArtifact`](@ref) object: an
+in-memory artifact (`storage=:memory`) read from its live image, a file
+artifact from its path (2026-11-03). `read`, `read(out, item)`, the keyword
+selection and `column_names` work as on a path.
+"""
+MomentOutput(art::RunArtifact; name::AbstractString) =
+    MomentOutput(art.path, "moments/" * String(name), art)
+
+# A moment handle on an in-memory artifact reads the live image, the path
+# handle and the file artifact the path (the `TaskOutput` method's rule).
+_ra_open(f::Function, file::MomentOutput) =
+    _ra_open(f, TaskOutput(file.path, file.artifact))
+# The image of an in-memory artifact is HDF5 by construction; a path is
+# decided by its content below.
+_is_hdf5_output(file::MomentOutput) =
+    (file.artifact !== nothing && _ra_in_memory(file.artifact)) || _is_hdf5_output(file.path)
 
 const MomentOutputFile = MomentOutput
 const OutputFile = MomentOutput
@@ -1671,15 +1699,14 @@ without_z2 = read(out; orders = 1:2, exclude = (Moment(; z = 2),))
 ```
 """
 function read(file::MomentOutput; orders=_READ_ALL_MOMENT_COLUMNS, extra=(), exclude=())
-    if !_is_hdf5_output(file.path)
+    if !_is_hdf5_output(file)
         orders === _READ_ALL_MOMENT_COLUMNS && isempty(extra) && isempty(exclude) && return _read_moment(file.path, :data)
         throw(ArgumentError("keyword moment selection is only supported for HDF5 output files"))
     end
     if orders === _READ_ALL_MOMENT_COLUMNS && isempty(extra) && isempty(exclude)
-        return _read_hdf5_data(file.path, file.group)
+        return _read_hdf5_data(file)
     end
-    return _read_hdf5_selection(file.path, file.group;
-                                orders=orders, extra=extra, exclude=exclude)
+    return _read_hdf5_selection(file; orders=orders, extra=extra, exclude=exclude)
 end
 
 """
@@ -1708,7 +1735,7 @@ seconds = read(out, :elapsed_time)
 ```
 """
 function read(file::MomentOutput, item::Union{Moment,Symbol,AbstractString})
-    _is_hdf5_output(file.path) && return _read_hdf5_column(file.path, file.group, item)
+    _is_hdf5_output(file) && return _read_hdf5_column(file, item)
     item isa Symbol && return _read_moment(file.path, item)
     item isa AbstractString && return _read_moment(file.path, Symbol(item))
     return _read_moment(file.path, Symbol(name(item)))
@@ -1738,8 +1765,8 @@ df = DataFrame(data, Symbol.(names))
 ```
 """
 function column_names(file::MomentOutput)
-    if _is_hdf5_output(file.path)
-        return _ra_open(file.path) do h5
+    if _is_hdf5_output(file)
+        return _ra_open(file) do h5
             String.(read(_moment_h5_root(h5, file.group)["column_names"]))
         end
     end
@@ -1794,18 +1821,20 @@ end
 
 _moment_h5_root(h5, group::String) = isempty(group) ? h5 : h5[group]
 
-function _read_hdf5_data(path::AbstractString, group::String="")
-    return _ra_open(path) do h5
-        root = _moment_h5_root(h5, group)
+# The three moment readers take the handle (2026-11-03): its path, or the live
+# image of an in-memory artifact, through `_ra_open(f, ::MomentOutput)`.
+function _read_hdf5_data(file::MomentOutput)
+    return _ra_open(file) do h5
+        root = _moment_h5_root(h5, file.group)
         n = _read_hdf5_record_count(root)
         data = read(root["data"])
         data[1:n, :]
     end
 end
 
-function _read_hdf5_column(path::AbstractString, group::String, item)
-    return _ra_open(path) do h5
-        root = _moment_h5_root(h5, group)
+function _read_hdf5_column(file::MomentOutput, item)
+    return _ra_open(file) do h5
+        root = _moment_h5_root(h5, file.group)
         special = _read_hdf5_special(root, item)
         special === _NOT_HDF5_SPECIAL || return special
         names = String.(read(root["column_names"]))
@@ -1834,11 +1863,10 @@ function _read_hdf5_special(h5, item)
     return _NOT_HDF5_SPECIAL
 end
 
-function _read_hdf5_selection(path::AbstractString, group::String="";
-                              orders=(), extra=(), exclude=())
+function _read_hdf5_selection(file::MomentOutput; orders=(), extra=(), exclude=())
     requested = _selected_moments(orders=orders, extra=extra, exclude=exclude)
-    return _ra_open(path) do h5
-        h5 = _moment_h5_root(h5, group)
+    return _ra_open(file) do h5
+        h5 = _moment_h5_root(h5, file.group)
         names = String.(read(h5["column_names"]))
         name_to_index = Dict(name => i for (i, name) in pairs(names))
         cols = Int[1]
