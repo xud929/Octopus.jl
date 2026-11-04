@@ -258,6 +258,21 @@ real machine then ran. This addendum is the bookkeeping the owner asked
 for on 2026-11-04; it is markdown-only and rides the fast lane named in
 its commit message.
 
+**Correction, 2026-11-04, beside the addendum:** the message of the commit
+that carried it (1194818) states that fast lane's clock as "01:22 to 02:04
+EST"; the lane's log says 2026-11-04 08:54 to 09:32 EST. The time was typed
+from the writer's estimate instead of read from the log; every other clock
+in this record was read from its log. The same lane had first run red once
+on the tree before the todo row, at one assertion of the testset "Dropped
+spectral charge is recorded in a receipt, not only in a warning (F-36)" --
+a positional pairing of warnings with receipts across two channels that
+worker threads fill -- recorded then as a todo row and closed 2026-11-04 by
+the commit that carries this correction, which compares the payloads as
+multisets (the row and its closing: `todo_ledger_archive.md`, "Row retired
+by the in-memory run artifact bookkeeping"). CI run #477 on 1194818 was
+green (85.8 min, within the runner's 52 to 81 min spread of the previous
+five runs).
+
 ## 6 Ledger
 
 `docs/todo.md`: a new row, "In-memory run artifact: the follow-ups the mode

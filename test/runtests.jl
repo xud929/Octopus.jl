@@ -37770,10 +37770,28 @@ end
     @test all(r -> r.backend === CPUThreadsBackend && r.values.scope === :per_solve, clipped)
     @test all(r -> 0 < r.values.dropped_fraction <= 1 && r.values.nsource == 128, clipped)
     @test all(r -> r.values.box == clipped[1].values.box && length(r.values.box) == 2, clipped)
-    # The warning's payload and the receipt's are the same numbers.
-    @test all(Dict(l.kwargs)[:dropped_fraction] == r.values.dropped_fraction &&
-              Dict(l.kwargs)[:nsource] == r.values.nsource
-              for (l, r) in zip(warned, clipped[1:length(warned)]))
+    # The warning's payload and the receipt's are the same numbers -- compared
+    # as MULTISETS, not pair by pair (2026-11-04). `_spectral_box_coverage_event!`
+    # records the receipt under the audit's lock and then logs the warning,
+    # and one collide's four clipping solves run on the solver's worker
+    # threads, so the audit's receipt order and the logger's warning order can
+    # interleave differently: the positional `zip(warned, clipped[1:length(warned)])`
+    # that stood here passed three lanes on 2026-11-03 and failed one on
+    # 2026-11-04 with every other assertion green (todo ledger archive,
+    # "Order-dependent pin in ... (F-36)"). The claim is that every warned
+    # payload is some receipt's payload, with multiplicity -- the budget keeps
+    # the warnings a subset of the receipts -- and that is what is checked,
+    # once in emission order and once reversed, so order is visibly not the
+    # claim; two negative controls show the check can fail.
+    payload_counts(ps) = Dict(p => count(==(p), ps) for p in unique(ps))
+    warned_payloads(ls) = [(Dict(l.kwargs)[:dropped_fraction], Dict(l.kwargs)[:nsource]) for l in ls]
+    receipt_payloads(rs) = [(r.values.dropped_fraction, r.values.nsource) for r in rs]
+    payloads_covered(ws, rs) = all(get(payload_counts(rs), p, 0) >= n for (p, n) in payload_counts(ws))
+    rp = receipt_payloads(clipped)
+    @test payloads_covered(warned_payloads(warned), rp)
+    @test payloads_covered(warned_payloads(reverse(warned)), rp)
+    @test !payloads_covered([(2.0, 128)], rp)                 # a fraction above 1 is no receipt's
+    @test !payloads_covered(vcat(rp, rp[1:1]), rp)             # one copy more than the receipts hold
     if CUDA_TESTS_ACTIVE
         strong_cuda(n) = Octopus._strong_strong_contract_beam(strong(n), Octopus.CUDABackend)
         gaudit = ExecutionAudit()
