@@ -239,6 +239,25 @@ owner's gate-before-push decision, `../experiences.md`, "Process habits that
 earned their place"); the script `result/in_memory_artifact/run_full_gate_avx2.sh`
 is prepared for it. Nothing in this batch is pushed.
 
+**Addendum, 2026-11-04 (the paragraph above stands as written at commit
+time; this is the correction beside it).** The batch was pushed on
+2026-11-03 at 23:25 EST as 2f311d3..a232f91 on the owner's word ("Push
+now"), with the native arm only: the AVX2 arm did not run, and the owner
+chose to let CI stand in for it, since the runner IS the AVX2-class machine
+the local `-C haswell` arm only emulates and the batch touches no
+floating-point kernel, reduction or tolerance, the failure mode that arm
+exists for (`../experiences.md`, "A tolerance measured on one CPU is a
+hand-copy of that CPU's rounding"). CI run #476 (id 41772980957, job
+"Julia 1.12 CPU full-lane tests" on `ubuntu-latest`, this time a znver5
+host by the suite's own identity annotation, stage 6 identity pins 6 of 6)
+ran the full CPU lane on a232f91 and completed green at 05:18:59 UTC on
+2026-11-04, 54.8 min after it started; the CUDA testsets skip there as
+always. So the AVX2-class check passed on the pushed tree itself, and the
+only thing this batch did not have is the local emulation of a check the
+real machine then ran. This addendum is the bookkeeping the owner asked
+for on 2026-11-04; it is markdown-only and rides the fast lane named in
+its commit message.
+
 ## 6 Ledger
 
 `docs/todo.md`: a new row, "In-memory run artifact: the follow-ups the mode
