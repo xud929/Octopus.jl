@@ -333,15 +333,15 @@ The curated scripts of `example_catalog()` (categories: `BenchmarkExample`, `Ref
 entry's script with `example_script_path`.
 
 - `examples/strong_strong_tracking.jl` (`ReferenceExample`)
-  - Objects: `StrongStrongTask`, `StrongStrongCollision`, `PICPoissonSolver`, `LongitudinalSlicing`, `Beam`
+  - Objects: `StrongStrongTask`, `StrongStrongCollision`, `PICPoissonSolver`, `LongitudinalSlicing`, `Beam`, `LinearOptics`
 - `examples/weak_strong_tracking.jl` (`ReferenceExample`)
-  - Objects: `TrackingTask`, `ThinStrongBeamSpec`, `ThinCrabCavitySpec`, `Beam`
+  - Objects: `TrackingTask`, `ThinStrongBeamSpec`, `ThinCrabCavitySpec`, `Beam`, `LinearOptics`
 - `examples/crab_cavity_noise.jl` (`ReferenceExample`)
-  - Objects: `TrackingTask`, `ThinCrabCavitySpec`, `WhiteNoise`, `PinkNoise`, `SpectralNoise`, `TurnTable`, `TurnModulated`, `RunArtifact`
+  - Objects: `TrackingTask`, `ThinCrabCavitySpec`, `WhiteNoise`, `PinkNoise`, `SpectralNoise`, `TurnTable`, `TurnModulated`, `RunArtifact`, `LinearOptics`
 - `examples/knob_control.jl` (`ReferenceExample`)
   - Objects: `TrackingTask`, `ElementSpec`, `BeamLine`
 - `examples/twiss_dispersion_dba_ring.jl` (`ReferenceExample`)
-  - Objects: `TwissDispersionAnalysis`, `BeamLine`, `ThinRFCavitySpec`, `SBendSpec`
+  - Objects: `TwissDispersionAnalysis`, `BeamLine`, `ThinRFCavitySpec`, `SBendSpec`, `LinearOptics`
 
 ## Tasks
 

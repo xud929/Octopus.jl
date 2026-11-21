@@ -185,6 +185,16 @@ for (name, s) in zip(("x", "px", "y", "py", "z", "delta"), sizes)
     println("  rms ", name, " = ", s)
 end
 
+# The analysis's point as the constructible LinearOptics value every consumer
+# accepts (Beam(; optics), Linear6DSpec(o1, o2), ChromaticityKickSpec(; optics),
+# docs/design/linear_optics.md): the Edwards-Teng Twiss with its form, the
+# canonical dispersion, and phases zero in the frame named here.
+point = linear_optics(r; frame = :ring)::LinearOptics
+println("LinearOptics point at the ring's origin (frame :ring):")
+println("  beta = ", point.twiss.beta, "  alpha = ", point.twiss.alpha)
+println("  Edwards-Teng R = ", point.twiss.R, "  form ", point.twiss.form)
+println("  zeta = ", point.dispersion.zeta, "  eta = ", point.dispersion.eta,
+        "  h = ", dispersion_h(point.dispersion))
 println("Residual checks (name, value, tolerance):")
 for (name, value, tol) in r.diagnostics.residuals
     println("  ", name, ": ", value, " <= ", tol)

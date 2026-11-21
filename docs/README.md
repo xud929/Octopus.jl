@@ -214,6 +214,14 @@ Procedures, one per task class, routed from the Task Routing table in
   [`history/audit_linear_optics_2026_11_21_unit_reports/U1.md`](history/audit_linear_optics_2026_11_21_unit_reports/U1.md)
   and the U1-1 reproduction
   [`history/audit_linear_optics_2026_11_21_U1_1_repro.jl`](history/audit_linear_optics_2026_11_21_U1_1_repro.jl).
+- [`linear_optics_examples_2026_11_21.md`](history/linear_optics_examples_2026_11_21.md)
+  — the shipped examples in the `LinearOptics` form (the weak-strong,
+  strong-strong and crab-noise scripts spell each beam's optics as IP and
+  crab-cavity points that the beam, the transfer maps, the chromaticity kick
+  and the radiation element flatten alike; the DBA example turns its analysis
+  result into the point with `linear_optics`): what changed per script, the
+  fingerprint identity against the flat versions on CPU and CUDA, the gate,
+  and the push and CI run of the LinearOptics batch it follows.
 - [`guides/development_workflow.md`](guides/development_workflow.md) — the
   environment, the two load modes, the commands, the single-testset probe
   recipe, lanes and the gate, where output goes, committing, reporting.

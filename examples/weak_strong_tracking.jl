@@ -15,7 +15,9 @@ The pattern this example follows:
 
 1. Define one `input` named tuple: weak beam, optics, crab cavity, strong beam,
    radiation, output.
-2. Build the weak `Beam` directly from the input (including any initial offset).
+2. Build the weak beam's linear optics as two `LinearOptics` points (the IP and
+   the crab cavities) and the weak `Beam` from the IP point (including any
+   initial offset).
 3. Build element specs in tracking order and place observers where they matter.
 4. Build `TrackingTask(line)` and `execute!` it.
 
@@ -111,10 +113,6 @@ input = (
         damping_turns = (1.0e100, 1.0e100, 1.0e100),
         is_damping = false,
         is_excitation = true,
-        alpha = (0.0, 0.0, 0.0),
-        zeta = (0.0, 0.0, 0.0, 0.0),
-        eta = (0.0, 0.0, 0.0, 0.0),
-        coupling = (0.0, 0.0, 0.0, 0.0),
     ),
 
     output = (
@@ -233,9 +231,20 @@ beta_z = wb.sigz / wb.sigd
 emit = (wb.sigx^2 / wb.beta_x, wb.sigy^2 / wb.beta_y, wb.sigz * wb.sigd)
 weak_r0 = RE * ME0 / wb.mass
 
+# The weak beam's linear optics, spelled once as LinearOptics points
+# (docs/design/linear_optics.md): the IP, with the beam's alpha, canonical
+# dispersion (zeta, eta) and Edwards-Teng coupling R, and the crab cavities,
+# uncoupled and dispersion-free at alpha = 0. The Beam, the transfer maps, the
+# chromaticity kick and the lumped radiation flatten these points into their
+# own parameters, so the quintuple (beta, alpha, zeta, eta, R) is never
+# repeated and the maps carry the same dispersion and coupling as the beam.
+opt = input.optics
+ip_point = LinearOptics(; beta = (wb.beta_x, wb.beta_y, beta_z), alpha = wb.alpha,
+                        zeta = wb.zeta, eta = wb.eta, R = wb.coupling)
+crab_point = LinearOptics(; beta = (opt.crab_beta_x, opt.crab_beta_y, beta_z))
+
 beam = Beam(n_macro, policy, Float64;
-    beta = (wb.beta_x, wb.beta_y, beta_z),
-    alpha = wb.alpha,
+    optics = ip_point,
     emit = emit,
     cutoff = wb.cutoff,
     rng_id = 1,
@@ -244,44 +253,16 @@ beam = Beam(n_macro, policy, Float64;
     E0 = wb.energy,
     r0 = weak_r0,
     npart = wb.n_particle,
-    zeta = wb.zeta,
-    eta = wb.eta,
-    R = wb.coupling,
     initial_offset = wb.initial_offset,
 )
 
-opt = input.optics
 cckick = tan(opt.crossing_angle) / sqrt(wb.beta_x * opt.crab_beta_x)
 cc_strength_x = cckick .* input.crab_cavity.harmonic_weights
 
-tccb2ip = Linear6DSpec{Float64}(;
-    beta1 = (opt.crab_beta_x, opt.crab_beta_y, beta_z),
-    beta2 = (wb.beta_x, wb.beta_y, beta_z),
-    alpha1 = (0.0, 0.0, 0.0),
-    alpha2 = (0.0, 0.0, 0.0),
-    dmu = (pi / 2.0, 0.0, 0.0),
-    zeta1 = (0.0, 0.0, 0.0, 0.0),
-    eta1 = (0.0, 0.0, 0.0, 0.0),
-    R1 = (0.0, 0.0, 0.0, 0.0),
-    zeta2 = (0.0, 0.0, 0.0, 0.0),
-    eta2 = (0.0, 0.0, 0.0, 0.0),
-    R2 = (0.0, 0.0, 0.0, 0.0),
-)
+tccb2ip = Linear6DSpec{Float64}(crab_point, ip_point; dmu = (pi / 2.0, 0.0, 0.0))
 tccb2ip_inv = Linear6DSpec{Float64}(matrix = inv(Matrix(Linear6D(tccb2ip))))
 
-ip2tcca = Linear6DSpec{Float64}(;
-    beta1 = (wb.beta_x, wb.beta_y, beta_z),
-    beta2 = (opt.crab_beta_x, opt.crab_beta_y, beta_z),
-    alpha1 = (0.0, 0.0, 0.0),
-    alpha2 = (0.0, 0.0, 0.0),
-    dmu = (pi / 2.0, 0.0, 0.0),
-    zeta1 = (0.0, 0.0, 0.0, 0.0),
-    eta1 = (0.0, 0.0, 0.0, 0.0),
-    R1 = (0.0, 0.0, 0.0, 0.0),
-    zeta2 = (0.0, 0.0, 0.0, 0.0),
-    eta2 = (0.0, 0.0, 0.0, 0.0),
-    R2 = (0.0, 0.0, 0.0, 0.0),
-)
+ip2tcca = Linear6DSpec{Float64}(ip_point, crab_point; dmu = (pi / 2.0, 0.0, 0.0))
 ip2tcca_inv = Linear6DSpec{Float64}(matrix = inv(Matrix(Linear6D(ip2tcca))))
 
 tccb = ThinCrabCavitySpec{3}(input.crab_cavity.frequency;
@@ -295,32 +276,17 @@ tcca = ThinCrabCavitySpec{3}(input.crab_cavity.frequency;
     phase = input.crab_cavity.phase,
 )
 
-one_turn = Linear6DSpec{Float64}(;
-    beta1 = (wb.beta_x, wb.beta_y, beta_z),
-    beta2 = (wb.beta_x, wb.beta_y, beta_z),
-    alpha1 = (0.0, 0.0, 0.0),
-    alpha2 = (0.0, 0.0, 0.0),
-    dmu = (2pi * opt.tune[1], 2pi * opt.tune[2], 2pi * opt.tune[3]),
-    zeta1 = (0.0, 0.0, 0.0, 0.0),
-    eta1 = (0.0, 0.0, 0.0, 0.0),
-    R1 = (0.0, 0.0, 0.0, 0.0),
-    zeta2 = (0.0, 0.0, 0.0, 0.0),
-    eta2 = (0.0, 0.0, 0.0, 0.0),
-    R2 = (0.0, 0.0, 0.0, 0.0),
-)
+one_turn = Linear6DSpec{Float64}(ip_point, ip_point;
+    dmu = (2pi * opt.tune[1], 2pi * opt.tune[2], 2pi * opt.tune[3]))
 
-chrom = ChromaticityKickSpec{Float64}(;
-    xi = opt.chromaticity,
-    beta = (wb.beta_x, wb.beta_y, beta_z),
-    alpha = wb.alpha,
-    zeta = (0.0, 0.0, 0.0, 0.0),
-    eta = (0.0, 0.0, 0.0, 0.0),
-    R = (0.0, 0.0, 0.0, 0.0),
-)
+chrom = ChromaticityKickSpec{Float64}(; xi = opt.chromaticity, optics = ip_point)
 
 strong = input.strong_beam
 kbb = wb.charge * strong.charge * strong.n_particle * weak_r0 * wb.mass / wb.energy
 klum = strong.n_particle * wb.n_particle / n_macro
+# The strong beam's optics is transverse (its longitudinal plane is the
+# slicing's), so it keeps the flat beta and alpha pairs; a 6D LinearOptics
+# point would carry an inert third plane here.
 thin_strong = ThinStrongBeamSpec{Float64}(;
     kbb = kbb,
     klum = klum,
@@ -343,12 +309,8 @@ gsb = GaussianStrongBeamSpec{Float64}(;
 rad = input.radiation
 radiation = LumpedRadSpec{Float64}(;
     damping_turns = rad.damping_turns,
-    beta = (wb.beta_x, wb.beta_y, beta_z),
-    alpha = rad.alpha,
+    optics = ip_point,
     sigma = (wb.sigx, wb.sigy, wb.sigz),
-    zeta = rad.zeta,
-    eta = rad.eta,
-    R = rad.coupling,
     is_damping = rad.is_damping,
     is_excitation = rad.is_excitation,
     rng_id = 2,

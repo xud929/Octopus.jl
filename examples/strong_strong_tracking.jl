@@ -17,7 +17,8 @@ The pattern this example follows:
 
 1. Define one `input` named tuple: beams, optics, crab cavities, slicing, solver.
 2. Build an execution policy (CPU threads or CUDA) from `config`.
-3. Build both live `Beam`s from the input.
+3. Build each beam's `LinearOptics` points (the IP and its crab cavities) and
+   both live `Beam`s from them.
 4. Build a Poisson solver. PIC is used here; the soft-Gaussian, spectral, and
    Gaussian-subtracted-PIC alternatives are shown commented below and share the
    same interface (see `?AbstractPoissonSolver`).
@@ -247,13 +248,21 @@ set_global_rng!(seed = input.seed, method = :philox)
 ele = input.electron
 pro = input.proton
 
+# Each beam's linear optics as LinearOptics points (docs/design/linear_optics.md):
+# the IP and the crab cavities, alpha from the input, no dispersion or coupling.
+# A beam's Beam, transfer maps, chromaticity kick and radiation element flatten
+# the same point, so beta and alpha are spelled once per place.
+ele_ip = LinearOptics(; beta = ele.beta, alpha = ele.alpha)
+ele_crab = LinearOptics(; beta = ele.crab_beta, alpha = ele.alpha)
+pro_ip = LinearOptics(; beta = pro.beta, alpha = pro.alpha)
+pro_crab = LinearOptics(; beta = pro.crab_beta, alpha = pro.alpha)
 beam_ele = Beam(config.n_macro_ele, policy, Float64;
-    beta = ele.beta, alpha = ele.alpha, sigma = ele.sigma, cutoff = ele.cutoff,
+    optics = ele_ip, sigma = ele.sigma, cutoff = ele.cutoff,
     rng_id = 1, charge = ele.charge, mc2 = ele.mass, E0 = ele.energy,
     r0 = RE * ME0 / ele.mass, npart = ele.n_particle,
 )
 beam_pro = Beam(config.n_macro_pro, policy, Float64;
-    beta = pro.beta, alpha = pro.alpha, sigma = pro.sigma, cutoff = pro.cutoff,
+    optics = pro_ip, sigma = pro.sigma, cutoff = pro.cutoff,
     rng_id = 2, charge = pro.charge, mc2 = pro.mass, E0 = pro.energy,
     r0 = RE * ME0 / pro.mass, npart = pro.n_particle,
 )
@@ -306,44 +315,30 @@ solver = PICPoissonSolver(;
 # Beam lines. Each ring carries the same collision marker at the IP, framed by
 # crab-cavity transport, the Lorentz boost pair, and one-turn optics.
 # ---------------------------------------------------------------------------
-electron_tccb2ip = Linear6DSpec{Float64}(;
-    beta1 = ele.crab_beta, beta2 = ele.beta, alpha1 = ele.alpha, alpha2 = ele.alpha,
-    dmu = (pi / 2.0, 0.0, 0.0),
-)
+electron_tccb2ip = Linear6DSpec{Float64}(ele_crab, ele_ip; dmu = (pi / 2.0, 0.0, 0.0))
 electron_tccb2ip_inv = Linear6DSpec{Float64}(matrix = inv(Matrix(Linear6D(electron_tccb2ip))))
-electron_ip2tcca = Linear6DSpec{Float64}(;
-    beta1 = ele.beta, beta2 = ele.crab_beta, alpha1 = ele.alpha, alpha2 = ele.alpha,
-    dmu = (pi / 2.0, 0.0, 0.0),
-)
+electron_ip2tcca = Linear6DSpec{Float64}(ele_ip, ele_crab; dmu = (pi / 2.0, 0.0, 0.0))
 electron_ip2tcca_inv = Linear6DSpec{Float64}(matrix = inv(Matrix(Linear6D(electron_ip2tcca))))
 electron_tccb = ThinCrabCavitySpec{3}(ele.crab_frequency;
     strengthX = ele.crab_strength_x, strengthY = ele.crab_strength_y, phase = ele.crab_phase)
 electron_tcca = ThinCrabCavitySpec{3}(ele.crab_frequency;
     strengthX = ele.crab_strength_x, strengthY = ele.crab_strength_y, phase = ele.crab_phase)
-electron_one_turn = Linear6DSpec{Float64}(;
-    beta1 = ele.beta, beta2 = ele.beta, alpha1 = ele.alpha, alpha2 = ele.alpha,
-    dmu = 2pi .* ele.tune)
-electron_chrom = ChromaticityKickSpec{Float64}(; xi = ele.chromaticity, beta = ele.beta, alpha = ele.alpha)
+electron_one_turn = Linear6DSpec{Float64}(ele_ip, ele_ip; dmu = 2pi .* ele.tune)
+electron_chrom = ChromaticityKickSpec{Float64}(; xi = ele.chromaticity, optics = ele_ip)
 electron_rad = LumpedRadSpec{Float64}(;
-    damping_turns = ele.radiation_damping_turns, beta = ele.beta, alpha = ele.alpha,
+    damping_turns = ele.radiation_damping_turns, optics = ele_ip,
     sigma = ele.sigma, is_damping = true, is_excitation = true, rng_id = 3)
 
-proton_tccb2ip = Linear6DSpec{Float64}(;
-    beta1 = pro.crab_beta, beta2 = pro.beta, alpha1 = pro.alpha, alpha2 = pro.alpha,
-    dmu = (pi / 2.0, 0.0, 0.0))
+proton_tccb2ip = Linear6DSpec{Float64}(pro_crab, pro_ip; dmu = (pi / 2.0, 0.0, 0.0))
 proton_tccb2ip_inv = Linear6DSpec{Float64}(matrix = inv(Matrix(Linear6D(proton_tccb2ip))))
-proton_ip2tcca = Linear6DSpec{Float64}(;
-    beta1 = pro.beta, beta2 = pro.crab_beta, alpha1 = pro.alpha, alpha2 = pro.alpha,
-    dmu = (pi / 2.0, 0.0, 0.0))
+proton_ip2tcca = Linear6DSpec{Float64}(pro_ip, pro_crab; dmu = (pi / 2.0, 0.0, 0.0))
 proton_ip2tcca_inv = Linear6DSpec{Float64}(matrix = inv(Matrix(Linear6D(proton_ip2tcca))))
 proton_tccb = ThinCrabCavitySpec{3}(pro.crab_frequency;
     strengthX = pro.crab_strength_x, strengthY = pro.crab_strength_y, phase = pro.crab_phase)
 proton_tcca = ThinCrabCavitySpec{3}(pro.crab_frequency;
     strengthX = pro.crab_strength_x, strengthY = pro.crab_strength_y, phase = pro.crab_phase)
-proton_one_turn = Linear6DSpec{Float64}(;
-    beta1 = pro.beta, beta2 = pro.beta, alpha1 = pro.alpha, alpha2 = pro.alpha,
-    dmu = 2pi .* pro.tune)
-proton_chrom = ChromaticityKickSpec{Float64}(; xi = pro.chromaticity, beta = pro.beta, alpha = pro.alpha)
+proton_one_turn = Linear6DSpec{Float64}(pro_ip, pro_ip; dmu = 2pi .* pro.tune)
+proton_chrom = ChromaticityKickSpec{Float64}(; xi = pro.chromaticity, optics = pro_ip)
 
 lb = LorentzBoostSpec(input.crossing_angle)
 rlb = RevLorentzBoostSpec(input.crossing_angle)

@@ -77,13 +77,16 @@ function example_catalog()
             "solver and its slicing, and what to observe. Its configurable " *
             "development harness is test/examples/strong_strong_tracking.jl.",
             Type[StrongStrongTask, StrongStrongCollision, PICPoissonSolver,
-                     LongitudinalSlicing, Beam]),
+                     LongitudinalSlicing, Beam, LinearOptics]),
         ReferenceExample(
             "examples/weak_strong_tracking.jl",
             "A live weak proton beam colliding with a fixed soft-Gaussian strong " *
             "beam through a crab crossing. The precedent for weak-strong work, " *
-            "and the smaller of the two tracking examples to read first.",
-            Type[TrackingTask, ThinStrongBeamSpec, ThinCrabCavitySpec, Beam]),
+            "and the smaller of the two tracking examples to read first; its " *
+            "linear optics are two LinearOptics points (the IP and the crab " *
+            "cavities) that the beam, the transfer maps, the chromaticity kick " *
+            "and the radiation element flatten alike.",
+            Type[TrackingTask, ThinStrongBeamSpec, ThinCrabCavitySpec, Beam, LinearOptics]),
         ReferenceExample(
             "examples/crab_cavity_noise.jl",
             "The weak-strong crab-crossing case with turn-by-turn RF phase and " *
@@ -104,7 +107,7 @@ function example_catalog()
             "test/examples/crab_cavity_noise.jl; the numerical study is " *
             "validation/crab_cavity_noise_response.jl.",
             Type[TrackingTask, ThinCrabCavitySpec, WhiteNoise, PinkNoise, SpectralNoise,
-                 TurnTable, TurnModulated, RunArtifact]),
+                 TurnTable, TurnModulated, RunArtifact, LinearOptics]),
         ReferenceExample(
             "examples/knob_control.jl",
             "One knob driving many element parameters, in two production-shaped " *
@@ -122,8 +125,10 @@ function example_catalog()
             "the uncertified longitudinal selection, the certified second run is " *
             ":passed and prints tunes, dispersions, normal modes, matched beam " *
             "sizes and the residual checks. The precedent for running an analysis " *
-            "and reading its result (every undetermined quantity by its reason).",
-            Type[TwissDispersionAnalysis, BeamLine, ThinRFCavitySpec, SBendSpec]),
+            "and reading its result (every undetermined quantity by its reason), " *
+            "and for turning the result into the LinearOptics point every " *
+            "consumer accepts (linear_optics).",
+            Type[TwissDispersionAnalysis, BeamLine, ThinRFCavitySpec, SBendSpec, LinearOptics]),
     ]
 end
 
