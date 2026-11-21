@@ -36,6 +36,10 @@ function track! end
 # Architecture and metadata.
 include("knowledge/Knowledge.jl")
 include("knowledge/Methods.jl")
+# The shared linear-optics value object (EdwardsTengTwiss, CanonicalDispersion,
+# LinearOptics): spec-layer vocabulary the element constructors, Beam and the
+# Twiss analysis flatten into their own parameters; needs nothing below it.
+include("knowledge/LinearOptics.jl")
 
 # Shared constants and math helpers.
 include("constants/Constants.jl")

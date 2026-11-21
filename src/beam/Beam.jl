@@ -614,7 +614,7 @@ end
          grid_size=nothing, grid_step=nothing,
          beta=(1,1,1), alpha=(0,0,0), sigma=nothing, emit=nothing,
          coupling=zeros(4), R=nothing, C=nothing, mode=XY_MODEA,
-         eta=zeros(4), zeta=zeros(4), initial_offset=zeros(6),
+         eta=zeros(4), zeta=zeros(4), optics=nothing, initial_offset=zeros(6),
          cutoff=5, rng=nothing, seed=nothing, rng_id=0,
          charge=0, mc2=0, E0=0, r0=0, npart=N)
 
@@ -656,13 +656,25 @@ sigma-based construction, the longitudinal covariance is
 temporarily and interpreted as `(αx,αy,0)`.
 
 `coupling`, `R` and `C` are three names for the same four x-y coupling
-coefficients `(r1, r2, r3, r4)` of [`XYCoupling`](@ref) (`R` is the element
-specs' spelling, `coupling` the original one, `C` is accepted for scripts that
-use it); give at most one, two are refused by name. `mode` selects the coupling
-branch (`XY_MODEA`, `XY_MODEB`) and acts only when the coefficients are nonzero.
-`eta=(η1..η4)` is the momentum dispersion of [`MomentumDispersion`](@ref),
-`zeta=(ζ1..ζ4)` the crab dispersion of [`CrabDispersion`](@ref); each map is
-applied only when nonzero. `cutoff` truncates the standard normals at that many
+coefficients `(r1, r2, r3, r4)` of [`XYCoupling`](@ref): the Edwards-Teng
+matrix R of `docs/theory/twiss_dispersion.md` (T2), the spelling `R` of
+`ChromaticityKickSpec` and `LumpedRadSpec` (`coupling` is the original name,
+`C` is accepted for scripts that use it) -- NOT the coupling block `R1`/`R2`
+of `Linear6DSpec`, which stores `adj(R)/sqrt(1 + det R)`. Give at most one;
+two are refused by name. `mode` selects the coupling branch (`XY_MODEA` =
+form 1, `XY_MODEB` = form 2) and acts only when the coefficients are nonzero;
+`XY_UNDEF` beside nonzero coefficients is refused rather than ignored.
+`eta=(η1..η4)` is the canonical momentum dispersion of
+[`MomentumDispersion`](@ref), `zeta=(ζ1..ζ4)` the canonical crab dispersion of
+[`CrabDispersion`](@ref); each map is applied only when nonzero.
+
+`optics = o` takes `beta`, `alpha`, the coupling coefficients, `mode`, `eta`
+and `zeta` from a [`LinearOptics`](@ref) point at once (design
+`docs/design/linear_optics.md`), so the beam is matched to that point; `sigma`
+or `emit` is still given here. Any of those keywords given beside `optics`,
+whatever its value, is refused by name, and the beam equals the one the
+flat keywords build, bit for bit under one seed. The bounded distributions
+refuse `optics` as they refuse every other optics keyword. `cutoff` truncates the standard normals at that many
 standard deviations before they are standardized (`Inf` disables it; it must be
 positive). The remaining keywords (`charge`, `mc2`, `E0`, `r0`, `npart`) build
 the beam's [`BeamParams`](@ref); `npart` defaults to `N`.
@@ -799,16 +811,17 @@ end
 function _initialize_beam(N::Union{Nothing,Integer}, backend::Type{BTAG}, FloatT::Type{RT}=Float64;
               distribution=N === nothing ? :grid : :gaussian,
               lower=nothing, upper=nothing, grid_size=nothing, grid_step=nothing,
-              beta=(one(RT), one(RT), one(RT)),
-              alpha=(zero(RT), zero(RT), zero(RT)),
+              beta=nothing,
+              alpha=nothing,
               sigma=nothing,
               emit=nothing,
-              zeta=zeros(RT, 4),
-              eta=zeros(RT, 4),
-              coupling=zeros(RT, 4),
+              zeta=nothing,
+              eta=nothing,
+              coupling=nothing,
               R=nothing,
               C=nothing,
-              mode::XYCouplingMode=XY_MODEA,
+              mode::Union{Nothing,XYCouplingMode}=nothing,
+              optics=nothing,
               cutoff=5,
               rng=nothing,
               seed=nothing,
@@ -817,6 +830,34 @@ function _initialize_beam(N::Union{Nothing,Integer}, backend::Type{BTAG}, FloatT
               execution_policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
               kwargs...) where {BTAG<:AbstractExecutionBackend,RT<:Real}
 	_require_sampling_float(RT)
+    # The optics keywords arrive as `nothing` when not given (2026-11-21
+    # neighbour audit U1-2: value defaults could not tell an explicit
+    # `beta=(1,1,1)` from an absent one beside `optics`, so the explicit value
+    # was overridden silently). With a LinearOptics point every one of them
+    # must be absent (design docs/design/linear_optics.md D3-D4: two spellings
+    # of one beam, never two sources of truth); without one they take the
+    # defaults the docstring states.
+    if optics !== nothing
+        optics isa LinearOptics || throw(ArgumentError("Beam optics must be a LinearOptics; got $(typeof(optics))"))
+        clash = [String(k) for (k, v) in pairs((; beta, alpha, coupling, R, C, mode, eta, zeta)) if v !== nothing]
+        isempty(clash) || throw(ArgumentError(
+            "Beam takes beta, alpha, the coupling coefficients, mode, eta and zeta from the LinearOptics object " *
+            "given as optics; " * join(clash, ", ") * " cannot be given beside it (give one form)"))
+        (distribution === :uniform || distribution === :grid) && throw(ArgumentError(
+            "Beam optics is Gaussian-only; bounded distributions take no optics object"))
+        beta = optics.twiss.beta
+        alpha = optics.twiss.alpha
+        coupling = optics.twiss.R
+        mode = _coupling_mode(optics.twiss)
+        eta = optics.dispersion.eta
+        zeta = optics.dispersion.zeta
+    end
+    beta = something(beta, (one(RT), one(RT), one(RT)))
+    alpha = something(alpha, (zero(RT), zero(RT), zero(RT)))
+    zeta = something(zeta, zeros(RT, 4))
+    eta = something(eta, zeros(RT, 4))
+    coupling = something(coupling, zeros(RT, 4))
+    mode = something(mode, XY_MODEA)
 	if distribution === :uniform || distribution === :grid
         return _bounded_beam(N, BTAG, RT; distribution, lower, upper, grid_size, grid_step,
             beta, alpha, sigma, emit, zeta, eta, coupling, R, C, mode, cutoff,
@@ -838,6 +879,11 @@ function _initialize_beam(N::Union{Nothing,Integer}, backend::Type{BTAG}, FloatT
 	α = _beam_alpha(alpha, RT)
 	normalization = _beam_normalization(sigma, emit, RT)
 	r = _beam_coupling_coefficients(coupling, R, C, RT)
+	# XY_UNDEF is the identity and reads no coefficient: nonzero coefficients
+	# beside it would be ignored silently, so they are refused here, before any
+	# stream is consumed (2026-11-21 LinearOptics batch, D8; the XYCoupling
+	# constructor refuses the same pair, but only after the draw).
+	_check_undef_coefficients("Beam", r[1], r[2], r[3], r[4], mode)
 	η = _tuple_typed(eta, 4, RT; keyword=:eta)
 	ζ = _tuple_typed(zeta, 4, RT; keyword=:zeta)
 	offset = _tuple_typed(initial_offset, 6, RT; keyword=:initial_offset)

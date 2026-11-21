@@ -337,7 +337,7 @@ function runtime_type(spec::ElementSpec{:linear6d}, method)
     return getparam(spec, :particle_tunes, nothing) === nothing ? Linear6D : ParticleLinear6D
 end
 
-function _particle_tune_normalizer(beta, alpha, zeta, eta, coupling, ::Type{T}) where {T}
+function _particle_tune_normalizer(beta, alpha, zeta, eta, coupling, ::Type{T}; form::Integer=1) where {T}
     b = _linear6d_tuple(beta, 3, T)
     a = _linear6d_tuple(alpha, 3, T)
     all(v -> isfinite(v) && v > 0, b) || throw(ArgumentError(
@@ -351,9 +351,16 @@ function _particle_tune_normalizer(beta, alpha, zeta, eta, coupling, ::Type{T}) 
         N = _mset(N, row+1, row, -a[i]/root_beta)
         N = _mset(N, row+1, row+1, inv(root_beta))
     end
+    # The coupling block in the end's Edwards-Teng form (`form1`/`form2` of the
+    # optics form, docs/design/linear_optics.md D7), admissibility checked by
+    # name as `_linear6d_matrix_from_optics` checks it: until the 2026-11-21
+    # neighbour audit (U1-1) this normalizer read R1/R2 but not the form, so a
+    # form-2 spec with particle tunes tracked in form 1 silently.
+    C = _linear6d_tuple(coupling, 4, T)
+    _check_linear6d_block(C, :R)
     A = _mmul66(_mmul66(_mmul66(_mzeta66(_linear6d_tuple(zeta, 4, T)),
                                 _meta66(_linear6d_tuple(eta, 4, T))),
-                        _mR66(_linear6d_tuple(coupling, 4, T))), N)
+                        _mR66(C, _linear6d_form(form, :form))), N)
     _validate_linear6d_symplectic(A; source="particle-tune normalization")
     return A
 end
@@ -380,10 +387,11 @@ function ParticleLinear6D(spec::ElementSpec{:linear6d}, method::Symplectic6DMap)
     z1 = getparam(spec, :zeta1, (0, 0, 0, 0))
     e1 = getparam(spec, :eta1, (0, 0, 0, 0))
     c1 = getparam(spec, :R1, (0, 0, 0, 0))
-    Ain = _particle_tune_normalizer(b1, a1, z1, e1, c1, T)
+    f1 = getparam(spec, :form1, 1)
+    Ain = _particle_tune_normalizer(b1, a1, z1, e1, c1, T; form=f1)
     Aout = _particle_tune_normalizer(getparam(spec, :beta2, b1), getparam(spec, :alpha2, a1),
                                      getparam(spec, :zeta2, z1), getparam(spec, :eta2, e1),
-                                     getparam(spec, :R2, c1), T)
+                                     getparam(spec, :R2, c1), T; form=getparam(spec, :form2, f1))
     phases = _linear6d_tuple(param(spec, :dmu), 3, T)
     all(isfinite, phases) || throw(ArgumentError("particle-tune dmu must be finite"))
     nominal = map(v -> v / T(2pi), phases)

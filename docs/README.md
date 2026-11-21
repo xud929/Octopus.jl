@@ -203,7 +203,17 @@ Procedures, one per task class, routed from the Task Routing table in
   phases as positions, the analysis accessor `linear_optics`, form 2 in
   `Linear6DSpec`, `XY_UNDEF` refusing coefficients, elementary maps from
   parts, conventions documented at every consumer), the staging and tests,
-  and the owner items left open.
+  and the owner items left open. Campaign record:
+  [`history/linear_optics_2026_11_21.md`](history/linear_optics_2026_11_21.md),
+  with the baseline fingerprint script
+  [`history/linear_optics_2026_11_21_baseline.jl`](history/linear_optics_2026_11_21_baseline.jl)
+  and its recorded tables
+  [`history/linear_optics_2026_11_21_baseline_fingerprints.txt`](history/linear_optics_2026_11_21_baseline_fingerprints.txt);
+  neighbour audit [`history/audit_linear_optics_2026_11_21.md`](history/audit_linear_optics_2026_11_21.md)
+  with its unit report
+  [`history/audit_linear_optics_2026_11_21_unit_reports/U1.md`](history/audit_linear_optics_2026_11_21_unit_reports/U1.md)
+  and the U1-1 reproduction
+  [`history/audit_linear_optics_2026_11_21_U1_1_repro.jl`](history/audit_linear_optics_2026_11_21_U1_1_repro.jl).
 - [`guides/development_workflow.md`](guides/development_workflow.md) — the
   environment, the two load modes, the commands, the single-testset probe
   recipe, lanes and the gate, where output goes, committing, reporting.

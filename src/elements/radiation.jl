@@ -9,12 +9,23 @@ abstract type LumpedRadSpec{T} end
                               is_damping=true, is_excitation=true,
                               tracking_method=Radiation6DMap(), rng_id=0,
                               kwargs...)
+    LumpedRadSpec{T=Float64}(; damping_turns, optics::LinearOptics, sigma=(-1,-1,-1), ...)
 
 Create an `ElementSpec{:lumped_radiation}` for a lumped damping and stochastic
 excitation element. `Radiation6DMap()` permits both components,
 `Damping6DMap()` permits damping only, and `Diffusion6DMap()` permits
 excitation only. `is_damping` and `is_excitation` enable or disable the
 component permitted by the selected method.
+
+`beta`, `alpha` are the three-plane Twiss of the damped modes, `zeta`, `eta` the
+canonical dispersions removed before the map and restored after it, and
+`R = (r1, r2, r3, r4)` the Edwards-Teng coupling matrix of [`XYCouplingSpec`](@ref)
+applied in form 1 (`XY_MODEA`), the same `R` as `Beam`'s coupling and NOT the
+block `R1`/`R2` of `Linear6DSpec`. Alternatively `optics = o` takes the five
+from a [`LinearOptics`](@ref) point (design `docs/design/linear_optics.md`);
+the flat keywords are then refused beside it, and a form-2 point is refused
+because the element couples in form 1 only. `sigma` stays a separate keyword.
+The stored spec is the same either way.
 
 Numeric type: `T` (default `Float64`) is stored as `numeric_type` and compiled
 as given, so `LumpedRadSpec{Float32}` is the Float32 element -- the typed form
@@ -41,12 +52,13 @@ LumpedRadSpec(; numeric_type=nothing, kwargs...) =
     _floor_form(LumpedRadSpec{something(numeric_type, Float64)}(; kwargs...), numeric_type)
 function (::Type{LumpedRadSpec{T}})(;
                                     damping_turns,
-                                    beta=(one(T), one(T), one(T)),
-                                    alpha=(zero(T), zero(T), zero(T)),
+                                    beta=nothing,
+                                    alpha=nothing,
                                     sigma=(-one(T), -one(T), -one(T)),
-                                    zeta=(zero(T), zero(T), zero(T), zero(T)),
-                                    eta=(zero(T), zero(T), zero(T), zero(T)),
-                                    R=(zero(T), zero(T), zero(T), zero(T)),
+                                    zeta=nothing,
+                                    eta=nothing,
+                                    R=nothing,
+                                    optics=nothing,
                                     is_damping=true,
                                     is_excitation=true,
                                     tracking_method=Radiation6DMap(),
@@ -58,17 +70,22 @@ function (::Type{LumpedRadSpec{T}})(;
     rng_id isa Integer || throw(ArgumentError(
         "lumped_radiation: rng_id must be a non-negative integer (0 assigns a fresh " *
         "stream at construction, an explicit id is claimed); got $(repr(rng_id))"))
+    # The optics keywords resolve BEFORE a stream is assigned or claimed, so a
+    # refused construction leaves the stream registry as it was.
+    o = _resolve_optics_keywords("LumpedRadSpec", optics, (; beta, alpha, zeta, eta, R),
+                                 (beta=(1, 1, 1), alpha=(0, 0, 0), zeta=(0, 0, 0, 0), eta=(0, 0, 0, 0), R=(0, 0, 0, 0));
+                                 form1_only=true, require_beta=false)
     stream_id = rng_id == 0 ? next_rng_id!(consumer=:lumped_radiation) :
                               claim_rng_id!(rng_id; consumer=:lumped_radiation)
     return ElementSpec{:lumped_radiation}(_stamp_numeric_type!(
         _spec_params(;
             damping_turns=_fixed_tuple(damping_turns, 3, T),
-            beta=_fixed_tuple(beta, 3, T),
-            alpha=_fixed_tuple(alpha, 3, T),
+            beta=_fixed_tuple(o.beta, 3, T),
+            alpha=_fixed_tuple(o.alpha, 3, T),
             sigma=_fixed_tuple(sigma, 3, T),
-            zeta=_fixed_tuple(zeta, 4, T),
-            eta=_fixed_tuple(eta, 4, T),
-            R=_fixed_tuple(R, 4, T),
+            zeta=_fixed_tuple(o.zeta, 4, T),
+            eta=_fixed_tuple(o.eta, 4, T),
+            R=_fixed_tuple(o.R, 4, T),
             is_damping=Bool(is_damping),
             is_excitation=Bool(is_excitation),
             tracking_method=tracking_method,
@@ -433,7 +450,7 @@ end
         sigma=ParamMeta(default=(-1, -1, -1), meaning="equilibrium beam sizes used by excitation; negative disables excitation"),
         zeta=ParamMeta(default=(0, 0, 0, 0), meaning="crab dispersion coefficients (zeta1..zeta4) removed before damping and restored after it. " * _CANONICAL_DISPERSION_NOTE),
         eta=ParamMeta(default=(0, 0, 0, 0), meaning="momentum dispersion coefficients (eta1..eta4) removed before damping and restored after it. " * _CANONICAL_DISPERSION_NOTE),
-        R=ParamMeta(default=(0, 0, 0, 0), meaning="x-y coupling coefficients removed before damping"),
+        R=ParamMeta(default=(0, 0, 0, 0), meaning="x-y coupling coefficients (r1, r2, r3, r4) removed before damping and restored after it: the Edwards-Teng matrix R of XYCouplingSpec applied in form 1 (XY_MODEA), lambda = 1/sqrt(1 + det R); the same R as Beam's coupling, NOT Linear6DSpec's block R1/R2 (C = adj(R)/sqrt(1 + det R))"),
         is_damping=ParamMeta(default=true, meaning="enable radiation damping"),
         is_excitation=ParamMeta(default=true, meaning="enable stochastic excitation when sigma and beta are valid"),
         tracking_method=ParamMeta(default=Radiation6DMap(), meaning="per-element tracking method; use Damping6DMap() for damping only or Diffusion6DMap() for diffusion only"),
@@ -441,7 +458,7 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = LumpedRadSpec(damping_turns=(1000.0, 1000.0, 500.0), rng_id=1)
-    construction_help = "Friendly constructor: LumpedRadSpec{T}(; damping_turns, beta=(1,1,1), alpha=(0,0,0), sigma=(-1,-1,-1), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), is_damping=true, is_excitation=true, tracking_method=Radiation6DMap(), rng_id=0, kwargs...). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form LumpedRadSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "Friendly constructor: LumpedRadSpec{T}(; damping_turns, beta=(1,1,1), alpha=(0,0,0), sigma=(-1,-1,-1), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), is_damping=true, is_excitation=true, tracking_method=Radiation6DMap(), rng_id=0, kwargs...), or LumpedRadSpec{T}(; damping_turns, optics=o::LinearOptics, sigma=(-1,-1,-1), kwargs...) taking beta, alpha, zeta, eta and R from the point (form 1 only; the flat optics keywords are refused beside optics). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form LumpedRadSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 default_method(::Type{ElementSpec{:lumped_radiation}}) = Radiation6DMap()

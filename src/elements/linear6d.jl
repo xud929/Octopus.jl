@@ -6,12 +6,36 @@ abstract type Linear6DSpec{T} end
     Linear6DSpec{T=Float64}(; matrix, tracking_method=Symplectic6DMap(), kwargs...)
     Linear6DSpec{T=Float64}(; beta1, dmu, beta2=beta1, alpha1=(0,0,0),
                              alpha2=alpha1, zeta1=(0,0,0,0),
-                             eta1=(0,0,0,0), R1=(0,0,0,0),
-                             zeta2=zeta1, eta2=eta1, R2=R1,
+                             eta1=(0,0,0,0), R1=(0,0,0,0), form1=1,
+                             zeta2=zeta1, eta2=eta1, R2=R1, form2=form1,
                              particle_tunes=nothing, rng_id=0,
                              tracking_method=Symplectic6DMap(), kwargs...)
+    Linear6DSpec{T=Float64}(o1::LinearOptics, o2::LinearOptics; dmu=nothing, kwargs...)
 
 Create an `ElementSpec{:linear6d}` for a six-dimensional linear transfer map.
+
+The third form is the transfer between two lattice points given as
+[`LinearOptics`](@ref) objects (design `docs/design/linear_optics.md`): it is
+flattened into the optics form -- `beta1`, `alpha1`, `zeta1`, `eta1` from the
+entrance point, their exit twins from the exit point, the coupling block
+`R = adj(R_ET) / sqrt(1 + det R_ET)` and `form` from each point's
+`EdwardsTengTwiss`, and the phase advance `dmu = o2.mu .- o1.mu` when both
+points carry phases in one frame, or the explicit `dmu` when they carry none
+(a disagreement between the two, a frame mismatch, or a pair of which only one
+carries phases is refused by name). The stored spec is the same one the flat
+optics keywords build.
+
+Coupling convention of the optics form: `R1`, `R2` are the Edwards-Teng
+coupling BLOCK `C = lambda adj(R)` of docs/theory/twiss_dispersion.md (T12),
+stored as `(C11, C12, C21, C22)` with the normaliser `g = sqrt(1 - det C)`, so
+that the transverse factor is `V1 = [g I, C; -adj(C), g I]` (`form = 1`) or
+`V2 = [C, g I; g I, -adj(C)]` (`form = 2`); `det C < 1` is required and refused
+by name otherwise. This is NOT the `(r1, r2, r3, r4)` Edwards-Teng matrix R
+that `XYCouplingSpec`, `Beam`, `ChromaticityKickSpec` and `LumpedRadSpec`
+take: `C = adj(R) / sqrt(1 + det R)` and `R = adj(C) / sqrt(1 - det C)`.
+`form1`, `form2` (1 or 2) select the Edwards-Teng form of each end, form 2
+being the one that stays finite when the oscillation dominating x is the
+second eigenmode; the exit form defaults to the entrance one.
 The runtime stores the 6x6 matrix as a flat tuple for GPU-compatible callable
 tracking. An explicit matrix must satisfy `transpose(M) * J * M = J` in the
 canonical `(x, px, y, py, z, pz)` ordering. Validation uses a
@@ -58,20 +82,68 @@ independent copies of assigned values and preparation provenance.
 """
 Linear6DSpec(; matrix=nothing, beta1=nothing, dmu=nothing, beta2=nothing,
               alpha1=nothing, alpha2=nothing,
-              zeta1=nothing, eta1=nothing, R1=nothing,
-              zeta2=nothing, eta2=nothing, R2=nothing,
+              zeta1=nothing, eta1=nothing, R1=nothing, form1=nothing,
+              zeta2=nothing, eta2=nothing, R2=nothing, form2=nothing,
               particle_tunes=nothing, rng_id=0, numeric_type=nothing, kwargs...) =
     _floor_form(Linear6DSpec{something(numeric_type,
                                        _linear_map_eltype(matrix, beta1, dmu, beta2, alpha1, alpha2,
                                                           zeta1, eta1, R1, zeta2, eta2, R2))}(;
         matrix=matrix, beta1=beta1, dmu=dmu, beta2=beta2,
-        alpha1=alpha1, alpha2=alpha2, zeta1=zeta1, eta1=eta1, R1=R1,
-        zeta2=zeta2, eta2=eta2, R2=R2, particle_tunes=particle_tunes, rng_id=rng_id,
+        alpha1=alpha1, alpha2=alpha2, zeta1=zeta1, eta1=eta1, R1=R1, form1=form1,
+        zeta2=zeta2, eta2=eta2, R2=R2, form2=form2, particle_tunes=particle_tunes, rng_id=rng_id,
         kwargs...), numeric_type)
 # The optics form's keys, in one place for the two refusals of "both forms at
 # once" (the typed constructor and `Linear6D(spec)` on a raw spec).
 const _LINEAR6D_OPTICS_KEYS = (:beta1, :dmu, :beta2, :alpha1, :alpha2,
-                               :zeta1, :eta1, :R1, :zeta2, :eta2, :R2)
+                               :zeta1, :eta1, :R1, :form1, :zeta2, :eta2, :R2, :form2)
+
+# The Edwards-Teng form of one end of the optics form: 1 or 2 (design
+# docs/design/linear_optics.md D7), read through the friendly constructor and
+# the raw form alike.
+function _linear6d_form(value, name::Symbol)
+    (value isa Integer && !(value isa Bool) && value in (1, 2)) || throw(ArgumentError(
+        "Linear6DSpec $(name) must be 1 or 2 (the Edwards-Teng forms V1 and V2 of the theory note's (T2)); got $(repr(value))"))
+    return Int(value)
+end
+
+# The coupling block of one end from a LinearOptics point: C = adj(R) / sqrt(1 + det R)
+# (theory note (T12); the inverse is R = adj(C) / sqrt(1 - det C), `_edwards_teng_R_from_block`).
+function _edwards_teng_block(t::EdwardsTengTwiss{T}) where {T}
+    r1, r2, r3, r4 = t.R
+    lambda = inv(sqrt(1 + r1 * r4 - r2 * r3))
+    return (lambda * r4, -lambda * r2, -lambda * r3, lambda * r1)
+end
+function _edwards_teng_R_from_block(C::NTuple{4})
+    g = sqrt(1 - (C[1] * C[4] - C[2] * C[3]))
+    return (C[4] / g, -C[2] / g, -C[3] / g, C[1] / g)
+end
+
+function (::Type{Linear6DSpec{T}})(o1::LinearOptics, o2::LinearOptics; dmu=nothing, kwargs...) where {T}
+    clash = [k for k in keys(kwargs) if k in _LINEAR6D_OPTICS_KEYS || k === :matrix]
+    isempty(clash) || throw(ArgumentError(
+        "Linear6DSpec(o1, o2) takes its optics from the two LinearOptics points; $(join(string.(clash), ", ")) " *
+        "cannot be given beside them (give one form)"))
+    advance = _phase_advance(o1, o2, dmu)
+    return Linear6DSpec{T}(; beta1=o1.twiss.beta, alpha1=o1.twiss.alpha, zeta1=o1.dispersion.zeta,
+                           eta1=o1.dispersion.eta, R1=_edwards_teng_block(o1.twiss), form1=o1.twiss.form,
+                           beta2=o2.twiss.beta, alpha2=o2.twiss.alpha, zeta2=o2.dispersion.zeta,
+                           eta2=o2.dispersion.eta, R2=_edwards_teng_block(o2.twiss), form2=o2.twiss.form,
+                           dmu=advance, kwargs...)
+end
+"""
+    Linear6DSpec(o1::LinearOptics, o2::LinearOptics; dmu=nothing, kwargs...)
+    Linear6DSpec{T}(o1::LinearOptics, o2::LinearOptics; dmu=nothing, kwargs...)
+
+The transfer from the lattice point `o1` to the point `o2` (see the type
+docstring): the optics form with the two points flattened in and the phase
+advance from their phases or from `dmu`. Extra keywords (`particle_tunes`,
+`rng_id`, `tracking_method`, placement, metadata) pass through unchanged;
+the optics keywords themselves are refused beside the points.
+"""
+function Linear6DSpec(o1::LinearOptics{T1}, o2::LinearOptics{T2}; dmu=nothing, numeric_type=nothing, kwargs...) where {T1,T2}
+    T = something(numeric_type, promote_type(Float64, T1, T2, _optics_eltype(dmu)))
+    return _floor_form(Linear6DSpec{T}(o1, o2; dmu=dmu, kwargs...), numeric_type)
+end
 
 _linear6d_both_forms(given) = ArgumentError(
     "Linear6DSpec takes either matrix or the optics form (beta1, dmu, ...), not both: " *
@@ -91,6 +163,8 @@ function (::Type{Linear6DSpec{T}})(; matrix=nothing,
                                   zeta2=nothing,
                                   eta2=nothing,
                                   R2=nothing,
+                                  form1=nothing,
+                                  form2=nothing,
                                   particle_tunes=nothing,
                                   rng_id=0,
                                   tracking_method=Symplectic6DMap(),
@@ -99,7 +173,7 @@ function (::Type{Linear6DSpec{T}})(; matrix=nothing,
     sources = _normalize_particle_tunes(particle_tunes)
     sources === nothing || T in (Float32, Float64) || throw(ArgumentError(
         "particle_tunes supports Float32 or Float64; ordinary Linear6DSpec supports other Number types"))
-    optics = (; beta1, dmu, beta2, alpha1, alpha2, zeta1, eta1, R1, zeta2, eta2, R2)
+    optics = (; beta1, dmu, beta2, alpha1, alpha2, zeta1, eta1, R1, form1, zeta2, eta2, R2, form2)
     @assert keys(optics) == _LINEAR6D_OPTICS_KEYS
     if matrix !== nothing
         sources === nothing || throw(ArgumentError(
@@ -126,6 +200,8 @@ function (::Type{Linear6DSpec{T}})(; matrix=nothing,
         zeta2 = something(zeta2, zeta1)
         eta2 = something(eta2, eta1)
         R2 = something(R2, R1)
+        form1 = _linear6d_form(something(form1, 1), :form1)
+        form2 = _linear6d_form(something(form2, form1), :form2)
         params[:beta1] = _linear6d_tuple(beta1, 3, T)
         params[:beta2] = _linear6d_tuple(beta2, 3, T)
         params[:alpha1] = _linear6d_tuple(alpha1, 3, T)
@@ -137,6 +213,10 @@ function (::Type{Linear6DSpec{T}})(; matrix=nothing,
         params[:zeta2] = _linear6d_tuple(zeta2, 4, T)
         params[:eta2] = _linear6d_tuple(eta2, 4, T)
         params[:R2] = _linear6d_tuple(R2, 4, T)
+        params[:form1] = form1
+        params[:form2] = form2
+        _check_linear6d_block(params[:R1], :R1)
+        _check_linear6d_block(params[:R2], :R2)
     end
     resolved_rng_id = _particle_tune_rng_id(sources, rng_id; claim=true)
     if sources !== nothing
@@ -361,6 +441,8 @@ function _linear6d_matrix_from_optics(spec::ElementSpec{:linear6d})
     zeta2 = partner(:zeta2, zeta1)
     eta2 = partner(:eta2, eta1)
     R2 = partner(:R2, R1)
+    form1 = _linear6d_form(partner(:form1, 1), :form1)
+    form2 = _linear6d_form(partner(:form2, form1), :form2)
     # The promotion has to span EVERY optics parameter that reaches the matrix,
     # not just the Twiss block: it used to cover beta/alpha/dmu only, so a Dual
     # or Complex zeta/eta/R died at the `_linear6d_tuple(..., T)` conversions
@@ -392,12 +474,27 @@ function _linear6d_matrix_from_optics(spec::ElementSpec{:linear6d})
     zeta2 = _linear6d_tuple(zeta2, 4, T)
     eta2 = _linear6d_tuple(eta2, 4, T)
     R2 = _linear6d_tuple(R2, 4, T)
+    _check_linear6d_block(R1, :R1)
+    _check_linear6d_block(R2, :R2)
 
     return _mmul66(
-        _mmul66(_mmul66(_mmul66(_mmul66(_mzeta66(zeta2), _meta66(eta2)), _mR66(R2)), B),
-                _minv66(_mR66(R1))),
+        _mmul66(_mmul66(_mmul66(_mmul66(_mzeta66(zeta2), _meta66(eta2)), _mR66(R2, form2)), B),
+                _minv66(_mR66(R1, form1))),
         _mmul66(_minv66(_meta66(eta1)), _minv66(_mzeta66(zeta1))),
     )
+end
+
+# The admissibility of a coupling block: `g = sqrt(1 - det C)` must be real,
+# i.e. det C < 1 (theory note (T3) read through (T12): 1 + det R > 0). Refused
+# by name at construction and at the raw-form compile; before the 2026-11-21
+# LinearOptics batch `_mR66` reached `sqrt` of a negative number and died with
+# a bare DomainError naming neither the element nor the parameter.
+function _check_linear6d_block(C::NTuple{4}, name::Symbol)
+    det = C[1] * C[4] - C[2] * C[3]
+    isfinite(real(det)) && real(det) >= 1 && throw(ArgumentError(
+        "Linear6DSpec $(name) = $(C) is not an admissible Edwards-Teng block: det C = $(real(det)) must be below 1 " *
+        "(g = sqrt(1 - det C) is the normaliser; the block is C = adj(R) / sqrt(1 + det R) of the coupling matrix R)"))
+    return nothing
 end
 
 _zero66(::Type{T}) where {T} = ntuple(_ -> zero(T), 36)
@@ -428,20 +525,41 @@ function _meta66(eta::NTuple{4,T}) where {T}
     return M
 end
 
-function _mR66(C::NTuple{4,T}) where {T}
+# The transverse coupling factor of one end, from the Edwards-Teng block C
+# (docs/theory/twiss_dispersion.md (T2) with C = lambda adj(R), (T12)):
+#   form 1: V1 = [g I, C; -adj(C), g I]      form 2: V2 = [C, g I; g I, -adj(C)]
+# with g = sqrt(1 - det C) = lambda and adj(C) = [C4 -C2; -C3 C1]. Form 2 is
+# V1 with the mode columns exchanged ((T4)); the z plane is the identity.
+_mR66(C::NTuple{4,T}) where {T} = _mR66(C, 1)
+function _mR66(C::NTuple{4,T}, form::Integer) where {T}
     M = _identity66(T)
     g = sqrt(one(T) - C[1] * C[4] + C[2] * C[3])
-    for i in 1:4
-        M = _mset(M, i, i, g)
+    if form == 1
+        for i in 1:4
+            M = _mset(M, i, i, g)
+        end
+        M = _mset(M, 1, 3, C[1])
+        M = _mset(M, 1, 4, C[2])
+        M = _mset(M, 2, 3, C[3])
+        M = _mset(M, 2, 4, C[4])
+        M = _mset(M, 3, 1, -C[4])
+        M = _mset(M, 3, 2, C[2])
+        M = _mset(M, 4, 1, C[3])
+        M = _mset(M, 4, 2, -C[1])
+    else
+        M = _mset(M, 1, 1, C[1])
+        M = _mset(M, 1, 2, C[2])
+        M = _mset(M, 2, 1, C[3])
+        M = _mset(M, 2, 2, C[4])
+        M = _mset(M, 1, 3, g)
+        M = _mset(M, 2, 4, g)
+        M = _mset(M, 3, 1, g)
+        M = _mset(M, 4, 2, g)
+        M = _mset(M, 3, 3, -C[4])
+        M = _mset(M, 3, 4, C[2])
+        M = _mset(M, 4, 3, C[3])
+        M = _mset(M, 4, 4, -C[1])
     end
-    M = _mset(M, 1, 3, C[1])
-    M = _mset(M, 1, 4, C[2])
-    M = _mset(M, 2, 3, C[3])
-    M = _mset(M, 2, 4, C[4])
-    M = _mset(M, 3, 1, -C[4])
-    M = _mset(M, 3, 2, C[2])
-    M = _mset(M, 4, 1, C[3])
-    M = _mset(M, 4, 2, -C[1])
     return M
 end
 
@@ -471,13 +589,15 @@ end
             meaning="counter RNG stream consumed by particle-tune distributions at first passage and explicit rearm; zero allocates/claims a fresh stream at friendly construction, a raw stochastic spec requires a resolved nonzero ID, and nonzero without distributions is refused as inactive"),
         zeta1=ParamMeta(meaning="initial crab dispersion coefficients; defaults to zeros in the optics form (see alpha1). " * _CANONICAL_DISPERSION_NOTE),
         eta1=ParamMeta(meaning="initial momentum dispersion coefficients; defaults to zeros in the optics form (see alpha1). " * _CANONICAL_DISPERSION_NOTE),
-        R1=ParamMeta(meaning="initial x-y coupling coefficients; defaults to zeros in the optics form (see alpha1)"),
+        R1=ParamMeta(meaning="initial x-y coupling BLOCK (C11, C12, C21, C22): the Edwards-Teng block C = lambda adj(R) of docs/theory/twiss_dispersion.md (T12), normaliser g = sqrt(1 - det C), det C < 1 required; NOT the (r1, r2, r3, r4) matrix R of XYCouplingSpec, Beam, ChromaticityKickSpec and LumpedRadSpec (C = adj(R)/sqrt(1 + det R), R = adj(C)/sqrt(1 - det C)); the LinearOptics form converts. Defaults to zeros in the optics form (see alpha1)"),
+        form1=ParamMeta(alternatives=(1, 2), meaning="Edwards-Teng form of the initial coupling block: 1 for V1 = [gI C; -adj(C) gI], 2 for V2 = [C gI; gI -adj(C)] (theory note (T2), (T4)); inert while R1 is zero; defaults to 1 in the optics form (no schema default: the matrix form has no such parameter, see alpha1)"),
         zeta2=ParamMeta(meaning="final crab dispersion coefficients; defaults to zeta1. " * _CANONICAL_DISPERSION_NOTE),
         eta2=ParamMeta(meaning="final momentum dispersion coefficients; defaults to eta1. " * _CANONICAL_DISPERSION_NOTE),
-        R2=ParamMeta(meaning="final x-y coupling coefficients; defaults to R1"),
+        R2=ParamMeta(meaning="final x-y coupling BLOCK (C11, C12, C21, C22), the same Edwards-Teng block convention as R1; defaults to R1"),
+        form2=ParamMeta(alternatives=(1, 2), meaning="Edwards-Teng form of the final coupling block, 1 or 2 as form1; defaults to form1 (the constructor and the raw form alike, so no literal default is declared)"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = Linear6DSpec(matrix=Matrix{Float64}(I, 6, 6))
-    construction_help = "Friendly constructor: Linear6DSpec{T}(; matrix, tracking_method=Symplectic6DMap(), kwargs...), where matrix must be canonical symplectic, or Linear6DSpec{T}(; beta1, dmu, beta2=beta1, alpha1=(0,0,0), alpha2=alpha1, zeta1=(0,0,0,0), eta1=(0,0,0,0), R1=(0,0,0,0), zeta2=zeta1, eta2=eta1, R2=R1, tracking_method=Symplectic6DMap(), kwargs...). The two forms are exclusive: matrix beside any optics keyword is refused by name, at construction and when a raw spec carrying both compiles. The optics form additionally accepts particle_tunes=nothing and rng_id=0: any named subset of nux/nuy/nuz can use global per-particle arrays, six-argument entrance-coordinate functions, finite real constants, or TuneDistribution; joint named sources use TuneFunction/TuneDistribution with planes, and disjoint groups compose in a tuple. Omitted tunes remain dmu/(2pi). The active ParticleLinear6D variant supports Float32/Float64 TrackingTask execution on CPU/CUDA/MPI, persists across continuation and coordinate reset, and refuses explicit matrices, non-default placement transforms, bare tracking and contextless Matrix/Twiss queries. rng_id is consumed only by distributions; zero assigns a fresh stream at friendly construction, raw stochastic specs require a resolved nonzero stream, and nonzero without distributions is refused. clear_particle_tunes! explicitly rearms with a fresh epoch; particle_tune_tables returns independent local copies and provenance. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form Linear6DSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "Friendly constructor: Linear6DSpec{T}(; matrix, tracking_method=Symplectic6DMap(), kwargs...), where matrix must be canonical symplectic, or Linear6DSpec{T}(; beta1, dmu, beta2=beta1, alpha1=(0,0,0), alpha2=alpha1, zeta1=(0,0,0,0), eta1=(0,0,0,0), R1=(0,0,0,0), form1=1, zeta2=zeta1, eta2=eta1, R2=R1, form2=form1, tracking_method=Symplectic6DMap(), kwargs...), or the transfer between two LinearOptics points Linear6DSpec{T}(o1, o2; dmu=nothing, kwargs...), flattened into the optics form (R1/R2 = adj(R)/sqrt(1 + det R) of each point's Edwards-Teng R, form1/form2 its form, dmu from the points' phases in one frame or given). The two forms are exclusive: matrix beside any optics keyword is refused by name, at construction and when a raw spec carrying both compiles. The optics form additionally accepts particle_tunes=nothing and rng_id=0: any named subset of nux/nuy/nuz can use global per-particle arrays, six-argument entrance-coordinate functions, finite real constants, or TuneDistribution; joint named sources use TuneFunction/TuneDistribution with planes, and disjoint groups compose in a tuple. Omitted tunes remain dmu/(2pi). The active ParticleLinear6D variant supports Float32/Float64 TrackingTask execution on CPU/CUDA/MPI, persists across continuation and coordinate reset, and refuses explicit matrices, non-default placement transforms, bare tracking and contextless Matrix/Twiss queries. rng_id is consumed only by distributions; zero assigns a fresh stream at friendly construction, raw stochastic specs require a resolved nonzero stream, and nonzero without distributions is refused. clear_particle_tunes! explicitly rearms with a fresh epoch; particle_tune_tables returns independent local copies and provenance. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form Linear6DSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end

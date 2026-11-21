@@ -2249,6 +2249,52 @@ tens of milliseconds per 64 MB): the probes are cheap and the decisions they
 decided -- `append` keeping its file meaning, the step a constant and not an
 option -- would otherwise have been guessed.
 
+## One name on six constructors is six conventions until one object carries it
+
+Measured 2026-11-21 while designing the shared linear-optics object
+([`design/linear_optics.md`](design/linear_optics.md), record
+[`history/linear_optics_2026_11_21.md`](history/linear_optics_2026_11_21.md)):
+the quintuple (beta, alpha, zeta, eta, R) was spelled on six constructors and
+the symbol `R` meant two different matrices. `Linear6DSpec`'s `R1`/`R2` held
+the Edwards-Teng BLOCK `C = adj(R) / sqrt(1 + det R)` with the normaliser
+`sqrt(1 - det C)` (`_mR66`), while `XYCouplingSpec`, `Beam`,
+`ChromaticityKickSpec` and `LumpedRadSpec` held the Edwards-Teng matrix R
+itself, the latter two with form 1 hard-coded; no `ParamMeta` said which, no
+test built a `Linear6DSpec` with a nonzero `R1`, and the `Beam` docstring
+asserted that `R` was "the element specs' spelling". The same four numbers
+given to two constructors built two different coupling maps. Nothing had
+failed, because every lattice in the suite and in the owner's studies was
+uncoupled: a convention mismatch is invisible until the parameter is
+nonzero.
+
+The remedy was structural, not editorial: a value type that carries the
+convention once (`EdwardsTengTwiss` with R and its form in the theory note's
+(T2)), consumers that FLATTEN it into their own stored parameters so that the
+object form and the flat form are bitwise one spec (pinned per consumer), a
+conversion inside the one consumer whose storage differs, and the convention
+restated in every `ParamMeta` (the F-99 rule). A pre-edit fingerprint of
+every flat path (14 SHA-256 hashes, CPU and CUDA) stayed identical through the
+batch, which is what let the flattening be added without a tolerance.
+
+Two rules adopted: when a name is reused across constructors, the first test
+is a nonzero round trip between them, not the docstrings; and when the
+analysis owns a quantity's meaning, the constructors' job is to convert into
+it, never to define a second one.
+
+## A form-2 point is a form-1 point with its modes exchanged
+
+Measured 2026-11-21 (same record): the Twiss analysis labels mode 1 as the
+x-dominant mode, so under `preferred_form = :auto` it presents form 1
+whenever that form is admissible, and a `LinearOptics` written in form 2 with
+a y-dominant first mode returned from `linear_optics(analyze(...))` as the
+form-1 point with beta and alpha exchanged and the same R -- the (T4)
+identity, the rebuilt map equal to 1e-13. The first round-trip test compared
+labels and failed on a correct result. Rule: a round trip through a
+labelling-dependent representation compares the OBJECT the labels describe
+(here the map) in every case and the labels only where the labelling is
+canonical; a forced presentation (`preferred_form = 2`) round-trips under the
+same request and is tested that way.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

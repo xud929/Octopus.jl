@@ -186,18 +186,40 @@ ThinStrongBeamSpec(; numeric_type=nothing, kwargs...) =
 function (::Type{ThinStrongBeamSpec{T}})(; kbb,
                                         klum=one(T),
                                         beta=nothing,
-                                        alpha=(zero(T), zero(T)),
+                                        alpha=nothing,
                                         sigma=nothing,
                                         covariance=nothing,
                                         coupling=nothing,
+                                        optics=nothing,
                                         center=(zero(T), zero(T), zero(T)),
                                         angle=(zero(T), zero(T), zero(T)),
                                         curvature=(zero(T), zero(T), zero(T)),
                                         virtual_drift=:hirata,
                                         tracking_method=WeakStrongBeamBeamMap(),
                                         kwargs...) where {T}
+    if optics !== nothing
+        # The transverse projection of a LinearOptics point (design
+        # docs/design/linear_optics.md D3-D4): the first two planes of beta and
+        # alpha, the Edwards-Teng R as an XYCouplingSpec in the point's form
+        # (only when nonzero, so the stored covariance equals the flat form's
+        # exactly); the strong beam's covariance is transverse, so a nonzero
+        # dispersion is refused rather than dropped.
+        optics isa LinearOptics || throw(ArgumentError(
+            "ThinStrongBeamSpec optics must be a LinearOptics; got $(typeof(optics))"))
+        clash = [String(k) for (k, v) in pairs((; beta, alpha, coupling, covariance)) if v !== nothing]
+        isempty(clash) || throw(ArgumentError(
+            "ThinStrongBeamSpec takes beta, alpha and coupling from the LinearOptics object given as optics; " *
+            join(clash, ", ") * " cannot be given beside it (give one form)"))
+        (all(iszero, optics.dispersion.zeta) && all(iszero, optics.dispersion.eta)) || throw(ArgumentError(
+            "ThinStrongBeamSpec builds a transverse covariance and carries no dispersion; the LinearOptics " *
+            "point has zeta = $(optics.dispersion.zeta), eta = $(optics.dispersion.eta), which would be dropped " *
+            "silently (give a dispersion-free point, or build the covariance yourself)"))
+        beta = (optics.twiss.beta[1], optics.twiss.beta[2])
+        alpha = (optics.twiss.alpha[1], optics.twiss.alpha[2])
+        coupling = all(iszero, optics.twiss.R) ? nothing : XYCouplingSpec{T}(optics.twiss)
+    end
     covariance4 = transverse_covariance(T;
-        beta=beta, alpha=alpha, sigma=sigma,
+        beta=beta, alpha=something(alpha, (zero(T), zero(T))), sigma=sigma,
         covariance=covariance, coupling=coupling)
     angle3 = _strong_inert_longitudinal(_strong_tuple(angle, 3, T), "angle", 3)
     curvature3 = _strong_inert_longitudinal(_strong_tuple(curvature, 3, T), "curvature", 3)
@@ -1964,7 +1986,7 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = ThinStrongBeamSpec(kbb=1e-4, beta=(1.0, 1.0), sigma=(1e-3, 1e-3))
-    construction_help = "Friendly constructor: ThinStrongBeamSpec{T}(; kbb, klum=1, beta=nothing, alpha=(0,0), sigma=nothing, covariance=nothing, coupling=nothing, center=(0,0,0), angle=(0,0,0), curvature=(0,0,0), virtual_drift=:hirata, tracking_method=WeakStrongBeamBeamMap(), kwargs...). Supply beta/sigma or covariance; coupling transforms the uncoupled covariance. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinStrongBeamSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "Friendly constructor: ThinStrongBeamSpec{T}(; kbb, klum=1, beta=nothing, alpha=(0,0), sigma=nothing, covariance=nothing, coupling=nothing, optics=nothing, center=(0,0,0), angle=(0,0,0), curvature=(0,0,0), virtual_drift=:hirata, tracking_method=WeakStrongBeamBeamMap(), kwargs...). Supply beta/sigma or covariance; coupling transforms the uncoupled covariance; optics=o::LinearOptics supplies beta, alpha and coupling (its transverse projection; a point carrying dispersion is refused, and beta/alpha/coupling/covariance are refused beside optics) with sigma given separately. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinStrongBeamSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 @element_spec begin

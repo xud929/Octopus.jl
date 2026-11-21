@@ -1,5 +1,6 @@
 export TwissDispersionAnalysis, TwissDispersionResult, OpticsAnalysisError, NormalMode,
-       ANALYSIS_STATUSES, analyze, analysis_option_schema, matched_covariance, normal_mode
+       ANALYSIS_STATUSES, analyze, analysis_option_schema, matched_covariance, normal_mode,
+       linear_optics
 
 # Stage 4b of the Twiss and dispersion analysis (design note
 # docs/design/twiss_dispersion_analysis.md, "Types and availability",
@@ -821,6 +822,67 @@ function matched_covariance(result::TwissDispersionResult, emittances)
         Sigma = _matched_covariance_6d(result.matrix_scaled, determined_value(po), em, f.covariances, sep.eta).sigma
     end
     return _unscale_covariance(result.scaling, Sigma)
+end
+
+"""
+    linear_optics(result::TwissDispersionResult; frame=nothing, s=nothing) -> LinearOptics
+
+The periodic linear optics of the analysed 6x6 map at its reference point, in
+the CALLER'S coordinates, as the [`LinearOptics`](@ref) object every optics
+consumer accepts (design `docs/design/linear_optics.md`, D6): the Edwards-Teng
+matrix `R` and the `form` the analysis presents (`physical.edwards_teng_R`,
+the transverse bundle's `preferred_form`), the unit-area eigenmode Twiss
+`(beta_j, alpha_j)` of that form unscaled from the normalizer-route
+`EdwardsTengPair` with the plane carrying each mode (form 1: mode j in plane
+j; form 2: exchanged), the canonical `zeta`, `eta` of `physical`, and the
+longitudinal mode's `(beta_z, alpha_z)` from the Courant-Snyder reading of
+the separation's decoupled longitudinal block, unscaled in plane 3. With a
+`frame` the point carries `mu = (0, 0, 0)` in that frame, so
+`Linear6DSpec(o, advance_phase(o, result.physical.tunes))` rebuilds a map
+with the analysed optics and tunes; without one `mu` is `nothing`.
+
+Throws `UndeterminedQuantityError` with the analysis's reason when a needed
+quantity is not unique (no transverse frame, no admissible form, an
+ambiguous or unavailable dispersion, a coasting or unstable longitudinal
+block), and `ArgumentError` on a 4x4 input, which has neither dispersion nor
+a longitudinal mode.
+"""
+function linear_optics(result::TwissDispersionResult; frame=nothing, s=nothing)
+    d = result.input.dimension
+    d == 6 || throw(ArgumentError(
+        "linear_optics: a 6x6 map is needed (the point carries dispersion and a longitudinal mode); got $(d)x$(d)"))
+    tr = result.transverse
+    is_determined(tr) || throw(UndeterminedQuantityError(tr.status, tr.reason, "linear_optics: no transverse frame: " * tr.detail))
+    t = determined_value(tr)
+    pf = t.preferred_form
+    is_determined(pf) || throw(UndeterminedQuantityError(pf.status, pf.reason, "linear_optics: no admissible Edwards-Teng form: " * pf.detail))
+    form = determined_value(pf)
+    pr = t.edwards_teng_normalizer
+    is_determined(pr) || throw(UndeterminedQuantityError(pr.status, pr.reason, "linear_optics: no Edwards-Teng pair on the normalizer route: " * pr.detail))
+    f = form == 1 ? determined_value(pr).form1 : determined_value(pr).form2
+    is_determined(f.twiss) || throw(UndeterminedQuantityError(f.twiss.status, f.twiss.reason, "linear_optics: no eigenmode Twiss in form $(form): " * f.twiss.detail))
+    tw = determined_value(f.twiss)
+    Rd = result.physical.edwards_teng_R
+    is_determined(Rd) || throw(UndeterminedQuantityError(Rd.status, Rd.reason, "linear_optics: no Edwards-Teng R: " * Rd.detail))
+    Rm = determined_value(Rd)
+    p1, p2 = form == 1 ? (1, 2) : (2, 1)
+    b1, a1, _ = _unscale_twiss(result.scaling, p1, tw[1].beta, tw[1].alpha, tw[1].gamma)
+    b2, a2, _ = _unscale_twiss(result.scaling, p2, tw[2].beta, tw[2].alpha, tw[2].gamma)
+    sep = result.separation
+    is_determined(sep) || throw(UndeterminedQuantityError(sep.status, sep.reason, "linear_optics: no canonical separation: " * sep.detail))
+    lt = _twiss_from_block(determined_value(sep).longitudinal_map)
+    is_determined(lt) || throw(UndeterminedQuantityError(lt.status, lt.reason, "linear_optics: the longitudinal mode has no Courant-Snyder Twiss: " * lt.detail))
+    l = determined_value(lt)
+    bs, as, _ = _unscale_twiss(result.scaling, 3, l.beta, l.alpha, l.gamma)
+    zd = result.physical.zeta
+    is_determined(zd) || throw(UndeterminedQuantityError(zd.status, zd.reason, "linear_optics: crab dispersion not unique: " * zd.detail))
+    ed = result.physical.eta
+    is_determined(ed) || throw(UndeterminedQuantityError(ed.status, ed.reason, "linear_optics: momentum dispersion not unique: " * ed.detail))
+    zeta = Tuple(Float64.(determined_value(zd))); eta = Tuple(Float64.(determined_value(ed)))
+    twiss = EdwardsTengTwiss{Float64}(; beta=(b1, b2, bs), alpha=(a1, a2, as),
+                                      R=(Rm[1, 1], Rm[1, 2], Rm[2, 1], Rm[2, 2]), form=form)
+    dispersion = CanonicalDispersion{Float64}(; zeta=zeta, eta=eta)
+    return LinearOptics{Float64}(twiss, dispersion; mu=frame === nothing ? nothing : (0.0, 0.0, 0.0), s=s, frame=frame)
 end
 
 """

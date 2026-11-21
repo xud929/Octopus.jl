@@ -2761,6 +2761,202 @@ end
     @test n_both > 0              # the fixtures exercise the two-form case (the one-form case has its own fixtures below)
 end
 
+@testset "LinearOptics: the shared optics object feeds every consumer by one flattening rule" begin
+    # Design docs/design/linear_optics.md (2026-11-21). The quintuple
+    # (beta, alpha, zeta, eta, R) is spelled on six constructors with two
+    # conventions under one name `R`: Linear6DSpec stores the Edwards-Teng
+    # BLOCK C = adj(R)/sqrt(1 + det R) (its R1/R2), XYCoupling, Beam,
+    # ChromaticityKickSpec and LumpedRadSpec the matrix R itself. The value
+    # object carries R in the theory note's convention and every consumer
+    # flattens it into its own stored parameters (D3), so the object form and
+    # the flat form must build the same spec or beam exactly, and the flat
+    # path itself must not move (the campaign's baseline fingerprints,
+    # docs/history/linear_optics_2026_11_21_baseline.jl).
+    β = (0.8, 0.072, 90.9); α = (0.3, -0.2, 0.05)
+    R = (0.05, 0.01, -0.02, 0.03); ζ = (1e-3, 2e-4, -3e-4, 5e-5); η = (0.2, 0.01, -0.03, 2e-3)
+    t1 = EdwardsTengTwiss(beta=β, alpha=α, R=R)
+    t2 = EdwardsTengTwiss(beta=β, alpha=α, R=R, form=2)
+    d = CanonicalDispersion(zeta=ζ, eta=η)
+    o1 = LinearOptics(t1, d; mu=(0.0, 0.0, 0.0), frame=:ring)
+    o2 = LinearOptics(; beta=(1.1, 0.05, 80.0), alpha=(-0.1, 0.4, 0.0), R=(-0.05, -0.01, 0.02, -0.03),
+                      zeta=ζ .* 0.5, eta=η .* 2, mu=(0.7, 1.3, -0.06), frame=:ring)
+    # --- D1: construction, promotion, refusals -----------------------------------------------------------
+    @test t1.form == 1 && t2.form == 2 && o1.twiss === t1 && o1.dispersion === d
+    @test LinearOptics(; beta=(1, 1, 1)) isa LinearOptics{Float64}            # Float64 floor
+    @test LinearOptics{Float32}(; beta=(1, 1, 1)) isa LinearOptics{Float32}
+    @test LinearOptics(; beta=(1f0, 1f0, 1f0)) isa LinearOptics{Float64}
+    @test_throws ArgumentError EdwardsTengTwiss(beta=(1.0, -1.0, 1.0))
+    @test_throws ArgumentError EdwardsTengTwiss(beta=(1.0, 1.0, 1.0), form=3)
+    @test_throws ArgumentError EdwardsTengTwiss(beta=(1.0, 1.0, 1.0), R=(2.0, 0.0, 0.0, -1.0))   # 1 + det R = -1
+    @test_throws ArgumentError EdwardsTengTwiss(beta=(1.0, 1.0))                              # length
+    @test_throws ArgumentError CanonicalDispersion(eta=(1, 0, 0, 0), slope=(1, 0, 0, 0))
+    @test_throws ArgumentError LinearOptics(; beta=(1, 1, 1), mu=(0, 0, 0))                    # D5: mu needs a frame
+    @test_throws ArgumentError LinearOptics(; beta=(1, 1, 1), mu=(0, 0, 0), frame="ring")
+    # --- D2: the canonical/slope dispersion conversion and h ---------------------------------------------
+    @test dispersion_h(d) ≈ 1 - (ζ[1] * η[2] - ζ[2] * η[1] + ζ[3] * η[4] - ζ[4] * η[3])
+    @test dispersion_h(CanonicalDispersion(eta=η)) == 1.0
+    @test all(slope_dispersion(CanonicalDispersion(eta=η)) .== η)                             # h = 1 without zeta
+    d_back = CanonicalDispersion(zeta=ζ, slope=slope_dispersion(d))
+    @test all(isapprox.(d_back.eta, η; rtol=1e-14))
+    # --- D5: phases are positions ------------------------------------------------------------------------
+    oa = advance_phase(o1, (0.7, 1.3, -0.06))
+    @test oa.mu == (0.7, 1.3, -0.06) && oa.frame === :ring && oa.twiss === o1.twiss
+    @test_throws ArgumentError advance_phase(LinearOptics(t1), (1, 1, 1))
+    @test Octopus._phase_advance(o1, oa, nothing) == (0.7, 1.3, -0.06)
+    @test Octopus._phase_advance(LinearOptics(t1), LinearOptics(t2), (0.1, 0.2, 0.3)) == (0.1, 0.2, 0.3)
+    @test_throws ArgumentError Octopus._phase_advance(LinearOptics(t1), LinearOptics(t2), nothing)
+    @test_throws ArgumentError Octopus._phase_advance(o1, LinearOptics(t1; mu=(1, 1, 1), frame=:other), nothing)
+    @test_throws ArgumentError Octopus._phase_advance(o1, oa, (0.1, 0.1, 0.1))
+    @test_throws ArgumentError Octopus._phase_advance(o1, LinearOptics(t1), (0.1, 0.1, 0.1))  # one point with phases
+    # --- D3/D7: Linear6DSpec from two points == the flat optics form with the converted block ------------
+    C1 = Octopus._edwards_teng_block(o1.twiss); C2 = Octopus._edwards_teng_block(o2.twiss)
+    λ = 1 / sqrt(1 + R[1] * R[4] - R[2] * R[3])
+    @test all(C1 .≈ (λ * R[4], -λ * R[2], -λ * R[3], λ * R[1]))                              # C = lambda adj(R)
+    @test all(Octopus._edwards_teng_R_from_block(C1) .≈ R)
+    flat = Linear6DSpec(; beta1=β, alpha1=α, zeta1=ζ, eta1=η, R1=C1, beta2=o2.twiss.beta, alpha2=o2.twiss.alpha,
+                        zeta2=o2.dispersion.zeta, eta2=o2.dispersion.eta, R2=C2, dmu=(0.7, 1.3, -0.06))
+    @test Octopus.params(Linear6DSpec(o1, o2)) == Octopus.params(flat)
+    @test Octopus.params(Linear6DSpec(o1, o2; dmu=(0.7, 1.3, -0.06))) == Octopus.params(flat)
+    @test Octopus.params(Linear6DSpec{Float64}(o1, o2)) == Octopus.params(Linear6DSpec{Float64}(; Octopus.params(flat)...))
+    @test Octopus.params(flat)[:form1] == 1 && Octopus.params(flat)[:form2] == 1
+    @test_throws ArgumentError Linear6DSpec(o1, o2; beta1=β)
+    @test_throws ArgumentError Linear6DSpec(o1, o2; matrix=Matrix(1.0I, 6, 6))
+    @test_throws ArgumentError Linear6DSpec(; beta1=β, dmu=(0.1, 0.2, 0.3), form1=3)
+    @test_throws ArgumentError Linear6DSpec(; beta1=β, dmu=(0.1, 0.2, 0.3), R1=(1.5, 0.0, 0.0, 1.0))  # det C = 1.5
+    @test_throws ArgumentError Linear6D(ElementSpec{:linear6d}(; beta1=β, dmu=(0.1, 0.2, 0.3), R1=(1.5, 0.0, 0.0, 1.0)))
+    @test Octopus.params(Linear6DSpec(; beta1=β, dmu=(0.1, 0.2, 0.3), form1=2))[:form2] == 2          # exit defaults to entrance
+    # the coupling factor of each form equals the XYCouplingSpec of the same twiss (V1 = XY_MODEA, V2 = XY_MODEB)
+    m0 = Matrix(Linear6D(Linear6DSpec(; beta1=β, alpha1=α, dmu=(0.7, 1.3, -0.06))))
+    J6 = [0 1 0 0 0 0; -1 0 0 0 0 0; 0 0 0 1 0 0; 0 0 -1 0 0 0; 0 0 0 0 0 1; 0 0 0 0 -1 0]
+    for t in (t1, t2)
+        p0 = LinearOptics(t; mu=(0.0, 0.0, 0.0), frame=:f)
+        M = Matrix(Linear6D(Linear6DSpec(p0, advance_phase(p0, (0.7, 1.3, -0.06)))))
+        W = one_turn_matrix((compile_runtime(XYCouplingSpec(t)),)).matrix
+        @test norm(M - W * m0 * inv(W)) <= 1e-13 * norm(M)
+        @test norm(M' * J6 * M - J6) <= 1e-14
+        @test Octopus.params(XYCouplingSpec(t))[:mode] === (t.form == 1 ? XY_MODEA : XY_MODEB)
+    end
+    @test Octopus.params(MomentumDispersionSpec(d)) == Octopus.params(MomentumDispersionSpec(eta1=η[1], eta2=η[2], eta3=η[3], eta4=η[4]))
+    @test Octopus.params(CrabDispersionSpec(d)) == Octopus.params(CrabDispersionSpec(zeta1=ζ[1], zeta2=ζ[2], zeta3=ζ[3], zeta4=ζ[4]))
+    # --- D3/D4: the other consumers --------------------------------------------------------------------
+    od = LinearOptics(t1, d)
+    @test Octopus.params(ChromaticityKickSpec(; xi=(2.0, 1.5), optics=od)) ==
+          Octopus.params(ChromaticityKickSpec(; xi=(2.0, 1.5), beta=β, alpha=α, zeta=ζ, eta=η, R=R))
+    @test Octopus.params(ChromaticityKickSpec{Float64}(; xi=(2.0, 1.5), optics=od)) ==
+          Octopus.params(ChromaticityKickSpec{Float64}(; xi=(2.0, 1.5), beta=β, alpha=α, zeta=ζ, eta=η, R=R))
+    @test_throws ArgumentError ChromaticityKickSpec(; xi=(1, 1), beta=β, optics=od)
+    @test_throws ArgumentError ChromaticityKickSpec(; xi=(1, 1), optics=LinearOptics(t2))          # form 1 only
+    @test_throws ArgumentError ChromaticityKickSpec(; xi=(1, 1))                                     # beta still required
+    @test_throws ArgumentError ChromaticityKickSpec(; xi=(1, 1), optics=(β, α))
+    set_global_rng!(seed=20261121, method=:philox)
+    @test Octopus.params(LumpedRadSpec(; damping_turns=(4000.0, 4000.0, 2000.0), optics=od, sigma=(1e-4, 1e-5, 0.01), rng_id=1021)) ==
+          Octopus.params(LumpedRadSpec(; damping_turns=(4000.0, 4000.0, 2000.0), beta=β, alpha=α, zeta=ζ, eta=η, R=R, sigma=(1e-4, 1e-5, 0.01), rng_id=1021))
+    @test_throws ArgumentError LumpedRadSpec(; damping_turns=(1.0, 1.0, 1.0), optics=LinearOptics(t2), rng_id=1022)
+    @test_throws ArgumentError LumpedRadSpec(; damping_turns=(1.0, 1.0, 1.0), optics=od, alpha=α, rng_id=1022)
+    tsf = ThinStrongBeamSpec(; kbb=-1e-6, beta=(0.8, 0.072), alpha=(0.3, -0.2), sigma=(1e-4, 1e-5),
+                             coupling=XYCouplingSpec(r1=R[1], r2=R[2], r3=R[3], r4=R[4]))
+    @test Octopus.params(ThinStrongBeamSpec(; kbb=-1e-6, optics=LinearOptics(t1), sigma=(1e-4, 1e-5))) == Octopus.params(tsf)
+    @test Octopus.params(ThinStrongBeamSpec(; kbb=-1e-6, optics=LinearOptics(beta=β, alpha=α), sigma=(1e-4, 1e-5))) ==
+          Octopus.params(ThinStrongBeamSpec(; kbb=-1e-6, beta=(0.8, 0.072), alpha=(0.3, -0.2), sigma=(1e-4, 1e-5)))
+    @test Octopus.params(ThinStrongBeamSpec(; kbb=-1e-6, optics=LinearOptics(t2), sigma=(1e-4, 1e-5)))[:covariance] ==
+          Octopus.params(ThinStrongBeamSpec(; kbb=-1e-6, beta=(0.8, 0.072), alpha=(0.3, -0.2), sigma=(1e-4, 1e-5),
+                                             coupling=XYCouplingSpec(r1=R[1], r2=R[2], r3=R[3], r4=R[4], mode=XY_MODEB)))[:covariance]
+    @test_throws ArgumentError ThinStrongBeamSpec(; kbb=1e-4, optics=od, sigma=(1e-3, 1e-3))             # dispersion refused
+    @test_throws ArgumentError ThinStrongBeamSpec(; kbb=1e-4, optics=LinearOptics(t1), beta=(1.0, 1.0), sigma=(1e-3, 1e-3))
+    @test_throws ArgumentError ThinStrongBeamSpec(; kbb=1e-4, optics=LinearOptics(t1), coupling=XYCouplingSpec(r1=0.1), sigma=(1e-3, 1e-3))
+    # --- Beam: optics form == flat form bit for bit under one seed; refusals before any draw --------------
+    for (opt, flatkw) in ((od, (; beta=β, alpha=α, coupling=R, eta=η, zeta=ζ)), (LinearOptics(t2), (; beta=β, alpha=α, coupling=R, mode=XY_MODEB)))
+        bo = Beam(300, CPUThreadsBackend, Float64; optics=opt, sigma=(1e-4, 1e-5, 0.01), rng_id=1023)
+        bf = Beam(300, CPUThreadsBackend, Float64; sigma=(1e-4, 1e-5, 0.01), rng_id=1023, flatkw...)
+        @test all(getproperty(bo.rep, f) == getproperty(bf.rep, f) for f in (:x, :px, :y, :py, :z, :pz))
+    end
+    next_before = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1)
+    for kw in ((; beta=(2.0, 2.0, 2.0)), (; alpha=(0.1, 0.0, 0.0)), (; coupling=(0.1, 0.0, 0.0, 0.0)), (; R=(0.0, 0.0, 0.0, 0.0)),
+               (; C=(0.0, 0.0, 0.0, 0.0)), (; mode=XY_MODEB), (; eta=(0.1, 0.0, 0.0, 0.0)), (; zeta=(0.1, 0.0, 0.0, 0.0)))
+        @test_throws ArgumentError Beam(10, CPUThreadsBackend; optics=LinearOptics(t1), sigma=(1e-4, 1e-5, 0.01), kw...)
+    end
+    @test_throws ArgumentError Beam(10, CPUThreadsBackend; optics=(β, α), sigma=(1e-4, 1e-5, 0.01))
+    @test_throws ArgumentError Beam(10, CPUThreadsBackend; distribution=:uniform, lower=ntuple(_ -> -1.0, 6), upper=ntuple(_ -> 1.0, 6), optics=LinearOptics(t1))
+    @test_throws ArgumentError Beam(10, CPUThreadsBackend; coupling=(0.1, 0.0, 0.0, 0.0), mode=XY_UNDEF)   # D8, before the draw
+    @test Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1) == next_before + 1                            # one id taken by the probe itself, none by the refusals
+    # --- D8: XY_UNDEF reads no coefficient, so nonzero ones are refused instead of ignored ----------------
+    u6 = (1.1e-3, -2.0e-4, 0.7e-3, 1.3e-4, -1.5e-3, 4.0e-4)
+    @test_throws ArgumentError XYCouplingSpec(r1=0.01, mode=XY_UNDEF)
+    @test_throws ArgumentError XYCoupling(0.01, 0.0, 0.0, 0.0, XY_UNDEF)
+    @test collect(compile_runtime(XYCouplingSpec(mode=XY_UNDEF))(u6...)) == collect(u6)
+    # --- D6: the analysis closes the loop ---------------------------------------------------------------
+    tunes = (2pi * 0.228, 2pi * 0.210, 2pi * 0.01)
+    for o in (LinearOptics(; beta=β, alpha=α, zeta=ζ, eta=η, mu=(0.0, 0.0, 0.0), frame=:ring),            # uncoupled
+              o1,                                                                                          # form 1, weak
+              LinearOptics(; beta=β, alpha=α, R=(0.4, 0.1, -0.2, 0.3), zeta=ζ, eta=η, mu=(0.0, 0.0, 0.0), frame=:ring))  # form 1, strong
+        spec = Linear6DSpec(o, advance_phase(o, tunes))
+        res = analyze(TwissDispersionAnalysis(), spec)
+        back = linear_optics(res; frame=:ring)
+        @test isapprox(back, o; rtol=1e-8, atol=1e-10)                              # the canonical labelling: mode 1 x-dominant, form 1
+        @test all(isapprox.(res.physical.tunes, tunes; atol=1e-10))
+        M = Matrix(Linear6D(spec)); M2 = Matrix(Linear6D(Linear6DSpec(back, advance_phase(back, res.physical.tunes))))
+        @test norm(M2 - M) <= 1e-10 * norm(M)
+        @test linear_optics(res).mu === nothing && linear_optics(res; frame=:a, s=12.5).s == 12.5
+    end
+    # a form-2 point is the form-1 point with the two transverse modes exchanged ((T4)): the analysis
+    # relabels (mode 1 = x-dominant) and returns form 1 with beta/alpha swapped and the same R, the same map
+    spec2 = Linear6DSpec(LinearOptics(t2, d; mu=(0.0, 0.0, 0.0), frame=:ring), LinearOptics(t2, d; mu=tunes, frame=:ring))
+    res2 = analyze(TwissDispersionAnalysis(), spec2); back2 = linear_optics(res2; frame=:ring)
+    @test back2.twiss.form == 1 && all(isapprox.(back2.twiss.beta, (β[2], β[1], β[3]); rtol=1e-8)) && all(isapprox.(back2.twiss.R, R; rtol=1e-8))
+    @test norm(Matrix(Linear6D(Linear6DSpec(back2, advance_phase(back2, res2.physical.tunes)))) - Matrix(Linear6D(spec2))) <= 1e-10 * norm(Matrix(Linear6D(spec2)))
+    # the user may ask for form 2: the presentation flips, the map is the same, and a form-2 point round-trips under the same request
+    resf2 = analyze(TwissDispersionAnalysis(preferred_form=2), Linear6DSpec(o1, advance_phase(o1, tunes)))
+    bf2 = linear_optics(resf2; frame=:ring)
+    @test bf2.twiss.form == 2
+    specf2 = Linear6DSpec(bf2, advance_phase(bf2, resf2.physical.tunes))
+    @test norm(Matrix(Linear6D(specf2)) - Matrix(Linear6D(Linear6DSpec(o1, advance_phase(o1, tunes))))) <= 1e-9 * norm(Matrix(Linear6D(specf2)))
+    @test isapprox(linear_optics(analyze(TwissDispersionAnalysis(preferred_form=2), specf2); frame=:ring), bf2; rtol=1e-7, atol=1e-9)
+    # refusals of the accessor: an inadmissible requested form, a 4x4 input
+    oneg = LinearOptics(; beta=β, alpha=α, R=(0.3, 0.5, 0.5, -0.2), mu=(0.0, 0.0, 0.0), frame=:ring)
+    @test_throws UndeterminedQuantityError linear_optics(analyze(TwissDispersionAnalysis(preferred_form=2), Linear6DSpec(oneg, advance_phase(oneg, tunes))))
+    @test_throws ArgumentError linear_optics(analyze(TwissDispersionAnalysis(), Matrix(1.0I, 4, 4)))
+    # --- a Beam matched to the point reproduces matched_covariance (second moments, 2e5 particles) --------
+    res = analyze(TwissDispersionAnalysis(), Linear6DSpec(o1, advance_phase(o1, tunes)))
+    em = (1.0e-8, 1.0e-9, 1.0e-5)
+    Σ = matched_covariance(res, em)
+    b = Beam(200_000, CPUThreadsBackend, Float64; optics=o1, emit=em, rng_id=1024, cutoff=Inf)
+    X = hcat(collect(b.rep.x), collect(b.rep.px), collect(b.rep.y), collect(b.rep.py), collect(b.rep.z), collect(b.rep.pz))
+    Xc = X .- sum(X, dims=1) ./ size(X, 1); S = Xc' * Xc ./ size(X, 1)
+    @test maximum(abs.(diag(S) ./ diag(Σ) .- 1)) < 0.02                                # 1/sqrt(2e5) ~ 2e-3 per variance
+    @test maximum(abs.(S .- Σ) ./ sqrt.(diag(Σ) * diag(Σ)')) < 0.02
+    # --- audit U1-1 (2026-11-21): the particle-tune variant reads form1/form2 as the plain map does -------
+    # Unfixed, ParticleLinear6D built its normalizer with the form-1 block for any form (repro
+    # docs/history/audit_linear_optics_2026_11_21_U1_1_repro.jl: |A - form1| = 0, |A - form2| = 5.8).
+    for form in (1, 2)
+        C = Octopus._edwards_teng_block(EdwardsTengTwiss(beta=β, alpha=α, R=R, form=form))
+        plain = Linear6DSpec(; beta1=β, alpha1=α, R1=C, form1=form, dmu=(0.7, 1.3, -0.06))
+        pt = Linear6DSpec(; beta1=β, alpha1=α, R1=C, form1=form, dmu=(0.7, 1.3, -0.06),
+                          particle_tunes=(nux=0.7 / 2pi, nuy=1.3 / 2pi, nuz=-0.06 / 2pi))
+        A = Octopus._mmul66(compile_runtime(pt).A, Octopus._minv66(compile_runtime(pt).A))   # A A^-1: sanity
+        @test all(isapprox.(A, Octopus._identity66(Float64); atol=1e-13))
+        Aform = compile_runtime(pt).A
+        N = Octopus._particle_tune_normalizer(β, α, (0, 0, 0, 0), (0, 0, 0, 0), (0, 0, 0, 0), Float64)
+        @test all(isapprox.(Aform, Octopus._mmul66(Octopus._mR66(C, form), N); atol=1e-14))
+        @test !all(isapprox.(Aform, Octopus._mmul66(Octopus._mR66(C, 3 - form), N); atol=1e-6))
+    end
+    @test_throws ArgumentError compile_runtime(Linear6DSpec(; beta1=β, dmu=(0.1, 0.2, 0.3), particle_tunes=(nux=0.1,),
+                                                            R1=(1.5, 0.0, 0.0, 1.0)))                      # det C >= 1, by name
+    # --- audit U1-2 (2026-11-21): an explicit default-valued flat keyword beside optics is still two forms -
+    @test_throws ArgumentError Beam(10, CPUThreadsBackend; optics=LinearOptics(t1), sigma=(1e-4, 1e-5, 0.01), beta=(1.0, 1.0, 1.0))
+    @test_throws ArgumentError Beam(10, CPUThreadsBackend; optics=LinearOptics(t1), sigma=(1e-4, 1e-5, 0.01), mode=XY_MODEA)
+    @test_throws ArgumentError Beam(10, CPUThreadsBackend; optics=LinearOptics(t1), sigma=(1e-4, 1e-5, 0.01), coupling=(0.0, 0.0, 0.0, 0.0))
+    # --- metadata: the help of every consumer names the object form ------------------------------------
+    for kind in (:linear6d, :chromaticity_kick, :lumped_radiation, :thin_strong_beam)
+        io = IOBuffer(); element_help(io, kind)
+        @test occursin("optics", String(take!(io)))
+    end
+    io = IOBuffer(); element_help(io, :xy_coupling); @test occursin("EdwardsTengTwiss", String(take!(io)))
+    @test Octopus.parameter_schema(ElementSpec{:linear6d})[:form1].alternatives == (1, 2)
+    @test occursin("adj(R)", Octopus.parameter_schema(ElementSpec{:linear6d})[:R1].meaning)
+    @test occursin("Edwards-Teng matrix R", Octopus.parameter_schema(ElementSpec{:chromaticity_kick})[:R].meaning)
+    @test occursin("Edwards-Teng matrix R", Octopus.parameter_schema(ElementSpec{:lumped_radiation})[:R].meaning)
+end
+
 @testset "Edwards-Teng: the coupled construction of benchmark 12.2-2 (Linear6DSpec optics form conjugated by XYCouplingSpec)" begin
     # The XYCoupling kernel (src/elements/linear_maps.jl 360-370) is, on
     # (x, px, y, py), g [I adj(Rm); -Rm I] in XY_MODEA and g [adj(Rm) I; I -Rm]
@@ -15565,7 +15761,10 @@ end
     @test Set(mode_meta.alternatives) == Set(instances(XYCouplingMode))
     @test mode_meta.default in mode_meta.alternatives
     @test occursin("identity", mode_meta.meaning)
-    @test collect(compile_runtime(XYCouplingSpec(r1=0.01, mode=XY_UNDEF))(u...)) == collect(u)
+    # 2026-11-21 (docs/design/linear_optics.md D8): XY_UNDEF reads no coefficient, so a nonzero
+    # one beside it is refused by name instead of ignored; with zero coefficients it is the identity.
+    @test_throws ArgumentError XYCouplingSpec(r1=0.01, mode=XY_UNDEF)
+    @test collect(compile_runtime(XYCouplingSpec(mode=XY_UNDEF))(u...)) == collect(u)
     @test collect(compile_runtime(XYCouplingSpec(r1=0.01, mode=XY_MODEA))(u...)) != collect(u)
     # F-99: every zeta/eta parameter of every registered kind is the canonical
     # pair of docs/theory/twiss_dispersion.md (D6)-(D8), as the analysis reports
@@ -16266,7 +16465,11 @@ if _lane_gate("Element parameter effectiveness")
     # roundoff class) -- a false exemption of F-107's kind. Net -2 +1.
     # 548 -> 549 on 2026-10-29: phase_space_reset.numeric_type is measured
     # through an actual typed capture/mutate/restore task witness.
-    @test r.metrics[:checked] >= 549
+    # 549 -> 551 on 2026-11-21: linear6d.form1 and form2 (the Edwards-Teng form
+    # of each coupling block, docs/design/linear_optics.md D7) are measured
+    # effective on the optics probe, whose R1/R2 are nonzero (deviations
+    # 2.7e-4 and 1.1e-3; 553 checked on that tree).
+    @test r.metrics[:checked] >= 551
 
     # What the contract does NOT decide has to be visible, and bounded
     # (2026-08-05_b audit, U4-2). 112 of 501 declared parameters used to be
@@ -18726,7 +18929,8 @@ end
     bad = ((; beta=(1.0, 2.0)), (; alpha=(1.0, 2.0, 3.0, 4.0)), (; sigma=(1.0e-3,)),
            (; emit=(1.0e-8, 1.0e-8)), (; eta=(1.0, 0.0, 0.0)), (; zeta=(1.0,)),
            (; coupling=(0.1, 0.0)), (; initial_offset=(1.0, 2.0)),
-           (; cutoff=-1.0), (; cutoff=0), (; seed=-1), (; rng_id=-3))
+           (; cutoff=-1.0), (; cutoff=0), (; seed=-1), (; rng_id=-3),
+           (; optics=(1.0, 1.0, 1.0)))                                                 # 2026-11-21: optics must be a LinearOptics
     for kw in bad
         err = try; Beam(10, CPUThreadsBackend; kw...); nothing catch e; e end
         @test err isa ArgumentError

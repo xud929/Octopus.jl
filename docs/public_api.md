@@ -45,6 +45,35 @@ and their product determines the macroparticle count. See the
 [initialization design](design/beam_initialization.md) for the decisions behind
 the API; `?Beam` owns the endpoint and inactive-option rules.
 
+A beam matched to a lattice point takes the point's optics as one object:
+
+```julia
+?LinearOptics
+?EdwardsTengTwiss
+?CanonicalDispersion
+?advance_phase
+?slope_dispersion
+?dispersion_h
+```
+
+```julia
+ip = LinearOptics(; beta=(0.8, 0.072, 90.9), alpha=(0, 0, 0), R=(0, 0, 0, 0),
+                  zeta=(0, 0, 0, 0), eta=(0, 0, 0, 0), mu=(0.0, 0.0, 0.0), frame=:IR6)
+beam = Beam(N, policy; optics=ip, sigma=(95e-6, 8.5e-6, 6e-2))
+```
+
+`LinearOptics` is the shared linear-optics value object
+([design](design/linear_optics.md)): an `EdwardsTengTwiss` (three-plane
+`beta`, `alpha`, the Edwards-Teng coupling matrix `R` and its `form`) and a
+`CanonicalDispersion` (the canonical `zeta`, `eta`), optionally placed by its
+mode phases `mu` in a named `frame`. `Beam(; optics=o)` flattens it into
+`beta`, `alpha`, the coupling coefficients, `mode`, `eta` and `zeta`; giving any
+of those beside `optics` is refused by name. The same object feeds
+`Linear6DSpec(o1, o2)`, `ChromaticityKickSpec(; optics=)`,
+`LumpedRadSpec(; optics=)` and `ThinStrongBeamSpec(; optics=)` (see "Construct
+Elements"), and `linear_optics(result)` builds one from a Twiss analysis (see
+"Analyses").
+
 ## Construct Elements
 
 Start with:
@@ -67,6 +96,29 @@ example_spec(ThinCrabCavitySpec)
 construction_help(ThinCrabCavitySpec)
 supported_tracking_methods(ThinCrabCavitySpec)
 ```
+
+The linear-optics consumers take a `LinearOptics` point in place of their
+flat `beta, alpha, zeta, eta, R` keywords (one form or the other, never both):
+
+```julia
+ip   = LinearOptics(; beta=(0.8, 0.072, 90.9), mu=(0.0, 0.0, 0.0), frame=:IR6)
+sext = LinearOptics(; beta=(1.0, 1000.0, 90.9), mu=(-pi, -1.5pi, 0.0), frame=:IR6)
+Linear6DSpec(ip, sext)                                   # transfer, dmu = sext.mu .- ip.mu
+Linear6DSpec(ip, advance_phase(ip, 2pi .* (0.228, 0.210, -0.01)))   # one-turn map
+ChromaticityKickSpec(; xi=(2.0, 2.0), optics=ip)
+LumpedRadSpec(; damping_turns=(4e3, 4e3, 2e3), optics=ip, sigma=(95e-6, 8.5e-6, 6e-2))
+ThinStrongBeamSpec(; kbb=kbb, optics=LinearOptics(; beta=(0.45, 0.056, 1.0)), sigma=(95e-6, 8.5e-6))
+XYCouplingSpec(ip.twiss); MomentumDispersionSpec(ip.dispersion); CrabDispersionSpec(ip.dispersion)
+```
+
+Conventions, stated in each kind's `element_help`: `Linear6DSpec`'s `R1`/`R2`
+are the Edwards-Teng coupling BLOCK `C = adj(R)/sqrt(1 + det R)` (with
+`form1`/`form2` selecting the Edwards-Teng form), while `XYCouplingSpec`,
+`Beam`, `ChromaticityKickSpec` and `LumpedRadSpec` take the matrix `R =
+(r1, r2, r3, r4)` itself; the object converts. `ChromaticityKickSpec` and
+`LumpedRadSpec` couple in form 1 only and refuse a form-2 point;
+`ThinStrongBeamSpec` is transverse and refuses a point carrying dispersion.
+
 
 For the element development pattern, use Julia help:
 
@@ -710,6 +762,7 @@ Use Julia help:
 ?matched_covariance
 ?normal_mode
 ?NormalMode
+?linear_optics
 ?dispersion_interval
 ?Determined
 ?UndeterminedQuantityError
@@ -717,6 +770,18 @@ Use Julia help:
 ?ANALYSIS_STATUSES
 ?one_turn_matrix
 ```
+
+`linear_optics(result; frame=:ring)` closes the loop between the analysis and
+the constructors: the periodic optics of the analysed 6x6 map as a
+`LinearOptics` point in the caller's coordinates (the Edwards-Teng `R` and
+`form` the analysis presents, the eigenmode Twiss of that form, the canonical
+dispersion, the longitudinal mode's Twiss), so that
+`Linear6DSpec(o, advance_phase(o, result.physical.tunes))` rebuilds a map with
+the analysed optics and `Beam(N, policy; optics=o, emit=...)` is matched to it.
+The analysis labels mode 1 as the x-dominant mode, so a point written in the
+other labelling (a form-2 point whose first mode is y-dominant) comes back as
+the equivalent form-1 point with the two transverse modes exchanged; the map it
+rebuilds is the same ((T4) of the theory note).
 
 ## Validation
 

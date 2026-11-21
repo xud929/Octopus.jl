@@ -103,6 +103,18 @@ function (::Type{CrabDispersionSpec{T}})(; zeta1=zero(T), zeta2=zero(T),
     )
 end
 
+"""
+    CrabDispersionSpec(d::CanonicalDispersion; kwargs...)
+    CrabDispersionSpec{T}(d::CanonicalDispersion; kwargs...)
+
+The crab-dispersion factor `M_zeta` of a [`CanonicalDispersion`](@ref): the
+spec with `zeta1..zeta4 = d.zeta` (design docs/design/linear_optics.md D9).
+"""
+CrabDispersionSpec(d::CanonicalDispersion{T}; kwargs...) where {T} =
+    CrabDispersionSpec(; zeta1=d.zeta[1], zeta2=d.zeta[2], zeta3=d.zeta[3], zeta4=d.zeta[4], kwargs...)
+(::Type{CrabDispersionSpec{T}})(d::CanonicalDispersion; kwargs...) where {T} =
+    CrabDispersionSpec{T}(; zeta1=d.zeta[1], zeta2=d.zeta[2], zeta3=d.zeta[3], zeta4=d.zeta[4], kwargs...)
+
 # `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
 # truncated power series is `<:Number`, so the tighter bound refuses a parameter
 # derivative outright. Float64 still satisfies it, so nothing else changes.
@@ -205,6 +217,19 @@ function (::Type{MomentumDispersionSpec{T}})(; eta1=zero(T), eta2=zero(T),
     )
 end
 
+"""
+    MomentumDispersionSpec(d::CanonicalDispersion; kwargs...)
+    MomentumDispersionSpec{T}(d::CanonicalDispersion; kwargs...)
+
+The momentum-dispersion factor `M_eta` of a [`CanonicalDispersion`](@ref):
+the spec with `eta1..eta4 = d.eta`, the canonical eta (design
+docs/design/linear_optics.md D9).
+"""
+MomentumDispersionSpec(d::CanonicalDispersion{T}; kwargs...) where {T} =
+    MomentumDispersionSpec(; eta1=d.eta[1], eta2=d.eta[2], eta3=d.eta[3], eta4=d.eta[4], kwargs...)
+(::Type{MomentumDispersionSpec{T}})(d::CanonicalDispersion; kwargs...) where {T} =
+    MomentumDispersionSpec{T}(; eta1=d.eta[1], eta2=d.eta[2], eta3=d.eta[3], eta4=d.eta[4], kwargs...)
+
 # `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
 # truncated power series is `<:Number`, so the tighter bound refuses a parameter
 # derivative outright. Float64 still satisfies it, so nothing else changes.
@@ -291,6 +316,26 @@ XY_MODEA
 """`XYCoupling` mode selecting the second coupling branch, with the roles of the `(x, px)` and `(y, py)` blocks swapped relative to `XY_MODEA`."""
 XY_MODEB
 
+# The mode of an Edwards-Teng form (docs/design/linear_optics.md D2): form 1 is
+# V1 = XY_MODEA, form 2 is V2 = XY_MODEB, entry for entry (pinned by the suite's
+# "Edwards-Teng: the coupled construction" testset against `_edwards_teng_V`).
+_coupling_mode(form::Integer) = form == 1 ? XY_MODEA : form == 2 ? XY_MODEB :
+    throw(ArgumentError("an Edwards-Teng form is 1 or 2; got $(form)"))
+_coupling_mode(t::EdwardsTengTwiss) = _coupling_mode(t.form)
+
+# `XY_UNDEF` is the identity and reads no coefficient; a nonzero coefficient
+# beside it would be ignored silently, which the project refuses by name
+# (2026-11-21 LinearOptics batch, D8; until then `XYCouplingSpec(r1=0.01,
+# mode=XY_UNDEF)` compiled to the identity and the suite pinned that).
+function _check_undef_coefficients(who::String, r1, r2, r3, r4, mode)
+    mode === XY_UNDEF || return nothing
+    (iszero(r1) && iszero(r2) && iszero(r3) && iszero(r4)) || throw(ArgumentError(
+        "$(who) with mode=XY_UNDEF is the identity map and reads no coupling coefficient, but r1=$(r1), " *
+        "r2=$(r2), r3=$(r3), r4=$(r4) were given and would be ignored silently; use XY_MODEA or XY_MODEB, " *
+        "or zero coefficients"))
+    return nothing
+end
+
 """
     XYCouplingSpec{T=Float64}(; r1=0, r2=0, r3=0, r4=0, mode=XY_MODEA,
                               tracking_method=Symplectic6DMap(), kwargs...)
@@ -313,11 +358,25 @@ function (::Type{XYCouplingSpec{T}})(; r1=zero(T), r2=zero(T), r3=zero(T),
                                     r4=zero(T), mode::XYCouplingMode=XY_MODEA,
                                     tracking_method=Symplectic6DMap(),
                                     kwargs...) where {T}
+    _check_undef_coefficients("XYCouplingSpec", r1, r2, r3, r4, mode)
     return ElementSpec{:xy_coupling}(_stamp_numeric_type!(
         _spec_params(; r1=T(r1), r2=T(r2), r3=T(r3), r4=T(r4), mode=mode,
                      tracking_method=tracking_method, kwargs...), T),
     )
 end
+
+"""
+    XYCouplingSpec(t::EdwardsTengTwiss; kwargs...)
+    XYCouplingSpec{T}(t::EdwardsTengTwiss; kwargs...)
+
+The transverse coupling factor `V_form(R)` of an [`EdwardsTengTwiss`](@ref):
+the spec with `r1..r4 = t.R` and `mode = XY_MODEA` for form 1, `XY_MODEB` for
+form 2 (design docs/design/linear_optics.md D2, D9).
+"""
+XYCouplingSpec(t::EdwardsTengTwiss{T}; kwargs...) where {T} =
+    XYCouplingSpec(; r1=t.R[1], r2=t.R[2], r3=t.R[3], r4=t.R[4], mode=_coupling_mode(t), kwargs...)
+(::Type{XYCouplingSpec{T}})(t::EdwardsTengTwiss; kwargs...) where {T} =
+    XYCouplingSpec{T}(; r1=t.R[1], r2=t.R[2], r3=t.R[3], r4=t.R[4], mode=_coupling_mode(t), kwargs...)
 
 # `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
 # truncated power series is `<:Number`, so the tighter bound refuses a parameter
@@ -352,6 +411,7 @@ struct XYCoupling{M<:AbstractTrackingMethod,FloatT <: Number} <: AbstractTrackOp
         #
         # `real` so the check works on the complex-step and Dual axes this type
         # is generic over; the determinant of a physical coupling block is real.
+        _check_undef_coefficients("XYCoupling", r1, r2, r3, r4, mode)
         det = 1 + r1 * r4 - r2 * r3
         if mode !== XY_UNDEF && isfinite(real(det)) && real(det) <= 0
             throw(ArgumentError(
@@ -374,21 +434,21 @@ end
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        r1=ParamMeta(default=0, meaning="coupling coefficient r1"),
-        r2=ParamMeta(default=0, meaning="coupling coefficient r2"),
-        r3=ParamMeta(default=0, meaning="coupling coefficient r3"),
-        r4=ParamMeta(default=0, meaning="coupling coefficient r4"),
+        r1=ParamMeta(default=0, meaning="coupling coefficient r1: entry (1,1) of the Edwards-Teng matrix R = [r1 r2; r3 r4] of docs/theory/twiss_dispersion.md (T2), the map being V1(R) = lambda [I adj(R); -R I] (XY_MODEA) or V2(R) = lambda [adj(R) I; I -R] (XY_MODEB) with lambda = 1/sqrt(1 + det R); the same R as Beam's coupling and as ChromaticityKickSpec's and LumpedRadSpec's R, NOT Linear6DSpec's block R1/R2"),
+        r2=ParamMeta(default=0, meaning="coupling coefficient r2, entry (1,2) of the Edwards-Teng matrix R (see r1)"),
+        r3=ParamMeta(default=0, meaning="coupling coefficient r3, entry (2,1) of the Edwards-Teng matrix R (see r1)"),
+        r4=ParamMeta(default=0, meaning="coupling coefficient r4, entry (2,2) of the Edwards-Teng matrix R (see r1)"),
         # Every value of the enum, derived from it: the kernel, `_inverse` and
         # the rounding class all carry an XY_UNDEF branch, so the schema that
         # declared two values was narrower than what the runtime accepted and
         # the effectiveness sweep never visited the third (2026-10-18 audit, F-97).
         mode=ParamMeta(default=XY_MODEA, alternatives=Tuple(instances(XYCouplingMode)),
-                       meaning="coupling convention: XY_MODEA (the default) and XY_MODEB select which coupling branch the map applies, with the roles of the (x, px) and (y, py) blocks exchanged between them; XY_UNDEF switches the coupling off, the identity map"),
+                       meaning="coupling convention: XY_MODEA (the default, Edwards-Teng form 1) and XY_MODEB (form 2) select which coupling branch the map applies, with the roles of the (x, px) and (y, py) blocks exchanged between them; XY_UNDEF switches the coupling off, the identity map, and is accepted only with zero coefficients (a nonzero coefficient beside it is refused by name rather than ignored)"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = XYCouplingSpec(r1=0.01)
-    construction_help = "Friendly constructor: XYCouplingSpec{T}(; r1, r2, r3, r4, mode=XY_MODEA, tracking_method=Symplectic6DMap(), kwargs...). Equivalent flexible form: ElementSpec{:xy_coupling}(; r1=r1, r2=r2, r3=r3, r4=r4, mode=mode, tracking_method=tracking_method, kwargs...). Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form XYCouplingSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "Friendly constructor: XYCouplingSpec{T}(; r1, r2, r3, r4, mode=XY_MODEA, tracking_method=Symplectic6DMap(), kwargs...), or XYCouplingSpec{T}(t::EdwardsTengTwiss; kwargs...) taking r1..r4 = t.R and mode from t.form (1 = XY_MODEA, 2 = XY_MODEB). Equivalent flexible form: ElementSpec{:xy_coupling}(; r1=r1, r2=r2, r3=r3, r4=r4, mode=mode, tracking_method=tracking_method, kwargs...). Extra keyword arguments are stored as metadata. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form XYCouplingSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 # Restored explicitly: defining an inner constructor above removes Julia's

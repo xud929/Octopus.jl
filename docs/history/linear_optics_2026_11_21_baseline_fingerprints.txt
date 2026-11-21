@@ -1,0 +1,17 @@
+# Fingerprints of docs/history/linear_optics_2026_11_21_baseline.jl (with the cuda argument), RTX 4500 Ada, Julia 1.12.4
+# before the batch (tree 9c48589, 2026-11-21):
+linear6d_plain_matrix                        212f68b85ede500644a0a920d6c06515beff044b8cf7d622fc0330d326b84b3e
+linear6d_coupled_dispersive_matrix           9f43a77994727eb5b843d75a8299a495e8f19537ebd3d359b425a492ee0bec2e
+linear6d_coupled_track                       73644d3a09ed9a313774e1bc2e52ca50d9d2feb74b98bdd838c1d4c63d8cad23
+xycoupling_modeA                             239de1039bc601772a45f53e27c4b0e71afedb2eb3c52a16688ce1c7d2673709
+xycoupling_modeB                             0683657ce231f7c66067d261c83724014c97c133885ac1c56b5657a860269fa5
+momentum_dispersion                          07a83b7e10e7990d0b08b07f5d6d0c58da73025766bfc0faf11ec660b179d038
+crab_dispersion                              d30d33262331eecfa18837256caad1610ba2428999e71e55fc204f7c79d51aa2
+chromaticity_kick_track                      d8d4680efdebbaa78e8ae918c490cd98407c21b2b5c0659f856b295277555c53
+lumped_rad_damping_track                     de32a6f0fedbfc86536a386064a1b6ef8081dee1d8ef97cafbf57cdadd5e85a0
+thin_strong_beam_track                       fb3d3731f2c225e54b4c5021bce5aeaf04f3f2cb07292530035fcfd166e98978
+beam_gaussian_coupled_dispersive             f7a471a419feebb2c886c880111f96cc433430d7155a467254311b70dc43026d
+beam_gaussian_coupled_modeB                  af059c75163d6f24e50cc4823627bb53871c73cfea54932dd059d01a4eb20aa3
+beam_grid                                    331f1fa521a0ee823f54c9a649757a7675c953e8e770b5bf5e8e1237e3956cc5
+beam_gaussian_coupled_dispersive_cuda        d51e0c29820d5a9b2139cd41d1ba70410af0ed7a383d812c89f5c3b2c10c16db
+# after the batch (working tree of the feature commit, 2026-11-21): identical, diff empty

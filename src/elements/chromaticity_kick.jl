@@ -3,7 +3,8 @@ export ChromaticityKickSpec, ChromaticityKick
 abstract type ChromaticityKickSpec{T} end
 
 """
-    ChromaticityKickSpec{T=Float64}(; xi, beta, alpha=(0,0,0), ...)
+    ChromaticityKickSpec{T=Float64}(; xi, beta, alpha=(0,0,0), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), ...)
+    ChromaticityKickSpec{T=Float64}(; xi, optics::LinearOptics, ...)
 
 Create a symplectic chromaticity kick. The horizontal and vertical phase
 advances depend on the longitudinal momentum offset `pz`. To complete the
@@ -12,7 +13,13 @@ longitudinal coordinate `z` by the chromatic transverse actions.
 
 `beta` and `alpha` may use the shared three-plane optics interface; this
 element uses only their horizontal and vertical components. Legacy
-two-component tuples remain accepted.
+two-component tuples remain accepted. `R = (r1, r2, r3, r4)` is the Edwards-Teng
+coupling matrix of [`XYCouplingSpec`](@ref) applied in form 1 (`XY_MODEA`), the
+same `R` as `Beam`'s coupling and NOT the block `R1`/`R2` of `Linear6DSpec`.
+Alternatively `optics = o` takes `beta`, `alpha`, `zeta`, `eta` and `R` from a
+[`LinearOptics`](@ref) point (design `docs/design/linear_optics.md`); the flat
+keywords are then refused beside it, and a form-2 point is refused because the
+kick couples in form 1 only. The stored spec is the same either way.
 
 Without the explicit `{T}`, the element type is the promotion of the named
 parameters (`xi`, `beta`, `alpha`, `zeta`, `eta`, `R`) over a `Float64` floor,
@@ -25,30 +32,39 @@ audit this constructor hard-coded `Float64`, so `ChromaticityKickSpec(xi=(1.0 +
 0.1im, 1.0), beta=(1.0, 1.0))` died with `InexactError: Float64(1.0 + 0.1im)`
 while the kind's construction help promised the floor promotion (F-94).
 """
-function ChromaticityKickSpec(; xi, beta, alpha=(0, 0, 0), zeta=(0, 0, 0, 0),
-                              eta=(0, 0, 0, 0), R=(0, 0, 0, 0), numeric_type=nothing,
+function ChromaticityKickSpec(; xi, beta=nothing, alpha=nothing, zeta=nothing,
+                              eta=nothing, R=nothing, optics=nothing, numeric_type=nothing,
                               kwargs...)
-    T = something(numeric_type, _linear_map_eltype(xi, beta, alpha, zeta, eta, R))
-    return _floor_form(ChromaticityKickSpec{T}(; xi=xi, beta=beta, alpha=alpha, zeta=zeta,
-                                                eta=eta, R=R, kwargs...), numeric_type)
+    o = _resolve_optics_keywords("ChromaticityKickSpec", optics, (; beta, alpha, zeta, eta, R),
+                                 _CHROMATICITY_OPTICS_DEFAULTS; form1_only=true)
+    T = something(numeric_type, _linear_map_eltype(xi, o.beta, o.alpha, o.zeta, o.eta, o.R))
+    return _floor_form(ChromaticityKickSpec{T}(; xi=xi, beta=o.beta, alpha=o.alpha, zeta=o.zeta,
+                                                eta=o.eta, R=o.R, kwargs...), numeric_type)
 end
+
+# The flat keywords' defaults, applied by `_resolve_optics_keywords` when no
+# LinearOptics is given (beta has none: it is required).
+const _CHROMATICITY_OPTICS_DEFAULTS = (beta=nothing, alpha=(0, 0, 0), zeta=(0, 0, 0, 0), eta=(0, 0, 0, 0), R=(0, 0, 0, 0))
 function (::Type{ChromaticityKickSpec{T}})(;
                                           xi,
-                                          beta,
-                                          alpha=(zero(T), zero(T), zero(T)),
-                                          zeta=(zero(T), zero(T), zero(T), zero(T)),
-                                          eta=(zero(T), zero(T), zero(T), zero(T)),
-                                          R=(zero(T), zero(T), zero(T), zero(T)),
+                                          beta=nothing,
+                                          alpha=nothing,
+                                          zeta=nothing,
+                                          eta=nothing,
+                                          R=nothing,
+                                          optics=nothing,
                                           tracking_method=Symplectic6DMap(),
                                           kwargs...) where {T}
+    o = _resolve_optics_keywords("ChromaticityKickSpec", optics, (; beta, alpha, zeta, eta, R),
+                                 _CHROMATICITY_OPTICS_DEFAULTS; form1_only=true)
     return ElementSpec{:chromaticity_kick}(_stamp_numeric_type!(
         _spec_params(;
             xi=_pair_tuple(xi, T),
-            beta=_transverse_optics_tuple(beta, T, :beta),
-            alpha=_transverse_optics_tuple(alpha, T, :alpha),
-            zeta=_quad_tuple(zeta, T),
-            eta=_quad_tuple(eta, T),
-            R=_quad_tuple(R, T),
+            beta=_transverse_optics_tuple(o.beta, T, :beta),
+            alpha=_transverse_optics_tuple(o.alpha, T, :alpha),
+            zeta=_quad_tuple(o.zeta, T),
+            eta=_quad_tuple(o.eta, T),
+            R=_quad_tuple(o.R, T),
             tracking_method=tracking_method,
             kwargs...,
         ), T),
@@ -246,10 +262,10 @@ end
         alpha=ParamMeta(default=(0, 0, 0), meaning="two- or three-plane alpha functions; only horizontal and vertical values are used"),
         zeta=ParamMeta(default=(0, 0, 0, 0), meaning="crab dispersion coefficients (zeta1..zeta4), removed before the kick and restored after it. " * _CANONICAL_DISPERSION_NOTE),
         eta=ParamMeta(default=(0, 0, 0, 0), meaning="momentum dispersion coefficients (eta1..eta4), removed before the kick and restored after it. " * _CANONICAL_DISPERSION_NOTE),
-        R=ParamMeta(default=(0, 0, 0, 0), meaning="x-y coupling coefficients"),
+        R=ParamMeta(default=(0, 0, 0, 0), meaning="x-y coupling coefficients (r1, r2, r3, r4): the Edwards-Teng matrix R of XYCouplingSpec, applied in form 1 (XY_MODEA) with lambda = 1/sqrt(1 + det R), removed before the kick and restored after it; the same R as Beam's coupling, NOT Linear6DSpec's block R1/R2 (C = adj(R)/sqrt(1 + det R))"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = ChromaticityKickSpec(xi=(1.0, 1.0), beta=(1.0, 1.0))
-    construction_help = "Friendly constructor: ChromaticityKickSpec{T}(; xi, beta, alpha=(0,0,0), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), tracking_method=Symplectic6DMap(), kwargs...). beta and alpha accept two or three values; only the transverse pair is used. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ChromaticityKickSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "Friendly constructor: ChromaticityKickSpec{T}(; xi, beta, alpha=(0,0,0), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), tracking_method=Symplectic6DMap(), kwargs...), or ChromaticityKickSpec{T}(; xi, optics=o::LinearOptics, kwargs...) taking beta, alpha, zeta, eta and R from the point (form 1 only; the flat optics keywords are refused beside optics). beta and alpha accept two or three values; only the transverse pair is used. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ChromaticityKickSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
