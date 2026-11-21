@@ -6,9 +6,10 @@ authorised 2026-11-21 ("a tech note first, then implementation and
 validation, audit following, finally commit and push"), implemented and
 verified the same day as sections 3 and 4 record; the neighbour audit is
 [`audit_linear_optics_2026_11_21.md`](audit_linear_optics_2026_11_21.md), the
-gate is section 5, the ledger section 6. Bracketed `[...: pending]` markers
-name a measurement the record commit after the gate fills; nothing under
-`result/` is cited as evidence.
+gate is section 5, the ledger section 6. The gate paragraphs of section 5
+and the examples check closing section 4 were added by the record commit
+after the gate; the rest of the file is as the gate saw it. Paths under
+`result/` name the location of scratch drivers, never evidence.
 
 ## 1 The decisions
 
@@ -162,6 +163,31 @@ the audit's unit report where not in the suite):
 - Red where it should be: on the pre-batch tree `XYCouplingSpec(r1=0.01,
   mode=XY_UNDEF)` constructed and the F-97 pin asserted the identity; the
   retargeted pin fails there and passes here.
+- The two shipped examples before and after, at the owner's request after the
+  gate (2026-11-21, 14:20 to 15:00 EST): `examples/weak_strong_tracking.jl`
+  (10,000 macroparticles, 50 turns) and `examples/strong_strong_tracking.jl`
+  (2,000 + 2,000 macroparticles, 20 turns, PIC 128 x 128, 15 slices), both
+  unchanged by the batch, run on a clean worktree of 9c48589 and on this tree
+  with the scripts' `config` edited only to those sizes, `execution =
+  :threads` and then `execution = :cuda`, and `result_dir` under scratch;
+  four threads, seed 123456789 as shipped. Hashed (SHA-256 of the Float64
+  payload) per run: the final six coordinates of every beam, the rms, the
+  luminosity table and the full moment table of the run artifact. On CPU
+  threads all ten hashes are identical between the trees (prefixes:
+  weak-strong coordinates `98dc07e8c396832f`, rms `701353e212e715ac`,
+  luminosity `db81599532f3c8b8`, moments `d8e66470f10bbace`; strong-strong
+  electron coordinates `a1cfea9e817a638f`, proton coordinates
+  `2aa9524b1aed93b7`, rms `80e4841409255c35`, luminosity `c66eec4637087ba7`,
+  electron moments `bb780250a3908aee`, proton moments `0f6f3731d67941b6`).
+  On CUDA the four weak-strong hashes are identical between the trees and
+  between two repetitions of one tree; the six strong-strong hashes differ
+  between the trees AND between two repetitions of the SAME tree by the same
+  amounts (max relative difference 1.6e-11 on the luminosity, below 1e-9 on
+  every moment, 1e-16 on the second moments that set the beam sizes), so the
+  CUDA PIC path's run-to-run summation-order noise, present on 9c48589,
+  bounds the difference and nothing attributable to the batch is visible.
+  The drivers (`compare.jl`, the tolerance reader `diff_artifacts.jl`) and
+  the six hash tables are kept under `result/gates/linopt/compare/`.
 
 ## 5 The gate
 
@@ -183,7 +209,25 @@ A checkpoint, not the finish line. The audit fixes (U1-1, U1-2 of
 re-run is in the audit record's section 5, and the full gate below covers
 the final tree.
 
-[full gate, CUDA active, on the final tree: pending]
+**Full gate, CUDA active, on the feature commit's tree** (9fb9a2d, that is
+9c48589 plus the batch with both audit fixes; gated as the working tree with
+nothing else dirty and committed unchanged; host acnlinj4, RTX 4500 Ada,
+`OCTOPUS_REQUIRE_GPU_CONTRACT=1`, four threads; 2026-11-21, 13:23:58 to
+14:54:16 EST, 90.3 min): green, "Testing Octopus tests passed", exit 0. 461
+testset summaries (the 460 of the 2026-11-03 gate plus this batch's), 159888
+passing assertions summed over them; the one testset with a Broken column is
+"Misalignment maps" (26 passed, 2 broken), the pre-existing expected-broken
+checks every gate records separately. No lane skip (the full lane); the CUDA
+arm of the validation scripts ran inside it (218 assertions, 8m10s). Nothing
+was unrunnable: the device was functional and the MPI launcher sections ran.
+The AVX2 parity arm was not run; as on 2026-11-03, the CI run of the pushed
+tree stands in for it, and its result is recorded with the next batch's
+record, since a record cannot carry its own push.
+
+**This record's commit** is markdown-only (`git diff --name-only`: this
+file, the audit record, `docs/todo.md`), so the matrix names the fast lane on
+its tree: run on the working tree before the commit, with the tree committed
+unchanged afterwards; its numbers are in the commit message.
 
 ## 6 Ledger
 

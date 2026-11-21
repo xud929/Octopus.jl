@@ -6,8 +6,8 @@ protocol `../comprehensive_audit.md`), scoped to the batch recorded in
 [`linear_optics_2026_11_21.md`](linear_optics_2026_11_21.md). Conducted
 2026-11-21 by the auditor alone (one reading unit, two confirmed findings,
 both fixed in the batch), reproductions re-run before recording. Gate
-numbers: the campaign record's section 5. Bracketed `[...: pending]` markers
-are filled by the record commit after the gate.
+numbers: the campaign record's section 5, filled by the record commit after
+the gate; section 5 below was complete before the gate ran.
 
 ## 1 Executive summary and repository
 
