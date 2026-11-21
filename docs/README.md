@@ -195,6 +195,15 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
 Procedures, one per task class, routed from the Task Routing table in
 `AGENTS.md`. The root file keeps invariants and routing; these keep the steps.
 
+- [`linear_optics.md`](design/linear_optics.md) — the shared linear-optics
+  value object (`LinearOptics` = `EdwardsTengTwiss` + `CanonicalDispersion`
+  + phases): the measured spread of the quintuple (beta, alpha, zeta, eta, R)
+  over six constructors with two conventions under one name `R`, the ten
+  decisions (types, conventions, flattening never storage, exclusive forms,
+  phases as positions, the analysis accessor `linear_optics`, form 2 in
+  `Linear6DSpec`, `XY_UNDEF` refusing coefficients, elementary maps from
+  parts, conventions documented at every consumer), the staging and tests,
+  and the owner items left open.
 - [`guides/development_workflow.md`](guides/development_workflow.md) — the
   environment, the two load modes, the commands, the single-testset probe
   recipe, lanes and the gate, where output goes, committing, reporting.
