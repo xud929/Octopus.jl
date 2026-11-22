@@ -251,7 +251,8 @@ Procedures, one per task class, routed from the Task Routing table in
   self-contained (its own parameters or a `LinearOptics` point, `thin =` kept,
   the stored spec unchanged), a dispersive point consumed at the slice level
   through `gaussian_strong_beam_covariance` with the new `sigma_delta`, the
-  slice-offset rule S3 enforced, the call sites moved; verification, where the
+  user's slice offsets through `offset_slices!`/`offset_slices` over the
+  covariance's own tilt (S3), the call sites moved; verification, where the
   gate's numbers are, and the CI run of the push before it.
 - [`strong_beam_element_stage2_2026_11_22.md`](history/strong_beam_element_stage2_2026_11_22.md)
   — stage 2 of the strong-beam consolidation: the deprecated spellings
@@ -260,7 +261,21 @@ Procedures, one per task class, routed from the Task Routing table in
   every case, a 6×6 covariance alone, `ns = 1` without `sigz`, the suite and
   the validation scripts moved to the recommended form with one compatibility
   testset, and the weak-strong physics and performance measured unchanged on
-  CPU threads, MPI and CUDA; the stage-1 CI run.
+  CPU threads, MPI and CUDA; the stage-1 CI run. Neighbour audit of both
+  stages: [`audit_strong_beam_element_2026_11_22.md`](history/audit_strong_beam_element_2026_11_22.md)
+  with its four unit reports
+  [`U1.md`](history/audit_strong_beam_element_2026_11_22_unit_reports/U1.md)
+  (the element file),
+  [`U2.md`](history/audit_strong_beam_element_2026_11_22_unit_reports/U2.md)
+  (the twin, task and contract seams),
+  [`U3.md`](history/audit_strong_beam_element_2026_11_22_unit_reports/U3.md)
+  (the suite and script conversion) and
+  [`U4.md`](history/audit_strong_beam_element_2026_11_22_unit_reports/U4.md)
+  (the documents): one Moderate (`alpha` beside a covariance read by nothing),
+  one bunch-length consistency check, five refusals or messages of the
+  recommended form, one acceptance that moved with the spelling, three coverage
+  pins and the documentation corrections, all fixed in its batch; the stage-2
+  record's wrong counts corrected beside it.
 - [`guides/development_workflow.md`](guides/development_workflow.md) — the
   environment, the two load modes, the commands, the single-testset probe
   recipe, lanes and the gate, where output goes, committing, reporting.

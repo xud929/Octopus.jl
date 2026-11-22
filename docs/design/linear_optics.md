@@ -191,7 +191,9 @@ per call.
   `docs/public_api.md` say so: new scripts, examples and documentation give
   linear optics as `LinearOptics` points (`Beam(; optics)`,
   `Linear6DSpec(o1, o2)`, `ChromaticityKickSpec(; optics)`,
-  `LumpedRadSpec(; optics)`, `ThinStrongBeamSpec(; optics)`,
+  `LumpedRadSpec(; optics)`, `GaussianStrongBeamSpec(; optics)` (since
+  2026-11-22 the strong beam's recommended spelling; `ThinStrongBeamSpec(; optics)`
+  is deprecated and kept, `strong_beam_element.md` S7),
   `XYCouplingSpec(o.twiss)`), and a point built by `linear_optics(result)`
   feeds them directly. The flat keywords remain as the stored representation
   (what `params(spec)` holds and the raw `ElementSpec{kind}(; ...)` form
@@ -249,3 +251,6 @@ Still open:
   which nothing in the source calls; it needs the strong beam's momentum
   spread as a new input. Waits for the owner's word on whether a dispersive
   strong beam is needed.
+  Resolved 2026-11-22 by [`strong_beam_element.md`](strong_beam_element.md) S2:
+  `GaussianStrongBeamSpec(; optics)` consumes a dispersive point at the slice
+  level through `gaussian_strong_beam_covariance` with `sigma_delta`.

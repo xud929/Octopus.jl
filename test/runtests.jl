@@ -10592,7 +10592,7 @@ end
     @test !isdefined(Octopus, :LinearTurnSignal)
 end
 
-@testset "Strong beam element stage 1 (docs/design/strong_beam_element.md S1-S5): the self-contained GaussianStrongBeamSpec" begin
+@testset "Strong beam element stage 1 (docs/design/strong_beam_element.md S1-S6): the self-contained GaussianStrongBeamSpec" begin
     kbb = 1.0e-8; β = (0.82, 0.075); α = (0.01, -0.02); σ = (110.0e-6, 12.0e-6)
     ctr = (2.0e-6, -1.0e-6, 0.0); ang = (1.0e-5, 0.0, 0.0)
     norm(s) = Dict(k => (k === :thin ? Octopus.params(v) : v) for (k, v) in Octopus.params(s))
@@ -10721,7 +10721,7 @@ end
     norm(s) = Dict(k => (k === :thin ? Octopus.params(v) : v) for (k, v) in Octopus.params(s))
     kern(s) = Octopus.params(Octopus.params(s)[:thin])
     quietly(f) = Test.collect_test_logs(f)[2]
-    deprecated = r"deprecated spelling of the strong beam"
+    deprecated = r"deprecated spellings? of the strong beam"
     same(a, b) = (transverse_covariance(a.thin.moments) == transverse_covariance(b.thin.moments) && a.thin.kbb == b.thin.kbb &&
                   (a.thin.xo, a.thin.pxo, a.thin.yo, a.thin.pyo, a.thin.zo, a.thin.pzo) ==
                   (b.thin.xo, b.thin.pxo, b.thin.yo, b.thin.pyo, b.thin.zo, b.thin.pzo) &&
@@ -10839,6 +10839,69 @@ end
     @test occursin("DEPRECATED", tt) && occursin("GaussianStrongBeamSpec", tt)
     io = IOBuffer(); element_help(io, :gaussian_strong_beam); tg = String(take!(io))
     @test occursin("DEPRECATED", tg) && occursin("offset_slices!", tg) && occursin("mean", tg)
+end
+
+@testset "Strong beam stage-2 neighbour audit (docs/history/audit_strong_beam_element_2026_11_22.md): U1-1..U1-4, U1-7, U2-1, U3-1..U3-3" begin
+    # The leads of the four reading units, reproduced on the stage-2 tree 8e8139a before the fixes (the audit report's
+    # section 4 quotes the unfixed outputs); every assertion below fails there for the lead's reason.
+    kbb = 1.0e-8; β = (0.82, 0.075); α = (0.01, -0.02); σ = (110.0e-6, 12.0e-6)
+    refused(f, needle) = (err = try f(); nothing catch e; e end; err isa ArgumentError && occursin(needle, sprint(showerror, err)))
+    quietly(f) = Test.collect_test_logs(f)[2]
+    deprecated = r"deprecated spellings? of the strong beam"
+    C = [4e-6 0 0 0; 0 4e-6 0 0; 0 0 1e-6 0; 0 0 0 1e-6]
+    # --- U1-1: a nonzero alpha beside an explicit covariance was accepted and read by nothing (params equal unfixed) ---
+    @test refused(() -> GaussianStrongBeamSpec(kbb=1e-4, covariance=C, alpha=(0.3, -0.2), ns=1), "alpha = (0.3, -0.2) is not read")
+    @test refused(() -> Octopus._thin_strong_beam_spec(; kbb=1e-4, covariance=C, alpha=(0.3, -0.2)), "is not read beside an explicit covariance")
+    cov6 = gaussian_strong_beam_covariance(transverse_covariance(; beta=β, sigma=σ), [3e-3^2 0; 0 1e-6])
+    @test refused(() -> GaussianStrongBeamSpec(kbb=kbb, covariance=cov6, alpha=(0.3, -0.2), ns=3), "is not read beside an explicit covariance")   # the S6 route too
+    @test GaussianStrongBeamSpec(kbb=1e-4, covariance=C, alpha=(0.0, 0.0), ns=1) isa ElementSpec                      # the declared default stays accepted
+    @test Octopus.params(Octopus.params(GaussianStrongBeamSpec(kbb=1e-4, covariance=C, alpha=(0.0, 0.0), ns=1))[:thin]) ==
+          Octopus.params(Octopus.params(GaussianStrongBeamSpec(kbb=1e-4, covariance=C, ns=1))[:thin])
+    # --- U1-2: a point without sigma is refused by the Gaussian's own message, naming sigma ----------------------------
+    @test refused(() -> GaussianStrongBeamSpec(kbb=1e-4, optics=LinearOptics(; beta=(1.0, 1.0, 90.0), alpha=(0.0, 0.0, 0.0)), ns=1),
+                  "takes sigma beside a LinearOptics point")
+    # --- U1-3: ns = 1 without sigz and an unknown rule blames the rule -------------------------------------------------
+    @test refused(() -> compile_runtime(GaussianStrongBeamSpec(kbb=1e-4, beta=(1.0, 1.0), sigma=(1e-3, 1e-3), ns=1, slice_method=:bogus)),
+                  "unknown slice_method :bogus")
+    # --- U1-4: sigz beside a 6 x 6 covariance must agree with sqrt(cov[5, 5]); the dispersive route's own pair passes ----
+    @test refused(() -> GaussianStrongBeamSpec(kbb=kbb, beta=β, alpha=α, sigma=σ, ns=3, sigz=7e-3, covariance=cov6), "disagree")
+    @test GaussianStrongBeamSpec(kbb=kbb, beta=β, alpha=α, sigma=σ, ns=3, sigz=3e-3, covariance=cov6) isa ElementSpec
+    base6 = GaussianStrongBeamSpec(kbb=kbb, beta=β, alpha=α, sigma=σ, ns=3, covariance=cov6)
+    raw = ElementSpec{:gaussian_strong_beam}(merge(copy(getfield(base6, :params)), Dict{Symbol,Any}(:sigz => 7e-3)))
+    @test refused(() -> compile_runtime(raw), "disagree")                                                             # the flexible form, at compile
+    @test refused(() -> offset_slices(raw, (hoffset=(1e-6, 2e-6, 3e-6),)), "disagree")                               # and in the offset functions
+    od = LinearOptics(; beta=(β..., 90.0), alpha=(α..., 0.0), zeta=(2.0e-3, 1.0e-4, 0.0, 0.0), eta=(0.3, 0.02, 0.0, 0.0))
+    @test compile_runtime(GaussianStrongBeamSpec{Float64}(; kbb=kbb, optics=od, sigma=σ, sigma_delta=1e-3, ns=3, sigz=7.0e-3)) isa Octopus.GaussianStrongBeam
+    # --- U1-7: thin= takes the kernel spec or a compiled kernel, refused by name otherwise ------------------------------
+    @test refused(() -> GaussianStrongBeamSpec(thin=42, ns=1), "thin must be an ElementSpec{:thin_strong_beam}")
+    @test refused(() -> GaussianStrongBeamSpec(thin=DriftSpec(L=1.0), ns=1), "thin must be an ElementSpec{:thin_strong_beam}")
+    # --- the mean deprecation warning follows the refusals: a call refused for S5 prints none ---------------------------
+    logs, _ = Test.collect_test_logs(() -> try
+        GaussianStrongBeamSpec{Float64}(; kbb=kbb, beta=β, sigma=σ, center=(1e-6, 0.0, 0.0), mean=(1e-6, 0.0, 0.0, 0.0, 0.0, 0.0), ns=3, sigz=7e-3)
+    catch; end)
+    @test !any(l -> occursin(deprecated, string(l.message)), logs)
+    # --- U2-1: one slice is the thin kernel and keeps its rounding bound -------------------------------------------------
+    class_of(spec) = Octopus._cross_backend_rounding(compile_runtime(spec))
+    @test class_of(GaussianStrongBeamSpec(kbb=1e-8, beta=(1.0, 1.0), sigma=(1e-4, 1e-4), ns=1)).ulp_bound == 8
+    @test class_of(GaussianStrongBeamSpec(kbb=1e-8, beta=(1.0, 1.0), sigma=(1e-4, 1e-4), ns=3, sigz=7e-3)).ulp_bound == 64
+    @test class_of(Octopus._thin_strong_beam_spec(; kbb=1e-8, beta=(1.0, 1.0), sigma=(1e-4, 1e-4))).ulp_bound == 8
+    # --- U3-1: the kernel builder's own optics refusals ------------------------------------------------------------------
+    o = LinearOptics(; beta=(1.0, 1.0, 1.0), alpha=(0.0, 0.0, 0.0))
+    @test refused(() -> Octopus._thin_strong_beam_spec(; kbb=1e-4, optics=o, beta=(1.0, 1.0), sigma=(1e-3, 1e-3)), "cannot be given beside it")
+    @test refused(() -> Octopus._thin_strong_beam_spec(; kbb=1e-4, optics=o, coupling=XYCouplingSpec(r1=0.1), sigma=(1e-3, 1e-3)), "cannot be given beside it")
+    @test refused(() -> Octopus._thin_strong_beam_spec(; kbb=1e-4, optics=((1.0, 1.0), (0.0, 0.0)), sigma=(1e-3, 1e-3)), "optics must be a LinearOptics")
+    # --- U3-2: a non-Dict hvoffset is refused by name on the constructor route and at the flexible form's compile ----------
+    @test refused(() -> quietly(() -> GaussianStrongBeamSpec(; kbb=kbb, beta=β, sigma=σ, ns=3, sigz=0.01, hvoffset=(1.0e-6, -2.0e-6))), "must be a Dict")
+    kernel = Octopus.params(GaussianStrongBeamSpec(; kbb=kbb, beta=β, sigma=σ, ns=3, sigz=0.01))[:thin]
+    @test refused(() -> compile_runtime(ElementSpec{:gaussian_strong_beam}(Dict{Symbol,Any}(
+                      :thin => kernel, :ns => 3, :sigz => 0.01, :hvoffset => (1.0e-6, -2.0e-6)))), "must be a Dict")
+    # --- U3-3: the thin kind tracks in Float32 as a line element, bit for bit the one-slice element -------------------------
+    rep32() = Phase6DRep(Float32[1e-4, -2e-4, 3e-4], Float32[1e-5, 2e-5, -1e-5], Float32[2e-5, -1e-5, 0.0],
+                         Float32[-1e-5, 1e-5, 2e-5], Float32[1e-3, -1e-3, 0.0], Float32[1e-4, 0.0, -1e-4])
+    a = rep32(); b = rep32()
+    track!(a, compile_runtime(Octopus._thin_strong_beam_spec(Float32; kbb=1f-5, beta=(1f0, 1f0), sigma=(1f-3, 1f-3))), 1, CPUThreadsBackend)
+    track!(b, compile_runtime(GaussianStrongBeamSpec{Float32}(kbb=1f-5, beta=(1f0, 1f0), sigma=(1f-3, 1f-3), ns=1)), 1, CPUThreadsBackend)
+    @test eltype(a.x) === Float32 && all(x == y for (x, y) in zip(coordinate_arrays(a), coordinate_arrays(b))) && a.px != rep32().px
 end
 
 @testset "The strong beam's momentum dispersion is canonical: the builder forms the physical slope by (D7) and agrees with the Twiss analysis" begin
@@ -16846,7 +16909,9 @@ if _lane_gate("Element parameter effectiveness")
     @test Set(filter(startswith("phase_space_reset."), r.metrics[:rejected_names])) ==
           Set("phase_space_reset.$key" for key in Octopus._PLACEMENT_PARAM_KEYS)
     @test r.metrics[:unperturbable] <= 35
-    @test r.metrics[:rejected] <= 23 + length(Octopus._PLACEMENT_PARAM_KEYS)
+    # 23 -> 24 on 2026-11-22 (strong-beam stage-2 neighbour audit, U1-1): `thin_strong_beam.alpha` moved from an
+    # inactive exemption to rejected, since a nonzero alpha beside the probe's covariance is now refused by name.
+    @test r.metrics[:rejected] <= 24 + length(Octopus._PLACEMENT_PARAM_KEYS)
 
     # `:name` is CARRIED by every kind and consumed by none, so it is exempt
     # kind-independently rather than through thirty copies of one reason in

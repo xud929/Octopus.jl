@@ -134,8 +134,8 @@ end
 one-slice strong beam and stays fully functional, but the recommended
 spelling is the self-contained [`GaussianStrongBeamSpec`](@ref) with `ns = 1`
 (one slice needs no `sigz`): the strong beam as one element, design
-`docs/design/strong_beam_element.md`, stage 2. Each public form of this
-constructor warns once per process and names that replacement; nothing else
+`docs/design/strong_beam_element.md`, stage 2. The constructor warns once per
+process, whichever of its two forms is called first, naming that replacement; nothing else
 about it changes and no feature is added to it. Its compiled runtime,
 `ThinStrongBeam`, remains the per-slice kernel of the Gaussian element, and the
 Gaussian element stores the kernel it builds as its `thin` parameter.
@@ -235,7 +235,7 @@ function _strong_beam_deprecated(spelling::Symbol)
     what = spelling === :ThinStrongBeamSpec ? "`ThinStrongBeamSpec`" :
            spelling === :slice_offsets ? "the GaussianStrongBeamSpec constructor keywords `slice_hoffset`, `slice_voffset`, `slice_pxoffset` and `slice_pyoffset`" :
            "the GaussianStrongBeamSpec constructor keyword `$(spelling)`"
-    @warn "$(what) is a deprecated spelling of the strong beam, kept for existing scripts; prefer " *
+    @warn "$(what) $(spelling === :slice_offsets ? "are deprecated spellings" : "is a deprecated spelling") of the strong beam, kept for existing scripts; prefer " *
           "$(_STRONG_BEAM_DEPRECATIONS[spelling]) (docs/design/strong_beam_element.md, stage 2; this message prints once per process)" maxlog=1 _id=Symbol(:strong_beam_deprecated_, spelling)
     return nothing
 end
@@ -280,6 +280,15 @@ function _thin_strong_beam_spec(::Type{T}; kbb,
         beta = (optics.twiss.beta[1], optics.twiss.beta[2])
         alpha = (optics.twiss.alpha[1], optics.twiss.alpha[2])
         coupling = all(iszero, optics.twiss.R) ? nothing : XYCouplingSpec{T}(optics.twiss)
+    end
+    # Audit U1-1 (2026-11-22): a nonzero alpha beside an explicit covariance was
+    # accepted and read by nothing (the covariance carries the correlation);
+    # refused by name like the inert longitudinal components (F-124). Zero, the
+    # declared default, stays accepted so the metadata validator's default arm
+    # (`alpha = (0, 0)` beside the example's covariance) holds.
+    if covariance !== nothing && alpha !== nothing && !all(iszero, _strong_tuple(alpha, 2, T))
+        throw(ArgumentError("alpha = $(alpha) is not read beside an explicit covariance (the covariance carries the " *
+                            "beam's correlation); give alpha = (0, 0) or omit it, or give beta/alpha/sigma instead of the covariance"))
     end
     covariance4 = transverse_covariance(T;
         beta=beta, alpha=something(alpha, (zero(T), zero(T))), sigma=sigma,
@@ -439,8 +448,10 @@ slice a thin Bassetti-Erskine kick. The first form, the recommended one
 (design `docs/design/strong_beam_element.md`, S1), takes the strong beam's own
 parameters: `kbb` and `klum`, its transverse optics as a [`LinearOptics`](@ref)
 point (`optics`, with `sigma`), as the `beta`/`alpha`/`sigma` pairs or as a
-`4 x 4` `covariance` (with `coupling`), and `center`, `angle`, `curvature`,
-`virtual_drift`, which `ThinStrongBeamSpec` documents. `ns = 1` is the 4D
+`4 x 4` `covariance` (already coupled: `coupling` is refused beside it), and
+`center`, `angle`, `curvature`, `virtual_drift`, with the meanings the kernel's
+own docstring (`ThinStrongBeamSpec`, now a deprecated spelling) gives them in
+detail. `ns = 1` is the 4D
 single-kick case, bit for bit the thin element. The second form takes the
 per-slice kernel ready-made, `thin` a `ThinStrongBeamSpec` or a compiled
 `ThinStrongBeam`, and is exclusive with the strong beam's own parameters
@@ -566,7 +577,6 @@ function (::Type{GaussianStrongBeamSpec{T}})(; thin=nothing,
     any(v -> v !== nothing, (slice_hoffset, slice_voffset, slice_pxoffset, slice_pyoffset)) &&
         _strong_beam_deprecated(:slice_offsets)
     mean6 = mean === nothing ? nothing : _strong_inert_longitudinal(_strong_tuple(mean, 6, T), "mean", 6)
-    mean === nothing || _strong_beam_deprecated(:mean)
     # The strong beam itself (design docs/design/strong_beam_element.md, S1):
     # its own parameters, the recommended form, or a `thin=` spec, never both;
     # the stored representation is the same `thin` either way. A covariance is
@@ -587,6 +597,11 @@ function (::Type{GaussianStrongBeamSpec{T}})(; thin=nothing,
                                             curvature, virtual_drift, sigma_delta)) if v !== nothing]
     cov4 === nothing || push!(own, "covariance (4 x 4)")
     if thin !== nothing
+        # Audit U1-7 (2026-11-22): anything else was stored and died at compile
+        # with a MethodError rather than being refused by name here.
+        thin isa Union{ElementSpec{:thin_strong_beam},ThinStrongBeam} || throw(ArgumentError(
+            "GaussianStrongBeamSpec thin must be an ElementSpec{:thin_strong_beam} (the kernel spec) or a compiled " *
+            "ThinStrongBeam; got $(typeof(thin))"))
         isempty(own) || throw(ArgumentError(
             "GaussianStrongBeamSpec takes the strong beam either as thin= or as its own parameters (kbb, klum, " *
             "beta, alpha, sigma, a 4 x 4 covariance, coupling, optics, center, angle, curvature, virtual_drift, " *
@@ -606,6 +621,11 @@ function (::Type{GaussianStrongBeamSpec{T}})(; thin=nothing,
             isempty(clash) || throw(ArgumentError(
                 "GaussianStrongBeamSpec takes beta, alpha and coupling from the LinearOptics point given as optics; " *
                 join(clash, ", ") * " cannot be given beside it (give one form)"))
+            # Audit U1-2 (2026-11-22): without this the kernel builder's refusal
+            # named the deprecated constructor and asked for beta the point gave.
+            sigma === nothing && throw(ArgumentError(
+                "GaussianStrongBeamSpec takes sigma beside a LinearOptics point: the point carries beta, alpha and the " *
+                "coupling, not the beam's transverse rms sizes (give sigma)"))
         elseif cov4 === nothing && (beta === nothing || sigma === nothing)
             # S6 (stage 2): a 6 x 6 covariance alone describes the strong beam.
             # The kernel's stored transverse covariance is then the 6 x 6's
@@ -661,7 +681,9 @@ function (::Type{GaussianStrongBeamSpec{T}})(; thin=nothing,
                                                coupling=coupling, optics=optics)
         end
     end
+    mean === nothing || _strong_beam_deprecated(:mean)       # after the refusals: a refused call does not warn
     cov6v = cov6 === nothing ? nothing : _validated_covariance(cov6, 6, T)
+    cov6v === nothing || sigz === nothing || _check_sigz_against_covariance(T(sigz), cov6v)
     return ElementSpec{:gaussian_strong_beam}(_stamp_numeric_type!(
         _spec_params(;
             thin=thin_spec,
@@ -721,9 +743,10 @@ function _cross_backend_rounding(op::GaussianStrongBeam)
     round_beam = _strong_beam_round(op.thin.moments)
     return _rounding_class(untouched=moves_z ? () : (:z,),
                            ulp=moves_z ? _COORDINATE_NAMES : (:x, :px, :y, :py, :pz),
-                           ulp_bound=round_beam ? 64 : 2048,
+                           ulp_bound=round_beam ? (op.ns == 1 ? 8 : 64) : 2048,
         why="$(op.ns) slices, each the thin kick (`exp`, the fused virtual drift to the slice centre and back, the synchro-beam energy term) at its own centre; " *
-            (round_beam ? "a round beam (11 ulps of scale over 3 turns with 3 slices)" :
+            (round_beam ? (op.ns == 1 ? "a round beam, one slice: the thin kernel itself, with its bound of 8 (audit U2-1)" :
+                                        "a round beam (11 ulps of scale over 3 turns with 3 slices)") :
                           "an elliptic beam's Bassetti-Erskine kick cancels (313 and 236 ulps of px's and py's scale over 2 turns on a 115 by 13 um beam)") *
             "; the $(nameof(typeof(op.thin.virtual_drift))) virtual drift " * (moves_z ? "advances z" : "leaves z alone"))
 end
@@ -742,7 +765,7 @@ function GaussianStrongBeam(spec::ElementSpec{:gaussian_strong_beam},
     typeof(thin.kbb) === T0 || throw(ArgumentError(
         "gaussian_strong_beam: the wrapped thin strong beam compiled in $(typeof(thin.kbb)) " *
         "but this spec's numeric type is $(T0); build both in one type " *
-        "(ThinStrongBeamSpec{$(T0)} inside GaussianStrongBeamSpec{$(T0)}) -- one " *
+        "(GaussianStrongBeamSpec{$(T0)} with the strong beam's own parameters, or a kernel compiled in $(T0)) -- one " *
         "precision rule for every kind"))
     covariance6 = getparam(spec, :covariance, nothing)
     crab_slope = ntuple(_ -> zero(T0), 4)
@@ -1847,10 +1870,29 @@ const SLICE_METHODS = (:equal_area, :equal_width, :equal_area_centroid,
 # for the compile and for `offset_slices!`, so the two slice alike.
 function _stored_sigz(spec::ElementSpec{:gaussian_strong_beam}, ::Type{T}) where {T}
     sigz = getparam(spec, :sigz, nothing)
-    sigz === nothing || return sigz
     covariance6 = getparam(spec, :covariance, nothing)
+    if sigz !== nothing
+        covariance6 === nothing || _check_sigz_against_covariance(T(sigz), covariance6)
+        return sigz
+    end
     covariance6 === nothing && return nothing
     return sqrt(T(covariance6[5, 5]))
+end
+
+# One bunch length (audit U1-4, 2026-11-22): a stored sigz beside a stored
+# 6 x 6 covariance must agree with sqrt(cov[5, 5]) to 1e-9 relative on the
+# variance, since the slicing reads sigz and each slice's conditional
+# covariance reads cov[5, 5]; before, the two were accepted apart and a beam
+# sliced at one length was conditioned at another, silently. The dispersive
+# point route builds the 6 x 6 from sigz and passes exactly; the constructor
+# checks at construction and `_stored_sigz` at compile and in the offset
+# functions, so the flexible form is covered too.
+function _check_sigz_against_covariance(sigz, covariance6)
+    v = covariance6[5, 5]
+    isapprox(sigz^2, v; rtol=1.0e-9) || throw(ArgumentError(
+        "GaussianStrongBeamSpec: sigz = $(sigz) and the 6 x 6 covariance's sqrt(cov[5, 5]) = $(sqrt(v)) disagree; " *
+        "the slicing reads sigz and each slice's conditional covariance reads cov[5, 5], so give one of them, or both equal"))
+    return nothing
 end
 
 function _gaussian_slices(::Type{T}, ns::Int, slice_center, slice_weight, sigz, method, width) where {T}
@@ -1873,7 +1915,8 @@ function _gaussian_slices(::Type{T}, ns::Int, slice_center, slice_weight, sigz, 
             "slice_method = $(repr(method)) generate them -- passing one alone " *
             "used to be discarded silently."))
     end
-    if sigz === nothing && ns == 1 && method in SLICE_METHODS && method !== :equal_width
+    method in SLICE_METHODS || throw(ArgumentError("unknown slice_method $(repr(method)); expected one of $(SLICE_METHODS)"))
+    if sigz === nothing && ns == 1 && method !== :equal_width
         # One slice needs no bunch length: every rule puts it at z = 0 with
         # weight 1 (measured for all seven on 2026-11-22), so the 4D case
         # `ns = 1` is spelled without sigz (stage 2). `:equal_width` keeps
@@ -2225,8 +2268,9 @@ them the shape's, the planes the shape does not name becoming zero. The
 offsets are stored per slice, so the slicing is frozen into the spec first:
 `slice_center` and `slice_weight` are computed by its `slice_method` when not
 already explicit (`slice_method` and `slice_width` are then inert), and a
-stored `hvoffset`, the constructor's legacy spelling, is folded into the
-tuples and removed. The covariance's crab slope, a dispersive
+stored `hvoffset`, the constructor's deprecated spelling, is folded into the
+tuples and removed, so it counts as the user's offsets from then on (`:add`
+keeps it, `:replace` resets it with the rest). The covariance's crab slope, a dispersive
 [`LinearOptics`](@ref) point's `zeta`, is the bunch's own tilt and is added
 at compile regardless of these offsets; to remove it, remove the dispersion
 from the point. The stored values are numbers, never the function or the
@@ -2347,7 +2391,7 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = _thin_strong_beam_spec(; kbb=1e-4, beta=(1.0, 1.0), sigma=(1e-3, 1e-3))
-    construction_help = "DEPRECATED spelling, kept for existing scripts: each public form warns once per process and names the replacement, GaussianStrongBeamSpec{T}(; kbb, klum, optics or beta/alpha/sigma or a 4 x 4 covariance, coupling, center, angle, curvature, virtual_drift, ns=1), the strong beam as one element (one slice needs no sigz; design docs/design/strong_beam_element.md, stage 2); no feature is added to this constructor. Friendly constructor: ThinStrongBeamSpec{T}(; kbb, klum=1, beta=nothing, alpha=(0,0), sigma=nothing, covariance=nothing, coupling=nothing, optics=nothing, center=(0,0,0), angle=(0,0,0), curvature=(0,0,0), virtual_drift=:hirata, tracking_method=WeakStrongBeamBeamMap(), kwargs...). Recommended form (design D15): optics=o::LinearOptics supplies beta, alpha and coupling (its transverse projection; a point carrying dispersion is refused, and beta/alpha/coupling/covariance are refused beside optics) with sigma given separately. Otherwise supply beta/sigma or covariance; coupling transforms the uncoupled covariance. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinStrongBeamSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "DEPRECATED spelling, kept for existing scripts: each public form warns once per process and names the replacement, GaussianStrongBeamSpec{T}(; kbb, klum, optics or beta/alpha/sigma or a 4 x 4 covariance, coupling, center, angle, curvature, virtual_drift, ns=1), the strong beam as one element (one slice needs no sigz; design docs/design/strong_beam_element.md, stage 2); no feature is added to this constructor. Friendly constructor: ThinStrongBeamSpec{T}(; kbb, klum=1, beta=nothing, alpha=(0,0), sigma=nothing, covariance=nothing, coupling=nothing, optics=nothing, center=(0,0,0), angle=(0,0,0), curvature=(0,0,0), virtual_drift=:hirata, tracking_method=WeakStrongBeamBeamMap(), kwargs...). The optics= form (design D15): optics=o::LinearOptics supplies beta, alpha and coupling (its transverse projection; a point carrying dispersion is refused, and beta/alpha/coupling/covariance are refused beside optics) with sigma given separately. Otherwise supply beta/sigma or covariance; coupling transforms the uncoupled covariance. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinStrongBeamSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 @element_spec begin
@@ -2369,7 +2413,7 @@ end
         slice_voffset=ParamMeta(meaning="per-slice vertical offsets [m], the stored form offset_slices! and offset_slices write; as a constructor keyword a DEPRECATED spelling kept for existing scripts (warns once per process): prefer the functions"),
         slice_pxoffset=ParamMeta(meaning="per-slice horizontal-angle offsets [rad], the stored form offset_slices! and offset_slices write; as a constructor keyword a DEPRECATED spelling kept for existing scripts (warns once per process): prefer the functions"),
         slice_pyoffset=ParamMeta(meaning="per-slice vertical-angle offsets [rad], the stored form offset_slices! and offset_slices write; as a constructor keyword a DEPRECATED spelling kept for existing scripts (warns once per process): prefer the functions"),
-        sigz=ParamMeta(meaning="strong-beam longitudinal rms size; required unless explicit slice_center and slice_weight are supplied, a 6 x 6 covariance is stored (then sqrt(cov[5,5])), or ns = 1 (one slice sits at z = 0 with weight 1 for every slice_method but :equal_width, which keeps requiring its width)"),
+        sigz=ParamMeta(meaning="strong-beam longitudinal rms size; required unless explicit slice_center and slice_weight are supplied, a 6 x 6 covariance is stored (then sqrt(cov[5,5])), or ns = 1 (one slice sits at z = 0 with weight 1 for every slice_method but :equal_width, which keeps requiring sigz and slice_width)"),
         mean=ParamMeta(meaning="DEPRECATED spelling kept for existing scripts (warns once per process): the strong beam's 6D centroid in (x, px, y, py, z, pz) order, acting as center = (x, y, z) and angle = (px, py, pz) of the kernel in every case since stage 2 (before, it was read only beside a 6 x 6 covariance); prefer center and angle, beside which it is refused by name; the sixth component must be 0 (the strong beam's own energy offset is not read by the kick; refused by name rather than accepted and ignored)"),
         covariance=ParamMeta(meaning="optional 6 x 6 Gaussian covariance, given or built by the constructor from a LinearOptics point carrying dispersion with sigz and sigma_delta (design S2; the constructor also takes a 4 x 4, the slice's transverse covariance, which goes into thin); slices use conditional transverse moments"),
         slice_method=ParamMeta(default=:sqrt_density, meaning="longitudinal slicing rule: :sqrt_density (default, Furman #4), :equal_area (#2), :equal_area_centroid (#3), :min_cdf_area (#5), :equal_spacing_density (#1), :gauss_hermite, or :equal_width; see docs/theory/gaussian_longitudinal_slicing.md"),
@@ -2379,7 +2423,7 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = GaussianStrongBeamSpec(kbb=1e-4, beta=(1.0, 1.0), sigma=(1e-3, 1e-3), ns=3, sigz=0.01)
-    construction_help = "Friendly constructor, recommended form (design docs/design/strong_beam_element.md): GaussianStrongBeamSpec{T}(; kbb, klum=1, optics=o::LinearOptics | beta, alpha=(0,0), sigma | covariance (4 x 4), coupling=nothing, center=(0,0,0), angle=(0,0,0), curvature=(0,0,0), virtual_drift=:hirata, sigma_delta=nothing, ns, sigz=nothing, slice_method=:sqrt_density, slice_width=nothing, slice_center=nothing, slice_weight=nothing, slice_hoffset=nothing, slice_voffset=nothing, slice_pxoffset=nothing, slice_pyoffset=nothing, hvoffset=nothing, covariance (6 x 6)=nothing, mean=nothing, tracking_method=WeakStrongBeamBeamMap(), kwargs...); ns=1 is the 4D single-kick case. The thin= form, GaussianStrongBeamSpec{T}(; thin::ThinStrongBeamSpec, ns, ...), spells the same spec and is exclusive with the strong beam's own parameters; thin= itself is silent (the stored form's keyword), building the kernel through ThinStrongBeamSpec warns once (stage 2). A LinearOptics point carrying dispersion needs sigma_delta and sigz and builds the 6 x 6 covariance through gaussian_strong_beam_covariance (S2). Slice offsets: the covariance's crab slope times the slice centre is the bunch's own tilt and always applies; the user's per-slice offsets are written by offset_slices!(spec, shape; mode=:add|:replace) in place or offset_slices(spec, shape; mode) on a copy, shape a NamedTuple of per-slice tuples (hoffset, voffset, pxoffset, pyoffset), a function z -> (x, px, y, py), or the crab-waveform Dict (S3); the constructor's hvoffset and slice_*offset keywords and mean are DEPRECATED spellings kept for existing scripts (each warns once per process naming its replacement; hvoffset and slice_*offset add at compile as before, mean acts as center and angle in every case since stage 2). mean beside center/angle is refused (S5). A 6 x 6 covariance alone describes the strong beam (S6): the kernel's stored transverse covariance is then its transverse block, replaced at compile by each slice's conditional covariance. ns=1 needs no sigz. A 6 x 6 covariance is conditioned on each longitudinal slice. hvoffset: a Dict with the Symbol keys dim (:x or :y), coef [m], frequency [Hz] and harmonics; coef and frequency are required and an unknown key is refused by name. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form GaussianStrongBeamSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "Friendly constructor, recommended form (design docs/design/strong_beam_element.md): GaussianStrongBeamSpec{T}(; kbb, klum=1, optics=o::LinearOptics | beta, alpha=(0,0), sigma | covariance (4 x 4), coupling=nothing, center=(0,0,0), angle=(0,0,0), curvature=(0,0,0), virtual_drift=:hirata, sigma_delta=nothing, ns, sigz=nothing, slice_method=:sqrt_density, slice_width=nothing, slice_center=nothing, slice_weight=nothing, slice_hoffset=nothing, slice_voffset=nothing, slice_pxoffset=nothing, slice_pyoffset=nothing, hvoffset=nothing, covariance (6 x 6)=nothing, mean=nothing, tracking_method=WeakStrongBeamBeamMap(), kwargs...); ns=1 is the 4D single-kick case. The thin= form, GaussianStrongBeamSpec{T}(; thin::ThinStrongBeamSpec, ns, ...), spells the same spec and is exclusive with the strong beam's own parameters; thin= itself is silent (the stored form's keyword), building the kernel through ThinStrongBeamSpec warns once (stage 2). A LinearOptics point carrying dispersion needs sigma_delta and sigz and builds the 6 x 6 covariance through gaussian_strong_beam_covariance (S2). Slice offsets: the covariance's crab slope times the slice centre is the bunch's own tilt and always applies; the user's per-slice offsets are written by offset_slices!(spec, shape; mode=:add|:replace) in place or offset_slices(spec, shape; mode) on a copy, shape a NamedTuple of per-slice tuples (hoffset, voffset, pxoffset, pyoffset), a function z -> (x, px, y, py), or the crab-waveform Dict (S3); the constructor's hvoffset and slice_*offset keywords and mean are DEPRECATED spellings kept for existing scripts (each warns once per process naming its replacement; hvoffset and slice_*offset add at compile as before, mean acts as center and angle in every case since stage 2). mean beside center/angle is refused (S5). A 6 x 6 covariance alone describes the strong beam (S6): the kernel's stored transverse covariance is then its transverse block, replaced at compile by each slice's conditional covariance. ns=1 needs no sigz (every rule puts one slice at z = 0 with weight 1), except :equal_width, which keeps requiring sigz and slice_width. A 6 x 6 covariance is conditioned on each longitudinal slice. hvoffset: a Dict with the Symbol keys dim (:x or :y), coef [m], frequency [Hz] and harmonics; coef and frequency are required and an unknown key is refused by name. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form GaussianStrongBeamSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 default_method(::Type{ElementSpec{:thin_strong_beam}}) = WeakStrongBeamBeamMap()

@@ -3897,7 +3897,6 @@ const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     (:lumped_radiation, :alpha) => "optics input used to build the damping/excitation moments, folded before the map",
     (:lumped_radiation, :beta) => "optics input folded before the map, as alpha is",
     (:thin_strong_beam, :klum) => "reaches the runtime but feeds the luminosity diagnostic, not the coordinate map",
-    (:thin_strong_beam, :alpha) => "used only when the strong beam is given through beta/alpha optics rather than kbb, which this probe does not do",
     # Turn-modulation rule parameters (docs/design/turn_modulation.md): each
     # entry is `nothing` or a rule object, and the realised offset is added by
     # the per-turn `update` the task loops call, which the bare deterministic
@@ -3984,7 +3983,7 @@ const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
 The elliptical thin strong beam the Gaussian strong beam's probe wraps
 (`ELEMENT_PARAM_PROBE_OVERRIDES`): the example's `kbb` and `beta`, with
 `sigma_x = 2 sigma_y` so a roll about s is physical. A function, called when
-the probe is built, since `ThinStrongBeamSpec` is not defined where the
+the probe is built, since the strong-beam constructors are not defined where the
 override table is evaluated; defined ABOVE the table so the table can name it.
 """
 _elliptical_thin_strong_beam_probe() =

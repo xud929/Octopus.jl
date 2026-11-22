@@ -40,7 +40,8 @@ design (2026-11-21):
   `kbb`, `klum`, the optics as a `LinearOptics` point (`optics`, the
   recommended spelling) or as `beta`/`alpha`/`sigma` or as a 4×4
   `covariance`, with `coupling`, `center`, `angle`, `curvature` and
-  `virtual_drift`, beside `ns`, `sigz`, the slice options and `hvoffset`.
+  `virtual_drift`, beside `ns`, `sigz`, the slice options and `hvoffset`
+  (the last a deprecated spelling since stage 2, S7).
   `thin =` stays accepted and is exclusive with every thin parameter (refused
   by name beside any of them). The stored representation does not change:
   the constructor builds the `ThinStrongBeamSpec{T}` itself and stores it as
@@ -104,7 +105,8 @@ design (2026-11-21):
   conditional covariance as for every 6×6, so the compiled element equals the
   one the thin= form built from any 4×4 beside the same 6×6. The same batch
   lets `ns = 1` go without `sigz` (every rule puts one slice at `z = 0` with
-  weight 1, measured for all seven; `:equal_width` keeps requiring its width)
+  weight 1, measured for all seven; `:equal_width` keeps requiring `sigz` and
+  its width)
   and makes `offset_slices!` read `sigz` from a stored 6×6 as the compile
   does (a stage-1 defect: the function refused a spec that compiled).
 - **S7 Deprecate and keep, never remove (owner, 2026-11-22).** The old
@@ -150,7 +152,11 @@ The new form against `thin =` for the examples' parameters, bit for bit
 (`params`, the compiled kernel, the tracked coordinates);
 `validation/strong_beam_kick_fingerprint.jl` unchanged; the dispersive point
 against the explicit 6×6 built by `gaussian_strong_beam_covariance`, bit for
-bit; the offset rule (the sum, the refusal, the zero-slope tripwire); every
-refusal by name; `validate_element_metadata()`, both `element_help` forms;
-the full gate with CUDA active (the kernels are unchanged, the CUDA arm runs
-the backend-consistency script).
+bit; the two offset functions (`:add` accumulating, `:replace` resetting the
+user's part, the tilt untouched, a stored `hvoffset` folded, every shape and
+every refusal by name); `validate_element_metadata()`, both `element_help`
+forms; the full gate with CUDA active (the kernels are unchanged, the CUDA
+arm runs the backend-consistency script). Stage 2's verification and the
+neighbour audit that followed it are in their records
+([stage 2](../history/strong_beam_element_stage2_2026_11_22.md),
+[audit](../history/audit_strong_beam_element_2026_11_22.md)).
