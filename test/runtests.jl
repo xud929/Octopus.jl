@@ -2877,13 +2877,12 @@ end
     end
     @test_throws ArgumentError Beam(10, CPUThreadsBackend; optics=(β, α), sigma=(1e-4, 1e-5, 0.01))
     @test_throws ArgumentError Beam(10, CPUThreadsBackend; distribution=:uniform, lower=ntuple(_ -> -1.0, 6), upper=ntuple(_ -> 1.0, 6), optics=LinearOptics(t1))
-    @test_throws ArgumentError Beam(10, CPUThreadsBackend; coupling=(0.1, 0.0, 0.0, 0.0), mode=XY_UNDEF)   # D8, before the draw
     @test Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1) == next_before + 1                            # one id taken by the probe itself, none by the refusals
-    # --- D8: XY_UNDEF reads no coefficient, so nonzero ones are refused instead of ignored ----------------
+    # --- D8 -> D14: XY_UNDEF retired 2026-11-21; zero coefficients in form 1 are the identity (form 2: the plane exchange)
     u6 = (1.1e-3, -2.0e-4, 0.7e-3, 1.3e-4, -1.5e-3, 4.0e-4)
-    @test_throws ArgumentError XYCouplingSpec(r1=0.01, mode=XY_UNDEF)
-    @test_throws ArgumentError XYCoupling(0.01, 0.0, 0.0, 0.0, XY_UNDEF)
-    @test collect(compile_runtime(XYCouplingSpec(mode=XY_UNDEF))(u6...)) == collect(u6)
+    @test !isdefined(Octopus, :XY_UNDEF) && Set(instances(XYCouplingMode)) == Set((XY_MODEA, XY_MODEB))
+    @test collect(compile_runtime(XYCouplingSpec())(u6...)) == collect(u6)
+    @test collect(compile_runtime(XYCouplingSpec(mode=XY_MODEB))(u6...)) == collect((u6[3], u6[4], u6[1], u6[2], u6[5], u6[6]))   # V2 at R = 0: the block swap
     # --- D6: the analysis closes the loop ---------------------------------------------------------------
     tunes = (2pi * 0.228, 2pi * 0.210, 2pi * 0.01)
     for o in (LinearOptics(; beta=β, alpha=α, zeta=ζ, eta=η, mu=(0.0, 0.0, 0.0), frame=:ring),            # uncoupled
@@ -15846,17 +15845,19 @@ end
 @testset "Dispersion parameters state the canonical convention, the coupling mode declares every value the runtime accepts, the cavity's L meta names the slip's owner (F-97, F-98, F-99)" begin
     u = (1.1e-3, -2.0e-4, 0.7e-3, 1.3e-4, -1.5e-3, 4.0e-4)
     # F-97: `xy_coupling` declared alternatives (XY_MODEA, XY_MODEB) while the
-    # kernel, `_inverse` and the rounding class all carry an XY_UNDEF branch
+    # kernel, `_inverse` and the rounding class all carried an XY_UNDEF branch
     # (the identity), so the accepted enumeration was wider than the declared
-    # one and the effectiveness sweep never visited the third value.
+    # one; the alternatives are derived from the enum since. 2026-11-21
+    # (docs/design/linear_optics.md D14): XY_UNDEF is retired -- zero
+    # coefficients in form 1, the default, are the identity -- so the enum is the two
+    # Edwards-Teng forms and has no zero member.
     mode_meta = Octopus.parameter_schema(ElementSpec{:xy_coupling})[:mode]
-    @test Set(mode_meta.alternatives) == Set(instances(XYCouplingMode))
+    @test Set(mode_meta.alternatives) == Set(instances(XYCouplingMode)) == Set((XY_MODEA, XY_MODEB))
     @test mode_meta.default in mode_meta.alternatives
     @test occursin("identity", mode_meta.meaning)
-    # 2026-11-21 (docs/design/linear_optics.md D8): XY_UNDEF reads no coefficient, so a nonzero
-    # one beside it is refused by name instead of ignored; with zero coefficients it is the identity.
-    @test_throws ArgumentError XYCouplingSpec(r1=0.01, mode=XY_UNDEF)
-    @test collect(compile_runtime(XYCouplingSpec(mode=XY_UNDEF))(u...)) == collect(u)
+    @test !isdefined(Octopus, :XY_UNDEF)
+    @test_throws ArgumentError XYCouplingMode(0)
+    @test collect(compile_runtime(XYCouplingSpec())(u...)) == collect(u)                    # zero coefficients: the identity
     @test collect(compile_runtime(XYCouplingSpec(r1=0.01, mode=XY_MODEA))(u...)) != collect(u)
     # F-99: every zeta/eta parameter of every registered kind is the canonical
     # pair of docs/theory/twiss_dispersion.md (D6)-(D8), as the analysis reports

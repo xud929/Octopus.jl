@@ -230,9 +230,6 @@ end
 end
 
 @inline function _inverse(elem::XYCoupling, x0, px0, y0, py0, z0, pz0)
-    if elem.mode == XY_UNDEF
-        return x0, px0, y0, py0, z0, pz0
-    end
     if elem.mode == XY_MODEA
         return _inverse_xy_modea(elem, x0, px0, y0, py0, z0, pz0)
     end

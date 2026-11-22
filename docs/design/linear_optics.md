@@ -168,6 +168,22 @@ per call.
   a tripwire asserts it on coupled fixtures, a form-2 point among them, and
   that `2` still presents form 2.
 
+### Decision of the third batch (2026-11-21, the owner item 2 of section 4)
+
+- **D14 `XY_UNDEF` retired.** The enum `XYCouplingMode` is the two Edwards-Teng
+  forms, `XY_MODEA = 1` and `XY_MODEB = 2`; the zero member that made
+  `XYCoupling` the identity is gone, with its branch in the tracking kernel,
+  in `_inverse` and in the cross-backend rounding class, the coefficient
+  check D8 added for it, and its mention in the Beam docstring and the mode
+  metadata. Zero coefficients in form 1 (`XY_MODEA`, the default) give the
+  identity, the only meaning the member had; in form 2 they give the exchange
+  of the transverse planes, as V2's definition says (the suite's first run of
+  the retirement caught the claim "identity in either form"). A script naming `XY_UNDEF` fails loudly with an
+  undefined-variable error; specs are in-memory objects, so nothing stored
+  needs a migration. The symbol-removal class of the matrix: a repo-wide grep
+  of `src/`, `test/`, `docs/`, `examples/`, `validation/` and `profiling/`
+  found every mention listed in the record.
+
 ## 3. Staging, tests, verification
 
 One batch, one record. Stage 1: D1, D2, `Linear6DSpec(o1, o2)`, `Beam(; optics)`,
@@ -204,10 +220,12 @@ form 2 on `ChromaticityKickSpec` and `LumpedRadSpec`; `LumpedRadSpec`'s
 untyped form fixing `Float64`; whether `preferred_form = :auto` ever presents
 form 2.
 
+Closed by the third batch (D14, record
+[`../history/linear_optics_xy_undef_2026_11_21.md`](../history/linear_optics_xy_undef_2026_11_21.md)):
+retiring `XY_UNDEF`.
+
 Still open:
 
-- Retiring `XY_UNDEF` (R = 0 already gives the identity): the next batch, as
-  its own commit, since it removes an exported enum member.
 - Dispersion in the strong beam through `gaussian_strong_beam_covariance`,
   which builds the 6x6 covariance `GaussianStrongBeamSpec` already consumes
   (the transverse Gaussian conditional on z, the crab slope per slice) and

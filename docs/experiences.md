@@ -2313,6 +2313,22 @@ elsewhere (a labelling, an ordering, a sign), state the resulting constant in
 the option's description, and add the tripwire that would fire if the
 convention moved.
 
+## A zero "undefined" enum member is a third branch in every kernel
+
+`XYCouplingMode` carried `XY_UNDEF = 0`, "the identity", beside the two
+Edwards-Teng forms. It bought nothing: zero coefficients in the default form
+give the identity (in form 2 they give the plane exchange, which is what form 2
+means). It cost a branch in the tracking kernel, in the inverse and in
+the cross-backend rounding class, a coefficient check so that nonzero
+coefficients beside it would not be ignored silently (D8), a sentence in two
+docstrings and the mode metadata, and a value the effectiveness sweep had to
+visit. The 2026-11-21 third LinearOptics batch retired it (D14).
+
+How to apply: an enum of conventions should hold conventions only. When a
+"none" or "undefined" member is spelled equally well by a neutral value of the
+parameters it governs, do not add it; if it exists, retire it as its own
+commit (the symbol-removal class), since every reader of the enum is a site.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

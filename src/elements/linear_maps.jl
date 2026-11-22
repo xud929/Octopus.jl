@@ -1,5 +1,5 @@
 export CrabDispersionSpec, MomentumDispersionSpec, XYCouplingSpec,
-       CrabDispersion, MomentumDispersion, XYCouplingMode, XY_UNDEF, XY_MODEA, XY_MODEB, XYCoupling
+       CrabDispersion, MomentumDispersion, XYCouplingMode, XY_MODEA, XY_MODEB, XYCoupling
 
 abstract type CrabDispersionSpec{T} end
 abstract type MomentumDispersionSpec{T} end
@@ -302,13 +302,10 @@ function _cross_backend_rounding(op::MomentumDispersion)
         why="`x += eta1 pz`, `z -= eta2 x - eta1 px + ...`: fused on the device, rounded twice on the host (34% of 1e5 particles part in x at eta1 = 0.2; 2 ulps of scale over 3 turns); a coordinate with a zero coefficient comes back as it was; pz is never written")
 end
 
-@enum XYCouplingMode::UInt8 XY_UNDEF=0 XY_MODEA=1 XY_MODEB=2
+@enum XYCouplingMode::UInt8 XY_MODEA=1 XY_MODEB=2
 
-"""Convention selector for the `XYCoupling` map: which of its two coupling branches `track_particle` applies, or none."""
+"""Convention selector for the `XYCoupling` map: which of its two coupling branches `track_particle` applies (Edwards-Teng form 1 or 2; zero coefficients in form 1, the default, give the identity, in form 2 the exchange of the transverse planes). The former zero member `XY_UNDEF` was retired on 2026-11-21 (design D14)."""
 XYCouplingMode
-
-"""`XYCoupling` mode under which the map is the identity."""
-XY_UNDEF
 
 """`XYCoupling` mode selecting the first coupling branch of the map (the default)."""
 XY_MODEA
@@ -322,19 +319,6 @@ XY_MODEB
 _coupling_mode(form::Integer) = form == 1 ? XY_MODEA : form == 2 ? XY_MODEB :
     throw(ArgumentError("an Edwards-Teng form is 1 or 2; got $(form)"))
 _coupling_mode(t::EdwardsTengTwiss) = _coupling_mode(t.form)
-
-# `XY_UNDEF` is the identity and reads no coefficient; a nonzero coefficient
-# beside it would be ignored silently, which the project refuses by name
-# (2026-11-21 LinearOptics batch, D8; until then `XYCouplingSpec(r1=0.01,
-# mode=XY_UNDEF)` compiled to the identity and the suite pinned that).
-function _check_undef_coefficients(who::String, r1, r2, r3, r4, mode)
-    mode === XY_UNDEF || return nothing
-    (iszero(r1) && iszero(r2) && iszero(r3) && iszero(r4)) || throw(ArgumentError(
-        "$(who) with mode=XY_UNDEF is the identity map and reads no coupling coefficient, but r1=$(r1), " *
-        "r2=$(r2), r3=$(r3), r4=$(r4) were given and would be ignored silently; use XY_MODEA or XY_MODEB, " *
-        "or zero coefficients"))
-    return nothing
-end
 
 """
     XYCouplingSpec{T=Float64}(; r1=0, r2=0, r3=0, r4=0, mode=XY_MODEA,
@@ -358,7 +342,6 @@ function (::Type{XYCouplingSpec{T}})(; r1=zero(T), r2=zero(T), r3=zero(T),
                                     r4=zero(T), mode::XYCouplingMode=XY_MODEA,
                                     tracking_method=Symplectic6DMap(),
                                     kwargs...) where {T}
-    _check_undef_coefficients("XYCouplingSpec", r1, r2, r3, r4, mode)
     return ElementSpec{:xy_coupling}(_stamp_numeric_type!(
         _spec_params(; r1=T(r1), r2=T(r2), r3=T(r3), r4=T(r4), mode=mode,
                      tracking_method=tracking_method, kwargs...), T),
@@ -388,7 +371,7 @@ Compiled runtime (`compile_runtime`) for `ElementSpec{:xy_coupling}`, built by
 `XYCouplingSpec`. Zero-length linear map mixing `(x, px)` with `(y, py)`
 through the coefficients `r1..r4`, normalized by
 `1/sqrt(1 + r1*r4 - r2*r3)`; `mode` selects which of the two coupling branches
-applies (`XY_UNDEF` makes it the identity), and `z`, `pz` are untouched. The
+applies (zero coefficients in `XY_MODEA` give the identity), and `z`, `pz` are untouched. The
 runtime layer is an implementation detail (AGENTS.md) and may change.
 """
 struct XYCoupling{M<:AbstractTrackingMethod,FloatT <: Number} <: AbstractTrackOp
@@ -411,9 +394,8 @@ struct XYCoupling{M<:AbstractTrackingMethod,FloatT <: Number} <: AbstractTrackOp
         #
         # `real` so the check works on the complex-step and Dual axes this type
         # is generic over; the determinant of a physical coupling block is real.
-        _check_undef_coefficients("XYCoupling", r1, r2, r3, r4, mode)
         det = 1 + r1 * r4 - r2 * r3
-        if mode !== XY_UNDEF && isfinite(real(det)) && real(det) <= 0
+        if isfinite(real(det)) && real(det) <= 0
             throw(ArgumentError(
                 "XYCoupling is not invertible: 1 + r1*r4 - r2*r3 = $(real(det)) " *
                 "must be positive, because the map scales by 1/sqrt of it. " *
@@ -438,12 +420,12 @@ end
         r2=ParamMeta(default=0, meaning="coupling coefficient r2, entry (1,2) of the Edwards-Teng matrix R (see r1)"),
         r3=ParamMeta(default=0, meaning="coupling coefficient r3, entry (2,1) of the Edwards-Teng matrix R (see r1)"),
         r4=ParamMeta(default=0, meaning="coupling coefficient r4, entry (2,2) of the Edwards-Teng matrix R (see r1)"),
-        # Every value of the enum, derived from it: the kernel, `_inverse` and
-        # the rounding class all carry an XY_UNDEF branch, so the schema that
-        # declared two values was narrower than what the runtime accepted and
-        # the effectiveness sweep never visited the third (2026-10-18 audit, F-97).
+        # Every value of the enum, derived from it (2026-10-18 audit, F-97: the
+        # schema once declared two values while the runtime accepted a third,
+        # XY_UNDEF; that member was retired on 2026-11-21, design D14, so the
+        # enum is the two Edwards-Teng forms and nothing else).
         mode=ParamMeta(default=XY_MODEA, alternatives=Tuple(instances(XYCouplingMode)),
-                       meaning="coupling convention: XY_MODEA (the default, Edwards-Teng form 1) and XY_MODEB (form 2) select which coupling branch the map applies, with the roles of the (x, px) and (y, py) blocks exchanged between them; XY_UNDEF switches the coupling off, the identity map, and is accepted only with zero coefficients (a nonzero coefficient beside it is refused by name rather than ignored)"),
+                       meaning="coupling convention: XY_MODEA (the default, Edwards-Teng form 1) and XY_MODEB (form 2) select which coupling branch the map applies, with the roles of the (x, px) and (y, py) blocks exchanged between them; zero coefficients in XY_MODEA give the identity, in XY_MODEB the exchange of the transverse planes (the former zero member XY_UNDEF, the identity, was retired 2026-11-21, design D14)"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
@@ -473,10 +455,6 @@ XYCoupling(spec::ElementSpec{:xy_coupling}, method::AbstractTrackingMethod=track
     XYCoupling(method, _float_params(spec, :r1, :r2, :r3, :r4)..., _declared_param(spec, :mode))
 
 @inline function track_particle(::Symplectic6DMap, elem::XYCoupling, x0, px0, y0, py0, z0, pz0)
-    if elem.mode == XY_UNDEF
-        return x0, px0, y0, py0, z0, pz0
-    end
-
     g = inv(sqrt(1 + elem.r1*elem.r4 - elem.r2*elem.r3))
     if elem.mode == XY_MODEA
         x1 = g*(x0 + elem.r4*y0 - elem.r2*py0)
@@ -497,8 +475,6 @@ end
 
 # Cross-backend rounding class (`CrossBackendRounding`, src/track/Track.jl).
 function _cross_backend_rounding(op::XYCoupling)
-    op.mode == XY_UNDEF && return _rounding_class(untouched=_COORDINATE_NAMES,
-        why="an undefined coupling mode: the identity")
     return _rounding_class(untouched=(:z, :pz), ulp=(:x, :px, :y, :py), ulp_bound=4,
         why="the fused sums `g (x0 + r4 y0 - r2 py0)` the device rounds once and the host twice (0.6% of 1e5 particles part in px at r1 = 0.01); z, pz are never written")
 end

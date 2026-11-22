@@ -201,7 +201,7 @@ Procedures, one per task class, routed from the Task Routing table in
   over six constructors with two conventions under one name `R`, the ten
   decisions (types, conventions, flattening never storage, exclusive forms,
   phases as positions, the analysis accessor `linear_optics`, form 2 in
-  `Linear6DSpec`, `XY_UNDEF` refusing coefficients, elementary maps from
+  `Linear6DSpec`, `XY_UNDEF` refusing coefficients (retired by D14), elementary maps from
   parts, conventions documented at every consumer), the staging and tests,
   and the owner items left open. Campaign record:
   [`history/linear_optics_2026_11_21.md`](history/linear_optics_2026_11_21.md),
@@ -230,6 +230,12 @@ Procedures, one per task class, routed from the Task Routing table in
   `preferred_form = :auto` documented as form 1 with a tripwire. What changed,
   the verification, where the gate's numbers are, and the CI run of the
   examples batch before it.
+- [`linear_optics_xy_undef_2026_11_21.md`](history/linear_optics_xy_undef_2026_11_21.md)
+  — the third LinearOptics batch, retiring the `XY_UNDEF` member of
+  `XYCouplingMode` (D14): every mention removed (the kernel, inverse and
+  rounding-class branches, the D8 coefficient check, the docstrings, the mode
+  metadata, the tests), the repo-wide grep, the verification, where the
+  gate's numbers are, and the CI run of the owner-items batch before it.
 - [`guides/development_workflow.md`](guides/development_workflow.md) — the
   environment, the two load modes, the commands, the single-testset probe
   recipe, lanes and the gate, where output goes, committing, reporting.

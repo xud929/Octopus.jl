@@ -662,8 +662,7 @@ matrix R of `docs/theory/twiss_dispersion.md` (T2), the spelling `R` of
 `C` is accepted for scripts that use it) -- NOT the coupling block `R1`/`R2`
 of `Linear6DSpec`, which stores `adj(R)/sqrt(1 + det R)`. Give at most one;
 two are refused by name. `mode` selects the coupling branch (`XY_MODEA` =
-form 1, `XY_MODEB` = form 2) and acts only when the coefficients are nonzero;
-`XY_UNDEF` beside nonzero coefficients is refused rather than ignored.
+form 1, `XY_MODEB` = form 2) and acts only when the coefficients are nonzero.
 `eta=(η1..η4)` is the canonical momentum dispersion of
 [`MomentumDispersion`](@ref), `zeta=(ζ1..ζ4)` the canonical crab dispersion of
 [`CrabDispersion`](@ref); each map is applied only when nonzero.
@@ -879,11 +878,6 @@ function _initialize_beam(N::Union{Nothing,Integer}, backend::Type{BTAG}, FloatT
 	α = _beam_alpha(alpha, RT)
 	normalization = _beam_normalization(sigma, emit, RT)
 	r = _beam_coupling_coefficients(coupling, R, C, RT)
-	# XY_UNDEF is the identity and reads no coefficient: nonzero coefficients
-	# beside it would be ignored silently, so they are refused here, before any
-	# stream is consumed (2026-11-21 LinearOptics batch, D8; the XYCoupling
-	# constructor refuses the same pair, but only after the draw).
-	_check_undef_coefficients("Beam", r[1], r[2], r[3], r[4], mode)
 	η = _tuple_typed(eta, 4, RT; keyword=:eta)
 	ζ = _tuple_typed(zeta, 4, RT; keyword=:zeta)
 	offset = _tuple_typed(initial_offset, 6, RT; keyword=:initial_offset)
