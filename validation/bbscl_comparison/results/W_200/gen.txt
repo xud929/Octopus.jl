@@ -1,0 +1,1 @@
+wrote /cfs/ad/dxu/Library/Julia/Octopus/result/bbscl_comparison_2026_11_22/runs/W_200/bbscl_W.in | p: eps=(1.1281e-08,1.0035e-09,3.9600e-05) beta_z=90.9091 | strong eps=(1.6409e-08,1.2902e-09) Ns_in=9.36905e+07 | L_octopus[m^-2/crossing] = Lum_printed * 1.72030e+11 * 6.88100e+10 * 1e4 / f_rev(78197.209 Hz)

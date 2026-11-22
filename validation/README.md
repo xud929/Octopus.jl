@@ -2183,6 +2183,27 @@ dump is what a reader recomputes it from offline, and its 2026-09-14 reading
 ratio 3.49, the weak cavity's five routes accepted) is in the kappa_route
 section of `../docs/history/twiss_dispersion_analysis_history.md`.
 
+## BBSCL Comparison
+
+`validation/bbscl_comparison/` holds the Octopus drivers
+(`octopus_strong_strong_bbscl.jl`, `octopus_weak_strong_bbscl.jl`,
+`octopus_lattice_bbscl.jl`), the BBSCL input generators (`gen_bbscl_*.py`), the
+sequential run chains, `summarize.py`, `tunes.py` and the raw per-turn results of
+the 2026-11-22 comparison with BBSCL (K. Ohmi's CUDA beam-beam collider code).
+Reference model: BBSCL itself, built out of tree and run on the same GPU in the
+same hour. Metrics: seconds per turn (BBSCL's `gpu_time` over its turn loop,
+Octopus's `turn_timings`), luminosity per crossing and rms beam sizes per turn.
+The record, with every number and its caveats, is
+[`bbscl_comparison_2026_11_22.md`](../docs/history/bbscl_comparison_2026_11_22.md);
+the directory's own `README.md` says how to build BBSCL and run each arm. The
+drivers run on CPU threads at a reduced size without a device (`OCT_GPU=0`), so
+they are not CUDA-requiring scripts of the gate's arm; they live in a
+subdirectory and are not run by the suite.
+
+```bash
+OCT_GPU=0 OCT_N=20480 OCT_TURNS=5 julia --project=. --threads=4 validation/bbscl_comparison/octopus_weak_strong_bbscl.jl
+```
+
 ## Paper Anchors
 
 Two paper-cited scripts. They were committed and cited with no README entry at

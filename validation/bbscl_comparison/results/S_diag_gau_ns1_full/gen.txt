@@ -1,0 +1,1 @@
+wrote /cfs/ad/dxu/Library/Julia/Octopus/result/bbscl_comparison_2026_11_22/runs/S_diag_gau_ns1_full/bbscl_S_{e,p}.in | e: eps=(2.0429e-08,1.6116e-09,3.8500e-06) beta_z=12.7273 Ne_in=9.36905e+07 | p: eps=(1.1281e-08,1.0035e-09,3.9600e-05) beta_z=90.9091 | luminosity conversion: L[m^-2 per crossing] = Lumi(f10) * 1.72030e+11 * 6.88100e+10 * 1e4

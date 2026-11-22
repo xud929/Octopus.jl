@@ -1408,6 +1408,14 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   detection, the CUDA `:quadratic` batched-route port, the re-slicing jitter
   quantification, and the corrected hybrid z-scan).
 
+- [`bbscl_comparison_2026_11_22.md`](history/bbscl_comparison_2026_11_22.md)
+  (BBSCL, K. Ohmi's CUDA beam-beam collider code, read and run beside Octopus on
+  one GPU: implementation comparison of the tracking kernels, the weak-strong map,
+  the Gaussian and PIC strong-strong solvers and the infrastructure; matched
+  production-size timings with the physics agreement beside every number; the
+  defects found in BBSCL by reading; and the ranked list of what Octopus should
+  borrow. Scripts, inputs and raw results under `validation/bbscl_comparison/`).
+
 ## Where other documentation lives
 
 - **API details** → source docstrings (`?PICPoissonSolver`, `solver_help(...)`,

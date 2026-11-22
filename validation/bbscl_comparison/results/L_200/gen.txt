@@ -1,0 +1,1 @@
+wrote /cfs/ad/dxu/Library/Julia/Octopus/result/bbscl_comparison_2026_11_22/runs/L_200/bbscl_L.in elements=81 beta=(16.3565,5.1298,709.5549) alpha=(-1.4904,0.5015) eps_z=7.096e-12

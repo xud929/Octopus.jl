@@ -1,0 +1,3 @@
+bbscl: turns=1024  Qx=0.463593  Qy=0.165129  Qz=0.008169  <x> amplitude 2.134e-04  <y> 1.121e-04  <z> 1.041e-03
+octopus: turns=1024  Qx=0.421166  Qy=0.113138  Qz=0.008046  <x> amplitude 2.144e-04  <y> 1.118e-04  <z> 1.046e-03
+octopus: turns=1024  Qx=0.463600  Qy=0.165137  Qz=0.008169  <x> amplitude 2.102e-04  <y> 1.128e-04  <z> 1.040e-03

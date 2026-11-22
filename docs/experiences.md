@@ -219,6 +219,18 @@ liability.
   effective beam); MAD-X twiss scales its (T, PT) by beta0 and omits the
   slip; xtrack's (zeta, delta) needs only the slip shear Sh(-C/gamma0^2).
   The conversion law per code is now a table header line, not prose.
+- BBSCL (2026-11-22, `history/bbscl_comparison_2026_11_22.md`) scales both
+  strong-strong kicks with the ELECTRON classical radius and no charge sign
+  (`bbcol3d.cu:284-285`), prints its luminosity per particle pair in cm^-2,
+  takes the half crossing angle, rotates its longitudinal plane by `-nu_z`,
+  and reads SAD integrated strengths where Octopus reads per-metre ones. None
+  of this is written anywhere in its tree; each was read from the source and
+  then confirmed by a small matched run before the production runs (the
+  first-turn luminosity agreeing to 0.1% was the receipt that the
+  `N_e m_e/m_p` workaround did what the reading said). An external code with
+  no sample input and no manual is compared by reading its parser, writing
+  the smallest input that runs, and matching one observable before trusting
+  a timing.
 
 ## Mechanics that bit more than once
 

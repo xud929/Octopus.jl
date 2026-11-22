@@ -1,0 +1,3 @@
+ 12:40:25 up 339 days,  1:52,  4 users,  load average: 1.19, 1.34, 1.52
+18 MiB, 24 %
+ 12:52:38 up 339 days,  2:04,  4 users,  load average: 1.37, 1.31, 1.39
