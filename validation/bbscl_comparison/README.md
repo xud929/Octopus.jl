@@ -58,3 +58,27 @@ repository root from their own location and write under `result/bbscl_comparison
 rebuilds the record's tables from a results directory; `tunes.py` extracts fractional tunes from a
 BBSCL `.f10` or an Octopus moments TSV. `results/` holds the per-turn outputs of every arm
 (BBSCL `.f10` and stdout, Octopus TSVs and logs), the numbers behind every claim in the record.
+
+## Per-element-type arms and probes (record section 9)
+
+`eltype/` holds the follow-up that measured the lattice difference per element type and corrected
+the BBSCL clock. `octopus_eltype.jl` (`OCT_KIND` = map | drift | quad | sext | bend | split | thinq,
+`OCT_COUNT`, `OCT_NST`, `OCT_ORDER`, `OCT_BEND_FRINGE`, `OCT_MAXREGS`, `OCT_DUMP`) and
+`gen_bbscl_T.py` (`--kind`, `--count`) build matched arms of a one-turn linear map plus copies of
+one element kind, with a shared per-kind optics table that keeps both rings linearly stable;
+`run_eltype.sh` is the chain behind `results/eltype/runs/`, including the two-turn-count BBSCL arms
+that separate the per-turn slope of `gpu_time` from its end-of-run constant (the `.f15` beam dump
+is inside BBSCL's clock). `run_micro.sh`, `run_micro2.sh`, `run_micro3.sh` are the register-cap,
+explicit-split and `nst` probes; `probe_strang.jl` with `run_probe.sh` and `run_probe_lattice.sh`
+swaps variants of the thick-magnet `track_particle` in by `@eval` before the kernel compiles (an
+A/B probe, never part of Octopus); `maxregs_override.jl` is the register cap for `blocks=:auto`.
+Static counts: `dump_L81.jl` and `run_dump.sh` dump the case L kernel's PTX
+(`CUDA.@device_code_ptx io= dump_module=true`), `analyze_ptx.sh` runs the CUDA.jl artifact
+`ptxas -v` and `nvdisasm` on it, `split_ptx.py`, `sass_loops.py` and `sass_blocks.py` read the
+listing. `summarize_eltype.py [runs dir]` rebuilds the table of record section 9.2.
+`results/eltype/` holds every arm's inputs, logs and TSVs (no PTX, SASS or `.f15` dumps) and
+`bbscl_opcode_table.txt`, the `cuobjdump` static mix of BBSCL's device functions.
+
+```bash
+OCT_GPU=0 OCT_KIND=quad OCT_COUNT=4 OCT_N=4096 OCT_TURNS=5 OCT_WARMUP=1 julia --project=. --threads=4 validation/bbscl_comparison/eltype/octopus_eltype.jl   # CPU smoke (the driver itself requires CUDA; see its header)
+```

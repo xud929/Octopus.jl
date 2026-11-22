@@ -583,3 +583,164 @@ Everything lives under `validation/bbscl_comparison/`:
   -lcusolver" collider`, and the same with `-f pr.mk ... prmb` followed by a manual link that
   adds `section_map.o` (missing from `pr.mk`). `collider_test bbscl_S` reads `bbscl_S_e.in` and
   `bbscl_S_p.in`; `prmb_test bbscl_W` reads `bbscl_W.in`; outputs land in the working directory.
+
+## 9. Addendum (2026-11-22, later the same day): the element-by-element difference, measured per element type
+
+Asked why BBSCL's element-by-element turn is faster, the attribution in section 4.3 ("Lattice":
+the integrator order and the per-element instruction count of the exact quadrupole) was tested
+rather than repeated. Two things in sections 4.2 and 4.3 are wrong and are corrected here; the
+frozen sections above are left as written. Scripts under `validation/bbscl_comparison/eltype/`,
+raw outputs under `validation/bbscl_comparison/results/eltype/` (section 9.7).
+
+### 9.1 BBSCL's `gpu_time` contains an end-of-run constant
+
+The `cudaEvent` pair of `TrackGPU` (element.cu) is closed after the turn loop, after the 48 MB
+device-to-host copy of the beam and after `PrintPBeam`, which writes the whole beam as text to
+`<base>.f15` (146.8 MB for 1,048,576 particles). Dividing `gpu_time` by the turn count, as
+sections 4.2 and 4.3 do, therefore charges that dump to the turns. Measured by running the same
+input at two turn counts (the slope is the per-turn cost, the intercept the constant):
+
+| input | 200 turns [ms] | 400 turns [ms] | per turn [ms] | constant [ms] |
+|---|---|---|---|---|
+| one-turn map only (`Ph_rot`), 1,048,576 p | 2725.4 | 2334.2 | below the run-to-run noise of the dump | 2300 to 3100 |
+| case L (`bbscl_L.in`), 1,048,576 p | 23549.5 | 44575.5 | 105.13 | 2523 |
+| case W (`bbscl_W.in`), 1,024,000 p | 4705.1 | 6956.2 | 11.26 | 2454 |
+
+Corrected BBSCL rows of section 4.2: case L 0.105 s/turn (recorded 0.1162 and 0.1181), case W
+0.0113 s/turn (recorded 0.0235); case S is unchanged to three digits (2.5 s in 715 s). Corrected
+ratios: weak-strong, BBSCL 2.7 times faster per turn (recorded 1.29); lattice at Octopus's default
+`nst = 1`, BBSCL 1.61 times faster (recorded 1.46); lattice at `nst = 4`, order 4, BBSCL 3.17
+times faster (recorded 2.9); strong-strong, Octopus 13.3 times (PIC) and 18.5 times (Gaussian)
+faster (recorded 13.4 and 18.6). Per particle-element in case L: BBSCL 1.24 ns, not 1.37. The
+section 7 caveat that the first-turn bias "favours BBSCL in no case" stands; this constant is a
+different thing and favoured Octopus in every row.
+
+### 9.2 Cost per element type
+
+Each arm is the one-turn linear map (`Linear6DSpec` in Octopus, `Ph_rot` in BBSCL, the same
+alpha, beta and tunes, chosen per kind so that the ring is linearly stable) plus 16 copies of one
+element kind at the case L literals (32 for drifts), 1,048,576 particles, the map-only arm
+subtracted, Octopus the median of turns 11-60 with `turn_timings`, BBSCL 200 turns of `gpu_time`
+with the map-only arm's total subtracted (which removes the constant of 9.1; its 0.4 s spread
+between runs is 0.06 ns per element here). Nanoseconds per particle-element, RTX 4500 Ada:
+
+| element (count per arm) | BBSCL | Octopus, `nst = 1`, order 2 | Octopus, `nst = 4`, order 4 |
+|---|---|---|---|
+| drift (32) | 0.25 | 0.18 | n/a (no splitting) |
+| quadrupole, 0.5 m, k1 = +-0.36 (16) | 2.04 (exact matrix, one slice) | 2.37 | 7.02 |
+| sextupole, 0.2 m (16) | 1.20 (`sodd_thin`, 4 drifts and 3 kicks) | 2.42 | 7.54 |
+| sector bend, 3 m, 22.5 deg (16) | 2.49 (hard-edge fringe built in) | 4.74 with `bend_fringe = true` (the default for a bend); 2.83 with it off | same (no splitting) |
+| thin quadrupole kick (16) | n/a | 0.048 | |
+| drift, thin quadrupole, drift (16) | n/a | 0.41 | |
+
+The drift cost is flat in the line length (8, 32, 128 drifts: BBSCL 0.22, 0.25, 0.27; Octopus
+0.16, 0.18, 0.18 ns), so neither code pays for code size at this scale. Summing the per-kind
+costs with the case L multiplicities reproduces the full-turn measurements: Octopus 166 ms against
+169.4 measured at `nst = 1` (2%), 330 against 333 at `nst = 4` order 4 (1%); BBSCL 104.7 against
+105.1 (0.4%). The decomposition is therefore the full story of case L. Beam sizes stayed
+bounded in every arm of both codes (the arms were read at different turns, 60 and 200, with a
+mismatch oscillation on both, so the sizes were not compared beyond that; the map-only arm
+agrees to 0.01%).
+
+### 9.3 Where the 64 ms per turn of case L go
+
+Octopus minus BBSCL per turn at `nst = 1`: bends +37.9 ms (of which the two hard-edge dipole
+fringes 32 ms), sextupoles +20.3 ms, quadrupoles +5.6 ms, drifts -2.5 ms; the RF cavity and the
+per-turn floor (Octopus 0.32 ms for the launch, the gather and scatter and the timing; BBSCL's
+below noise) do not register. Three causes, in order of size:
+
+1. **The hard-edge dipole fringe model.** Octopus's `_fringe_dipole_exact` is PTC's exact
+   hard-edge map: per face an `atan`, a `cos^2`, a `tan`, a `sqrt` and about eight divisions,
+   roughly 300 FP64 instructions, 1.9 ns per bend for the two faces, FP64-throughput-bound.
+   BBSCL's `mbcore_KO` applies SAD's hard-edge terms (`fa`, `f`, `ff`: a polynomial in y with
+   one `sqrt(1/(1 - px^2))` per face, some twenty FMAs). Octopus's exact body alone (2.83 ns)
+   costs about what BBSCL's whole bend does (2.49). This is a physics-model difference (what
+   Octopus promises is PTC's map), not an inefficiency; whether a cheaper hard-edge option is
+   wanted is a physics decision for the lattice guide.
+2. **A fixed overhead on every thick multipole magnet, about 2.0 ns, that is not arithmetic.**
+   A Strang quadrupole at `nst = 1` costs 2.37 ns, the same step written out as `DriftSpec`,
+   `ThinQuadrupoleSpec`, `DriftSpec` costs 0.41 ns, and `nst = 2` adds only 0.36 ns per extra
+   step. Variants of `track_particle(::Symplectic6DMap, ::LatticeMagnet)` for the order-2 path,
+   swapped in by `@eval` before the kernel compiled (`probe_strang.jl`), on the 16-quadrupole
+   arm: as written 2.37 ns; without the kick 2.34; with the `nst` loop kept but `_lattice_drift`
+   called directly in place of `_body_step` 0.40 (bit-identical rms to the original); with
+   `_body_step` kept but the runtime loop removed (one step) 0.38; loop, direct drift, no kick
+   0.22. The cost is the pairing of the runtime-trip-count `for _ in 1:elem.nst` loop with the
+   untaken `_lattice_bend` arm of `_body_step` inside its body
+   (`src/elements/lattice_magnets.jl`, `_body_step` and the Strang/Forest-Ruth loops of
+   `track_particle`): each static loop body compiles to 3508 SASS instructions (1505 FP64-class,
+   60 divisions, 14 trig slow-path calls, 122 convergence barriers) of which the drift arm is
+   about 70, and the element pays once per pass, not per iteration. It is not occupancy: capping
+   the kernel at 128 registers (16 resident warps per SM instead of 8) gave 40.20 against 40.12 ms
+   per turn. Applied to the whole case L line through the same `@eval` (`run_probe_lattice.sh`),
+   the direct-drift variant runs 0.100 s/turn at `nst = 1` (median of turns 11-100; 0.167 as
+   written, BBSCL 0.105) and 0.193 s/turn at `nst = 4`, order 4 (0.331 as written), so at
+   matched accuracy BBSCL's lead would be 1.84 times instead of 3.17; the variant's kernel also
+   compiled in about 100 s where the original order-4 kernel took about 340 s. The physics
+   equivalence of the variant is the bit-identical rms of the 16-quadrupole arm; the case L
+   runs were 100 turns against the record's 200, so their final centroids were not compared.
+   The cheapest fix is to decide `b0 == 0` at compile time, as `curved` already is (a type
+   parameter, or a straight-multipole body method without the bend arm); a `docs/todo.md` row
+   carries it.
+3. **The integrator at matched accuracy.** With the overhead of item 2 removed, a `nst = 4`
+   order-4 quadrupole is still 16 exact drifts and 12 kicks, about 3.4 ns of arithmetic
+   (16 x 0.18 + 12 x 0.05), against BBSCL's one-slice exact matrix at 2.04 ns; the exact
+   thick-quadrupole body of section 5 item 7 remains the borrow for the accurate setting, and
+   at Octopus's default setting the same body would also remove the 0.04 tune error of section
+   4.3 at no cost.
+
+### 9.4 What was ruled out, with the measurement
+
+- Occupancy and registers. After device linking BBSCL's `TrackBeamGPU` uses 241 registers and an
+  18,096-byte stack per thread (`cuobjdump -res-usage`; the maps are separate-translation-unit
+  calls with the particle in local memory), so it runs one 256-thread block per SM, 8 resident
+  warps of 48. Octopus's 81-element kernel uses 170 registers and a 13,008-byte stack at `nst = 1` and 206
+  registers at `nst = 4`, order 4 (ptxas on the dumped modules), also one block per SM. The per-file `ptxas -v` of element.cu alone reports
+  40 registers because it does not see the callees; that number is not the kernel's.
+- Launch structure, memory layout, lost-particle early exit, i-cache and code size: the
+  Octopus per-turn floor is 0.32 ms (0.2% of the turn); 96 MB of particle traffic per turn is
+  0.2 ms at the card's bandwidth; no particle was lost in any arm; the per-drift cost is flat
+  from 8 to 128 drifts although the 81-element kernel is 362,276 SASS instructions (5.8 MB,
+  151,073 FP64-class) at `nst = 1` and 495,332 at `nst = 4`, order 4, compiled by ptxas in 3 to
+  11 minutes.
+- BBSCL's own economies. Its drift and quadrupole avoid `sqrt` for small arguments by series
+  (`pxy2dpz`, `sqrt1`: three terms below 8e-6), and its particle lives in local memory through
+  ABI calls; the net is a drift 1.4 times slower than Octopus's exact drift with `sqrt`. Its
+  turn also runs `BeamSizeMonitorGPU` and a synchronising 4-byte copy every turn.
+
+### 9.5 Corrections to the text above
+
+- Section 4.3, "Lattice": the integrator order is not "the whole story". At `nst = 1` the
+  gap is the fringe model (half) and the thick-multipole overhead (a third); at `nst = 4` the
+  integrator and the overhead together. The per-element numbers "1.37, 2.0 and 3.9 ns" become
+  1.24, 2.0 and 3.9 ns.
+- Section 4.3, "Weak-strong": BBSCL is 2.7 times faster, not 1.29; section 5 item 1 (fuse the
+  weak-strong turn) gains weight accordingly.
+- Section 7, second caveat: "BBSCL has no per-turn clock" is true and incomplete; its clock
+  also contains the final beam dump (9.1).
+- Section 3.5: the launch-site reading "one persistent kernel per beam per turn" stands, but
+  the turn also launches `BeamSizeMonitorGPU` and copies the lost count back every turn.
+
+### 9.6 Method notes
+
+A foreign code's clock is read as a slope: the same input at two run lengths, never a total
+divided by a turn count. A per-element decomposition (one kind per arm against a baseline,
+summed and checked against the full turn to 2%) found the cost in a branch the physics never
+takes, where reading the code had produced a plausible and wrong attribution (section 4.3). The
+`@eval` variant probe of the memory note on kernel shapes (redefine the Octopus method before
+the kernel compiles, compare the physics bit for bit) settled the cause in five runs of ninety
+seconds.
+
+### 9.7 Reproduction
+
+`validation/bbscl_comparison/eltype/`: `octopus_eltype.jl` (`OCT_KIND`, `OCT_COUNT`, `OCT_NST`,
+`OCT_ORDER`, `OCT_BEND_FRINGE`, `OCT_MAXREGS`, `OCT_DUMP`) and `gen_bbscl_T.py` (`--kind`,
+`--count`) build the per-kind arms with the shared optics table; `run_eltype.sh` is the chain
+that produced `results/eltype/runs/` (including the two-turn-count arms of 9.1);
+`run_micro.sh`, `run_micro2.sh`, `run_micro3.sh` the register-cap, explicit-split and `nst`
+probes; `probe_strang.jl` with `run_probe.sh` and `run_probe_lattice.sh` the variants of 9.3;
+`dump_L81.jl` with `run_dump.sh`, `analyze_ptx.sh`, `split_ptx.py`, `sass_loops.py` and
+`sass_blocks.py` the static counts (PTX dumped with `CUDA.@device_code_ptx io= dump_module=true`,
+assembled with the CUDA.jl artifact `ptxas -v`, disassembled with `nvdisasm`);
+`summarize_eltype.py` rebuilds the table of 9.2. BBSCL's static table is
+`results/eltype/bbscl_opcode_table.txt` (`cuobjdump -sass` and `-res-usage` on `prmb_test`).

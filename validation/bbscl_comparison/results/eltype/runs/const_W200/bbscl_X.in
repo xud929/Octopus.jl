@@ -1,0 +1,11 @@
+// BBSCL comparison case W, weak proton ring against a rigid electron beam (gen_bbscl_W.py) ;
+// Beam <dist>=({E[eV], mass[eV], eps_x, eps_y, eps_z [m], Nbucket, NMacroP, NTurn, ITMon, Ax, Ay}) ;
+Beam Gaussian=({2.750000e+11, 9.382720813e+08, 1.128125e-08, 1.003472e-09, 3.960000e-05, 1, 1024000, 200, 10, 1.0, 1.0});
+Bunches B=({6.881000e+10});
+Twiss IP=({0.0, 0.8, 0.0, 0.0, 0.072, 0.0, 0.0, 90.9090909090909, 0.0, 0,0,0,0, 0,0,0,0, 0,0,0,0});
+COD cod=({0,0,0,0,0,0, 0.0, 0,0,0});
+// IP: ax*,bx*,ay*,by* of the STRONG beam, K20 half angle, K21 eps_x, K22 eps_y, K23 sigma_delta, K26 sigma_z, K27 nslice, K28 N_strong ;
+// N_strong handed to BBSCL = 9.369047e+07 (Ns m_e/m_p, proton-kick scaling; physical Ns = 1.72030e+11) ;
+IP ip=({0, 5.500000e-01, 0, 5.600000e-02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.250000e-02, 1.640909e-08, 1.290179e-09, 5.500000e-04, 0, 0, 7.000000e-03, 7, 9.369047e+07});
+// one-turn linear map: L[m], then the 21 twiss values with the fractional tunes ;
+Ph_rot ring=({3833.8, 0.0, 0.8, 0.228, 0.0, 0.072, 0.21, 0.0, 90.9090909090909, 0.01, 0,0,0,0, 0,0,0,0, 0,0,0,0});

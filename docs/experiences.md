@@ -230,7 +230,15 @@ liability.
   `N_e m_e/m_p` workaround did what the reading said). An external code with
   no sample input and no manual is compared by reading its parser, writing
   the smallest input that runs, and matching one observable before trusting
-  a timing.
+  a timing. Its clock bit too (record section 9.1): `gpu_time` closes after
+  a 147 MB text dump of the beam, so the per-turn numbers first recorded
+  were a total divided by a turn count; a foreign clock is read as a slope,
+  the same input at two run lengths. And the attribution written from
+  reading both codes (the integrator order) was wrong: a per-element
+  decomposition, one kind per arm against a baseline and summed back to the
+  full turn (2%), put half the lattice gap in the dipole fringe model and a
+  third in a branch the physics never takes, settled by `@eval` variants of
+  the one method with bit-identical physics. Measure before attributing.
 
 ## Mechanics that bit more than once
 

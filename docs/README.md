@@ -1414,7 +1414,10 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   the Gaussian and PIC strong-strong solvers and the infrastructure; matched
   production-size timings with the physics agreement beside every number; the
   defects found in BBSCL by reading; and the ranked list of what Octopus should
-  borrow. Scripts, inputs and raw results under `validation/bbscl_comparison/`).
+  borrow. Section 9, added the same day, measures the lattice difference per
+  element type, corrects the BBSCL per-turn numbers for the end-of-run dump
+  inside its clock, and finds a fixed per-element cost in Octopus's thick
+  multipole path. Scripts, inputs and raw results under `validation/bbscl_comparison/`).
 
 ## Where other documentation lives
 

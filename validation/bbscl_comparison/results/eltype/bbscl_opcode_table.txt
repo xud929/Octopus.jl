@@ -1,0 +1,21 @@
+# BBSCL prmb_test (cuobjdump -sass, sm_89): static instruction mix of the device functions on the case L path
+function                                      total  FP64  DFMA  DMUL  DADD MUFU LDL+STL  LDG  BRA CALL
+_Z12TrackBeamGPUPiPdiiddS0_S0_S_iPfS0_S1_       336     9     0     0     0    0      10   10   36   18
+_Z9drift_mapPddS_                               152    24    16     2     1    2      26    0    7    5
+_Z10drift_freedPd                               128    24    18     2     2    2      30    2    3    3
+_Z7pxy2dpzdd                                    112    28    15     6     3    2      20    0    5    2
+_Z5sqrt1d                                       120    32    19     6     2    2      20    0    7    2
+_Z8quad_mapPddS_                                408    34    17     3     2    2      84    0   17   13
+_Z11quad_map_lzdddddddddddddPd                 2424   852   470   221    75   51     248    3   69   68
+_Z6msolqudddddddPd                             1720   637   337   185    67   39     184    2   46   49
+_Z7xsincosdPdS_S_S_                             336   111    67    20    14    5      24   12   17    7
+_Z8xsincoshdPdS_S_S_                            336   138    91    18    18    7      20    0   14    6
+_Z8sodd_mapPdS_                                 232    35    18     2     1    2      32    0   14    8
+_Z9sodd_thindidPd                               496   126    53    59     5    2      70    0   24    7
+_Z8bend_mapPddbS_                               640    58    16     8    14    2     116    1   24   23
+_Z11bend_map_lzdddddddddddddddddddddbdPd      11112  4076  2565   889   265  208     473  384  471  311
+_Z9mbcore_KOdddddddddddddddddddddPdS_          1616   614   391   123    43   45     184    2   52   49
+_Z9PhRot_mapPdS_                                 96    36    30     6     0    0       0    0    1    0
+_Z10cav_map_KOPdS_S_                            344    90    61    20     0    5      44   12   14    9
+
+# cuobjdump -res-usage: TrackBeamGPU REG:241 STACK:18096; mbcore_KO REG:177; msolqu REG:154; sodd_thin REG:60; drift_free REG:44; PhRot_map REG:78

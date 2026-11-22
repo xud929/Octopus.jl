@@ -2198,7 +2198,12 @@ The record, with every number and its caveats, is
 the directory's own `README.md` says how to build BBSCL and run each arm. The
 drivers run on CPU threads at a reduced size without a device (`OCT_GPU=0`), so
 they are not CUDA-requiring scripts of the gate's arm; they live in a
-subdirectory and are not run by the suite.
+subdirectory and are not run by the suite. `bbscl_comparison/eltype/` is the
+same-day follow-up (record section 9): per-element-type arms, the two-turn-count
+reading of BBSCL's clock (its `gpu_time` holds an end-of-run beam dump, so the
+first recorded BBSCL per-turn numbers were high), the `@eval` variant probes of the
+thick-magnet body step and the static PTX/SASS counts; CUDA-requiring, not run by
+the suite.
 
 ```bash
 OCT_GPU=0 OCT_N=20480 OCT_TURNS=5 julia --project=. --threads=4 validation/bbscl_comparison/octopus_weak_strong_bbscl.jl
