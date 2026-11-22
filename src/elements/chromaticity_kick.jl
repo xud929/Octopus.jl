@@ -14,12 +14,16 @@ longitudinal coordinate `z` by the chromatic transverse actions.
 `beta` and `alpha` may use the shared three-plane optics interface; this
 element uses only their horizontal and vertical components. Legacy
 two-component tuples remain accepted. `R = (r1, r2, r3, r4)` is the Edwards-Teng
-coupling matrix of [`XYCouplingSpec`](@ref) applied in form 1 (`XY_MODEA`), the
-same `R` as `Beam`'s coupling and NOT the block `R1`/`R2` of `Linear6DSpec`.
-Alternatively `optics = o` takes `beta`, `alpha`, `zeta`, `eta` and `R` from a
-[`LinearOptics`](@ref) point (design `docs/design/linear_optics.md`); the flat
-keywords are then refused beside it, and a form-2 point is refused because the
-kick couples in form 1 only. The stored spec is the same either way.
+coupling matrix of [`XYCouplingSpec`](@ref), applied in the form stored as
+`form` (1, `XY_MODEA`, from the flat keywords), the same `R` as `Beam`'s
+coupling and NOT the block `R1`/`R2` of `Linear6DSpec`. Alternatively
+`optics = o` takes `beta`, `alpha`, `zeta`, `eta`, `R` and the form from a
+[`LinearOptics`](@ref) point (design `docs/design/linear_optics.md`, D11); the
+flat keywords are then refused beside it, and a form-2 point stores `form = 2`
+and couples in `XY_MODEB`. `form = 2` beside the flat keywords is refused by
+name, since form 2 reaches the element through the point (or through the raw
+`ElementSpec{:chromaticity_kick}(; form = 2)`). The stored spec of a form-1
+point is the flat spec, bit for bit.
 
 Without the explicit `{T}`, the element type is the promotion of the named
 parameters (`xi`, `beta`, `alpha`, `zeta`, `eta`, `R`) over a `Float64` floor,
@@ -33,13 +37,17 @@ audit this constructor hard-coded `Float64`, so `ChromaticityKickSpec(xi=(1.0 +
 while the kind's construction help promised the floor promotion (F-94).
 """
 function ChromaticityKickSpec(; xi, beta=nothing, alpha=nothing, zeta=nothing,
-                              eta=nothing, R=nothing, optics=nothing, numeric_type=nothing,
+                              eta=nothing, R=nothing, form=nothing, optics=nothing, numeric_type=nothing,
                               kwargs...)
-    o = _resolve_optics_keywords("ChromaticityKickSpec", optics, (; beta, alpha, zeta, eta, R),
-                                 _CHROMATICITY_OPTICS_DEFAULTS; form1_only=true)
+    o = _resolve_optics_keywords("ChromaticityKickSpec", optics, (; beta, alpha, zeta, eta, R, form),
+                                 _CHROMATICITY_OPTICS_DEFAULTS)
     T = something(numeric_type, _linear_map_eltype(xi, o.beta, o.alpha, o.zeta, o.eta, o.R))
-    return _floor_form(ChromaticityKickSpec{T}(; xi=xi, beta=o.beta, alpha=o.alpha, zeta=o.zeta,
-                                                eta=o.eta, R=o.R, kwargs...), numeric_type)
+    # The point goes through as itself when given (its form with it); the flat
+    # keywords go through flattened, in form 1 as the resolver verified.
+    spec = optics === nothing ?
+        ChromaticityKickSpec{T}(; xi=xi, beta=o.beta, alpha=o.alpha, zeta=o.zeta, eta=o.eta, R=o.R, kwargs...) :
+        ChromaticityKickSpec{T}(; xi=xi, optics=optics, kwargs...)
+    return _floor_form(spec, numeric_type)
 end
 
 # The flat keywords' defaults, applied by `_resolve_optics_keywords` when no
@@ -52,11 +60,12 @@ function (::Type{ChromaticityKickSpec{T}})(;
                                           zeta=nothing,
                                           eta=nothing,
                                           R=nothing,
+                                          form=nothing,
                                           optics=nothing,
                                           tracking_method=Symplectic6DMap(),
                                           kwargs...) where {T}
-    o = _resolve_optics_keywords("ChromaticityKickSpec", optics, (; beta, alpha, zeta, eta, R),
-                                 _CHROMATICITY_OPTICS_DEFAULTS; form1_only=true)
+    o = _resolve_optics_keywords("ChromaticityKickSpec", optics, (; beta, alpha, zeta, eta, R, form),
+                                 _CHROMATICITY_OPTICS_DEFAULTS)
     return ElementSpec{:chromaticity_kick}(_stamp_numeric_type!(
         _spec_params(;
             xi=_pair_tuple(xi, T),
@@ -65,6 +74,7 @@ function (::Type{ChromaticityKickSpec{T}})(;
             zeta=_quad_tuple(o.zeta, T),
             eta=_quad_tuple(o.eta, T),
             R=_quad_tuple(o.R, T),
+            form=o.form,
             tracking_method=tracking_method,
             kwargs...,
         ), T),
@@ -129,7 +139,8 @@ function ChromaticityKick(spec::ElementSpec{:chromaticity_kick},
         (one(T) + alfy * alfy) / bety,
         CrabDispersion(Symplectic6DMap(), _quad_tuple(_declared_param(spec, :zeta), T)...),
         MomentumDispersion(Symplectic6DMap(), _quad_tuple(_declared_param(spec, :eta), T)...),
-        XYCoupling(_quad_tuple(_declared_param(spec, :R), T)..., XY_MODEA),
+        XYCoupling(_quad_tuple(_declared_param(spec, :R), T)...,
+                   _coupling_mode(_optics_form(_declared_param(spec, :form), "chromaticity_kick"))),
     )
 end
 
@@ -262,10 +273,11 @@ end
         alpha=ParamMeta(default=(0, 0, 0), meaning="two- or three-plane alpha functions; only horizontal and vertical values are used"),
         zeta=ParamMeta(default=(0, 0, 0, 0), meaning="crab dispersion coefficients (zeta1..zeta4), removed before the kick and restored after it. " * _CANONICAL_DISPERSION_NOTE),
         eta=ParamMeta(default=(0, 0, 0, 0), meaning="momentum dispersion coefficients (eta1..eta4), removed before the kick and restored after it. " * _CANONICAL_DISPERSION_NOTE),
-        R=ParamMeta(default=(0, 0, 0, 0), meaning="x-y coupling coefficients (r1, r2, r3, r4): the Edwards-Teng matrix R of XYCouplingSpec, applied in form 1 (XY_MODEA) with lambda = 1/sqrt(1 + det R), removed before the kick and restored after it; the same R as Beam's coupling, NOT Linear6DSpec's block R1/R2 (C = adj(R)/sqrt(1 + det R))"),
+        R=ParamMeta(default=(0, 0, 0, 0), meaning="x-y coupling coefficients (r1, r2, r3, r4): the Edwards-Teng matrix R of XYCouplingSpec, applied in the Edwards-Teng form `form` (1, XY_MODEA, unless a LinearOptics point in form 2 set form=2) with lambda = 1/sqrt(1 + det R), removed before the kick and restored after it; the same R as Beam's coupling, NOT Linear6DSpec's block R1/R2 (C = adj(R)/sqrt(1 + det R))"),
+        form=ParamMeta(default=1, alternatives=(1, 2), meaning="Edwards-Teng form in which R is applied: 1 (XY_MODEA, the V1 normalizer) or 2 (XY_MODEB, V2). Set from the LinearOptics point given as optics (its twiss.form); the flat keywords couple in form 1 and refuse form=2 by name, and the raw ElementSpec{:chromaticity_kick}(; form=2) spells it directly (design docs/design/linear_optics.md, D11)"),
         tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = ChromaticityKickSpec(xi=(1.0, 1.0), beta=(1.0, 1.0))
-    construction_help = "Friendly constructor: ChromaticityKickSpec{T}(; xi, beta, alpha=(0,0,0), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), tracking_method=Symplectic6DMap(), kwargs...), or ChromaticityKickSpec{T}(; xi, optics=o::LinearOptics, kwargs...) taking beta, alpha, zeta, eta and R from the point (form 1 only; the flat optics keywords are refused beside optics). beta and alpha accept two or three values; only the transverse pair is used. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ChromaticityKickSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "Friendly constructor: ChromaticityKickSpec{T}(; xi, beta, alpha=(0,0,0), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), form=1, tracking_method=Symplectic6DMap(), kwargs...), or ChromaticityKickSpec{T}(; xi, optics=o::LinearOptics, kwargs...) taking beta, alpha, zeta, eta and R from the point (its form with them; the flat optics keywords are refused beside optics). beta and alpha accept two or three values; only the transverse pair is used. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ChromaticityKickSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line. Form 2 reaches the kick through a LinearOptics point in form 2 (optics=LinearOptics(; ..., form=2)); form=2 beside the flat keywords is refused by name, and the raw ElementSpec{:chromaticity_kick}(; form=2) spells it directly."
 end

@@ -413,7 +413,7 @@ const _TWISS_DISPERSION_OPTION_SCHEMA = (
         "Which mode is the synchrotron mode of a 6x6 map. :max_signed_z_area is stage 4a's heuristic (UNCERTIFIED: by (K12) kappa_sz = h and kappa_1z + kappa_2z = 1 - h, so a betatron mode CAN carry more z-area and the 3x3 array cannot distinguish a row permutation); an Int names a canonical eigenvalue index; a Float64 is the synchrotron tune mu_s in (0, 2pi) other than pi (tunes are reported mod 2pi; mu and 2pi - mu name the same mode), selecting the mode whose eigenvalue pair contains the one nearest exp(-i mu_s) (the chord must be below max(half the chord to the runner-up, _TUNE_CHORD_FLOOR_MULTIPLIER rho_M1), else an ArgumentError). Inactive on 4x4 input and on a coasting map.";
         category=:physics, supported_backends=(CPUThreadsBackend,), consumer=:analysis_labels),
     preferred_form=ConfigurationOptionMeta(Union{Symbol,Int}, :auto,
-        "Which Edwards-Teng form the result PRESENTS as preferred (both are always computed): :auto takes the admissible form with the larger area weight (ties to form 1); 1 or 2 name a form. Inactive when the transverse optics are unavailable.";
+        "Which Edwards-Teng form the result PRESENTS as preferred (both are always computed): :auto takes the admissible form with the larger area weight (ties to form 1), which under the x-dominant labelling of mode 1 is always form 1, so :auto never presents form 2 (design D13); 1 or 2 name a form. Inactive when the transverse optics are unavailable.";
         category=:physics, supported_backends=(CPUThreadsBackend,), consumer=:analysis_edwards_teng),
     dispersion_routes=ConfigurationOptionMeta(Tuple{Vararg{Symbol}}, DISPERSION_ROUTES,
         "The dispersion routes to execute on a 6x6 map, a non-empty tuple of distinct members of DISPERSION_ROUTES that includes :eigenplane, the primary route (an ArgumentError without it). Inactive on 4x4 input and on a coasting map (no synchrotron mode); on a bunched map whose longitudinal cluster is blocked the requested tuple is still read (receipt :analysis_dispersion_routes), so the option stays resolved.";
@@ -1120,7 +1120,10 @@ end
     _analysis_preferred_form(analysis, pair::Determined{EdwardsTengPair}) -> (form::Determined{Int}, diagnostic::Determined{_EDWARDS_TENG_DIAGNOSTIC_T})
 
 Step 9: both forms are in the pair; `:auto` presents the admissible form
-with the larger `area_weight` (ties to form 1), an Int presents that form
+with the larger `area_weight` (ties to form 1) -- under the x-dominant
+labelling of mode 1 always form 1, since `1 - u > u` and `lambda^2 = 1 - u > 0`,
+so `:auto` never presents form 2 (docs/design/linear_optics.md, D13; the rule
+is kept as written in case the labelling changes) -- an Int presents that form
 (unavailable `:form_inadmissible` with the form's detail when it is not
 admissible). Receipt `:analysis_edwards_teng (preferred_form, reported,
 admissible)` in the branch that read the option (none when the pair is

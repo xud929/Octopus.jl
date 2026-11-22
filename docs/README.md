@@ -222,6 +222,14 @@ Procedures, one per task class, routed from the Task Routing table in
   result into the point with `linear_optics`): what changed per script, the
   fingerprint identity against the flat versions on CPU and CUDA, the gate,
   and the push and CI run of the LinearOptics batch it follows.
+- [`linear_optics_owner_items_2026_11_21.md`](history/linear_optics_owner_items_2026_11_21.md)
+  — the second LinearOptics batch, closing the design note's owner items 1, 4
+  and 5 (D11-D13): form 2 reaching `ChromaticityKickSpec` and `LumpedRadSpec`
+  through the point only, with a stored `form` and the contract's joint move;
+  the untyped `LumpedRadSpec` promoting like every other element; and
+  `preferred_form = :auto` documented as form 1 with a tripwire. What changed,
+  the verification, where the gate's numbers are, and the CI run of the
+  examples batch before it.
 - [`guides/development_workflow.md`](guides/development_workflow.md) — the
   environment, the two load modes, the commands, the single-testset probe
   recipe, lanes and the gate, where output goes, committing, reporting.

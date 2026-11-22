@@ -116,7 +116,8 @@ are the Edwards-Teng coupling BLOCK `C = adj(R)/sqrt(1 + det R)` (with
 `form1`/`form2` selecting the Edwards-Teng form), while `XYCouplingSpec`,
 `Beam`, `ChromaticityKickSpec` and `LumpedRadSpec` take the matrix `R =
 (r1, r2, r3, r4)` itself; the object converts. `ChromaticityKickSpec` and
-`LumpedRadSpec` couple in form 1 only and refuse a form-2 point;
+`LumpedRadSpec` store the point's form (`form`, 1 or 2) and couple in it, form 2
+reaching them only through the point (D11);
 `ThinStrongBeamSpec` is transverse and refuses a point carrying dispersion.
 
 

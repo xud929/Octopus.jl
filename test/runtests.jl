@@ -2845,13 +2845,13 @@ end
     @test Octopus.params(ChromaticityKickSpec{Float64}(; xi=(2.0, 1.5), optics=od)) ==
           Octopus.params(ChromaticityKickSpec{Float64}(; xi=(2.0, 1.5), beta=β, alpha=α, zeta=ζ, eta=η, R=R))
     @test_throws ArgumentError ChromaticityKickSpec(; xi=(1, 1), beta=β, optics=od)
-    @test_throws ArgumentError ChromaticityKickSpec(; xi=(1, 1), optics=LinearOptics(t2))          # form 1 only
+    @test Octopus.params(ChromaticityKickSpec(; xi=(1, 1), optics=LinearOptics(t2)))[:form] == 2        # D11: form 2 through the point
     @test_throws ArgumentError ChromaticityKickSpec(; xi=(1, 1))                                     # beta still required
     @test_throws ArgumentError ChromaticityKickSpec(; xi=(1, 1), optics=(β, α))
     set_global_rng!(seed=20261121, method=:philox)
     @test Octopus.params(LumpedRadSpec(; damping_turns=(4000.0, 4000.0, 2000.0), optics=od, sigma=(1e-4, 1e-5, 0.01), rng_id=1021)) ==
           Octopus.params(LumpedRadSpec(; damping_turns=(4000.0, 4000.0, 2000.0), beta=β, alpha=α, zeta=ζ, eta=η, R=R, sigma=(1e-4, 1e-5, 0.01), rng_id=1021))
-    @test_throws ArgumentError LumpedRadSpec(; damping_turns=(1.0, 1.0, 1.0), optics=LinearOptics(t2), rng_id=1022)
+    @test Octopus.params(LumpedRadSpec(; damping_turns=(1.0, 1.0, 1.0), optics=LinearOptics(t2), rng_id=1023))[:form] == 2   # D11
     @test_throws ArgumentError LumpedRadSpec(; damping_turns=(1.0, 1.0, 1.0), optics=od, alpha=α, rng_id=1022)
     tsf = ThinStrongBeamSpec(; kbb=-1e-6, beta=(0.8, 0.072), alpha=(0.3, -0.2), sigma=(1e-4, 1e-5),
                              coupling=XYCouplingSpec(r1=R[1], r2=R[2], r3=R[3], r4=R[4]))
@@ -2955,6 +2955,98 @@ end
     @test occursin("adj(R)", Octopus.parameter_schema(ElementSpec{:linear6d})[:R1].meaning)
     @test occursin("Edwards-Teng matrix R", Octopus.parameter_schema(ElementSpec{:chromaticity_kick})[:R].meaning)
     @test occursin("Edwards-Teng matrix R", Octopus.parameter_schema(ElementSpec{:lumped_radiation})[:R].meaning)
+end
+
+@testset "Owner items 1, 4, 5 (2026-11-21, design D11-D13): form 2 through the point, the untyped LumpedRadSpec promotes, :auto is form 1" begin
+    # docs/design/linear_optics.md section 4 items closed by the second batch: form 2 reaches ChromaticityKickSpec
+    # and LumpedRadSpec only through a LinearOptics point (stored as `form`, D11), the untyped LumpedRadSpec
+    # promotes like every other element (D12), and the analysis's `preferred_form=:auto` is form 1 (D13).
+    β = (0.8, 0.072, 90.9); α = (0.3, -0.2, 0.05); R = (0.05, 0.01, -0.02, 0.03)
+    ζ = (1e-3, 2e-4, -3e-4, 5e-5); η = (0.2, 0.01, -0.03, 2e-3)
+    t1 = EdwardsTengTwiss(beta=β, alpha=α, R=R); t2 = EdwardsTengTwiss(beta=β, alpha=α, R=R, form=2)
+    d = CanonicalDispersion(zeta=ζ, eta=η)
+    o1 = LinearOptics(t1, d); o2 = LinearOptics(t2, d)
+    sym = Symplectic6DMap()
+    u = (3e-4, -2e-5, 1e-4, 4e-5, 2e-3, 1.5e-3)
+    # --- D11: the point's form is stored and compiled; the flat spec stores form 1 -----------------------------
+    k1 = ChromaticityKickSpec(; xi=(2.0, 1.5), optics=o1); k2 = ChromaticityKickSpec(; xi=(2.0, 1.5), optics=o2)
+    @test Octopus.params(k1)[:form] == 1 && Octopus.params(k2)[:form] == 2
+    @test Octopus.params(k1) == Octopus.params(ChromaticityKickSpec(; xi=(2.0, 1.5), beta=β, alpha=α, zeta=ζ, eta=η, R=R))
+    @test Octopus.params(k1) == Octopus.params(ChromaticityKickSpec(; xi=(2.0, 1.5), beta=β, alpha=α, zeta=ζ, eta=η, R=R, form=1))
+    @test Octopus.params(ChromaticityKickSpec{Float64}(; xi=(2.0, 1.5), optics=o2))[:form] == 2
+    @test compile_runtime(k1).coupling.mode == XY_MODEA && compile_runtime(k2).coupling.mode == XY_MODEB
+    # the kick in a form is that form's coupling conjugating the uncoupled kick: C^-1, the kick in the decoupled frame, C
+    k0 = compile_runtime(ChromaticityKickSpec(; xi=(2.0, 1.5), beta=β, alpha=α))
+    kf(form) = compile_runtime(ChromaticityKickSpec(; xi=(2.0, 1.5), optics=LinearOptics(EdwardsTengTwiss(beta=β, alpha=α, R=R, form=form))))
+    Cf(form) = compile_runtime(XYCouplingSpec(EdwardsTengTwiss(beta=β, alpha=α, R=R, form=form)))
+    conj(C, op, method, w) = Octopus.track_particle(sym, C, Octopus.track_particle(method, op, Octopus._inverse(C, w...)...)...)
+    for form in (1, 2)
+        got = Octopus.track_particle(sym, kf(form), u...)
+        @test all(isapprox.(got, conj(Cf(form), k0, sym, u); rtol=1e-12, atol=1e-20))
+    end
+    g1 = Octopus.track_particle(sym, kf(1), u...); g2 = Octopus.track_particle(sym, kf(2), u...)
+    @test maximum(abs.(g1 .- g2)) > 1e-6 * maximum(abs.(u))                           # the form reaches the map
+    # the same for the lumped radiation element, damping only (deterministic)
+    set_global_rng!(seed=20261122, method=:philox)
+    dmp = Damping6DMap()
+    turns = (50.0, 40.0, 30.0)
+    r0 = compile_runtime(LumpedRadSpec(; damping_turns=turns, beta=β, alpha=α, tracking_method=dmp, rng_id=2041))
+    rf(form, id) = compile_runtime(LumpedRadSpec(; damping_turns=turns, tracking_method=dmp, rng_id=id,
+                                                 optics=LinearOptics(EdwardsTengTwiss(beta=β, alpha=α, R=R, form=form))))
+    r1 = rf(1, 2042); r2 = rf(2, 2043)
+    @test r1.coupling.mode == XY_MODEA && r2.coupling.mode == XY_MODEB
+    for (form, op) in ((1, r1), (2, r2))
+        got = Octopus.track_particle(dmp, op, u...)
+        @test all(isapprox.(got, conj(Cf(form), r0, dmp, u); rtol=1e-12, atol=1e-20))
+    end
+    @test maximum(abs.(Octopus.track_particle(dmp, r1, u...) .- Octopus.track_particle(dmp, r2, u...))) > 1e-6 * maximum(abs.(u))
+    norng(spec) = Dict(k => v for (k, v) in Octopus.params(spec) if k !== :rng_id)
+    @test Octopus.params(LumpedRadSpec(; damping_turns=turns, optics=o2, rng_id=2044))[:form] == 2
+    @test norng(LumpedRadSpec(; damping_turns=turns, optics=o1, rng_id=2045)) ==
+          norng(LumpedRadSpec(; damping_turns=turns, beta=β, alpha=α, zeta=ζ, eta=η, R=R, form=1, rng_id=2046))
+    # --- D11: form 2 is refused beside the flat keywords and beside the point, 3 everywhere; the raw spec spells it
+    @test_throws ArgumentError ChromaticityKickSpec(; xi=(1, 1), beta=β, form=2)
+    @test_throws ArgumentError ChromaticityKickSpec{Float64}(; xi=(1, 1), beta=β, form=2)
+    @test_throws ArgumentError ChromaticityKickSpec(; xi=(1, 1), beta=β, form=3)
+    @test_throws ArgumentError ChromaticityKickSpec(; xi=(1, 1), beta=β, form=true)
+    @test_throws ArgumentError ChromaticityKickSpec(; xi=(1, 1), optics=o2, form=2)
+    @test_throws ArgumentError LumpedRadSpec(; damping_turns=turns, beta=β, form=2, rng_id=2047)
+    @test_throws ArgumentError LumpedRadSpec(; damping_turns=turns, optics=o2, form=2, rng_id=2047)
+    raw(form) = ElementSpec{:chromaticity_kick}(; xi=(1.0, 1.0), beta=(1.0, 1.0), R=(0.01, 0.0, 0.0, 0.0), form=form)
+    @test compile_runtime(raw(2)).coupling.mode == XY_MODEB
+    @test_throws ArgumentError compile_runtime(raw(3))
+    @test_throws ArgumentError compile_runtime(raw(2.0))
+    @test compile_runtime(ElementSpec{:chromaticity_kick}(; xi=(1.0, 1.0), beta=(1.0, 1.0))).coupling.mode == XY_MODEA   # no form stored: form 1
+    rawr = ElementSpec{:lumped_radiation}(; damping_turns=turns, R=(0.01, 0.0, 0.0, 0.0), form=2, rng_id=2048)
+    @test compile_runtime(rawr).coupling.mode == XY_MODEB
+    for kind in (:chromaticity_kick, :lumped_radiation)
+        io = IOBuffer(); element_help(io, kind); h = String(take!(io))
+        @test occursin("form", h) && occursin("LinearOptics", h)
+    end
+    # --- D12: the untyped LumpedRadSpec promotes over the Float64 floor like every other element --------------
+    @test Octopus.numeric_type(LumpedRadSpec(; damping_turns=(1f3, 1f3, 1f3), rng_id=2051)) === Float64
+    @test Octopus.numeric_type(LumpedRadSpec(; damping_turns=(1000, 1000, 500), rng_id=2052)) === Float64
+    @test Octopus.numeric_type(LumpedRadSpec(; damping_turns=(big"1000.0", big"1000.0", big"500.0"), rng_id=2053)) === BigFloat
+    @test Octopus.numeric_type(LumpedRadSpec(; damping_turns=(1000.0, 1000.0, 500.0), numeric_type=Float32, rng_id=2054)) === Float32
+    @test Octopus.numeric_type(LumpedRadSpec(; damping_turns=(1000.0, 1000.0, 500.0), optics=LinearOptics{Float32}(; beta=(1, 1, 1)), rng_id=2055)) === Float64
+    cplx = LumpedRadSpec(; damping_turns=(1000.0 + 0im, 1000.0, 500.0), rng_id=2056)                            # constructs in ComplexF64 ...
+    @test Octopus.numeric_type(cplx) === ComplexF64
+    @test_throws ArgumentError compile_runtime(cplx)                                                               # ... and compile refuses it by name (real floats only)
+    @test Octopus.params(LumpedRadSpec(; damping_turns=turns, sigma=(1e-4, 1e-5, 0.01), rng_id=2057))[:sigma] == (1e-4, 1e-5, 0.01)
+    @test Octopus.params(LumpedRadSpec(; damping_turns=turns, rng_id=2058))[:sigma] == (-1.0, -1.0, -1.0)           # the typed form's default sigma
+    # --- D13: :auto never presents form 2 under the x-dominant labelling of mode 1 --------------------------------
+    tunes = (2pi * 0.228, 2pi * 0.21, 2pi * 0.01)
+    for t in (t1, t2, EdwardsTengTwiss(beta=β, alpha=α, R=(0.4, 0.1, -0.2, 0.3)),
+              EdwardsTengTwiss(beta=(0.1, 5.0, 90.0), alpha=(0.0, 0.0, 0.0), R=(0.6, 0.2, 0.1, 0.5), form=2))
+        o = LinearOptics(t, d; mu=(0.0, 0.0, 0.0), frame=:ring)
+        spec = Linear6DSpec(o, advance_phase(o, tunes))
+        res = analyze(TwissDispersionAnalysis(), spec)
+        tr = determined_value(res.transverse)
+        @test determined_value(tr.preferred_form) == 1
+        pair = determined_value(tr.edwards_teng_normalizer)
+        @test pair.form1.admissible && pair.form1.area_weight >= pair.form2.area_weight          # 1 - u >= u
+        @test determined_value(determined_value(analyze(TwissDispersionAnalysis(preferred_form=2), spec).transverse).preferred_form) == 2
+    end
 end
 
 @testset "Edwards-Teng: the coupled construction of benchmark 12.2-2 (Linear6DSpec optics form conjugated by XYCouplingSpec)" begin
@@ -16469,7 +16561,11 @@ if _lane_gate("Element parameter effectiveness")
     # of each coupling block, docs/design/linear_optics.md D7) are measured
     # effective on the optics probe, whose R1/R2 are nonzero (deviations
     # 2.7e-4 and 1.1e-3; 553 checked on that tree).
-    @test r.metrics[:checked] >= 551
+    # 551 -> 553 on 2026-11-21 (second LinearOptics batch, D11): chromaticity_kick.form and
+    # lumped_radiation.form are measured effective through the joint move of
+    # _perturb_coupled_overrides (the probe re-spelled as a form-2 LinearOptics point, the
+    # probes' R nonzero); 555 checked on that tree, the ratchet two below as before.
+    @test r.metrics[:checked] >= 553
 
     # What the contract does NOT decide has to be visible, and bounded
     # (2026-08-05_b audit, U4-2). 112 of 501 declared parameters used to be

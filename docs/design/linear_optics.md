@@ -134,6 +134,40 @@ per call.
   Edwards-Teng form-1 convention; the `Beam` docstring stops claiming one
   spelling for all element specs.
 
+### Decisions of the second batch (2026-11-21, the owner items 1, 4, 5 of section 4)
+
+- **D11 Form 2 reaches `ChromaticityKickSpec` and `LumpedRadSpec` through the
+  point only.** Both kinds store `form` (1 or 2, declared alternatives, default
+  1) and compile their `XYCoupling` in that form; the value comes from the
+  `LinearOptics` point given as `optics` (its `twiss.form`). The flat keywords
+  couple in form 1: `form=1` is accepted as the explicit spelling of the
+  default, `form=2` is refused by name with the pointer to the point, and the
+  raw `ElementSpec{kind}(; form=2)` spells it directly, as every stored
+  parameter can be. The owner asked for the unified interface rather than a
+  second flat spelling (2026-11-21); the stored parameter exists because the
+  runtime must read the form and the validators read declared defaults
+  through the friendly constructor. The effectiveness contract probes `form`
+  by a joint move that re-spells the probe as the same point in form 2
+  (`_perturb_coupled_overrides`), the generic alternative `form=2` being the
+  refused flat spelling; the probes carry a nonzero `R` so that the form is
+  the only difference between the two specs.
+- **D12 The untyped `LumpedRadSpec` promotes.** `LumpedRadSpec(; ...)` takes
+  its type from the named parameters over the `Float64` floor through
+  `_linear_map_eltype`, as every other untyped element form does (integers,
+  rationals and `Float32` land on `Float64`; wider types promote); until this
+  batch it fixed `Float64` whatever it was given. A non-float type constructs
+  and is refused by name at compile ("lumped radiation parameters must be
+  real floating-point values"), where before an `InexactError` fired inside
+  the constructor.
+- **D13 `preferred_form = :auto` is form 1, and says so.** The rule "the
+  admissible form with the larger area weight, ties to form 1" is kept, but
+  the analysis labels mode 1 as the x-dominant mode, so form 1's weight
+  `1 - u` exceeds form 2's `u` and form 1 is admissible whenever the pair is
+  (`lambda^2 = 1 - u > 0`): `:auto` never presents form 2. The option's
+  description, the type docstring and the selection's docstring state this;
+  a tripwire asserts it on coupled fixtures, a form-2 point among them, and
+  that `2` still presents form 2.
+
 ## 3. Staging, tests, verification
 
 One batch, one record. Stage 1: D1, D2, `Linear6DSpec(o1, o2)`, `Beam(; optics)`,
@@ -164,11 +198,19 @@ full gate with CUDA active on the final tree, the record, the push.
 
 ## 4. Open after this batch (owner items)
 
-- Form 2 on `ChromaticityKickSpec` and `LumpedRadSpec` (a stored `form`
-  parameter passed to their `XYCoupling`); until then a form-2 point is
-  refused there.
-- Retiring `XY_UNDEF` (R = 0 already gives the identity).
-- Dispersion in `ThinStrongBeamSpec` through `gaussian_strong_beam_covariance`,
-  which exists and is consumed by nothing.
-- `LumpedRadSpec`'s untyped form fixes `Float64` instead of promoting, unlike
-  every other element (radiation.jl:40-41); unrelated to this batch, noted.
+Closed by the second batch (D11-D13, record
+[`../history/linear_optics_owner_items_2026_11_21.md`](../history/linear_optics_owner_items_2026_11_21.md)):
+form 2 on `ChromaticityKickSpec` and `LumpedRadSpec`; `LumpedRadSpec`'s
+untyped form fixing `Float64`; whether `preferred_form = :auto` ever presents
+form 2.
+
+Still open:
+
+- Retiring `XY_UNDEF` (R = 0 already gives the identity): the next batch, as
+  its own commit, since it removes an exported enum member.
+- Dispersion in the strong beam through `gaussian_strong_beam_covariance`,
+  which builds the 6x6 covariance `GaussianStrongBeamSpec` already consumes
+  (the transverse Gaussian conditional on z, the crab slope per slice) and
+  which nothing in the source calls; it needs the strong beam's momentum
+  spread as a new input. Waits for the owner's word on whether a dispersive
+  strong beam is needed.

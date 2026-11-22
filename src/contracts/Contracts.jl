@@ -3843,13 +3843,18 @@ const DEFAULT_ELEMENT_PARAM_PROBES = Dict{Symbol,Any}(
     # Unequal transverse damping rates: the curated example damps x and y
     # equally, and an isotropic transverse map commutes with a roll about s,
     # so `tilt` would read as inert when it is only unprobeable there.
-    :lumped_radiation => (damping_turns=(1000.0, 800.0, 500.0), rng_id=1),
+    # A nonzero R (and the three-plane Twiss a LinearOptics point needs) so that
+    # `form`, probed by the joint move below, is the only thing that changes
+    # between the two specs (design docs/design/linear_optics.md, D11).
+    :lumped_radiation => (damping_turns=(1000.0, 800.0, 500.0), rng_id=1,
+                          beta=(0.82, 0.075, 90.0), alpha=(0.01, -0.02, 0.0), R=(0.02, 0.01, 0.0, 0.0)),
     # The same symmetry for the chromaticity kick: its example has
     # `xi = (1, 1)`, `beta = (1, 1)`, an isotropic map that commutes with a
     # roll, so `tilt` was credited on the conjugation's roundoff (6.5e-19;
     # 2026-10-18 audit, F-112). Unequal chromaticities and betas make the
     # roll physical.
-    :chromaticity_kick => (xi=(1.2, -0.8), beta=(0.82, 0.075), alpha=(0.01, -0.02)),
+    :chromaticity_kick => (xi=(1.2, -0.8), beta=(0.82, 0.075, 90.0), alpha=(0.01, -0.02, 0.0),
+                           R=(0.02, 0.01, 0.0, 0.0)),
 )
 """
 Parameters that every kind CARRIES rather than consumes.
@@ -4197,6 +4202,21 @@ function _perturb_coupled_overrides(kind::Symbol, key::Symbol, probe)
     if kind === :thin_strong_beam && (key === :angle || key === :curvature)
         current = get(probe, key, (0.0, 0.0, 0.0))
         return [Dict{Symbol,Any}(key => (Float64(current[1]) + 0.17, Float64(current[2]) + 0.34, 0.0))]
+    end
+    # Form 2 reaches the chromaticity kick and the lumped radiation element
+    # only through a LinearOptics point (design docs/design/linear_optics.md,
+    # D11): the flat `form=2` is refused by name, so the generic alternative
+    # would be counted REJECTED. The legal move re-spells the probe's optics as
+    # the same point in form 2 and withdraws the flat keywords (`nothing` is
+    # "not given" to these constructors). The probe carries a nonzero R, so the
+    # only difference between the two specs is the form, and what is proved is
+    # that `form` reaches the map.
+    if (kind === :chromaticity_kick || kind === :lumped_radiation) && key === :form
+        point = LinearOptics(; beta=probe[:beta], alpha=probe[:alpha], R=probe[:R],
+                             zeta=get(probe, :zeta, (0.0, 0.0, 0.0, 0.0)),
+                             eta=get(probe, :eta, (0.0, 0.0, 0.0, 0.0)), form=2)
+        return [Dict{Symbol,Any}(:form => nothing, :beta => nothing, :alpha => nothing, :zeta => nothing,
+                                 :eta => nothing, :R => nothing, :optics => point)]
     end
     (kind in (:thin_rf_cavity, :thin_accelerating_cavity) &&
      (key === :beta0 || key === :gamma0)) || return nothing

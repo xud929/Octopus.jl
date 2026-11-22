@@ -2295,6 +2295,24 @@ labelling-dependent representation compares the OBJECT the labels describe
 canonical; a forced presentation (`preferred_form = 2`) round-trips under the
 same request and is tested that way.
 
+## An option whose rule can never pick one of its values must say so
+
+`preferred_form = :auto` promised "the admissible Edwards-Teng form with the
+larger area weight, ties to form 1". The rule is correct, and under the
+analysis's own labelling (mode 1 = the x-dominant mode) it is also a constant:
+form 1's weight `1 - u` always exceeds form 2's `u`, and form 1 is admissible
+whenever the pair is. Nothing was wrong in the code; the description invited a
+reader to expect form 2 from `:auto` in a strongly coupled ring, and the first
+such reader was the owner, asking during the LinearOptics design whether the
+analysis ever presents form 2. The 2026-11-21 second batch (design D13) kept
+the rule, wrote the consequence into the option's description and both
+docstrings, and pinned it with a tripwire over coupled fixtures.
+
+How to apply: when an option's rule depends on a convention the code fixes
+elsewhere (a labelling, an ordering, a sign), state the resulting constant in
+the option's description, and add the tripwire that would fire if the
+convention moved.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

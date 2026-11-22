@@ -60,9 +60,15 @@ listed in the result's configuration report ([`configuration_report`](@ref)).
     `Float64` synchrotron tune `mu_s` in `(0, 2pi)` other than `pi` (radians
     per turn; tunes are reported mod `2pi`, `mu` and `2pi - mu` name the same
     mode, so the result's own `tunes[3]` is accepted).
-  * `preferred_form`: `:auto` (the admissible Edwards-Teng form with the
-    larger area weight, ties to form 1), `1` or `2`. Both forms are always
-    computed; this selects the one PRESENTED.
+  * `preferred_form`: `:auto`, `1` or `2`. Both forms are always computed;
+    this selects the one PRESENTED. `:auto` is the admissible form with the
+    larger area weight, ties to form 1 -- which is form 1 whenever the pair is
+    determined: the analysis labels mode 1 as the x-dominant mode, so form 1's
+    weight `1 - u` exceeds form 2's `u` and form 1 is admissible (`lambda^2 =
+    1 - u > 0`). `:auto` therefore never presents form 2 (design
+    `docs/design/linear_optics.md`, D13); `2` presents the same normalizer with
+    the two transverse modes exchanged, the spelling a form-2 `LinearOptics`
+    point round-trips under.
   * `dispersion_routes`: a non-empty tuple of distinct members of
     `DISPERSION_ROUTES` that includes `:eigenplane`, the primary route (an
     `ArgumentError` without it).

@@ -314,38 +314,49 @@ function Base.show(io::IO, o::LinearOptics)
     print(io, ")")
 end
 
+# An Edwards-Teng form value as the consumers store it: 1 or 2, an Integer that
+# is not a Bool (`Linear6DSpec` has its own `_linear6d_form` with its own wording).
+function _optics_form(value, who::AbstractString, name::Symbol=:form)
+    (value isa Integer && !(value isa Bool) && value in (1, 2)) || throw(ArgumentError(
+        "$(who) $(name) must be 1 or 2 (the Edwards-Teng forms V1 and V2 of the theory note's (T2)); got $(repr(value))"))
+    return Int(value)
+end
+
 """
-    _resolve_optics_keywords(who, optics, given, defaults; form1_only=false, require_beta=true)
+    _resolve_optics_keywords(who, optics, given, defaults; require_beta=true)
 
 The one flattening rule of the element constructors that take `beta, alpha,
 zeta, eta, R` (design docs/design/linear_optics.md D3-D4): without `optics`
 the flat keywords apply with their `defaults` (a `nothing` entry of `given`
-means "not given"); with a `LinearOptics` every flat keyword must be absent
-(refused by name otherwise), the point's parts are returned, and a form-2
-point is refused when the consumer couples in form 1 only. Returns the
-NamedTuple `(beta, alpha, zeta, eta, R)`.
+means "not given") and the form is 1: `form=1` is accepted as the explicit
+spelling of that default, `form=2` is refused by name, since form 2 reaches
+these consumers through a `LinearOptics` point (the raw `ElementSpec{kind}(;
+form=2)` spells it directly; design D11). With a `LinearOptics` every flat
+keyword must be absent (refused by name otherwise) and the point's parts, its
+form included, are returned. Returns the NamedTuple `(beta, alpha, zeta, eta,
+R, form)`; `given` may omit `form`.
 """
 function _resolve_optics_keywords(who::String, optics, given::NamedTuple, defaults::NamedTuple;
-                                  form1_only::Bool=false, require_beta::Bool=true)
+                                  require_beta::Bool=true)
+    given_form = get(given, :form, nothing)
     if optics === nothing
         if given.beta === nothing && require_beta
             throw(ArgumentError("$(who) requires beta (or a LinearOptics through optics)"))
         end
+        form = given_form === nothing ? 1 : _optics_form(given_form, who)
+        form == 1 || throw(ArgumentError(
+            "$(who) couples in Edwards-Teng form 1 from its flat keywords; form 2 reaches it through a LinearOptics " *
+            "point in form 2 (optics=LinearOptics(; ..., form=2)) or through the raw ElementSpec form (form=2)"))
         return (beta=something(given.beta, defaults.beta), alpha=something(given.alpha, defaults.alpha),
                 zeta=something(given.zeta, defaults.zeta), eta=something(given.eta, defaults.eta),
-                R=something(given.R, defaults.R))
+                R=something(given.R, defaults.R), form=1)
     end
     optics isa LinearOptics || throw(ArgumentError(
         "$(who) optics must be a LinearOptics; got $(typeof(optics))"))
     clash = [String(k) for (k, v) in pairs(given) if v !== nothing]
     isempty(clash) || throw(ArgumentError(
-        "$(who) takes beta, alpha, zeta, eta and R from the LinearOptics object given as optics; " *
+        "$(who) takes beta, alpha, zeta, eta, R and the form from the LinearOptics object given as optics; " *
         join(clash, ", ") * " cannot be given beside it (give one form)"))
-    if form1_only && optics.twiss.form != 1
-        throw(ArgumentError(
-            "$(who) couples the transverse planes in Edwards-Teng form 1 only (its XYCoupling is built in XY_MODEA); " *
-            "a form-2 LinearOptics is refused rather than read in the wrong form"))
-    end
     return (beta=optics.twiss.beta, alpha=optics.twiss.alpha, zeta=optics.dispersion.zeta,
-            eta=optics.dispersion.eta, R=optics.twiss.R)
+            eta=optics.dispersion.eta, R=optics.twiss.R, form=optics.twiss.form)
 end
