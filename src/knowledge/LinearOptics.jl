@@ -5,7 +5,7 @@ export EdwardsTengTwiss, CanonicalDispersion, LinearOptics, advance_phase, slope
 #
 # The quintuple (beta, alpha, zeta, eta, R) that fixes the linear optics at a
 # lattice point is consumed by `Linear6DSpec`, `Beam`, `ChromaticityKickSpec`,
-# `LumpedRadSpec`, `ThinStrongBeamSpec` and the three elementary maps, and is
+# `LumpedRadSpec`, `GaussianStrongBeamSpec` and the three elementary maps, and is
 # read back by `TwissDispersionAnalysis`. These three plain value types carry
 # it once, in the conventions the analysis reports (docs/theory/twiss_dispersion.md:
 # Edwards-Teng forms (T2)-(T4), canonical dispersion (D1)-(D3)), and every
@@ -191,8 +191,10 @@ remain as the stored representation, what `params(spec)` holds and the raw
 before the point), each consumer flattening it into its own parameters: `Linear6DSpec(o1, o2)`
 (a transfer between two points), `Beam(N, policy; optics = o, sigma | emit)`
 (a matched beam), `ChromaticityKickSpec(; xi, optics = o)`,
-`LumpedRadSpec(; damping_turns, optics = o)`, `ThinStrongBeamSpec(; kbb,
-optics = o, sigma)`, and [`linear_optics`](@ref) builds one from a
+`LumpedRadSpec(; damping_turns, optics = o)`, `GaussianStrongBeamSpec(; kbb,
+optics = o, sigma, ns, sigz)` (a dispersive point there needs `sigma_delta`;
+the deprecated `ThinStrongBeamSpec(; kbb, optics = o, sigma)` still refuses
+one), and [`linear_optics`](@ref) builds one from a
 `TwissDispersionResult`. The object form and the flat keywords produce the
 same spec or beam exactly; giving both is refused by name.
 

@@ -157,8 +157,10 @@ gsb = GaussianStrongBeamSpec{Float64}(; kbb = kbb, klum = klum,
     sigma = (strong.sigma[1], strong.sigma[2]), center = strong.center,
     angle = strong.angle, curvature = strong.curvature,
     virtual_drift = strong.virtual_drift, ns = strong.z_slices,
-    sigz = strong.sigma[3], slice_method = strong.slice_method,
-    hvoffset = strong.hvoffset)
+    sigz = strong.sigma[3], slice_method = strong.slice_method)
+# The crab-crossing waveform, when asked for, through the offset function (the
+# constructor's hvoffset keyword is a deprecated spelling; design S7).
+strong.hvoffset === nothing || offset_slices!(gsb, strong.hvoffset)
 radiation = LumpedRadSpec{Float64}(; damping_turns = rad.damping_turns,
     beta = (wb.beta_x, wb.beta_y, beta_z), alpha = rad.alpha,
     sigma = (wb.sigx, wb.sigy, wb.sigz), zeta = rad.zeta, eta = rad.eta,

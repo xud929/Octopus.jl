@@ -199,10 +199,12 @@ Procedures, one per task class, routed from the Task Routing table in
   element: `GaussianStrongBeamSpec` takes the thin parameters and a
   `LinearOptics` point directly (stage 1, the stored spec unchanged), consumes
   a point's dispersion at the slice level through
-  `gaussian_strong_beam_covariance`, adds its three slice-offset sources by
-  order with the one overlap refused, and leaves retiring `ThinStrongBeamSpec`
-  and `mean` to stage 2. Measured basis: `ns = 1` reproduces the thin element
-  bit for bit.
+  `gaussian_strong_beam_covariance`, takes the user's slice offsets through
+  `offset_slices!`/`offset_slices` over the covariance's own tilt (S3), is
+  described by a 6×6 covariance alone (S6), and keeps the deprecated
+  spellings (`ThinStrongBeamSpec`, the constructor's `hvoffset`/`slice_*offset`,
+  `mean`) alive for existing scripts with a once-per-process warning (S7,
+  stage 2). Measured basis: `ns = 1` reproduces the thin element bit for bit.
 - [`linear_optics.md`](design/linear_optics.md) — the shared linear-optics
   value object (`LinearOptics` = `EdwardsTengTwiss` + `CanonicalDispersion`
   + phases): the measured spread of the quintuple (beta, alpha, zeta, eta, R)
@@ -251,6 +253,14 @@ Procedures, one per task class, routed from the Task Routing table in
   through `gaussian_strong_beam_covariance` with the new `sigma_delta`, the
   slice-offset rule S3 enforced, the call sites moved; verification, where the
   gate's numbers are, and the CI run of the push before it.
+- [`strong_beam_element_stage2_2026_11_22.md`](history/strong_beam_element_stage2_2026_11_22.md)
+  — stage 2 of the strong-beam consolidation: the deprecated spellings
+  (`ThinStrongBeamSpec`, the constructor's `hvoffset`/`slice_*offset`, `mean`)
+  kept for existing scripts and warning once per process, `mean` active in
+  every case, a 6×6 covariance alone, `ns = 1` without `sigz`, the suite and
+  the validation scripts moved to the recommended form with one compatibility
+  testset, and the weak-strong physics and performance measured unchanged on
+  CPU threads, MPI and CUDA; the stage-1 CI run.
 - [`guides/development_workflow.md`](guides/development_workflow.md) — the
   environment, the two load modes, the commands, the single-testset probe
   recipe, lanes and the gate, where output goes, committing, reporting.

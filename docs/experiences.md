@@ -2329,6 +2329,34 @@ How to apply: an enum of conventions should hold conventions only. When a
 parameters it governs, do not add it; if it exists, retire it as its own
 commit (the symbol-removal class), since every reader of the enum is a site.
 
+## A deprecation keeps the code, warns once, and keeps one test
+
+The strong-beam consolidation's stage 2 (2026-11-22) deprecated four
+spellings (`ThinStrongBeamSpec`, the constructor's `hvoffset` and
+`slice_*offset`, `mean`) under the owner's condition that old scripts keep
+running. The form that satisfied every invariant at once: the code stays; each
+spelling warns once per process through a visible `@warn ... maxlog = 1`
+naming its replacement (not `Base.depwarn`, which is silent unless julia runs
+with `--depwarn=yes`); one table feeds the warnings and the suite's tripwire;
+the validators and the effectiveness contract run under a `ScopedValue` that
+silences the helper, since they build every kind through its friendly
+constructor and the message would be addressed to nobody; internal callers
+build through an internal constructor; the physics tests move to the
+recommended spelling; and ONE compatibility testset pins each deprecated
+spelling, built twice, warned once, the same spec bit for bit. Deleting that
+testset later would turn the compatibility into a claim. Two things surfaced
+while converting: a keyword read on one route only (`mean` without a 6×6
+covariance) is an inert request on the others, and a self-contained form
+needs a spelling for every combination the nested form allowed (a 6×6 beside
+the kernel's 4×4: S6 of the design note).
+
+How to apply: deprecate by keeping, warning once and pinning. Grep the
+validators, contracts and registry examples for the deprecated constructor
+before adding the warning, since they call it at load and in every gate.
+`Test.TestLogger` counts `maxlog` per logger, so a fresh `collect_test_logs`
+block sees the warning however often the process has printed it; assert
+"built twice, one record" there.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

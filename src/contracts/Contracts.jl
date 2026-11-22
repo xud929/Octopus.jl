@@ -2530,14 +2530,16 @@ function _symplecticity_contract_cases()
     # identical across the three (7.908e-8 at step 3e-7, scaling as step^2), so
     # the shared Gaussian kick sets the truncation floor and the drift choice
     # adds nothing to it.
-    thin_with(drift) = ThinStrongBeam(ThinStrongBeamSpec{Float64}(;
+    # The thin kind through its internal builder (its public constructor is a
+    # deprecated spelling that warns; the kind and its runtime remain), the
+    # Gaussian in its self-contained form (stage 2).
+    thin_with(drift) = ThinStrongBeam(_thin_strong_beam_spec(Float64;
         kbb=1.0e-8, covariance=covariance, center=(2.0e-5, -1.0e-5, 3.0e-4),
         angle=(3.0e-4, -2.0e-4, 0.0), virtual_drift=drift))
     thin = thin_with(:hirata)
     gaussian = GaussianStrongBeam(GaussianStrongBeamSpec{Float64}(;
-        thin=ThinStrongBeamSpec{Float64}(;
-            kbb=8.0e-9, covariance=covariance, center=(-1.0e-5, 2.0e-5, -2.0e-4),
-            angle=(2.0e-4, -1.0e-4, 0.0), virtual_drift=:hirata),
+        kbb=8.0e-9, covariance=covariance, center=(-1.0e-5, 2.0e-5, -2.0e-4),
+        angle=(2.0e-4, -1.0e-4, 0.0), virtual_drift=:hirata,
         ns=3, sigz=7.0e-3, slice_method=:equal_area))
     q0 = copy(SYMPLECTICITY_PROBE_POINT)
     # The twelve older cases' tolerances, re-frozen at ~100x their measured
@@ -3986,7 +3988,7 @@ the probe is built, since `ThinStrongBeamSpec` is not defined where the
 override table is evaluated; defined ABOVE the table so the table can name it.
 """
 _elliptical_thin_strong_beam_probe() =
-    ThinStrongBeamSpec(kbb=1.0e-4, beta=(1.0, 1.0), sigma=(2.0e-3, 1.0e-3))
+    _thin_strong_beam_spec(; kbb=1.0e-4, beta=(1.0, 1.0), sigma=(2.0e-3, 1.0e-3))
 
 """
 Keys merged ONTO a kind's probe (whether that probe is curated or the kind's own
@@ -4262,7 +4264,13 @@ function _probe_deviation(moved, baseline)
     return dev
 end
 
-function validate(contract::ElementParameterEffectivenessContract; kwargs...)
+validate(contract::ElementParameterEffectivenessContract; kwargs...) =
+    _silence_deprecations(() -> _validate_element_parameter_effectiveness(contract; kwargs...))
+
+# The body, under the deprecation-silencing scope (`_SILENCE_DEPRECATIONS`,
+# src/knowledge/Knowledge.jl): the sweep builds every kind, the deprecated
+# `:thin_strong_beam` included, through its friendly constructor.
+function _validate_element_parameter_effectiveness(contract::ElementParameterEffectivenessContract; kwargs...)
     _reject_unknown_validate_kwargs(contract, kwargs)
     u = (2.3e-3, 4.1e-4, -1.7e-3, -3.2e-4, 1.5e-3, 9.0e-4)
     ignored = String[]

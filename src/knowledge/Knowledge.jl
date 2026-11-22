@@ -1504,6 +1504,17 @@ function _check_method_answers!(errors, T, meta, example)
     return errors
 end
 
+# Octopus's own validators and contracts rebuild every registered kind through
+# its friendly constructor from the kind's stored parameters. A deprecated
+# spelling's once-per-process warning (the strong beam's
+# `_strong_beam_deprecated`, src/elements/strong_beam.jl) is addressed to a
+# user's script, not to them, so `validate_element_metadata` and the element
+# effectiveness contract run under this scope and the helper is silent inside
+# it. The suite pins both sides: the warning fires for a user call and not
+# inside the scope.
+const _SILENCE_DEPRECATIONS = Base.ScopedValues.ScopedValue{Bool}(false)
+_silence_deprecations(f::F) where {F} = Base.ScopedValues.with(f, _SILENCE_DEPRECATIONS => true)
+
 """
     validate_element_metadata(; throw_on_error=false)
         -> (; passed, errors, default_pairs, defaults_checked, defaults_on_required_base)
@@ -1546,7 +1557,13 @@ The last five landed with the 2026-10-20 fix batch (2026-10-18 comprehensive
 audit, F-168, F-171, F-172, F-174: each was shown validating a wrong entry
 clean before it landed).
 """
-function validate_element_metadata(; throw_on_error::Bool=false)
+validate_element_metadata(; throw_on_error::Bool=false) =
+    _silence_deprecations(() -> _validate_element_metadata(; throw_on_error))
+
+# The body, under the deprecation-silencing scope (`_SILENCE_DEPRECATIONS`
+# above): the checks build the deprecated `:thin_strong_beam` kind through
+# `ThinStrongBeamSpec` like every other kind through its friendly constructor.
+function _validate_element_metadata(; throw_on_error::Bool=false)
     errors = String[]
     seen_kinds = Set{Symbol}()
     default_pairs = 0

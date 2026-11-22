@@ -12,7 +12,8 @@ Run from the project root:
     julia --project=. validation/tracking_task_turn_update.jl
 
 The source modulation is workflow state owned by an `AbstractBeamAction`, not
-state hidden inside `ThinStrongBeam`.
+state hidden inside the strong-beam element (whose compiled kernel, `thin`,
+carries the centroid the action moves).
 =#
 
 struct _NoopObserver <: AbstractBeamObserver end
@@ -25,16 +26,17 @@ struct _CentroidRamp{E,T} <: AbstractBeamAction
 end
 
 function Octopus.apply_action!(ramp::_CentroidRamp, ctx::TrackingContext, rep)
-    ramp.element.xo = ramp.base[1] + ctx.turn * ramp.slope[1]
-    ramp.element.yo = ramp.base[2] + ctx.turn * ramp.slope[2]
+    ramp.element.thin.xo = ramp.base[1] + ctx.turn * ramp.slope[1]
+    ramp.element.thin.yo = ramp.base[2] + ctx.turn * ramp.slope[2]
     return nothing
 end
 
 function _source_action_case(hooks)
-    element = ThinStrongBeam(ThinStrongBeamSpec(;
+    element = compile_runtime(GaussianStrongBeamSpec(;
         kbb = 1.0e-4,
         beta = (1.0, 1.0),
         sigma = (1.0e-3, 1.0e-3),
+        ns = 1,
     ))
     ramp = _CentroidRamp(element, (0.0, 0.0), (1.0e-3, 0.0))
     rep = Phase6DRep([1.0e-3], [0.0], [2.0e-3], [0.0], [0.0], [0.0])

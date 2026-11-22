@@ -202,8 +202,8 @@ function _transition_symplectic_residual(eta; step=1.0e-5)
     A = Matrix(Diagonal([1 + eta, 1 - eta]))
     B = Matrix(Diagonal([0.03, -0.02]))
     Q = transpose(B) * (A \ B) + 0.3I
-    element = ThinStrongBeam(ThinStrongBeamSpec(;
-        kbb=0.7, covariance=_transition_covariance(A, B, Matrix(Q))))
+    element = compile_runtime(GaussianStrongBeamSpec(;
+        kbb=0.7, covariance=_transition_covariance(A, B, Matrix(Q)), ns=1))
     q0 = [0.4, 1.0e-4, -0.2, -1.5e-4, 0.0, 2.0e-4]
     mapq(q) = collect(element(q...))
     jacobian = hcat([(

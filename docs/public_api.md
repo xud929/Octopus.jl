@@ -125,7 +125,10 @@ are the Edwards-Teng coupling BLOCK `C = adj(R)/sqrt(1 + det R)` (with
 (r1, r2, r3, r4)` itself; the object converts. `ChromaticityKickSpec` and
 `LumpedRadSpec` store the point's form (`form`, 1 or 2) and couple in it, form 2
 reaching them only through the point (D11);
-`ThinStrongBeamSpec` is transverse and refuses a point carrying dispersion.
+`GaussianStrongBeamSpec(; optics)` consumes a dispersive point at the slice
+level (with `sigz` and `sigma_delta`, design `design/strong_beam_element.md`
+S2); the deprecated `ThinStrongBeamSpec`, kept for existing scripts and
+warning once per process, is transverse and refuses one.
 
 
 For the element development pattern, use Julia help:

@@ -603,8 +603,11 @@ gsb = GaussianStrongBeamSpec{Float64}(;
     ns = strong.z_slices,
     sigz = strong.sigma[3],
     slice_method = strong.slice_method,
-    hvoffset = strong.hvoffset,
 )
+# The crab-crossing waveform, when the input asks for one, goes through the offset
+# function (the constructor's hvoffset keyword is a deprecated spelling, kept for
+# existing scripts; design docs/design/strong_beam_element.md S7).
+strong.hvoffset === nothing || offset_slices!(gsb, strong.hvoffset)
 
 rad = input.radiation
 radiation = LumpedRadSpec{Float64}(;

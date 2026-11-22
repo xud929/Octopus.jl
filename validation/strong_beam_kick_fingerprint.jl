@@ -54,8 +54,14 @@ mkrep(n) = begin
                s(1.0e-5, 1.2), s(1.0e-3, 2.1), s(1.0e-4, 2.5))
 end
 const N = 4000
-thin(; kw...) = ThinStrongBeamSpec{Float64}(; kbb=1.0e-4, klum=1.0, beta=(0.82, 0.075),
-    alpha=(0.01, -0.02), sigma=(115.0e-6, 13.0e-6), kw...)
+# The strong beam's parameters once. The two "thin" cases build the per-slice kernel as a line
+# element through its internal builder (the public `ThinStrongBeamSpec` is a deprecated spelling
+# that warns, stage 2 of docs/design/strong_beam_element.md; the kind and its digests remain); the
+# "gsb" cases are the self-contained element. Stage 2 respelled "gsb 6x6 covariance hirata"'s
+# `mean` as center/angle and "gsb hirata hvoffset"'s hvoffset as `offset_slices`: same digests.
+const KICK = (; kbb=1.0e-4, klum=1.0, beta=(0.82, 0.075), alpha=(0.01, -0.02), sigma=(115.0e-6, 13.0e-6))
+thin(; kw...) = Octopus._thin_strong_beam_spec(Float64; KICK..., kw...)
+gsb(; kw...) = GaussianStrongBeamSpec{Float64}(; KICK..., kw...)
 cov6 = let sx = 115.0e-6, spx = 1.4e-4, sy = 13.0e-6, spy = 1.7e-4, sz = 7.0e-3, spz = 6.6e-4
     c = zeros(6, 6)
     for (i, s) in enumerate((sx, spx, sy, spy, sz, spz)); c[i, i] = s^2; end
@@ -69,14 +75,14 @@ end
 configs = [
     ("thin hirata angled",            () -> thin(center=(2.0e-6, -1.0e-6, 1.0e-3), angle=(1.0e-4, -2.0e-4, 0.0), curvature=(1.0e-3, -2.0e-3, 0.0))),
     ("thin coupled exact",            () -> thin(coupling=XYCouplingSpec{Float64}(r1=0.01, r2=-0.003, r3=0.002, r4=0.004), virtual_drift=:exact, angle=(1.0e-4, -2.0e-4, 0.0))),
-    ("gsb hirata angled",             () -> GaussianStrongBeamSpec{Float64}(thin=thin(center=(2.0e-6, -1.0e-6, 1.0e-3), angle=(1.0e-4, -2.0e-4, 0.0), curvature=(1.0e-3, -2.0e-3, 0.0)), ns=3, sigz=7.0e-3, slice_method=:equal_area)),
-    ("gsb chromatic",                 () -> GaussianStrongBeamSpec{Float64}(thin=thin(virtual_drift=:chromatic), ns=3, sigz=7.0e-3, slice_method=:equal_area)),
-    ("gsb exact",                     () -> GaussianStrongBeamSpec{Float64}(thin=thin(virtual_drift=:exact), ns=3, sigz=7.0e-3, slice_method=:gauss_hermite)),
-    ("gsb exact coupled",             () -> GaussianStrongBeamSpec{Float64}(thin=thin(coupling=XYCouplingSpec{Float64}(r1=0.01, r2=-0.003, r3=0.002, r4=0.004), virtual_drift=:exact), ns=3, sigz=7.0e-3, slice_method=:sqrt_density)),
-    ("gsb 6x6 covariance hirata",     () -> GaussianStrongBeamSpec{Float64}(thin=thin(), ns=3, covariance=cov6, mean=(1.0e-6, 2.0e-6, -1.0e-6, 1.0e-6, 0.0, 0.0))),
-    ("gsb unsafe paraxial-frozen",    () -> GaussianStrongBeamSpec{Float64}(thin=thin(virtual_drift=UnsafeVirtualDrift(:paraxial_frozen_longitudinal)), ns=3, sigz=7.0e-3, slice_method=:equal_area)),
-    ("gsb unsafe chromatic-frozen",   () -> GaussianStrongBeamSpec{Float64}(thin=thin(virtual_drift=UnsafeVirtualDrift(:chromatic_frozen_energy)), ns=3, sigz=7.0e-3, slice_method=:equal_area)),
-    ("gsb hirata hvoffset",           () -> GaussianStrongBeamSpec{Float64}(thin=thin(), ns=5, sigz=7.0e-3, slice_method=:equal_area, hvoffset=Dict(:dim => :x, :coef => 1.0e-6, :frequency => 197.0e6))),
+    ("gsb hirata angled",             () -> gsb(center=(2.0e-6, -1.0e-6, 1.0e-3), angle=(1.0e-4, -2.0e-4, 0.0), curvature=(1.0e-3, -2.0e-3, 0.0), ns=3, sigz=7.0e-3, slice_method=:equal_area)),
+    ("gsb chromatic",                 () -> gsb(virtual_drift=:chromatic, ns=3, sigz=7.0e-3, slice_method=:equal_area)),
+    ("gsb exact",                     () -> gsb(virtual_drift=:exact, ns=3, sigz=7.0e-3, slice_method=:gauss_hermite)),
+    ("gsb exact coupled",             () -> gsb(coupling=XYCouplingSpec{Float64}(r1=0.01, r2=-0.003, r3=0.002, r4=0.004), virtual_drift=:exact, ns=3, sigz=7.0e-3, slice_method=:sqrt_density)),
+    ("gsb 6x6 covariance hirata",     () -> gsb(ns=3, covariance=cov6, center=(1.0e-6, -1.0e-6, 0.0), angle=(2.0e-6, 1.0e-6, 0.0))),
+    ("gsb unsafe paraxial-frozen",    () -> gsb(virtual_drift=UnsafeVirtualDrift(:paraxial_frozen_longitudinal), ns=3, sigz=7.0e-3, slice_method=:equal_area)),
+    ("gsb unsafe chromatic-frozen",   () -> gsb(virtual_drift=UnsafeVirtualDrift(:chromatic_frozen_energy), ns=3, sigz=7.0e-3, slice_method=:equal_area)),
+    ("gsb hirata hvoffset",           () -> offset_slices(gsb(ns=5, sigz=7.0e-3, slice_method=:equal_area), Dict(:dim => :x, :coef => 1.0e-6, :frequency => 197.0e6))),
 ]
 # `:auto` workers: the digests are thread-count invariant (the suite pins
 # both loop copies across worker counts), so any `--threads` gives the same

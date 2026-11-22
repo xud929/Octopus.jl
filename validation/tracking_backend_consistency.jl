@@ -135,7 +135,11 @@ line = (
         eta=(0.001, 0.0, -0.001, 0.0),
         R=(0.001, -0.0005, 0.0003, 0.0007),
     ),
-    ThinStrongBeamSpec{Float64}(;
+    # The thin kind, through its internal builder: its public constructor is a
+    # deprecated spelling that warns (stage 2 of docs/design/strong_beam_element.md),
+    # while the kind, its CPU route and its wrapped CUDA route below remain and are
+    # measured here.
+    Octopus._thin_strong_beam_spec(Float64;
         kbb=1.0e-8,
         klum=1.0,
         beta=(0.82, 0.075),
@@ -163,7 +167,7 @@ line = (
     # kernel (`_track_cuda_wrapped_strong_beam!`, src/track/strong_beam_track.jl),
     # which this instance exercises in the line and alone (the per-kind arm
     # below, tagged "(misaligned)"). The bare instance above, translated.
-    ThinStrongBeamSpec{Float64}(;
+    Octopus._thin_strong_beam_spec(Float64;
         kbb=1.0e-8,
         klum=1.0,
         beta=(0.82, 0.075),

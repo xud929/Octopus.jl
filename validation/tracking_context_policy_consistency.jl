@@ -81,9 +81,9 @@ else
     Octopus._gpu_skip_or_error("CUDA radiation checks", reason)
 end
 
-weak_spec = ThinStrongBeamSpec{Float64}(
+weak_spec = GaussianStrongBeamSpec{Float64}(
     kbb=1e-8, klum=1.0, beta=(0.82, 0.075), alpha=(0.01, -0.02),
-    sigma=(110e-6, 12e-6),
+    sigma=(110e-6, 12e-6), ns=1,
 )
 
 struct ContextPolicyCentroidRamp{E,T} <: AbstractBeamAction
@@ -93,14 +93,14 @@ end
 
 function Octopus.apply_action!(ramp::ContextPolicyCentroidRamp,
                                ctx::TrackingContext, rep)
-    ramp.element.xo = ctx.turn * ramp.slope[1]
-    ramp.element.yo = ctx.turn * ramp.slope[2]
+    ramp.element.thin.xo = ctx.turn * ramp.slope[1]
+    ramp.element.thin.yo = ctx.turn * ramp.slope[2]
     return nothing
 end
 
 function run_weak(policy, backend, path)
     rep = Octopus._contract_rep_for_backend(base_rep(), backend)
-    weak = ThinStrongBeam(weak_spec)
+    weak = compile_runtime(weak_spec)
     ramp = ContextPolicyCentroidRamp(weak, (1e-7, -2e-7))
     audit = ExecutionAudit()
     with_execution_audit(audit) do

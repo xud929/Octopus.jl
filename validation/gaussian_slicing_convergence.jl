@@ -149,11 +149,10 @@ push_once(weak, strong, rule, ns, coords) =
     push_once_drift(weak, strong, rule, ns, coords, config.virtual_drift)
 
 function push_once_drift(weak, strong, rule, ns, coords, drift)
-    thin = ThinStrongBeamSpec(; kbb=kick_coefficient(weak, strong),
-                              beta=strong.beta, alpha=(0.0, 0.0),
-                              sigma=strong.sigma, virtual_drift=drift)
     element = compile_runtime(GaussianStrongBeamSpec(;
-        thin=thin, ns=ns, sigz=strong.sigz, slice_method=rule,
+        kbb=kick_coefficient(weak, strong), beta=strong.beta, alpha=(0.0, 0.0),
+        sigma=strong.sigma, virtual_drift=drift,
+        ns=ns, sigz=strong.sigz, slice_method=rule,
         slice_width=(rule === :equal_width ?
                      config.equal_width_span(ns) * strong.sigz : nothing)))
     n = length(coords[1])
@@ -248,7 +247,7 @@ for (weak, strong) in ((ELECTRON, PROTON), (PROTON, ELECTRON))
                      reference, norms)
         @printf("virtual-drift model error at ns=%d: |%s - exact| = %.3e%s\n",
                 config.ns_reference, drift, q,
-                drift === :hirata ? "   <-- ThinStrongBeamSpec default" : "")
+                drift === :hirata ? "   <-- GaussianStrongBeamSpec default" : "")
     end
     @printf("Furman criterion for this ring: Q ~ 4/sqrt(tau) = %.3e %s\n\n",
             4 / sqrt(config.tau_electron),
