@@ -81,12 +81,12 @@ function example_catalog()
         ReferenceExample(
             "examples/weak_strong_tracking.jl",
             "A live weak proton beam colliding with a fixed soft-Gaussian strong " *
-            "beam through a crab crossing. The precedent for weak-strong work, " *
+            "beam (GaussianStrongBeamSpec as one element, its own parameters beside the slicing) through a crab crossing. The precedent for weak-strong work, " *
             "and the smaller of the two tracking examples to read first; its " *
             "linear optics are two LinearOptics points (the IP and the crab " *
             "cavities) that the beam, the transfer maps, the chromaticity kick " *
             "and the radiation element flatten alike.",
-            Type[TrackingTask, ThinStrongBeamSpec, ThinCrabCavitySpec, Beam, LinearOptics]),
+            Type[TrackingTask, GaussianStrongBeamSpec, ThinCrabCavitySpec, Beam, LinearOptics]),
         ReferenceExample(
             "examples/crab_cavity_noise.jl",
             "The weak-strong crab-crossing case with turn-by-turn RF phase and " *

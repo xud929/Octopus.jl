@@ -1091,7 +1091,7 @@ strong = input.strong_beam
 # are read through the same columns.
 kbb = kbb_scale * wb.charge * strong.charge * strong.n_particle * weak_r0 * wb.mass / wb.energy
 klum = strong.n_particle * wb.n_particle / n_macro
-thin_strong = ThinStrongBeamSpec{Float64}(;
+gsb = GaussianStrongBeamSpec{Float64}(;
     kbb = kbb,
     klum = klum,
     beta = strong.beta,
@@ -1101,9 +1101,6 @@ thin_strong = ThinStrongBeamSpec{Float64}(;
     angle = strong.angle,
     curvature = strong.curvature,
     virtual_drift = strong.virtual_drift,
-)
-gsb = GaussianStrongBeamSpec{Float64}(;
-    thin = thin_strong,
     ns = strong.z_slices,
     sigz = strong.sigma[3],
     slice_method = strong.slice_method,

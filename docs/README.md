@@ -195,6 +195,14 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
 Procedures, one per task class, routed from the Task Routing table in
 `AGENTS.md`. The root file keeps invariants and routing; these keep the steps.
 
+- [`strong_beam_element.md`](design/strong_beam_element.md) — one strong-beam
+  element: `GaussianStrongBeamSpec` takes the thin parameters and a
+  `LinearOptics` point directly (stage 1, the stored spec unchanged), consumes
+  a point's dispersion at the slice level through
+  `gaussian_strong_beam_covariance`, adds its three slice-offset sources by
+  order with the one overlap refused, and leaves retiring `ThinStrongBeamSpec`
+  and `mean` to stage 2. Measured basis: `ns = 1` reproduces the thin element
+  bit for bit.
 - [`linear_optics.md`](design/linear_optics.md) — the shared linear-optics
   value object (`LinearOptics` = `EdwardsTengTwiss` + `CanonicalDispersion`
   + phases): the measured spread of the quintuple (beta, alpha, zeta, eta, R)
@@ -236,6 +244,13 @@ Procedures, one per task class, routed from the Task Routing table in
   rounding-class branches, the D8 coefficient check, the docstrings, the mode
   metadata, the tests), the repo-wide grep, the verification, where the
   gate's numbers are, and the CI run of the owner-items batch before it.
+- [`strong_beam_element_2026_11_22.md`](history/strong_beam_element_2026_11_22.md)
+  — stage 1 of the strong-beam consolidation: `GaussianStrongBeamSpec`
+  self-contained (its own parameters or a `LinearOptics` point, `thin =` kept,
+  the stored spec unchanged), a dispersive point consumed at the slice level
+  through `gaussian_strong_beam_covariance` with the new `sigma_delta`, the
+  slice-offset rule S3 enforced, the call sites moved; verification, where the
+  gate's numbers are, and the CI run of the push before it.
 - [`guides/development_workflow.md`](guides/development_workflow.md) — the
   environment, the two load modes, the commands, the single-testset probe
   recipe, lanes and the gate, where output goes, committing, reporting.

@@ -10597,6 +10597,114 @@ end
     @test !isdefined(Octopus, :LinearTurnSignal)
 end
 
+@testset "Strong beam element stage 1 (docs/design/strong_beam_element.md S1-S5): the self-contained GaussianStrongBeamSpec" begin
+    kbb = 1.0e-8; β = (0.82, 0.075); α = (0.01, -0.02); σ = (110.0e-6, 12.0e-6)
+    ctr = (2.0e-6, -1.0e-6, 0.0); ang = (1.0e-5, 0.0, 0.0)
+    norm(s) = Dict(k => (k === :thin ? Octopus.params(v) : v) for (k, v) in Octopus.params(s))
+    thin = ThinStrongBeamSpec{Float64}(; kbb=kbb, klum=2.0, beta=β, alpha=α, sigma=σ, center=ctr, angle=ang, virtual_drift=:chromatic)
+    old = GaussianStrongBeamSpec{Float64}(; thin=thin, ns=5, sigz=7.0e-3, slice_method=:equal_area)
+    new = GaussianStrongBeamSpec{Float64}(; kbb=kbb, klum=2.0, beta=β, alpha=α, sigma=σ, center=ctr, angle=ang,
+                                          virtual_drift=:chromatic, ns=5, sigz=7.0e-3, slice_method=:equal_area)
+    # --- S1: one spec, bit for bit, in both spellings; the untyped form too ---------------------------------------
+    @test norm(new) == norm(old)
+    @test norm(GaussianStrongBeamSpec(; kbb=kbb, klum=2.0, beta=β, alpha=α, sigma=σ, center=ctr, angle=ang,
+                                      virtual_drift=:chromatic, ns=5, sigz=7.0e-3, slice_method=:equal_area)) ==
+          norm(GaussianStrongBeamSpec(; thin=ThinStrongBeamSpec(; kbb=kbb, klum=2.0, beta=β, alpha=α, sigma=σ, center=ctr, angle=ang,
+                                                                virtual_drift=:chromatic), ns=5, sigz=7.0e-3, slice_method=:equal_area))
+    cov4 = Octopus.params(thin)[:covariance]
+    @test norm(GaussianStrongBeamSpec{Float64}(; kbb=kbb, klum=2.0, covariance=cov4, center=ctr, angle=ang, virtual_drift=:chromatic,
+                                               ns=5, sigz=7.0e-3, slice_method=:equal_area)) == norm(old)                 # the 4 x 4 route
+    # --- S1: ns = 1 is the thin element, compiled and tracked --------------------------------------------------------
+    one_slice = compile_runtime(GaussianStrongBeamSpec{Float64}(; kbb=kbb, beta=β, alpha=α, sigma=σ, ns=1, sigz=7.0e-3))
+    thin_op = compile_runtime(ThinStrongBeamSpec{Float64}(; kbb=kbb, beta=β, alpha=α, sigma=σ))
+    @test transverse_covariance(one_slice.thin.moments) == transverse_covariance(thin_op.moments) && one_slice.thin.kbb == thin_op.kbb
+    @test one_slice.slice_center == [0.0] && one_slice.slice_weight == [1.0]
+    pol = CPUThreadsExecutionPolicy()
+    set_global_rng!(seed=20261122, method=:philox)
+    mk() = Beam(400, pol, Float64; beta=(0.8, 0.072, 90.0), sigma=(95e-6, 8.5e-6, 0.06), rng_id=2061,
+                charge=1.0, mc2=PMASS_EV, E0=275e9, r0=RE * ME0 / PMASS_EV, npart=1e11)
+    coords(b) = vcat(collect(b.rep.x), collect(b.rep.px), collect(b.rep.y), collect(b.rep.py), collect(b.rep.z), collect(b.rep.pz))
+    b1 = mk(); execute!(TrackingTask((ThinStrongBeamSpec{Float64}(; kbb=kbb, beta=β, alpha=α, sigma=σ),); policy=pol,
+                                     artifact=RunArtifact(tempname() * ".h5"; storage=:memory)), b1; turns=1)
+    set_global_rng!(seed=20261122, method=:philox)
+    b2 = mk(); execute!(TrackingTask((GaussianStrongBeamSpec{Float64}(; kbb=kbb, beta=β, alpha=α, sigma=σ, ns=1, sigz=7.0e-3),); policy=pol,
+                                     artifact=RunArtifact(tempname() * ".h5"; storage=:memory)), b2; turns=1)
+    @test coords(b1) == coords(b2)
+    # --- S1: exclusivity and the required pieces, refused by name ---------------------------------------------------
+    @test_throws ArgumentError GaussianStrongBeamSpec{Float64}(; thin=thin, kbb=kbb, ns=5, sigz=7.0e-3)
+    @test_throws ArgumentError GaussianStrongBeamSpec{Float64}(; thin=thin, covariance=cov4, ns=5, sigz=7.0e-3)        # a 4 x 4 beside thin
+    @test_throws ArgumentError GaussianStrongBeamSpec{Float64}(; ns=5, sigz=7.0e-3)                                    # neither thin nor kbb
+    @test_throws ArgumentError GaussianStrongBeamSpec{Float64}(; kbb=kbb, ns=5, sigz=7.0e-3)                           # no transverse optics
+    @test_throws ArgumentError GaussianStrongBeamSpec{Float64}(; kbb=kbb, beta=β, sigma=σ, covariance=zeros(5, 5), ns=5, sigz=7.0e-3)
+    # --- S1: a point without dispersion is the thin spec's optics route ----------------------------------------------
+    o = LinearOptics(; beta=(β..., 90.0), alpha=(α..., 0.0), R=(0.05, 0.01, -0.02, 0.03))
+    @test norm(GaussianStrongBeamSpec{Float64}(; kbb=kbb, optics=o, sigma=σ, ns=3, sigz=7.0e-3)) ==
+          norm(GaussianStrongBeamSpec{Float64}(; thin=ThinStrongBeamSpec{Float64}(; kbb=kbb, optics=o, sigma=σ), ns=3, sigz=7.0e-3))
+    @test_throws ArgumentError GaussianStrongBeamSpec{Float64}(; kbb=kbb, optics=o, beta=β, sigma=σ, ns=3, sigz=7.0e-3)             # flat beside the point
+    @test_throws ArgumentError GaussianStrongBeamSpec{Float64}(; kbb=kbb, optics=o, sigma=σ, sigma_delta=1e-3, ns=3, sigz=7.0e-3)   # sigma_delta unread
+    @test_throws ArgumentError GaussianStrongBeamSpec{Float64}(; kbb=kbb, optics=(β, α), sigma=σ, ns=3, sigz=7.0e-3)
+    # --- S2: a dispersive point builds the 6 x 6 through the analysis's own conversion --------------------------------
+    od = LinearOptics(; beta=(β..., 90.0), alpha=(α..., 0.0), R=(0.05, 0.01, -0.02, 0.03),
+                      zeta=(2.0e-3, 1.0e-4, 0.0, 0.0), eta=(0.3, 0.02, 0.0, 0.0))
+    @test_throws ArgumentError GaussianStrongBeamSpec{Float64}(; kbb=kbb, optics=od, sigma=σ, ns=3, sigz=7.0e-3)                    # needs sigma_delta
+    @test_throws ArgumentError GaussianStrongBeamSpec{Float64}(; kbb=kbb, optics=od, sigma=σ, sigma_delta=1e-3, ns=3)                 # needs sigz
+    @test_throws ArgumentError GaussianStrongBeamSpec{Float64}(; kbb=kbb, optics=od, sigma=σ, sigma_delta=-1e-3, ns=3, sigz=7.0e-3)
+    gd = GaussianStrongBeamSpec{Float64}(; kbb=kbb, optics=od, sigma=σ, sigma_delta=1e-3, ns=3, sigz=7.0e-3)
+    free = LinearOptics(; beta=(β..., 90.0), alpha=(α..., 0.0), R=(0.05, 0.01, -0.02, 0.03))
+    t4 = Octopus.params(ThinStrongBeamSpec{Float64}(; kbb=kbb, optics=free, sigma=σ))[:covariance]
+    expected6 = gaussian_strong_beam_covariance(t4, [7.0e-3^2 0.0; 0.0 1e-6];
+                                                crab_dispersion=od.dispersion.zeta, momentum_dispersion=od.dispersion.eta)
+    @test Octopus.params(gd)[:covariance] == expected6
+    @test Octopus.params(Octopus.params(gd)[:thin]) == Octopus.params(ThinStrongBeamSpec{Float64}(; kbb=kbb, optics=free, sigma=σ))
+    @test_throws ArgumentError GaussianStrongBeamSpec{Float64}(; kbb=kbb, optics=od, sigma=σ, sigma_delta=1e-3, covariance=expected6, ns=3, sigz=7.0e-3)
+    cg = compile_runtime(gd)
+    slope = Octopus._conditional_transverse_gaussian(expected6, Float64)[2]
+    @test slope[1] != 0 && slope[3] == 0
+    @test cg.slice_hoffset ≈ slope[1] .* cg.slice_center && cg.slice_pxoffset ≈ slope[2] .* cg.slice_center     # zeta tilts the slices
+    @test transverse_covariance(cg.thin.moments) ≈ Octopus._conditional_transverse_gaussian(expected6, Float64)[1]  # eta widens them
+    # --- S3: the bunch's tilt at compile; the user's offsets through offset_slices! / offset_slices ------------------
+    base = GaussianStrongBeamSpec{Float64}(; kbb=kbb, optics=od, sigma=σ, sigma_delta=1e-3, ns=3, sigz=7.0e-3)
+    c0 = compile_runtime(base)
+    @test c0.slice_hoffset ≈ slope[1] .* c0.slice_center                                               # the tilt alone
+    s1 = offset_slices(base, (hoffset=(1e-6, 2e-6, 3e-6),))                                             # a copy ...
+    @test Octopus.params(s1)[:slice_hoffset] == (1e-6, 2e-6, 3e-6) && Octopus.params(s1)[:slice_center] == Tuple(c0.slice_center)
+    @test Octopus.getparam(base, :slice_hoffset, nothing) === nothing && Octopus.getparam(base, :slice_center, nothing) === nothing   # ... the argument untouched
+    c1 = compile_runtime(s1)
+    @test c1.slice_hoffset ≈ [1e-6, 2e-6, 3e-6] .+ slope[1] .* c1.slice_center                         # the user's offsets plus the bunch's tilt
+    hv1 = Dict(:dim => :x, :coef => 2.0e-4, :frequency => 4.0e8, :harmonics => Dict(1 => 4 / 3, 2 => -1 / 3))
+    wave = Octopus._crab_offsets(Tuple(c0.slice_center), 2.0e-4, 4.0e8, hv1[:harmonics])
+    s2 = offset_slices(s1, hv1)                                                                         # :add accumulates, the waveform as a shape
+    @test Octopus.params(s2)[:slice_hoffset] == (1e-6, 2e-6, 3e-6) .+ wave
+    s3 = offset_slices(s2, z -> (2z, 0.0, -z, 1e-3); mode=:replace)                                    # :replace resets the user's part
+    @test Octopus.params(s3)[:slice_hoffset] == 2 .* Tuple(c0.slice_center) && Octopus.params(s3)[:slice_voffset] == .-Tuple(c0.slice_center)
+    @test all(==(1e-3), Octopus.params(s3)[:slice_pyoffset]) && all(iszero, Octopus.params(s3)[:slice_pxoffset])
+    @test compile_runtime(s3).slice_hoffset ≈ 2 .* c0.slice_center .+ slope[1] .* c0.slice_center      # the tilt is not the user's to replace
+    # in place: the same object, mutated; the constructor's legacy hvoffset is folded into the tuples
+    legacy = GaussianStrongBeamSpec{Float64}(; kbb=kbb, beta=β, alpha=α, sigma=σ, ns=3, sigz=7.0e-3, hvoffset=hv1)
+    before = collect(compile_runtime(legacy).slice_hoffset)
+    @test offset_slices!(legacy, (voffset=(1e-7, 1e-7, 1e-7),)) === legacy
+    @test Octopus.getparam(legacy, :hvoffset, nothing) === nothing && collect(compile_runtime(legacy).slice_hoffset) == before
+    @test Octopus.params(legacy)[:slice_voffset] == (1e-7, 1e-7, 1e-7)
+    @test_throws ArgumentError offset_slices(base, (hoffset=(1e-6, 2e-6),))                            # ns values per slice
+    @test_throws ArgumentError offset_slices(base, (xoffset=(1e-6, 2e-6, 3e-6),))                      # an unknown plane
+    @test_throws ArgumentError offset_slices(base, z -> 2z)                                            # the function returns (x, px, y, py)
+    @test_throws ArgumentError offset_slices(base, (hoffset=(1e-6, 2e-6, 3e-6),); mode=:overwrite)
+    @test_throws ArgumentError offset_slices(base, 1.0)
+    @test_throws ArgumentError offset_slices(base, Dict(:dim => :x, :coef => 1.0))                       # the waveform is validated by name
+    @test_throws MethodError offset_slices(thin, (hoffset=(1e-6,),))                                     # a gaussian_strong_beam spec only
+    # the waveform's linear part is coef (1 - sum rel_h) z: zero for weights summing to one, the user's tilt otherwise
+    h = 1.0e-4
+    @test abs(Octopus._crab_offsets((h,), 2.0e-4, 4.0e8, hv1[:harmonics])[1] / h) < 1e-6 * 2.0e-4
+    @test isapprox(Octopus._crab_offsets((h,), 2.0e-4, 4.0e8, Dict(1 => 0.9))[1] / h, 0.1 * 2.0e-4; rtol=1e-4)   # the cubic term is 1e-6 of the tilt here
+    # --- S5: mean beside center/angle of the recommended form ---------------------------------------------------------
+    @test_throws ArgumentError GaussianStrongBeamSpec{Float64}(; kbb=kbb, beta=β, sigma=σ, center=(1e-6, 0.0, 0.0),
+                                                               mean=(1e-6, 0.0, 0.0, 0.0, 0.0, 0.0), ns=3, sigz=7.0e-3)
+    @test GaussianStrongBeamSpec{Float64}(; kbb=kbb, beta=β, sigma=σ, mean=(1e-6, 0.0, 0.0, 0.0, 0.0, 0.0), covariance=expected6, ns=3) isa ElementSpec
+    # --- help names the recommended form and its new pieces ------------------------------------------------------------
+    io = IOBuffer(); element_help(io, :gaussian_strong_beam); txt = String(take!(io))
+    @test occursin("sigma_delta", txt) && occursin("thin=", txt) && occursin("ecommended", txt)
+end
+
 @testset "The strong beam's momentum dispersion is canonical: the builder forms the physical slope by (D7) and agrees with the Twiss analysis" begin
     # Owner decision 2026-10-18 (the todo row "Strong-beam `momentum_dispersion`
     # is a slope, not canonical η", retired to the archive): one convention

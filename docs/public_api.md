@@ -73,7 +73,7 @@ mode phases `mu` in a named `frame`. `Beam(; optics=o)` flattens it into
 `beta`, `alpha`, the coupling coefficients, `mode`, `eta` and `zeta`; giving any
 of those beside `optics` is refused by name. The same object feeds
 `Linear6DSpec(o1, o2)`, `ChromaticityKickSpec(; optics=)`,
-`LumpedRadSpec(; optics=)` and `ThinStrongBeamSpec(; optics=)` (see "Construct
+`LumpedRadSpec(; optics=)` and `GaussianStrongBeamSpec(; optics=)` (see "Construct
 Elements"), and `linear_optics(result)` builds one from a Twiss analysis (see
 "Analyses").
 
@@ -111,7 +111,10 @@ Linear6DSpec(ip, sext)                                   # transfer, dmu = sext.
 Linear6DSpec(ip, advance_phase(ip, 2pi .* (0.228, 0.210, -0.01)))   # one-turn map
 ChromaticityKickSpec(; xi=(2.0, 2.0), optics=ip)
 LumpedRadSpec(; damping_turns=(4e3, 4e3, 2e3), optics=ip, sigma=(95e-6, 8.5e-6, 6e-2))
-ThinStrongBeamSpec(; kbb=kbb, optics=LinearOptics(; beta=(0.45, 0.056, 1.0)), sigma=(95e-6, 8.5e-6))
+GaussianStrongBeamSpec(; kbb=kbb, optics=LinearOptics(; beta=(0.45, 0.056, 1.0)), sigma=(95e-6, 8.5e-6),
+                       ns=7, sigz=0.7e-2)          # the strong beam as one element; ns=1 is the 4D kick
+offset_slices!(gsb, Dict(:dim => :x, :coef => 2e-4, :frequency => 394e6))   # the user's slice offsets, in place (:add)
+gsb2 = offset_slices(gsb, z -> (0.0, 0.0, 1e-5 * z, 0.0); mode=:replace)   # on a copy; the bunch's own tilt (a point's zeta) stays
 XYCouplingSpec(ip.twiss); MomentumDispersionSpec(ip.dispersion); CrabDispersionSpec(ip.dispersion)
 ```
 

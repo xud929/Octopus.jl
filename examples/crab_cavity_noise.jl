@@ -585,10 +585,12 @@ chrom = ChromaticityKickSpec{Float64}(; xi = opt.chromaticity, optics = ip_point
 strong = input.strong_beam
 kbb = wb.charge * strong.charge * strong.n_particle * weak_r0 * wb.mass / wb.energy
 klum = strong.n_particle * wb.n_particle / n_macro
-# The strong beam's optics is transverse (its longitudinal plane is the
-# slicing's), so it keeps the flat beta and alpha pairs; a 6D LinearOptics
-# point would carry an inert third plane here.
-thin_strong = ThinStrongBeamSpec{Float64}(;
+# The strong beam as one element (design docs/design/strong_beam_element.md):
+# its own parameters beside the slicing; ns = 1 would be the 4D single kick.
+# Its optics stay the transverse beta and alpha pairs: this strong beam
+# carries no dispersion, and a 6D LinearOptics point would add an inert
+# third plane here.
+gsb = GaussianStrongBeamSpec{Float64}(;
     kbb = kbb,
     klum = klum,
     beta = strong.beta,
@@ -598,9 +600,6 @@ thin_strong = ThinStrongBeamSpec{Float64}(;
     angle = strong.angle,
     curvature = strong.curvature,
     virtual_drift = strong.virtual_drift,
-)
-gsb = GaussianStrongBeamSpec{Float64}(;
-    thin = thin_strong,
     ns = strong.z_slices,
     sigz = strong.sigma[3],
     slice_method = strong.slice_method,

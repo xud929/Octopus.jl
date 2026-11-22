@@ -152,12 +152,11 @@ chrom = ChromaticityKickSpec{Float64}(; xi = opt.chromaticity,
     zeta = zero4, eta = zero4, R = zero4)
 kbb = wb.charge * strong.charge * strong.n_particle * weak_r0 * wb.mass / wb.energy
 klum = strong.n_particle * wb.n_particle / N_MACRO
-thin_strong = ThinStrongBeamSpec{Float64}(; kbb = kbb, klum = klum,
+gsb = GaussianStrongBeamSpec{Float64}(; kbb = kbb, klum = klum,
     beta = strong.beta, alpha = strong.alpha,
     sigma = (strong.sigma[1], strong.sigma[2]), center = strong.center,
     angle = strong.angle, curvature = strong.curvature,
-    virtual_drift = strong.virtual_drift)
-gsb = GaussianStrongBeamSpec{Float64}(; thin = thin_strong, ns = strong.z_slices,
+    virtual_drift = strong.virtual_drift, ns = strong.z_slices,
     sigz = strong.sigma[3], slice_method = strong.slice_method,
     hvoffset = strong.hvoffset)
 radiation = LumpedRadSpec{Float64}(; damping_turns = rad.damping_turns,
