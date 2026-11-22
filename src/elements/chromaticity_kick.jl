@@ -16,10 +16,10 @@ element uses only their horizontal and vertical components. Legacy
 two-component tuples remain accepted. `R = (r1, r2, r3, r4)` is the Edwards-Teng
 coupling matrix of [`XYCouplingSpec`](@ref), applied in the form stored as
 `form` (1, `XY_MODEA`, from the flat keywords), the same `R` as `Beam`'s
-coupling and NOT the block `R1`/`R2` of `Linear6DSpec`. Alternatively
-`optics = o` takes `beta`, `alpha`, `zeta`, `eta`, `R` and the form from a
-[`LinearOptics`](@ref) point (design `docs/design/linear_optics.md`, D11); the
-flat keywords are then refused beside it, and a form-2 point stores `form = 2`
+coupling and NOT the block `R1`/`R2` of `Linear6DSpec`. The recommended
+spelling, `optics = o`, takes `beta`, `alpha`, `zeta`, `eta`, `R` and the form
+from a [`LinearOptics`](@ref) point (design `docs/design/linear_optics.md`, D11,
+D15); the flat keywords are then refused beside it, and a form-2 point stores `form = 2`
 and couples in `XY_MODEB`. `form = 2` beside the flat keywords is refused by
 name, since form 2 reaches the element through the point (or through the raw
 `ElementSpec{:chromaticity_kick}(; form = 2)`). The stored spec of a form-1
@@ -276,5 +276,5 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = ChromaticityKickSpec(xi=(1.0, 1.0), beta=(1.0, 1.0))
-    construction_help = "Friendly constructor: ChromaticityKickSpec{T}(; xi, beta, alpha=(0,0,0), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), form=1, tracking_method=Symplectic6DMap(), kwargs...), or ChromaticityKickSpec{T}(; xi, optics=o::LinearOptics, kwargs...) taking beta, alpha, zeta, eta and R from the point (its form with them; the flat optics keywords are refused beside optics). beta and alpha accept two or three values; only the transverse pair is used. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ChromaticityKickSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line. Form 2 reaches the kick through a LinearOptics point in form 2 (optics=LinearOptics(; ..., form=2)); form=2 beside the flat keywords is refused by name, and the raw ElementSpec{:chromaticity_kick}(; form=2) spells it directly."
+    construction_help = "Friendly constructor, recommended form (design D15): ChromaticityKickSpec{T}(; xi, optics=o::LinearOptics, kwargs...) taking beta, alpha, zeta, eta, R and the form from the point (the flat optics keywords are refused beside optics). Flat form, the stored representation: ChromaticityKickSpec{T}(; xi, beta, alpha=(0,0,0), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), form=1, tracking_method=Symplectic6DMap(), kwargs...). beta and alpha accept two or three values; only the transverse pair is used. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ChromaticityKickSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line. Form 2 reaches the kick through a LinearOptics point in form 2 (optics=LinearOptics(; ..., form=2)); form=2 beside the flat keywords is refused by name, and the raw ElementSpec{:chromaticity_kick}(; form=2) spells it directly."
 end

@@ -45,7 +45,10 @@ and their product determines the macroparticle count. See the
 [initialization design](design/beam_initialization.md) for the decisions behind
 the API; `?Beam` owns the endpoint and inactive-option rules.
 
-A beam matched to a lattice point takes the point's optics as one object:
+A beam matched to a lattice point takes the point's optics as one object, the
+recommended spelling (design D15; the flat `beta`, `alpha`, `zeta`, `eta`, `R`
+keywords remain as the stored representation and for scripts written before
+the point):
 
 ```julia
 ?LinearOptics
@@ -98,7 +101,8 @@ supported_tracking_methods(ThinCrabCavitySpec)
 ```
 
 The linear-optics consumers take a `LinearOptics` point in place of their
-flat `beta, alpha, zeta, eta, R` keywords (one form or the other, never both):
+flat `beta, alpha, zeta, eta, R` keywords, the recommended spelling (design
+D15); one form or the other, never both:
 
 ```julia
 ip   = LinearOptics(; beta=(0.8, 0.072, 90.9), mu=(0.0, 0.0, 0.0), frame=:IR6)

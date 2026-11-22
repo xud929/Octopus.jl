@@ -667,9 +667,10 @@ form 1, `XY_MODEB` = form 2) and acts only when the coefficients are nonzero.
 [`MomentumDispersion`](@ref), `zeta=(ζ1..ζ4)` the canonical crab dispersion of
 [`CrabDispersion`](@ref); each map is applied only when nonzero.
 
-`optics = o` takes `beta`, `alpha`, the coupling coefficients, `mode`, `eta`
-and `zeta` from a [`LinearOptics`](@ref) point at once (design
-`docs/design/linear_optics.md`), so the beam is matched to that point; `sigma`
+`optics = o`, the recommended spelling (design `docs/design/linear_optics.md`,
+D15), takes `beta`, `alpha`, the coupling coefficients, `mode`, `eta` and
+`zeta` from a [`LinearOptics`](@ref) point at once, so the beam is matched to
+that point and cannot disagree with the lattice built from the same point; `sigma`
 or `emit` is still given here. Any of those keywords given beside `optics`,
 whatever its value, is refused by name, and the beam equals the one the
 flat keywords build, bit for bit under one seed. The bounded distributions

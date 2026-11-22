@@ -184,6 +184,23 @@ per call.
   of `src/`, `test/`, `docs/`, `examples/`, `validation/` and `profiling/`
   found every mention listed in the record.
 
+### Decision of the fourth batch (2026-11-21): the recommendation
+
+- **D15 The point is the recommended spelling.** Every consumer's docstring
+  and construction help, the `LinearOptics` docstring and
+  `docs/public_api.md` say so: new scripts, examples and documentation give
+  linear optics as `LinearOptics` points (`Beam(; optics)`,
+  `Linear6DSpec(o1, o2)`, `ChromaticityKickSpec(; optics)`,
+  `LumpedRadSpec(; optics)`, `ThinStrongBeamSpec(; optics)`,
+  `XYCouplingSpec(o.twiss)`), and a point built by `linear_optics(result)`
+  feeds them directly. The flat keywords remain as the stored representation
+  (what `params(spec)` holds and the raw `ElementSpec{kind}(; ...)` form
+  accepts) and as the spelling of scripts written before the point; nothing
+  is deprecated or refused. Measured reason: the flat example scripts shipped
+  with the maps' dispersion and coupling at zero whatever the beam input said
+  (the examples batch), and one object makes the beam and the lattice one
+  description. Owner request, 2026-11-21.
+
 ## 3. Staging, tests, verification
 
 One batch, one record. Stage 1: D1, D2, `Linear6DSpec(o1, o2)`, `Beam(; optics)`,

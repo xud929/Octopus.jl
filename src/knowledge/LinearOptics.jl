@@ -184,7 +184,11 @@ two parts fix the point's normalizer N = M_zeta M_eta V_form(R) B(beta, alpha)
 completely (the Twiss of the three decoupled modes, the coupling between the
 two transverse modes, the coupling between them and the longitudinal mode),
 so one object feeds every consumer of these quantities through its `optics`
-keyword, each flattening it into its own parameters: `Linear6DSpec(o1, o2)`
+keyword, the recommended spelling of linear optics in Octopus (design D15: new scripts,
+examples and documentation give the optics as a point; the flat keywords
+remain as the stored representation, what `params(spec)` holds and the raw
+`ElementSpec{kind}(; ...)` form accepts, and as the spelling of scripts written
+before the point), each consumer flattening it into its own parameters: `Linear6DSpec(o1, o2)`
 (a transfer between two points), `Beam(N, policy; optics = o, sigma | emit)`
 (a matched beam), `ChromaticityKickSpec(; xi, optics = o)`,
 `LumpedRadSpec(; damping_turns, optics = o)`, `ThinStrongBeamSpec(; kbb,

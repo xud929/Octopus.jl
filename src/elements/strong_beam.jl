@@ -123,6 +123,7 @@ end
     ThinStrongBeamSpec{T=Float64}(; kbb, klum=1, beta=nothing,
                                   alpha=(0,0), sigma=nothing,
                                   covariance=nothing, coupling=nothing,
+                                  optics=nothing,
                                   center=(0,0,0), angle=(0,0,0),
                                   curvature=(0,0,0), virtual_drift=:hirata,
                                   tracking_method=WeakStrongBeamBeamMap(),
@@ -133,6 +134,16 @@ interaction. Supply either the legacy uncoupled `(beta, alpha, sigma)` data or
 a symmetric `4 x 4` covariance in `(x, px, y, py)` order. `coupling` may be an
 `XYCouplingSpec`, an `XYCoupling`, or a `4 x 4` linear matrix; it transforms
 the uncoupled covariance before compilation.
+
+The recommended spelling of the optics is `optics = o`, a
+[`LinearOptics`](@ref) point (design `docs/design/linear_optics.md`, D3-D4,
+D15): its first two planes of `beta` and `alpha` and its Edwards-Teng `R` in
+the point's form become the stored `beta`, `alpha` and `coupling`
+(`XYCouplingSpec(o.twiss)`, only when `R` is nonzero, so the stored covariance
+equals the flat form's exactly); `sigma` is still given here. `beta`, `alpha`,
+`coupling` or `covariance` beside `optics` is refused by name, and a point
+carrying dispersion is refused rather than dropped, since the strong beam's
+covariance is transverse (the design note's open item 3).
 
 `virtual_drift` selects **which Hamiltonian** the drift to and from the
 collision point integrates. It is a physics-model choice, not a numerical
@@ -1986,7 +1997,7 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = ThinStrongBeamSpec(kbb=1e-4, beta=(1.0, 1.0), sigma=(1e-3, 1e-3))
-    construction_help = "Friendly constructor: ThinStrongBeamSpec{T}(; kbb, klum=1, beta=nothing, alpha=(0,0), sigma=nothing, covariance=nothing, coupling=nothing, optics=nothing, center=(0,0,0), angle=(0,0,0), curvature=(0,0,0), virtual_drift=:hirata, tracking_method=WeakStrongBeamBeamMap(), kwargs...). Supply beta/sigma or covariance; coupling transforms the uncoupled covariance; optics=o::LinearOptics supplies beta, alpha and coupling (its transverse projection; a point carrying dispersion is refused, and beta/alpha/coupling/covariance are refused beside optics) with sigma given separately. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinStrongBeamSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "Friendly constructor: ThinStrongBeamSpec{T}(; kbb, klum=1, beta=nothing, alpha=(0,0), sigma=nothing, covariance=nothing, coupling=nothing, optics=nothing, center=(0,0,0), angle=(0,0,0), curvature=(0,0,0), virtual_drift=:hirata, tracking_method=WeakStrongBeamBeamMap(), kwargs...). Recommended form (design D15): optics=o::LinearOptics supplies beta, alpha and coupling (its transverse projection; a point carrying dispersion is refused, and beta/alpha/coupling/covariance are refused beside optics) with sigma given separately. Otherwise supply beta/sigma or covariance; coupling transforms the uncoupled covariance. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinStrongBeamSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 @element_spec begin

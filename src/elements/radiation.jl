@@ -22,9 +22,9 @@ canonical dispersions removed before the map and restored after it, and
 `R = (r1, r2, r3, r4)` the Edwards-Teng coupling matrix of [`XYCouplingSpec`](@ref)
 applied in the form stored as `form` (1, `XY_MODEA`, from the flat keywords),
 the same `R` as `Beam`'s coupling and NOT the block `R1`/`R2` of
-`Linear6DSpec`. Alternatively `optics = o` takes the five and the form from a
-[`LinearOptics`](@ref) point (design `docs/design/linear_optics.md`, D11); the
-flat keywords are then refused beside it, and a form-2 point stores `form = 2`
+`Linear6DSpec`. The recommended spelling, `optics = o`, takes the five and the form from a
+[`LinearOptics`](@ref) point (design `docs/design/linear_optics.md`, D11, D15);
+the flat keywords are then refused beside it, and a form-2 point stores `form = 2`
 and couples in `XY_MODEB`. `form = 2` beside the flat keywords is refused by
 name, since form 2 reaches the element through the point (or through the raw
 `ElementSpec{:lumped_radiation}(; form = 2)`). `sigma` stays a separate
@@ -478,7 +478,7 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = LumpedRadSpec(damping_turns=(1000.0, 1000.0, 500.0), rng_id=1)
-    construction_help = "Friendly constructor: LumpedRadSpec{T}(; damping_turns, beta=(1,1,1), alpha=(0,0,0), sigma=(-1,-1,-1), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), form=1, is_damping=true, is_excitation=true, tracking_method=Radiation6DMap(), rng_id=0, kwargs...), or LumpedRadSpec{T}(; damping_turns, optics=o::LinearOptics, sigma=(-1,-1,-1), kwargs...) taking beta, alpha, zeta, eta and R from the point (its form with them; the flat optics keywords are refused beside optics). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form LumpedRadSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line. Form 2 reaches the element through a LinearOptics point in form 2 (optics=LinearOptics(; ..., form=2)); form=2 beside the flat keywords is refused by name, and the raw ElementSpec{:lumped_radiation}(; form=2) spells it directly. Without {T} the type promotes from the named parameters over a Float64 floor."
+    construction_help = "Friendly constructor, recommended form (design D15): LumpedRadSpec{T}(; damping_turns, optics=o::LinearOptics, sigma=(-1,-1,-1), kwargs...) taking beta, alpha, zeta, eta, R and the form from the point (the flat optics keywords are refused beside optics). Flat form, the stored representation: LumpedRadSpec{T}(; damping_turns, beta=(1,1,1), alpha=(0,0,0), sigma=(-1,-1,-1), zeta=(0,0,0,0), eta=(0,0,0,0), R=(0,0,0,0), form=1, is_damping=true, is_excitation=true, tracking_method=Radiation6DMap(), rng_id=0, kwargs...). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form LumpedRadSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line. Form 2 reaches the element through a LinearOptics point in form 2 (optics=LinearOptics(; ..., form=2)); form=2 beside the flat keywords is refused by name, and the raw ElementSpec{:lumped_radiation}(; form=2) spells it directly. Without {T} the type promotes from the named parameters over a Float64 floor."
 end
 
 default_method(::Type{ElementSpec{:lumped_radiation}}) = Radiation6DMap()
