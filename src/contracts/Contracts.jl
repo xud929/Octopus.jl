@@ -193,8 +193,8 @@ end
     StrongStrongPICMultiProcessConsistencyContract(; n_particles=1024, turns=2,
         grid=(32, 32), nslices=3, deposit_method=:CIC, green_type=:integrated,
         green_cache=:slice_pair,
-        ranks=(1, 2), threads_per_rank=1, mpiexec=nothing, timeout=1800,
-        atol=1e-18, rtol=1e-11, luminosity_rtol=1e-12, cuda=true,
+        ranks=(1, 2), threads_per_rank=1, shard=:chunk_aligned, mpiexec=nothing,
+        timeout=1800, atol=1e-18, rtol=1e-11, luminosity_rtol=1e-12, cuda=true,
         seed=123456789)
 
 The three-way consistency statement for the PIC collide (multi-process step
@@ -220,6 +220,24 @@ carry the triangle bound). The claim per leg:
   criterion, the global one the number to read; both are in the metrics per
   rank count;
 - **CPU against CUDA** at that contract's own tolerance.
+
+`shard` is the `MultiProcessExecutionPolicy(; shard)` rule the children run
+under, `:chunk_aligned` (the default) or `:balanced`; any other value fails the
+contract by name before a process is launched. Under `:chunk_aligned` a rank
+count in `ranks` that does not divide the `_REDUCTION_CHUNKS` (64) reduction
+chunks is refused the same way, as the policy itself would refuse it; under
+`:balanced` any positive rank count is accepted, and where the count does not
+divide the chunks the ranks hold equal contiguous particle ranges and the
+cross-rank folds sum the ranks' partials in rank order. The claim is the same
+under both rules, because it was never cross-rank bit identity for more than
+one rank: one rank is the CPU policy bit for bit under either rule (64 % 1 ==
+0, so the aligned rule is in force), and more ranks agree at the stated
+tolerances, which already cover the rank-ordered fold of a balanced shard (the
+CPU/CUDA parity class; 2026-11-23). Each child records the rule its
+communicator ran under and the rule in force (`MultiProcessContext.shard`,
+`.chunk_aligned`): a leg whose recorded rule is not the requested one fails,
+and the metrics carry the request as `shard` and the rule in force per rank
+count as `mpi_<P>_chunk_aligned`.
 
 The MPI legs run in launched subprocesses, because a rank count is a property
 of a launched process: `mpiexec` is the launcher command (`MPICH_jll.mpiexec()`
@@ -249,6 +267,7 @@ Base.@kwdef struct StrongStrongPICMultiProcessConsistencyContract <: AbstractBac
     green_cache::Symbol = :slice_pair
     ranks::Tuple{Vararg{Int}} = (1, 2)
     threads_per_rank::Int = 1
+    shard::Symbol = :chunk_aligned
     mpiexec::Union{Nothing,Cmd,String} = nothing
     timeout::Float64 = 1800.0
     atol::Float64 = 1e-18
@@ -2126,10 +2145,39 @@ end
 """
 The fields of `StrongStrongPICMultiProcessConsistencyContract` that describe the
 LAUNCH and the MPI legs' own tolerances, kept by that contract and forwarded
-to no leg. Every other field is forwarded (`_mpi_pic_contract_forwarded`).
+to no leg. Every other field is forwarded (`_mpi_pic_contract_forwarded`). The
+launch fields the child's policy is built from still travel to its command
+line, by `_mpi_pic_contract_child_policy_fields`.
 """
-const _MPI_PIC_CONTRACT_OWN_FIELDS = (:ranks, :threads_per_rank, :mpiexec, :timeout,
+const _MPI_PIC_CONTRACT_OWN_FIELDS = (:ranks, :threads_per_rank, :shard, :mpiexec, :timeout,
                                       :atol, :rtol, :luminosity_rtol, :cuda)
+
+"""
+The launch fields the child's `MultiProcessExecutionPolicy` is built from, declared
+once; `_mpi_pic_contract_child_policy_fields` checks and returns them.
+"""
+const _MPI_PIC_CONTRACT_CHILD_POLICY_FIELDS = (:threads_per_rank, :shard)
+
+"""
+    _mpi_pic_contract_child_policy_fields() -> Tuple{Vararg{Symbol}}
+
+The launch fields the child's `MultiProcessExecutionPolicy` is built from --
+`threads_per_rank` and `shard` -- kept by the contract (they are in
+`_MPI_PIC_CONTRACT_OWN_FIELDS`: the CUDA leg has no rank shard) yet carried to
+the child's command line and parsed back by the contract's own field type, in
+the same loop as the forwarded fields: a policy option the child did not
+receive fails by name, never falls back to the policy's default (F-53's rule,
+applied to the launch when `shard` joined on 2026-11-23). A name here the
+contract does not keep as a launch field is refused, by name.
+"""
+function _mpi_pic_contract_child_policy_fields()
+    foreign = [f for f in _MPI_PIC_CONTRACT_CHILD_POLICY_FIELDS if !(f in _MPI_PIC_CONTRACT_OWN_FIELDS)]
+    isempty(foreign) || throw(ArgumentError(
+        "the child's policy is built from $(foreign), which " *
+        "StrongStrongPICMultiProcessConsistencyContract does not keep as a launch field: " *
+        "list it in _MPI_PIC_CONTRACT_OWN_FIELDS"))
+    return _MPI_PIC_CONTRACT_CHILD_POLICY_FIELDS
+end
 
 """
     _mpi_pic_contract_forwarded() -> Tuple{Vararg{Symbol}}
@@ -2181,13 +2229,14 @@ _mpi_pic_contract_parse(::Type{T}, word) where {T} = throw(ArgumentError(
 """
 The keyword arguments the child rebuilds the contract from, as `key=value`
 command-line words (the child parses them back with `_mpi_pic_contract_spec`):
-every forwarded field, then the launch's `threads_per_rank`, `ranks` and `out`.
+every forwarded field, then the launch fields the child's policy is built from
+(`_mpi_pic_contract_child_policy_fields`), then `ranks` and `out`.
 """
 function _mpi_pic_contract_args(c::StrongStrongPICMultiProcessConsistencyContract, ranks::Int,
                                 out::AbstractString)
     words = String[string(f, "=", _mpi_pic_contract_word(getfield(c, f)))
-                   for f in _mpi_pic_contract_forwarded()]
-    return vcat(words, String["threads_per_rank=$(c.threads_per_rank)", "ranks=$(ranks)", "out=$(out)"])
+                   for f in (_mpi_pic_contract_forwarded()..., _mpi_pic_contract_child_policy_fields()...)]
+    return vcat(words, String["ranks=$(ranks)", "out=$(out)"])
 end
 
 function _mpi_pic_contract_spec(args)
@@ -2197,13 +2246,15 @@ function _mpi_pic_contract_spec(args)
         kv[String(k)] = String(v)
     end
     forwarded = _mpi_pic_contract_forwarded()
-    absent = [f for f in forwarded if !haskey(kv, string(f))]
+    launch = _mpi_pic_contract_child_policy_fields()
+    absent = [f for f in (forwarded..., launch...) if !haskey(kv, string(f))]
     isempty(absent) || throw(ArgumentError(
-        "the child's command line carries no value for the forwarded field(s) $(absent)"))
+        "the child's command line carries no value for the field(s) $(absent)"))
     values = (f => _mpi_pic_contract_parse(fieldtype(StrongStrongPICBackendConsistencyContract, f), kv[string(f)])
               for f in forwarded)
-    return (; values..., threads_per_rank=parse(Int, kv["threads_per_rank"]),
-            ranks=parse(Int, kv["ranks"]), out=kv["out"])
+    policy = (f => _mpi_pic_contract_parse(fieldtype(StrongStrongPICMultiProcessConsistencyContract, f), kv[string(f)])
+              for f in launch)
+    return (; values..., policy..., ranks=parse(Int, kv["ranks"]), out=kv["out"])
 end
 
 """
@@ -2236,7 +2287,9 @@ function _mpi_pic_contract_read(out::AbstractString)
         toRep(m) = Phase6DRep(m[:, 1], m[:, 2], m[:, 3], m[:, 4], m[:, 5], m[:, 6])
         (rep1=toRep(rows("beam1")), rep2=toRep(rows("beam2")),
          turns=Vector{Int}(read(f["turns"])), values=Vector{Float64}(read(f["values"])),
-         nranks=Int(read(f["nranks"])))
+         nranks=Int(read(f["nranks"])),
+         # the shard rule the child's communicator recorded: requested, and in force
+         shard=Symbol(read(f["shard"])), chunk_aligned=read(f["chunk_aligned"]) != 0)
     end
 end
 
@@ -2245,13 +2298,25 @@ description(::Type{StrongStrongPICMultiProcessConsistencyContract}) =
 
 function validate(contract::StrongStrongPICMultiProcessConsistencyContract; kwargs...)
     _reject_unknown_validate_kwargs(contract, kwargs)
-    metrics = Dict{Symbol,Any}(:ranks => collect(contract.ranks),
+    metrics = Dict{Symbol,Any}(:ranks => collect(contract.ranks), :shard => contract.shard,
                                :mpi_ranks_checked => 0, :cuda_status => :not_run)
-    bad = [p for p in contract.ranks if p < 1 || _REDUCTION_CHUNKS % p != 0]
+    # The launch checks, before any process is launched: the shard rule is one
+    # of the policy's, every rank count is positive, and under :chunk_aligned
+    # every rank count divides the reduction chunks -- the policy's own refusal
+    # (`_mp_shard_range`), which :balanced lifts (2026-11-23).
+    contract.shard in _MULTI_PROCESS_SHARD_RULES || return ContractResult(false,
+        "shard must be one of $(_MULTI_PROCESS_SHARD_RULES); got $(repr(contract.shard))";
+        metrics=metrics)
+    nonpositive = [p for p in contract.ranks if p < 1]
+    isempty(nonpositive) || return ContractResult(false,
+        "rank counts must be positive; got $(nonpositive)"; metrics=metrics)
+    bad = contract.shard === :chunk_aligned ?
+        [p for p in contract.ranks if _REDUCTION_CHUNKS % p != 0] : Int[]
     isempty(bad) || return ContractResult(false,
         "rank counts $(bad) cannot divide the $(_REDUCTION_CHUNKS) reduction chunks; " *
-        "the shard rule accepts " *
-        join((p for p in 1:_REDUCTION_CHUNKS if _REDUCTION_CHUNKS % p == 0), ", ");
+        "the chunk-aligned shard rule accepts " *
+        join((p for p in 1:_REDUCTION_CHUNKS if _REDUCTION_CHUNKS % p == 0), ", ") *
+        "; shard = :balanced accepts any rank count (more ranks then agree at the stated tolerances)";
         metrics=metrics)
     if contract.mpiexec === nothing
         metrics[:mpi_status] = :skipped
@@ -2298,6 +2363,14 @@ function validate(contract::StrongStrongPICMultiProcessConsistencyContract; kwar
             metrics[:mpi_ranks_checked] += 1
             r.nranks == P || push!(failures,
                 "the $(P)-rank child reported $(r.nranks) rank(s): the launcher did not divide it")
+            # The shard rule the child's communicator recorded, against the
+            # request (a configuration set is not a configuration the code read).
+            metrics[Symbol("mpi_$(P)_chunk_aligned")] = r.chunk_aligned
+            r.shard === contract.shard || push!(failures,
+                "the $(P)-rank child ran under shard = $(repr(r.shard)), not the requested $(repr(contract.shard))")
+            r.chunk_aligned == _mp_chunk_aligned(P, contract.shard) || push!(failures,
+                "the $(P)-rank child recorded chunk_aligned = $(r.chunk_aligned), but " *
+                "$(repr(contract.shard)) at $(P) ranks is $(_mp_chunk_aligned(P, contract.shard) ? "" : "not ")chunk-aligned")
             length(r.values) == length(cpu.values) || push!(failures,
                 "the $(P)-rank luminosity series has $(length(r.values)) turns, the CPU one $(length(cpu.values))")
             m1 = _contract_coordinate_metrics(cpu.rep1, r.rep1, contract.atol, contract.rtol)
@@ -2357,7 +2430,8 @@ function validate(contract::StrongStrongPICMultiProcessConsistencyContract; kwar
         "strong-strong PIC CPU/MPI/CUDA consistency: " * join(failures, "; "); metrics=metrics)
     mpi_note = "one rank under MPI is the CPU policy bit for bit; " *
         "$(join(string.(filter(>(1), contract.ranks)), ", ")) ranks agree with it to " *
-        "$(round(worst_rel; sigdigits=3)) abs / $(round(worst_lum_rel; sigdigits=3)) rel luminosity"
+        "$(round(worst_rel; sigdigits=3)) abs / $(round(worst_lum_rel; sigdigits=3)) rel luminosity " *
+        "(shard = $(repr(contract.shard)))"
     # A requested leg that did not run is not a pass: the MPI legs' outcome is
     # reported, and the status says the three-way claim was NOT established.
     cuda_skip === nothing || return ContractResult(:skipped,
