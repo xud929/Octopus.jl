@@ -30087,6 +30087,69 @@ end
                    string(Base.Docs.doc(Base.Docs.Binding(Octopus, :_mp_chunk_fold))))
 end
 
+@testset "The reduction chunk grid follows the alignment in force" begin
+    # The consumers that fold a per-particle quantity through `_mp_chunk_fold`
+    # (`_track_thin_strong_beam!`, `_track_gaussian_strong_beam!`,
+    # `_track_fused_luminous!`) cut their chunks with `_mp_chunk_local_bounds`:
+    # under an aligned shard the GLOBAL partition mapped through the offset,
+    # as always; under a balanced shard that is not aligned the same fixed
+    # partition of the LOCAL range. The global mapping there indexed outside
+    # the shard -- the three-rank balanced launcher child died in
+    # `_track_gaussian_strong_beam!` with `BoundsError ... 85-element Vector
+    # at index [-84]` (2026-11-23, measured before this fix); the launcher
+    # testset now runs that child, and these are the rule's own properties,
+    # on grids built by hand so no context plumbing is in the way.
+    chunks = Octopus._REDUCTION_CHUNKS
+    tiles(bounds, n) = first(first(bounds)) == 1 && last(last(bounds)) == n &&
+        all(bounds[c + 1][1] == bounds[c][2] + 1 for c in 1:(length(bounds) - 1)) &&
+        sum(hi - lo + 1 for (lo, hi) in bounds) == n
+    # Rank 1 of an aligned four-rank run of 1000: global chunks 17..32, each
+    # range the global chunk minus the offset, tiling the shard exactly once.
+    per_rank = div(chunks, 4)
+    lo_global = Octopus._chunk_bounds(1000, chunks, per_rank + 1)[1]
+    hi_global = Octopus._chunk_bounds(1000, chunks, 2 * per_rank)[2]
+    aligned = Octopus._MPChunkGrid(per_rank + 1, per_rank, lo_global - 1, 1000,
+                                   hi_global - lo_global + 1, true)
+    @test (aligned.first_chunk, aligned.local_chunks) == (17, 16)
+    @test aligned.local_n == length(Octopus._mp_shard_range(1000, 4, 1))   # the shard the rule gives rank 1
+    aligned_bounds = [Octopus._mp_chunk_local_bounds(aligned, c) for c in 1:per_rank]
+    @test aligned_bounds == [Octopus._chunk_bounds(1000, chunks, per_rank + c) .- (lo_global - 1)
+                             for c in 1:per_rank]
+    @test tiles(aligned_bounds, aligned.local_n)
+    # Rank 1 of a balanced three-rank run that is not aligned (3003 particles,
+    # 1001 each): all 64 chunks, of the local range, tiling 1:1001 exactly once.
+    balanced = Octopus._MPChunkGrid(1, chunks, 1001, 3003, 1001, false)
+    balanced_bounds = [Octopus._mp_chunk_local_bounds(balanced, c) for c in 1:chunks]
+    @test balanced_bounds == [Octopus._chunk_bounds(1001, chunks, c) for c in 1:chunks]
+    @test tiles(balanced_bounds, 1001)
+    @test all(1 <= lo && hi <= 1001 for (lo, hi) in balanced_bounds)
+    # The global mapping this replaces would have left the shard there: the
+    # first global chunk minus this rank's offset is below 1, which is the
+    # launcher child's BoundsError.
+    @test Octopus._chunk_bounds(3003, chunks, 1)[1] - 1001 < 1
+    # Outside a divided run the grid is the whole beam, aligned, from chunk 1,
+    # and immutable (the worker closures capture it; the Core.Box sweep).
+    rep = Phase6DRep([1.0e-4 * i for i in 1:10], zeros(10), zeros(10), zeros(10), zeros(10), zeros(10))
+    grid = Octopus._mp_chunk_grid(rep)
+    @test (grid.first_chunk, grid.local_chunks, grid.offset, grid.global_n, grid.local_n, grid.aligned) ==
+          (1, chunks, 0, 10, 10, true)
+    @test [Octopus._mp_chunk_local_bounds(grid, c) for c in 1:chunks] ==
+          [Octopus._chunk_bounds(10, chunks, c) for c in 1:chunks]
+    @test !ismutable(grid)
+    # The three consumers all read the grid, and nothing in src/ maps the
+    # global chunk bounds through the shard offset by hand any more.
+    src_root = joinpath(pkgdir(Octopus), "src")
+    sources = String[]
+    for (dir, _, files) in walkdir(src_root), f in files
+        endswith(f, ".jl") && push!(sources, joinpath(dir, f))
+    end
+    call = "first_i, last_i = _mp_chunk_local_bounds(grid, chunk)"
+    users = [f for f in sources if occursin(call, read(f, String))]
+    @test Set(basename.(users)) == Set(["strong_beam_track.jl", "Tasks.jl"])
+    @test sum(count(call, read(f, String)) for f in users) == 3
+    @test !any(occursin("first_chunk + chunk - 1", read(f, String)) for f in sources)
+end
+
 @testset "A sharded run keys its random streams on the global particle index" begin
     # The counter RNG keys each particle's stream on its index, so a rank
     # holding global particles k+1 … k+m must key them on k+i. The offset

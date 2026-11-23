@@ -1141,6 +1141,67 @@ function _mp_local_chunks()
 end
 
 """
+The reduction chunk grid of one rank's shard, for the consumers that fold a
+per-particle quantity through `_mp_chunk_fold` (`_track_thin_strong_beam!`,
+`_track_gaussian_strong_beam!`, `_track_fused_luminous!`): `first_chunk` and
+`local_chunks` are `_mp_first_chunk()` and `_mp_local_chunks()`, `offset` and
+`global_n` the shard's, `local_n` this rank's particle count, and `aligned`
+whether the shard is a run of whole global chunks
+(`MultiProcessContext.chunk_aligned`; always outside a divided run). Built by
+`_mp_chunk_grid`, read by `_mp_chunk_local_bounds`; immutable, so a worker
+closure that captures it boxes nothing.
+"""
+struct _MPChunkGrid
+    first_chunk::Int
+    local_chunks::Int
+    offset::Int
+    global_n::Int
+    local_n::Int
+    aligned::Bool
+end
+
+"""
+    _mp_chunk_grid(rep) -> _MPChunkGrid
+
+This rank's reduction chunk grid for `rep`, resolved once per call site: the
+shard through `_mp_current_shard`, the alignment from the context in force.
+"""
+function _mp_chunk_grid(rep)
+    offset, global_n = _mp_current_shard(rep)
+    context = _multi_process_context()
+    aligned = context === nothing || context.nranks == 1 || context.chunk_aligned
+    return _MPChunkGrid(_mp_first_chunk(), _mp_local_chunks(), Int(offset), Int(global_n),
+                        Int(length(rep)), aligned)
+end
+
+"""
+    _mp_chunk_local_bounds(grid, chunk) -> (first_i, last_i)
+
+The LOCAL index bounds of this rank's `chunk`-th reduction chunk. Under a
+chunk-aligned shard the chunks are the fixed GLOBAL `_REDUCTION_CHUNKS`
+partition mapped through the shard offset (`grid.first_chunk` is the first
+global chunk this rank owns), so the local partition IS the global one and the
+cross-rank fold reproduces the single-process sum bit for bit. Under a balanced
+shard that is not chunk-aligned (`shard = :balanced` at a rank count that does
+not divide the chunks) every rank keeps all the chunks for its own range
+(`grid.local_chunks` is all of them, `grid.first_chunk` is 1), so they are the
+same fixed partition of the LOCAL range: thread-count invariant within the
+rank, folded by `_mp_chunk_fold` to one number per rank and the ranks in
+order. Mapping the global partition through the offset there indexed outside
+the shard: measured 2026-11-23 by the suite's multi-process test unit, the
+three-rank balanced launcher child died in `_track_gaussian_strong_beam!` with
+`BoundsError: attempt to access 85-element Vector{Float64} at index [-84]` on
+rank 1 and `86-element ... at index [-169]` on rank 2.
+"""
+function _mp_chunk_local_bounds(grid::_MPChunkGrid, chunk::Integer)
+    if grid.aligned
+        lo, hi = _chunk_bounds(grid.global_n, _REDUCTION_CHUNKS, grid.first_chunk + Int(chunk) - 1)
+        return lo - grid.offset, hi - grid.offset
+    end
+    return _chunk_bounds(grid.local_n, _REDUCTION_CHUNKS, Int(chunk))
+end
+
+"""
     _mp_gather_rows(rows) -> Matrix
 
 Collect every rank's rows onto rank 0, in rank order, and return them there;

@@ -2829,8 +2829,10 @@ end
 One fused pass that also produces each strong beam's luminosity.
 
 THE REDUCTION IS THE ISOLATED PATH'S, UNCHANGED -- the fixed `_REDUCTION_CHUNKS`
-partition in GLOBAL terms, one scalar partial per chunk, folded by
-`_mp_chunk_fold` in chunk order. That is deliberate and it is what makes this
+partition of `_mp_chunk_grid`, cut as `_mp_chunk_local_bounds` documents (the
+global partition through the shard offset under a chunk-aligned shard, the
+local range's under a balanced one that is not), one scalar partial per chunk,
+folded by `_mp_chunk_fold` in chunk order. That is deliberate and it is what makes this
 route's number bit-identical to the isolated route's: thread-count invariance
 and the MPI shard semantics are properties of THAT partition and THAT fold
 order, so reusing them preserves both by construction rather than by argument.
@@ -2844,15 +2846,13 @@ reason.
 """
 function _track_fused_luminous!(rep, elems, beams, policy, ctx)
     mask = active_live_mask()
-    nchunks = _REDUCTION_CHUNKS
-    offset, global_n = _mp_current_shard(rep)
-    first_chunk, local_chunks = _mp_first_chunk(), _mp_local_chunks()
+    grid = _mp_chunk_grid(rep)
     nbeams = length(beams)
-    partials = zeros(eltype(rep.x), local_chunks, nbeams)
-    _run_logical_workers(local_chunks) do chunk, _
-        lo, hi = _chunk_bounds(global_n, nchunks, first_chunk + chunk - 1)
+    partials = zeros(eltype(rep.x), grid.local_chunks, nbeams)
+    _run_logical_workers(grid.local_chunks) do chunk, _
+        first_i, last_i = _mp_chunk_local_bounds(grid, chunk)
         acc = ntuple(_ -> zero(eltype(rep.x)), nbeams)
-        for index in (lo - offset):(hi - offset)
+        for index in first_i:last_i
             @inbounds begin
                 coords, lums = fusedTrackLuminous(mask, ctx, elems,
                                                   ctx.index_offset + index, rep[index]...)
@@ -2865,7 +2865,7 @@ function _track_fused_luminous!(rep, elems, beams, policy, ctx)
         end
     end
     for k in 1:nbeams
-        beams[k].last_luminosity = _mp_chunk_fold(@view(partials[:, k]), first_chunk)
+        beams[k].last_luminosity = _mp_chunk_fold(@view(partials[:, k]), grid.first_chunk)
     end
     return nothing
 end
