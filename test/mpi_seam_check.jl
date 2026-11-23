@@ -181,6 +181,53 @@ with_execution_audit(audit) do
     end
 end
 
+# --- the migration exchange keeps one buffer per role, whatever the column count ---
+#
+# `_mp_exchange_columns` is step 4d's migration: every turn ships the particles
+# that change slice or rank as whole columns, and their count is different every
+# turn. Until the 2026-11-23 fix the extension cached its send and receive
+# matrices per (role, eltype, rows, COLUMNS), so every turn retained one or two
+# fresh `8 x n` matrices for the life of the process: 530 entries and 1587 MiB
+# per rank after 300 turns at two ranks on the owner's scan case, and a 64-rank
+# Perlmutter node out of memory between turns 4000 and 4999
+# (`docs/history/multi_process_exchange_leak_2026_11_23.md`). Forty exchanges
+# with forty different column counts must leave the cache with at most one send
+# and one receive buffer for this (eltype, rows), and every delivery is checked
+# against the documented layout: sender rank order, the sender's column order.
+# The all-sum cache, keyed by padded length and block, is reported beside it.
+Octopus._with_execution_policy(resolved) do
+    nranks = Octopus._mp_nranks()
+    rank = Octopus._mp_rank()
+    before = length(ext._MP_EXCHANGE_BUFFERS)
+    trials = 40
+    for trial in 1:trials
+        n = 50 + 7 * trial + rank                  # a new count every call, as the migration's is
+        cols = Matrix{Float64}(undef, 3, n)
+        dest = Vector{Int}(undef, n)
+        for j in 1:n
+            dest[j] = (j + rank) % nranks
+            cols[1, j] = rank; cols[2, j] = j; cols[3, j] = trial
+        end
+        received, counts = Octopus._mp_exchange_columns(cols, dest)
+        expected_counts = [count(j -> (j + q) % nranks == rank, 1:(50 + 7 * trial + q)) for q in 0:(nranks - 1)]
+        counts == expected_counts ||
+            fail("exchange counts on rank $(rank), trial $(trial): got $(counts), expected $(expected_counts)")
+        size(received, 1) == 3 && size(received, 2) == sum(counts) ||
+            fail("exchange size on rank $(rank), trial $(trial): $(size(received)) for counts $(counts)")
+        col = 0
+        for q in 0:(nranks - 1), j in 1:(50 + 7 * trial + q)
+            (j + q) % nranks == rank || continue
+            col += 1
+            (received[1, col] == q && received[2, col] == j && received[3, col] == trial) ||
+                fail("exchange layout on rank $(rank), trial $(trial), column $(col): got $(received[:, col]), expected [$(q), $(j), $(trial)]")
+        end
+    end
+    after = length(ext._MP_EXCHANGE_BUFFERS)
+    bytes = sum(sizeof, values(ext._MP_EXCHANGE_BUFFERS); init=0)
+    @printf("MPI-XCHG rank=%d nranks=%d trials=%d buffers_before=%d buffers_after=%d bytes=%d allsum_buffers=%d OK\n",
+            rank, nranks, trials, before, after, bytes, length(ext._MP_ALLSUM_BUFFERS))
+end
+
 # --- bounded initialization: the constructor returns this rank's shard ---
 #
 # The undivided reference uses a backend tag, so it does not request an

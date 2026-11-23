@@ -31664,6 +31664,26 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 for rank in 0:(ranks - 1)
                     @test "MPI-RESET rank=$(rank) nranks=$(ranks) cases=3 finite_refused=true OK" in receipts
                 end
+                # The migration exchange keeps one send and one receive buffer per
+                # (eltype, rows) whatever the column count (2026-11-23, the
+                # Perlmutter OOM): forty exchanges with forty counts may add at
+                # most two entries, the delivery layout is checked in the child
+                # (it fails by name), and the all-sum cache stays small beside it
+                # (measured 3 to 6 entries; 64 is the bound).
+                xchg = filter(line -> startswith(line, "MPI-XCHG "), split(output, '\n'))
+                @test length(xchg) == ranks
+                for line in xchg
+                    fields = Dict{String,String}()
+                    for kv in split(line)[2:end]
+                        occursin('=', kv) || continue
+                        k, v = split(kv, '='; limit=2)
+                        fields[String(k)] = String(v)
+                    end
+                    @test endswith(line, " OK")
+                    @test parse(Int, fields["trials"]) == 40
+                    @test parse(Int, fields["buffers_after"]) - parse(Int, fields["buffers_before"]) <= 2
+                    @test parse(Int, fields["allsum_buffers"]) <= 64
+                end
             end
 
             # --- CPU vs MPI: BITWISE ----------------------------------

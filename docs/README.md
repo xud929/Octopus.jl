@@ -1408,6 +1408,11 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   detection, the CUDA `:quadratic` batched-route port, the re-slicing jitter
   quantification, and the corrected hybrid z-scan).
 
+- [`multi_process_exchange_leak_2026_11_23.md`](history/multi_process_exchange_leak_2026_11_23.md)
+  (the Perlmutter strong-strong scan ran out of memory after 4000 turns: the MPI
+  migration cached one exchange matrix per distinct column count, one or two per
+  turn, forever. The reproduction that found it, the measurements that ruled the
+  other candidates out, the one-function fix and the `MPI-XCHG` receipt that guards it).
 - [`bbscl_comparison_2026_11_22.md`](history/bbscl_comparison_2026_11_22.md)
   (BBSCL, K. Ohmi's CUDA beam-beam collider code, read and run beside Octopus on
   one GPU: implementation comparison of the tracking kernels, the weak-strong map,

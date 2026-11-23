@@ -85,7 +85,7 @@ rest arrived with the steps that needed them):
 | `_mp_lane_fold!(lanes)` | `lanes` | the gather-and-fold, named apart because the shard contract differs |
 | `_mp_allminmax(lo, hi)` | `(lo, hi)` | `Allreduce` with `min` and `max` |
 | `_mp_allmin!(A)` / `_mp_allmax!(A)` | `A` | vector `Allreduce!` with `min` / `max` (step 4c) |
-| `_mp_exchange_columns(cols, dest)` | `cols`, `[n]` | counts by Alltoall, then one Alltoallv of whole columns; received in sender rank order (step 4d's migration) |
+| `_mp_exchange_columns(cols, dest)` | `cols`, `[n]` | counts by Alltoall, then one Alltoallv of whole columns; received in sender rank order (step 4d's migration); the send and receive buffers are one growable pair per (role, eltype, rows), never per column count -- keyed on the count, which changes every turn, they leaked a matrix per turn (`../history/multi_process_exchange_leak_2026_11_23.md`) |
 | `_mp_isend(A, dest, tag)` / `_mp_irecv!(A, source, tag)` / `_mp_wait_all(reqs, stage)` | a copy to oneself, matched by tag at the wait | `Isend` / `Irecv!` / `Waitall`, the wait clocked per stage (step 4d's pair messages) |
 | `_mp_bcast!(A, root)` / `_mp_bcast(v, root)` | `A` / `v` | `Bcast!` / `bcast` |
 | `_mp_gather_rows(rows)` | `rows` | rows onto rank 0 in rank order (step 3c) |

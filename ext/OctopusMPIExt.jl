@@ -144,20 +144,29 @@ end
 """
 The migration (`Octopus._mp_exchange_columns`): columns sorted by
 destination, stably, so the order within a destination is the sender's; one
-`Alltoallv` of whole columns. The send and receive matrices are kept per
-(element type, rows, columns) -- between the turns of a run their shapes
-repeat, and fresh 9 MB matrices four times per collide were most of the
-0.149 GiB a rank allocated per collide at the production point (step 4d's
-record). The receive matrix is handed to the caller, who must be done with
-it before the next exchange of the same shape.
+`Alltoallv` of whole columns. The send and receive buffers are kept per
+(role, element type, rows) and GROWN to the high-water mark of columns seen
+-- the first `n` columns are handed out as a `k x n` view -- never per column
+count: the count is the number of particles migrating this turn, different
+every turn, and keyed on it the cache retained one or two fresh `8 x n`
+matrices per turn for the life of the process. Measured 2026-11-23 on the
+owner's scan case: 530 entries and 1587 MiB per rank after 300 turns at two
+ranks, 5.2 MiB per turn per rank at eight, and a 64-rank, 512 GB Perlmutter
+node out of memory between turns 4000 and 4999
+(`docs/history/multi_process_exchange_leak_2026_11_23.md`). The buffers were
+introduced so that fresh 9 MB matrices four times per collide stopped being
+most of the 0.149 GiB a rank allocated per collide at the production point
+(step 4d's record); that saving stands. The receive matrix is handed to the
+caller, who must be done with it before the next exchange of the same role.
 """
-const _MP_EXCHANGE_BUFFERS = Dict{Tuple{Symbol,DataType,Int,Int},Any}()
+const _MP_EXCHANGE_BUFFERS = Dict{Tuple{Symbol,DataType,Int},Vector}()
 function _mp_exchange_buffer(role::Symbol, ::Type{E}, k::Int, n::Int) where {E}
-    return get!(_MP_EXCHANGE_BUFFERS, (role, E, k, n)) do
-        Matrix{E}(undef, k, n)
-    end::Matrix{E}
+    buf = get!(_MP_EXCHANGE_BUFFERS, (role, E, k)) do
+        Vector{E}(undef, k * n)
+    end::Vector{E}
+    length(buf) < k * n && resize!(buf, k * n)
+    return view(buf, 1:(k * n))
 end
-
 function Octopus._mp_exchange_columns_impl(cols::AbstractMatrix, dest, comm::MPI.Comm)
     return _mp_timed(:exchange_columns) do
         nranks = Int(MPI.Comm_size(comm))
@@ -170,7 +179,7 @@ function Octopus._mp_exchange_columns_impl(cols::AbstractMatrix, dest, comm::MPI
             send_counts[d + 1] += 1
         end
         offsets = cumsum(vcat(0, Int.(send_counts)))     # column offset per destination
-        send = _mp_exchange_buffer(:send, E, k, n)
+        send = _mp_exchange_buffer(:send, E, k, n)       # flat, k * n long, contiguous
         fill_pos = copy(offsets)
         @inbounds for j in 1:n
             d = dest[j] + 1
@@ -180,12 +189,12 @@ function Octopus._mp_exchange_columns_impl(cols::AbstractMatrix, dest, comm::MPI
         recv_counts = similar(send_counts)
         MPI.Alltoall!(MPI.UBuffer(send_counts, 1), MPI.UBuffer(recv_counts, 1), comm)
         total = Int(sum(recv_counts))
-        # A different key from the send's even at equal shape: the caller
-        # holds the receive matrix while the return trip sends.
+        # Its own role, not the send's: the caller holds the receive matrix
+        # while the return trip fills the send buffer.
         recv = _mp_exchange_buffer(:recv, E, k, total)
-        MPI.Alltoallv!(MPI.VBuffer(vec(send), send_counts .* Cint(k)),
-                       MPI.VBuffer(vec(recv), recv_counts .* Cint(k)), comm)
-        return recv, Int.(recv_counts)
+        MPI.Alltoallv!(MPI.VBuffer(send, send_counts .* Cint(k)),
+                       MPI.VBuffer(recv, recv_counts .* Cint(k)), comm)
+        return reshape(recv, k, total), Int.(recv_counts)
     end
 end
 

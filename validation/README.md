@@ -2209,6 +2209,26 @@ the suite.
 OCT_GPU=0 OCT_N=20480 OCT_TURNS=5 julia --project=. --threads=4 validation/bbscl_comparison/octopus_weak_strong_bbscl.jl
 ```
 
+## Multi-Process Memory Check
+
+`validation/multi_process_memory/` holds the reduced reproduction of the owner's
+Perlmutter strong-strong scan case (`repro_exchange_leak.jl`: the production
+lines, solver options and every-turn observers at a reduced macroparticle
+count, run under an MPI launcher), the resident-memory poller (`rss_poll.sh`)
+the Julia GC-log summariser (`gclog.py`) and the bitwise artifact comparison
+(`compare_fingerprint.py`). Reference model: a flat resident
+memory per rank after the first turns. Metric: VmRSS of every rank sampled
+every 10 s over 300 turns, the live heap after full collections, and the
+extension's exchange-buffer cache (entries, bytes) reported by every rank at
+the end. It found the migration exchange-buffer leak and measured its fix
+(`../docs/history/multi_process_exchange_leak_2026_11_23.md`); the suite's own
+guard is the `MPI-XCHG` receipt of `test/mpi_seam_check.jl`. CUDA is not
+involved; MPI is, so the suite does not run it.
+
+```bash
+mpiexec -n 2 julia --project=. --threads=2,0 --gcthreads=1 validation/multi_process_memory/repro_exchange_leak.jl
+```
+
 ## Paper Anchors
 
 Two paper-cited scripts. They were committed and cited with no README entry at

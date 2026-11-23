@@ -1087,6 +1087,33 @@ set against the declared set in both directions. The
 [design note](design/twiss_dispersion_analysis.md) records the episode and
 the rule it adopted.
 
+## A cache keyed by a quantity that changes every turn is a leak with a long fuse
+
+The multi-process migration kept its send and receive matrices in a dictionary
+keyed by shape, "because between the turns of a run their shapes repeat"
+(`history/multi_process_exchange_leak_2026_11_23.md`). The plane and record
+buffers beside it do repeat; the migration's column count is the number of
+particles changing slice that turn, which never does, so every turn added a
+matrix that nothing released. Every test the project runs is a few turns long,
+and every one was green. The owner's 64-rank, 512 GB Perlmutter job was killed
+between turns 4000 and 4999, after 2.5 hours, 1296 times over had the queue
+not been cancelled.
+
+Three habits follow. A process-lifetime cache is bounded BY CONSTRUCTION — a
+fixed key set, a high-water mark that grows in place, or an eviction rule —
+and its key never includes a per-turn quantity; the review question for every
+`get!` on a global `Dict` is "what varies in this key, and how often". A code
+path meant to run for 10^5 turns is measured for 10^2 to 10^3 of them with the
+resident memory of every rank sampled over time before a production campaign;
+a flat line is the receipt, a slope is a defect whatever the suite says. And
+a memory diagnosis is a short decision tree, not a reading exercise: the slope
+per turn per rank; a heap-hint A/B (the same peak means retention, not
+garbage); a one-rank control (flat means the multi-process path); the live
+heap after full collections (rising means Julia objects, not a C library);
+then every process-lifetime cache reported at exit, which names the object.
+The reading done first attributed the growth to the GC and to the Green cache,
+both wrong; the five measurements took an evening.
+
 ## Code that runs only on the failure path is the least-tested code
 
 The one-turn-matrix helper's relabelling guard (2026-09-11) read `err.val` on
