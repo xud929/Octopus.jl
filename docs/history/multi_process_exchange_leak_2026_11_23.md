@@ -96,5 +96,16 @@ cache at exit. `docs/experiences.md` carries the lesson.
 
 ## 6. Gate
 
-The two-arm full gate at CI settings (native with CUDA active, then the AVX2 parity arm) ran on
-this commit's tree before the push; its result is recorded by the docs commit that follows it.
+The two-arm full gate at CI settings ran on this commit's tree (459004f) before the push:
+
+| arm | command | start to end (EST) | exit | summaries | failures |
+|---|---|---|---|---|---|
+| native (sapphirerapids, CUDA active) | `julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'` | 2026-11-23 09:17:03 to 10:43:51 | 0 | 465 | 0 |
+| AVX2 CI parity (`OPENBLAS_CORETYPE=Haswell julia -C haswell`, test process `-C haswell`) | the same `Pkg.test` with `"-C", "haswell"` | 2026-11-23 10:43:51 to 12:22:43 | 0 | 465 | 0 |
+
+Both arms ran the launcher testset "The multi-process seam runs under an MPI launcher" at one,
+two and four ranks with the new `MPI-XCHG` assertions (native: 1766 of 1766 in 12m51s; AVX2:
+1766 of 1766 in 14m38s). Logs: `result/gates/mpifix/full_gate_{native,avx2}.log` (git-ignored). The three
+commits pushed together with this record's -- `e2a6fa0`, `498af00` (the BBSCL comparison and its
+addendum) and `459004f` (the fix) -- are all covered by this gate, which ran on the tree they add
+up to.
