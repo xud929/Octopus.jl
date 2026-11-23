@@ -18,8 +18,13 @@ function psr_probe_initial(::Type{T}; n::Int=17) where {T}
         T[3.0e-4 * cos(0.29i) for i in 1:n])
 end
 
+"""The shard rule `policy` runs under: a multi-process policy's own, the
+aligned default for any other (the serial and CUDA callers never shard)."""
+psr_probe_shard(policy) =
+    policy isa Octopus.MultiProcessExecutionPolicy ? policy.shard : :chunk_aligned
+
 function psr_probe_copy(rep, policy; rank::Int=0, nranks::Int=1)
-    r = Octopus._mp_shard_range(length(rep), nranks, rank)
+    r = Octopus._mp_shard_range(length(rep), nranks, rank; shard=psr_probe_shard(policy))
     arrays = map(a -> copy(a[r]), Octopus.coordinate_arrays(rep))
     if policy isa Octopus.CUDAExecutionPolicy
         return Octopus.Phase6DRep(map(Octopus.CUDA.CuArray, arrays)...)

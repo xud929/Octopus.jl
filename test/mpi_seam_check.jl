@@ -1,10 +1,15 @@
 # Child process for the suite's multi-process section: the one place the MPI
 # half of the seam and the sharded tracking path actually execute.
 #
-# Run by `test/runtests.jl` under MPICH_jll's `mpiexec` at one and at two
-# ranks; also runnable by hand:
+# Run by `test/runtests.jl` under MPICH_jll's `mpiexec` at one, two and four
+# ranks under the policy's default shard rule, and at two and three ranks
+# under `OCTOPUS_MPI_CHECK_SHARD=balanced` -- the three-rank launch needs it,
+# because the default rule refuses a rank count that does not divide the 64
+# reduction chunks, and the suite launches that refusal too. Also runnable by
+# hand:
 #
 #     mpiexec -n 2 julia --project=<env with Octopus and MPI> test/mpi_seam_check.jl
+#     OCTOPUS_MPI_CHECK_SHARD=balanced mpiexec -n 3 julia --project=<...> test/mpi_seam_check.jl
 #
 # Every line it prints that the suite asserts on begins with `MPI-`. It exits
 # non-zero on the first failure, so a rank that dies takes the launcher down
@@ -27,6 +32,18 @@ using MPI
 using Printf
 
 include(joinpath(@__DIR__, "mpi_seam_check_fixture.jl"))
+
+# The shard rule this run requests, from the environment the parent sets:
+# `chunk_aligned` (the policy's default: whole reduction chunks per rank, a
+# rank count that does not divide them refused by name) or `balanced` (any
+# rank count: the aligned rule where the count divides the chunks, equal
+# contiguous ranges with a rank-ordered fold where it does not). ONE helper
+# builds every multi-process policy below, and the suite holds this file to
+# that, so no section can run the default rule under a launch the parent
+# believes ran the other; every shard range a section derives for itself
+# names the same rule, for the same reason.
+const _CHECK_SHARD = Symbol(get(ENV, "OCTOPUS_MPI_CHECK_SHARD", "chunk_aligned"))
+mp_policy(; kw...) = MultiProcessExecutionPolicy(; shard=_CHECK_SHARD, kw...)
 
 # MPI is initialised HERE rather than left to the policy's first activation,
 # because the receipt file is named by rank and has to exist before the first
@@ -131,7 +148,7 @@ else
 end
 
 rep = Phase6DRep([1.0e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
-resolved = Octopus._resolve_execution_policy(MultiProcessExecutionPolicy(), rep)
+resolved = Octopus._resolve_execution_policy(mp_policy(), rep)
 audit = ExecutionAudit()
 
 with_execution_audit(audit) do
@@ -175,9 +192,29 @@ with_execution_audit(audit) do
             fail("receipt says $(receipt.values.resolved_by), not :mpi_communicator")
         receipt.values.nranks == nranks && receipt.values.rank == rank ||
             fail("receipt disagrees with the communicator")
+        # The shard rule, as the receipt records it: the request is the one
+        # this child was given, and the alignment in force follows the rule
+        # (whole chunks under the default always, under `:balanced` exactly
+        # when the rank count divides them). Then the rule is APPLIED to the
+        # fixture's beam size at this rank count before any OK is written: a
+        # count the requested rule refuses fails the child here, by the rule's
+        # own message, rather than at the first `Beam(...)` below with an OK
+        # receipt already on file.
+        receipt.values.shard === _CHECK_SHARD ||
+            fail("receipt says shard=$(receipt.values.shard), not $(_CHECK_SHARD)")
+        expected_aligned = _CHECK_SHARD === :chunk_aligned || Octopus._REDUCTION_CHUNKS % nranks == 0
+        receipt.values.chunk_aligned === expected_aligned ||
+            fail("receipt says chunk_aligned=$(receipt.values.chunk_aligned) at $(nranks) rank(s) under $(_CHECK_SHARD)")
+        try
+            Octopus._mp_shard_range(_mpi_check_global_n(), nranks, rank; shard=_CHECK_SHARD)
+        catch err
+            fail("the $(_CHECK_SHARD) shard rule refused $(nranks) rank(s): " * sprint(showerror, err))
+        end
 
         @printf("MPI-CHECK rank=%d nranks=%d resolved_by=%s OK\n",
                 rank, nranks, receipt.values.resolved_by)
+        @printf("MPI-SHARD rank=%d nranks=%d shard=%s chunk_aligned=%s OK\n",
+                rank, nranks, receipt.values.shard, receipt.values.chunk_aligned)
     end
 end
 
@@ -238,7 +275,7 @@ end
 # pass a same-seed comparison. No parent parsing depends on this new marker;
 # any failed property exits through fail() before the existing seam finishes.
 let rank = child_rank(), nranks = MPI.Comm_size(MPI.COMM_WORLD)
-    policy = MultiProcessExecutionPolicy(threads=1, ranks=nranks)
+    policy = mp_policy(threads=1, ranks=nranks)
     lower = (-1.0, -0.5, 0.0, -0.5, 0.125, 0.0)
     upper = (1.0, 0.5, 1.0, 0.5, 0.125, 0.0)
     counts = (5, 3, 3, 2, 1, 1)
@@ -249,7 +286,8 @@ let rank = child_rank(), nranks = MPI.Comm_size(MPI.COMM_WORLD)
         distribution = form === :uniform ? :uniform : :grid
         constructor = if form === :uniform
             # An odd count straddles the fixed chunk partition differently
-            # at one, two and four ranks; physical population stays global.
+            # at one, two and four ranks, and the balanced partition at
+            # three; physical population stays global.
             backend -> Beam(257, backend, T; distribution=:uniform,
                 lower=lower, upper=upper, rng_id=rid, npart=7.0e10)
         elseif form === :grid_size
@@ -264,7 +302,7 @@ let rank = child_rank(), nranks = MPI.Comm_size(MPI.COMM_WORLD)
         end
         shard = holder[]
         global_n = length(whole.rep)
-        expected_range = Octopus._mp_shard_range(global_n, nranks, rank)
+        expected_range = Octopus._mp_shard_range(global_n, nranks, rank; shard=_CHECK_SHARD)
         length(shard.rep) == length(expected_range) ||
             fail("bounded initialization $(form)/$(T) rank $(rank): wrong local count")
         for (local_values, all_values) in zip(coordinate_arrays(shard), coordinate_arrays(whole))
@@ -288,13 +326,13 @@ end
 # --- persistent particle tunes: global slots, empty shards, all-rank refusal ---
 include(joinpath(@__DIR__, "particle_tunes_probe.jl"))
 let rank = child_rank(), nranks = MPI.Comm_size(MPI.COMM_WORLD)
-    policy = MultiProcessExecutionPolicy(threads=1, ranks=nranks)
+    policy = mp_policy(threads=1, ranks=nranks)
     checked = 0
     for T in (Float64, Float32), n in (17, 2)
         result = pt_probe_dense(policy; T=T, n=n, turns=3, rank=rank, nranks=nranks)
         result.comparison.equal || fail("particle-tune dense oracle differs on rank $(rank): $(result.comparison)")
         table = only(result.tables)
-        interval = Octopus._mp_shard_range(n, nranks, rank)
+        interval = Octopus._mp_shard_range(n, nranks, rank; shard=_CHECK_SHARD)
         table.global_range == interval && table.global_particles == n || fail("particle-tune global interval is wrong")
         table.local_particles == length(interval) || fail("particle-tune local count is wrong")
         for (local_labels, global_labels) in zip(values(table.tunes), values(result.labels))
@@ -329,7 +367,7 @@ let rank = child_rank(), nranks = MPI.Comm_size(MPI.COMM_WORLD)
         set_global_rng!(seed=pt_probe_seed(), method=:philox)
         execute!(serial, whole; turns=3, start_turn=0)
         reference = only(particle_tune_tables(serial))
-        interval = Octopus._mp_shard_range(n, nranks, rank)
+        interval = Octopus._mp_shard_range(n, nranks, rank; shard=_CHECK_SHARD)
         for (local_labels, global_labels) in zip(values(saved.tunes), values(reference.tunes))
             local_labels == global_labels[interval] || fail("MPI RNG used local rather than global particle IDs")
         end
@@ -402,7 +440,7 @@ end
 # --- repeated reset trials: real sharded tracking and loss revival ------
 include(joinpath(@__DIR__, "phase_space_reset_probe.jl"))
 let rank = child_rank(), nranks = MPI.Comm_size(MPI.COMM_WORLD)
-    policy = MultiProcessExecutionPolicy(threads=1, ranks=nranks)
+    policy = mp_policy(threads=1, ranks=nranks)
     checked = 0
     for (T, kind, losses) in ((Float64, :table, true), (Float32, :table, true),
                                (Float64, :radiation, false))
@@ -431,7 +469,7 @@ let rank = child_rank(), nranks = MPI.Comm_size(MPI.COMM_WORLD)
                 fail("phase-space reset MPI result differs from undivided global-ID scalar oracle")
         end
         state = result.task.phase_space_reset[]
-        expected = Octopus._mp_shard_range(17, nranks, rank)
+        expected = Octopus._mp_shard_range(17, nranks, rank; shard=_CHECK_SHARD)
         state.signature.global_n == 17 && state.signature.n == length(expected) ||
             fail("phase-space reset snapshot did not remain rank-local")
         state.signature.offset == first(expected) - 1 ||
@@ -470,7 +508,7 @@ end
 # compares the result with a single-process run of the same line. String
 # comparison, so the cross-rank concatenation involves no arithmetic and a
 # bitwise claim stays bitwise.
-let policy = MultiProcessExecutionPolicy(threads=1)
+let policy = mp_policy(threads=1)
     beam = _mpi_check_build_beam(policy)
     resolved = Octopus._resolve_execution_policy(policy, beam.rep)
     Octopus._with_execution_policy(resolved) do
@@ -478,7 +516,7 @@ let policy = MultiProcessExecutionPolicy(threads=1)
         offset, global_n = Octopus._mp_resolve_shard(length(beam.rep))
         global_n == _mpi_check_global_n() ||
             fail("global count $(global_n) is not $(_mpi_check_global_n())")
-        @printf("MPI-SHARD rank=%d nranks=%d n=%d offset=%d\n",
+        @printf("MPI-SHARDOFFSET rank=%d nranks=%d n=%d offset=%d\n",
                 rank, nranks, length(beam.rep), offset)
     end
     execute!(TrackingTask(_mpi_check_radiating_line(); policy=policy), beam; turns=3)
@@ -502,7 +540,7 @@ end
 # because its reduction is a collective and a rank that skipped it would hang
 # its peers. The proof that only rank 0 wrote is the ROW COUNT: if every rank
 # wrote, a P-rank run would leave P rows per turn instead of one.
-let policy = MultiProcessExecutionPolicy(threads=1)
+let policy = mp_policy(threads=1)
     path = _mpi_check_artifact_path(_ARTIFACT_DIR, "3b")
     beam = _mpi_check_build_beam(policy)
     resolved = Octopus._resolve_execution_policy(policy, beam.rep)
@@ -543,7 +581,7 @@ end
 # per particle per turn. Neither can be reduced, only moved, so both go
 # through the seam's gather and land in rank 0's file -- carrying the GLOBAL
 # particle id, not the slot index the rank happened to use.
-let policy = MultiProcessExecutionPolicy(threads=1)
+let policy = mp_policy(threads=1)
     path = _mpi_check_artifact_path(_ARTIFACT_DIR, "3c")
     beam = _mpi_check_build_beam(policy)
     resolved = Octopus._resolve_execution_policy(policy, beam.rep)
@@ -601,7 +639,7 @@ end
 # beam. What has to span the ranks is the slicing (its statistics AND the
 # histogram its boundaries are cut from), each slice's transverse moments and
 # weight, and the luminosity. The kick itself is local.
-let policy = MultiProcessExecutionPolicy(threads=1)
+let policy = mp_policy(threads=1)
     b1, b2 = _mpi_check_collide_beams(policy)
     # A second, identical pair for the sequential schedule: the collide below
     # kicks the beams it is given, so the two schedules cannot share one.
@@ -657,7 +695,7 @@ end
 # observer in each, the luminosity channel and the run artifact. Two beams of
 # DIFFERENT sizes, because a run holding two beams is where one scoped shard
 # handed the second beam the first beam's offset.
-let policy = MultiProcessExecutionPolicy(threads=1)
+let policy = mp_policy(threads=1)
     path = _mpi_check_artifact_path(_ARTIFACT_DIR, "4b")
     b1, b2 = _mpi_check_ss_beams(policy)
     resolved = Octopus._resolve_execution_policy(policy, b1.rep)
@@ -748,7 +786,7 @@ end
 # and kicks its own particles. Run through the task first -- two lines that
 # draw per particle, the artifact, two turns -- then one bare collide per
 # option variant, since each selects a different route through the code.
-let policy = MultiProcessExecutionPolicy(threads=1)
+let policy = mp_policy(threads=1)
     path = _mpi_check_artifact_path(_ARTIFACT_DIR, "4c")
     b1, b2 = _mpi_check_ss_beams(policy)
     resolved = Octopus._resolve_execution_policy(policy, b1.rep)
@@ -822,7 +860,7 @@ let policy = MultiProcessExecutionPolicy(threads=1)
         end
     end
     for (name, solver, threads, _) in _mpi_check_pic_variants()
-        vpolicy = threads == 1 ? policy : MultiProcessExecutionPolicy(threads=threads)
+        vpolicy = threads == 1 ? policy : mp_policy(threads=threads)
         r = _mpi_check_pic_collide_line(vpolicy, solver)
         # EVERY rank reports its luminosity: it is computed redundantly per
         # rank from the all-summed grids and the identical extents, and the
@@ -845,7 +883,7 @@ let policy = MultiProcessExecutionPolicy(threads=1)
     end
     # --- step 4f: Gaussian-PIC on the same transport ------------------------
     for (name, solver, threads, _) in _mpi_check_gpic_variants()
-        vpolicy = threads == 1 ? policy : MultiProcessExecutionPolicy(threads=threads)
+        vpolicy = threads == 1 ? policy : mp_policy(threads=threads)
         r = _mpi_check_pic_collide_line(vpolicy, solver)
         emit_by_rank("MPI-PICVARLUM $(name) $(child_rank()) $(r.lum)")
         emit_by_rank("MPI-PICVARZ $(name) $(child_rank()) $(r.restored)")
@@ -888,7 +926,7 @@ let policy = MultiProcessExecutionPolicy(threads=1)
     # share of the sliced route's work; the parent sums it over the ranks and
     # holds the total to the pair count, so a rank that did nothing shows up.
     for (name, solver, threads, _) in _mpi_check_spectral_variants()
-        vpolicy = threads == 1 ? policy : MultiProcessExecutionPolicy(threads=threads)
+        vpolicy = threads == 1 ? policy : mp_policy(threads=threads)
         r = _mpi_check_spectral_collide_line(vpolicy, solver)
         emit_by_rank("MPI-SPECVARLUM $(name) $(child_rank()) $(r.lum)")
         emit_by_rank("MPI-SPECVARZ $(name) $(child_rank()) $(r.restored)")
@@ -928,7 +966,7 @@ flush(stdout)
 # luminosity series only: the moment observers' first-order columns sit near
 # zero by construction at this size, and a relative comparison there measures
 # chance rather than agreement.
-let policy = MultiProcessExecutionPolicy(threads=1)
+let policy = mp_policy(threads=1)
     path = _mpi_check_artifact_path(_ARTIFACT_DIR, "4b_big")
     b1, b2 = _mpi_check_ss_big_beams(policy)
     resolved = Octopus._resolve_execution_policy(policy, b1.rep)
@@ -960,15 +998,24 @@ end
 # that closed 4a: the slicing refused an all-dead SHARD on that rank's own
 # count while its peers went on into the first collective and waited there.
 # Both refusals now read the whole beam's counts. Global particles 129..256
-# are killed -- all of rank 1's shard at two ranks, ranks 2 and 3 at four --
-# so some ranks hold no live particle while the beam does; every rank must
+# are killed -- all of rank 1's shard at two ranks, ranks 2 and 3 at four,
+# and the last rank's balanced third (171:256, from the rule) at three -- so
+# some ranks hold no live particle while the beam does; every rank must
 # slice. Then every particle is killed, and every rank must refuse alike.
-let policy = MultiProcessExecutionPolicy(threads=1)
+let policy = mp_policy(threads=1)
     b1, _ = _mpi_check_ss_beams(policy)
     resolved = Octopus._resolve_execution_policy(policy, b1.rep)
     slc = Octopus.LongitudinalSlicing(nslices=5, method=:equal_area)
     Octopus._with_execution_policy(resolved) do
-        offset, _ = Octopus._mp_resolve_shard(length(b1.rep))
+        offset, global_n = Octopus._mp_resolve_shard(length(b1.rep))
+        # Anti-vacuity, from the rule rather than from a list of rank counts:
+        # above one rank some rank's WHOLE shard lies in the killed range, or
+        # the half-dead case has no all-dead shard to test.
+        nranks = Octopus._mp_nranks()
+        nranks == 1 ||
+            any(r -> issubset(Octopus._mp_shard_range(global_n, nranks, r; shard=_CHECK_SHARD), 129:256),
+                0:(nranks - 1)) ||
+            fail("no rank's shard lies within the killed particles 129:256 at $(nranks) ranks")
         for g in 129:256
             local_i = g - offset
             1 <= local_i <= length(b1.rep) || continue

@@ -31,8 +31,13 @@ function pt_probe_initial(::Type{T}; n=17) where {T}
         T[0.007sin(0.19i) for i in 1:n], T[0.002cos(0.29i) for i in 1:n])
 end
 
+"""The shard rule `policy` runs under: a multi-process policy's own, the
+aligned default for any other (the serial and CUDA callers never shard)."""
+pt_probe_shard(policy) =
+    policy isa Octopus.MultiProcessExecutionPolicy ? policy.shard : :chunk_aligned
+
 function pt_probe_copy(rep, policy; rank=0, nranks=1)
-    interval = Octopus._mp_shard_range(length(rep), nranks, rank)
+    interval = Octopus._mp_shard_range(length(rep), nranks, rank; shard=pt_probe_shard(policy))
     arrays = map(a -> copy(Array(a)[interval]), Octopus.coordinate_arrays(rep))
     policy isa Octopus.CUDAExecutionPolicy && (arrays = map(Octopus.CUDA.CuArray, arrays))
     Octopus.Phase6DRep(arrays...)
@@ -295,7 +300,7 @@ function pt_probe_dense(policy; T=Float64, n=17, turns=3, rank=0, nranks=1)
     audit = Octopus.with_execution_audit() do
         Octopus.execute!(task, rep; turns=turns)
     end
-    interval = Octopus._mp_shard_range(n, nranks, rank)
+    interval = Octopus._mp_shard_range(n, nranks, rank; shard=pt_probe_shard(policy))
     reference = pt_probe_reference(optics, labels, initial; turns=turns)[interval, :]
     rows = pt_probe_rows(rep)
     receipts = Octopus.execution_receipts(audit)

@@ -30087,6 +30087,178 @@ end
                    string(Base.Docs.doc(Base.Docs.Binding(Octopus, :_mp_chunk_fold))))
 end
 
+@testset "A balanced shard accepts any rank count and is the aligned rule where that divides the chunks" begin
+    # `MultiProcessExecutionPolicy(; shard)` (2026-11-23, the owner's 128-rank
+    # launch refused by the rule above). `:chunk_aligned` is that rule
+    # unchanged; `:balanced` is its strict superset: the same shards and folds
+    # wherever the rank count divides the chunks, equal contiguous ranges with
+    # every rank keeping all the chunks for its own reductions where it does
+    # not. These are the option's own properties, checkable without a
+    # communicator; the launcher testset below runs the three-rank child
+    # under it and the default's refusal of three ranks beside it.
+    chunks = Octopus._REDUCTION_CHUNKS
+    dividing = [p for p in 1:chunks if chunks % p == 0]          # derived, not listed
+    non_dividing = (3, 5, 6, 7, 12, 96, 128)
+    @test all(p -> chunks % p != 0, non_dividing)                 # the premise of the arm
+
+    # The constructor: both rules by name, anything else refused by name, the
+    # default unchanged, positional and keyword forms alike.
+    @test Octopus._MULTI_PROCESS_SHARD_RULES == (:chunk_aligned, :balanced)
+    @test MultiProcessExecutionPolicy().shard === :chunk_aligned
+    @test MultiProcessExecutionPolicy(1, 2).shard === :chunk_aligned
+    @test MultiProcessExecutionPolicy(shard=:balanced).shard === :balanced
+    @test MultiProcessExecutionPolicy(threads=1, ranks=3, shard=:balanced).ranks == 3
+    @test MultiProcessExecutionPolicy(:auto, :auto, :balanced).shard === :balanced
+    bogus = try
+        MultiProcessExecutionPolicy(shard=:bogus); nothing
+    catch err
+        err
+    end
+    @test bogus isa ArgumentError
+    @test occursin("shard must be one of (:chunk_aligned, :balanced); got :bogus",
+                   sprint(showerror, bogus))
+    @test_throws ArgumentError MultiProcessExecutionPolicy(threads=1, ranks=2, shard=:bogus)
+    @test_throws ArgumentError MultiProcessExecutionPolicy(:auto, :auto, :bogus)
+
+    # The superset property: at every rank count the aligned rule accepts,
+    # `:balanced` IS the aligned rule, range for range.
+    for n in (4, 63, 64, 65, 1000, 1_024_000), p in dividing
+        @test all(Octopus._mp_shard_range(n, p, r; shard=:balanced) ==
+                  Octopus._mp_shard_range(n, p, r) for r in 0:(p - 1))
+    end
+    # Where the aligned rule refuses, `:balanced` partitions the beam into
+    # equal contiguous ranges -- the `_chunk_bounds` rule with the rank count
+    # as the chunk count -- in order, covering 1:n exactly once, no two
+    # lengths differing by more than one; and the default's refusal of the
+    # same counts now names the way out.
+    for n in (4, 63, 64, 65, 1000, 1_024_000), p in non_dividing
+        ranges = [Octopus._mp_shard_range(n, p, r; shard=:balanced) for r in 0:(p - 1)]
+        @test first(first(ranges)) == 1
+        @test last(last(ranges)) == n
+        @test sum(length, ranges) == n
+        @test all(first(ranges[i + 1]) == last(ranges[i]) + 1 for i in 1:(p - 1))
+        @test maximum(length, ranges) - minimum(length, ranges) <= 1
+        @test all(ranges[r + 1] == UnitRange(Octopus._chunk_bounds(n, p, r + 1)...)
+                  for r in 0:(p - 1))
+        refusal = try
+            Octopus._mp_shard_range(n, p, 0); nothing
+        catch err
+            err
+        end
+        @test refusal isa ArgumentError
+        @test occursin("cannot divide the $(chunks) fixed reduction chunks", sprint(showerror, refusal))
+        @test occursin("shard = :balanced", sprint(showerror, refusal))
+    end
+    # The alignment in force, which the context and the receipt record: always
+    # under the default, under `:balanced` exactly at a dividing count.
+    @test all(Octopus._mp_chunk_aligned(p, :chunk_aligned) for p in (dividing..., non_dividing...))
+    @test all(Octopus._mp_chunk_aligned(p, :balanced) for p in dividing)
+    @test !any(Octopus._mp_chunk_aligned(p, :balanced) for p in non_dividing)
+
+    # The verdict under `:balanced`, a function of the all-summed counts as
+    # under the default (F-170): the rule's own counts pass; anything else
+    # names the ranks whose count is not the rule's for that total, which is
+    # never nobody. The default refuses the count outright, right counts or
+    # not; at a dividing count the two verdicts are one.
+    right = [length(Octopus._mp_shard_range(256, 3, r; shard=:balanced)) for r in 0:2]
+    @test sum(right) == 256 && maximum(right) - minimum(right) == 1   # anti-vacuity: an uneven split
+    @test Octopus._mp_shard_verdict(right, 3; shard=:balanced) == Int[]
+    @test_throws ArgumentError Octopus._mp_shard_verdict(right, 3)
+    for wrong in ([right[1] + 1, right[2], right[3]], [right[1], right[2] - 1, right[3] + 1],
+                  [right[1] - 1, right[2], right[3]])
+        rule = [length(Octopus._mp_shard_range(sum(wrong), 3, r; shard=:balanced)) for r in 0:2]
+        named = [r for r in 0:2 if wrong[r + 1] != rule[r + 1]]
+        @test !isempty(named)
+        @test Octopus._mp_shard_verdict(wrong, 3; shard=:balanced) == named
+    end
+    @test Octopus._mp_shard_verdict([256, 256, 255, 257], 4; shard=:balanced) == [2, 3]
+    @test Octopus._mp_shard_verdict([256, 256, 256, 256], 4; shard=:balanced) == Int[]
+
+    # The request and the context carry the rule and the alignment in force;
+    # the constructors that predate the option keep their meaning.
+    @test Octopus.MultiProcessRequest(3).shard === :chunk_aligned
+    @test Octopus.MultiProcessRequest(3, :balanced).shard === :balanced
+    @test Octopus.MultiProcessRequest(:auto, :balanced).ranks === :auto
+    @test :shard in fieldnames(Octopus.MultiProcessContext)
+    @test :chunk_aligned in fieldnames(Octopus.MultiProcessContext)
+    five = Octopus.MultiProcessContext(nothing, 3, 0, :auto, :serial_passthrough)
+    @test (five.shard, five.chunk_aligned) === (:chunk_aligned, true)
+    seven = Octopus.MultiProcessContext(nothing, 3, 0, :auto, :serial_passthrough, :balanced, false)
+    @test (seven.shard, seven.chunk_aligned) === (:balanced, false)
+    @test (seven.nranks, seven.rank, seven.ranks, seven.resolved_by) === (3, 0, :auto, :serial_passthrough)
+
+    # The option's metadata and the configuration report.
+    schema = policy_option_schema(MultiProcessExecutionPolicy)
+    @test haskey(schema, :shard)
+    @test schema.shard.option_type === Symbol
+    @test schema.shard.default === :chunk_aligned
+    @test schema.shard.consumer === :multi_process_communicator
+    @test CPUThreadsBackend in schema.shard.supported_backends
+    shard_entry(policy) = only(filter(e -> e.name === :shard, collect(configuration_report(policy))))
+    balanced_entry = shard_entry(MultiProcessExecutionPolicy(shard=:balanced))
+    default_entry = shard_entry(MultiProcessExecutionPolicy())
+    @test balanced_entry.requested === :balanced && balanced_entry.resolved === :balanced
+    @test default_entry.requested === :chunk_aligned
+    @test balanced_entry.status === default_entry.status === :unresolved   # in force only at execution
+    @test balanced_entry.consumer === :multi_process_communicator
+    @test balanced_entry.reason != default_entry.reason                     # the report says which rule it describes
+
+    # The receipt at the consumer boundary, in this process's passthrough: the
+    # rule requested is recorded, and at one rank it is in force as the
+    # aligned rule (one divides the chunks).
+    rep = Phase6DRep([1.0e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
+    for (shard, aligned) in ((:chunk_aligned, true), (:balanced, true))
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do
+            resolved = Octopus._resolve_execution_policy(MultiProcessExecutionPolicy(shard=shard), rep)
+            Octopus._with_execution_policy(resolved) do
+                @test Octopus._mp_nranks() == 1
+            end
+        end
+        handshake = only(filter(r -> r.consumer === :multi_process_communicator,
+                                execution_receipts(audit)))
+        @test handshake.values.shard === shard
+        @test handshake.values.chunk_aligned === aligned
+        @test handshake.values.resolved_by === :serial_passthrough
+    end
+
+    # What the alignment in force changes, under contexts built by hand (the
+    # passthrough answers the collectives, so only the chunk bookkeeping is
+    # under test). A balanced three-rank context that is not chunk-aligned
+    # keeps all the chunks on every rank, starts at the first, and folds its
+    # own partials to one number; its resolve refusal names the rule in force.
+    partials = [0.1 * i for i in 1:chunks]
+    Octopus._with_resolved_policy(Octopus.ResolvedCPUExecutionPolicy(1, seven)) do
+        @test Octopus._mp_local_chunks() == chunks
+        @test Octopus._mp_first_chunk() == 1
+        @test Octopus._mp_chunk_fold(partials, 1) == sum(partials)
+        refused = try
+            Octopus._mp_resolve_shard(85); nothing
+        catch err
+            err
+        end
+        @test refused isa ArgumentError
+        @test occursin("balanced shards of a 85-particle beam", sprint(showerror, refused))
+    end
+    # An aligned two-rank context owns its half of the chunks, as before, and
+    # says "chunk-aligned" when it refuses; the balanced rule at a dividing
+    # count IS that context.
+    for context in (Octopus.MultiProcessContext(nothing, 2, 1, :auto, :serial_passthrough),
+                    Octopus.MultiProcessContext(nothing, 2, 1, :auto, :serial_passthrough, :balanced, true))
+        Octopus._with_resolved_policy(Octopus.ResolvedCPUExecutionPolicy(1, context)) do
+            @test Octopus._mp_local_chunks() == div(chunks, 2)
+            @test Octopus._mp_first_chunk() == div(chunks, 2) + 1
+            refused = try
+                Octopus._mp_resolve_shard(5); nothing
+            catch err
+                err
+            end
+            @test refused isa ArgumentError
+            @test occursin("chunk-aligned shards of a 5-particle beam", sprint(showerror, refused))
+        end
+    end
+end
+
 @testset "The reduction chunk grid follows the alignment in force" begin
     # The consumers that fold a per-particle quantity through `_mp_chunk_fold`
     # (`_track_thin_strong_beam!`, `_track_gaussian_strong_beam!`,
@@ -31648,16 +31820,25 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
     # parse. Every assertion below reads `outN`, which is now the rank files
     # joined in rank order; the raw merged stream is kept as `rawN` for saying
     # what happened when a rank dies, which is what it is good for.
-    run_ranks(n) = begin
+    run_ranks(n; shard=nothing) = begin
         # `Pkg.test` runs this process with JULIA_LOAD_PATH emptied and
         # `Base.julia_cmd()` inherits the environment, so the child is given
-        # its load path explicitly; the active project is the test environment
-        # that carries both Octopus and MPI.
+        # its load path explicitly -- this process's, entry for entry, as the
+        # PIC multi-process contract gives its own child: under `Pkg.test`
+        # that is `@:@stdlib` with the test environment active, which carries
+        # both Octopus and MPI; under the extracted runner
+        # (test/run_extracted_testsets.jl), where the active project is the
+        # package itself and MPI is only a weak dependency of it, it keeps the
+        # default environment this process resolved MPI from. `shard` is the
+        # rule the child requests through `OCTOPUS_MPI_CHECK_SHARD`
+        # (`:balanced`); `nothing` leaves the child on the policy's default.
         dir = mktempdir()
+        env = Pair{String,String}["JULIA_LOAD_PATH" => join(Base.LOAD_PATH, ":"),
+                                  "JULIA_PROJECT" => Base.active_project(),
+                                  "OCTOPUS_MPI_RECEIPT_DIR" => dir]
+        shard === nothing || push!(env, "OCTOPUS_MPI_CHECK_SHARD" => String(shard))
         cmd = addenv(`$(launcher) -n $(n) $(Base.julia_cmd()) --startup-file=no --threads=2 $(child)`,
-                     "JULIA_LOAD_PATH" => "@:@stdlib",
-                     "JULIA_PROJECT" => Base.active_project(),
-                     "OCTOPUS_MPI_RECEIPT_DIR" => dir)
+                     env...)
         out = IOBuffer()
         # Bounded (step 4b): every multi-process hazard shows up as ranks
         # blocked in a collective, and a rank that blocks WITHOUT exiting
@@ -31680,6 +31861,24 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
         receipts = join((isfile(f) ? read(f, String) : "" for f in files), "")
         (success(proc), receipts, String(take!(out)), delivered)
     end
+    # The child builds every multi-process policy through its one `mp_policy`
+    # helper, which reads the shard rule from `OCTOPUS_MPI_CHECK_SHARD`, and
+    # every shard range it or its probes derive for themselves names the rule:
+    # a bare construction or a bare `_mp_shard_range` call would run the
+    # default rule under a launch that believes it ran the balanced one -- and
+    # pass, at a dividing rank count. Held here, launcher or no launcher.
+    child_source = readlines(child)
+    @test count(l -> occursin("MultiProcessExecutionPolicy(", l), child_source) == 1
+    @test any(l -> startswith(l, "mp_policy(; kw...) = MultiProcessExecutionPolicy(; shard=_CHECK_SHARD"),
+              child_source)
+    @test count(l -> occursin("_mp_shard_range(", l), child_source) >= 4
+    for file in ("mpi_seam_check.jl", "mpi_seam_check_fixture.jl",
+                 "particle_tunes_probe.jl", "phase_space_reset_probe.jl")
+        source = readlines(joinpath(root, "test", file))
+        file == "mpi_seam_check.jl" ||
+            @test !any(l -> occursin("MultiProcessExecutionPolicy(", l), source)
+        @test all(l -> occursin("shard=", l), filter(l -> occursin("_mp_shard_range(", l), source))
+    end
     if launcher === nothing
         @test_broken false          # visible in the summary, unlike a silent skip
     else
@@ -31688,6 +31887,16 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
         # Four ranks (step 4d): three slices on four ranks put one slice on
         # two ranks, the first real group of the slice-aligned collide.
         ok4, out4, raw4, got4 = run_ranks(4)
+        # Three ranks (2026-11-23, `shard = :balanced`): the first count the
+        # default rule refuses -- 64 chunks do not divide by three -- so the
+        # launch is made twice: under the balanced rule, which must run the
+        # whole child, and under the default, which must fail by name before
+        # any receipt says OK. Two ranks under the balanced rule is the
+        # superset property end to end: a dividing count, so the child must
+        # match the default child's receipts to the character.
+        ok3b, out3b, raw3b, got3b = run_ranks(3; shard=:balanced)
+        ok2b, out2b, raw2b, got2b = run_ranks(2; shard=:balanced)
+        ok3d, out3d, raw3d, got3d = run_ranks(3)
         if !ok1 && !occursin("MPI-CHECK", out1)
             # The environment could not run an MPI child at all (no launcher
             # permissions, no shared memory). Loud, and NOT counted as a pass.
@@ -31697,15 +31906,33 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             ok1 || @info "the MPI child failed at 1 rank" out=last(raw1, 4000)
             ok2 || @info "the MPI child failed at 2 ranks" out=last(raw2, 4000)
             ok4 || @info "the MPI child failed at 4 ranks" out=last(raw4, 4000)
+            ok3b || @info "the MPI child failed at 3 ranks under shard = :balanced" out=last(raw3b, 4000)
+            ok2b || @info "the MPI child failed at 2 ranks under shard = :balanced" out=last(raw2b, 4000)
             @test ok1
             @test ok2
             @test ok4
+            @test ok3b
+            @test ok2b
             # N ranks owe N receipt files. Nothing below can tell a rank that
             # stayed silent from one that agreed, so this is the anti-vacuity
             # guard for the whole section.
             @test got1 == 1
             @test got2 == 2
             @test got4 == 4
+            @test got3b == 3
+            @test got2b == 2
+            # The default rule at three ranks: the launch FAILS, by the rule's
+            # own message in the merged stream, with the three receipt files
+            # delivered (the child opens them first) carrying its FAIL line
+            # and nothing that says OK -- the child applies the rule before
+            # its first OK receipt, so a refusal cannot leave one on file.
+            @test !ok3d
+            @test occursin("cannot divide the 64 fixed reduction chunks", raw3d)
+            @test got3d == 3
+            @test count(line -> startswith(line, "MPI-CHECK FAIL"), split(out3d, '\n')) == 3
+            @test occursin("cannot divide the 64 fixed reduction chunks", out3d)
+            @test !any(line -> endswith(line, " OK"), split(out3d, '\n'))
+            @test !occursin("MPI-TRACK ", out3d)
             # Both ranks must report, and both must report through MPI: a
             # child that silently fell back to the passthrough would print
             # `resolved_by=serial_passthrough` and one rank line.
@@ -31714,7 +31941,29 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             @test occursin("MPI-CHECK rank=1 nranks=2 resolved_by=mpi_communicator OK", out2)
             @test !occursin("MPI-CHECK FAIL", out1)
             @test !occursin("MPI-CHECK FAIL", out2)
-            for (output, ranks) in ((out1, 1), (out2, 2), (out4, 4))
+            for r in 0:2
+                @test occursin("MPI-CHECK rank=$(r) nranks=3 resolved_by=mpi_communicator OK", out3b)
+            end
+            @test occursin("MPI-CHECK rank=0 nranks=2 resolved_by=mpi_communicator OK", out2b)
+            @test occursin("MPI-CHECK rank=1 nranks=2 resolved_by=mpi_communicator OK", out2b)
+            @test !occursin("MPI-CHECK FAIL", out3b)
+            @test !occursin("MPI-CHECK FAIL", out2b)
+            # The shard receipt on EVERY rank of every launch, from the
+            # communicator receipt: the rule requested and the alignment in
+            # force, which differ only where the rank count does not divide
+            # the chunks.
+            for (output, ranks, shard, aligned) in ((out1, 1, "chunk_aligned", true),
+                                                    (out2, 2, "chunk_aligned", true),
+                                                    (out4, 4, "chunk_aligned", true),
+                                                    (out2b, 2, "balanced", true),
+                                                    (out3b, 3, "balanced", false))
+                shard_receipts = filter(line -> startswith(line, "MPI-SHARD "), split(output, '\n'))
+                @test length(shard_receipts) == ranks
+                for rank in 0:(ranks - 1)
+                    @test "MPI-SHARD rank=$(rank) nranks=$(ranks) shard=$(shard) chunk_aligned=$(aligned) OK" in shard_receipts
+                end
+            end
+            for (output, ranks) in ((out1, 1), (out2, 2), (out4, 4), (out2b, 2), (out3b, 3))
                 tune_receipts = filter(line -> startswith(line, "MPI-TUNES "), split(output, '\n'))
                 @test length(tune_receipts) == ranks
                 for rank in 0:(ranks - 1)
@@ -31783,6 +32032,12 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             @test joined(out1) == reference
             @test joined(out2) == reference         # 2 ranks, bit for bit
             @test length(shards(out2, "MPI-TRACK")) == 2
+            # Tracking reduces nothing, so it is bitwise at ANY rank count
+            # under either rule: three balanced shards joined in rank order
+            # are the single-process beam to the character.
+            @test joined(out3b) == reference
+            @test length(shards(out3b, "MPI-TRACK")) == 3
+            @test joined(out2b) == reference
 
             # The strong beam's luminosity crosses ranks through the chunk
             # fold; every rank must leave with the single-process number.
@@ -31795,12 +32050,23 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             end
             reference_lum = repr(element.last_luminosity)
             @test isfinite(element.last_luminosity) && element.last_luminosity > 0
-            for out in (out1, out2)
+            for out in (out1, out2, out2b)
                 reported = [split(line)[3] for line in split(out, '\n')
                             if startswith(line, "MPI-LUM ")]
                 @test !isempty(reported)
                 @test all(==(reference_lum), reported)
             end
+            # At three balanced ranks the luminosity is NOT bitwise, by
+            # design: each rank folds its 64 chunk partials to one number and
+            # the three numbers are summed in rank order, a re-association of
+            # the single-process chunk sum that moves last bits only. Every
+            # rank leaves with the SAME bits (the fold is the same gather on
+            # every rank), within the parity class of the single-process
+            # number.
+            three_lum = [split(line)[3] for line in split(out3b, '\n') if startswith(line, "MPI-LUM ")]
+            @test length(three_lum) == 3 && allequal(three_lum)
+            @test isapprox(parse(Float64, first(three_lum)), parse(Float64, reference_lum);
+                           rtol=1.0e-12, atol=0.0)
 
             # --- step 3b: one output file, written by rank 0 -------------
             #
@@ -31811,6 +32077,8 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                               if startswith(line, "MPI-MOMROWS ")]
             @test rowcounts(out1) == [3]
             @test rowcounts(out2) == [3]
+            @test rowcounts(out3b) == [3]
+            @test rowcounts(out2b) == [3]
 
             # The loss accounting spans the ranks: a divided run counts the
             # whole beam, not the shard it happens to hold.
@@ -31818,6 +32086,8 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             @test length(losses(out1)) == 1        # and only rank 0 reports
             @test length(losses(out2)) == 1
             @test losses(out1) == losses(out2)
+            @test losses(out3b) == losses(out1)     # integer counts: exact at any rank count
+            @test losses(out2b) == losses(out1)
             @test occursin("particles=$(_mpi_check_global_n())", first(losses(out1)))
             @test occursin("dead=4", first(losses(out1)))
 
@@ -31832,6 +32102,12 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             @test any(!=(0.0), one_rank[2:end])     # anti-vacuity
             for (a, b) in zip(one_rank, two_rank)
                 @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
+            end
+            for other in (momrow(out3b), momrow(out2b))
+                @test length(other) == length(one_rank)
+                for (a, b) in zip(one_rank, other)
+                    @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
+                end
             end
 
             # --- step 3c: per-particle output gathers onto rank 0 --------
@@ -31848,6 +32124,8 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 one, two = tagged(out1, tag), tagged(out2, tag)
                 @test length(one) == 1        # only rank 0 reports, and it does
                 @test one == two              # and a divided run recorded the same
+                @test tagged(out3b, tag) == one   # WHICH particles, whatever the shards
+                @test tagged(out2b, tag) == one
             end
             # Anti-vacuity: the aperture really killed a useful fraction, and
             # the snapshot really recorded its particles over both turns.
@@ -31865,6 +32143,8 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             # "ran" (F-222).
             @test tagged(out1, "MPI-TRACKREFUSE ") == ["action=false action_calls=1"]
             @test tagged(out2, "MPI-TRACKREFUSE ") == ["action=true action_calls=0"]
+            @test tagged(out3b, "MPI-TRACKREFUSE ") == ["action=true action_calls=0"]
+            @test tagged(out2b, "MPI-TRACKREFUSE ") == ["action=true action_calls=0"]
 
             # --- step 4a: the soft-Gaussian collide ----------------------
             #
@@ -31878,6 +32158,20 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                                   if startswith(line, "MPI-SLICE ")]
             @test length(slicing_lines(out1)) == 2
             @test slicing_lines(out1) == slicing_lines(out2)   # bit for bit
+            @test slicing_lines(out2b) == slicing_lines(out1)  # a dividing count: the aligned bits
+            # At three balanced ranks the boundaries and weights come through
+            # the rank-ordered fold, so they agree to rounding rather than to
+            # the bit; a boundary that moved a particle would show below as a
+            # different collision, not as last-bit noise.
+            three_slicing = slicing_lines(out3b)
+            @test length(three_slicing) == 2
+            for (a, b) in zip(slicing_lines(out1), three_slicing)
+                @test split(a)[1:2] == split(b)[1:2] && length(split(a)) == length(split(b))
+                for (x, y) in zip([parse(Float64, v) for v in split(a)[3:end]],
+                                  [parse(Float64, v) for v in split(b)[3:end]])
+                    @test isapprox(x, y; rtol=1.0e-12, atol=0.0)
+                end
+            end
 
             collide_values(out) = Dict(m.captures[1] => parse(Float64, m.captures[2])
                                        for line in split(out, '\n')
@@ -31889,6 +32183,12 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             for k in keys(one)
                 @test isapprox(one[k], two[k]; rtol=1.0e-12, atol=0.0)
             end
+            three = collide_values(out3b)
+            @test Set(keys(three)) == Set(keys(one))
+            for k in keys(one)
+                @test isapprox(one[k], three[k]; rtol=1.0e-12, atol=0.0)
+            end
+            @test collide_values(out2b) == two              # a dividing count: the aligned bits
 
             # `batch_mode` under division, to the CHARACTER. The child's first
             # collide runs the solver default `:wavefront`; its second runs
@@ -31899,7 +32199,7 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             # beam-1 and no beam-2 slice, so it re-associates nothing. This is
             # asserted at EVERY rank count the child runs, because the divided
             # collide's merged exchanges are exactly what could break it.
-            for out in (out1, out2)
+            for out in (out1, out2, out4, out2b, out3b)
                 @test first(tagged(out, "MPI-COLLIDE ")) ==
                       first(tagged(out, "MPI-COLLIDESEQ "))
             end
@@ -31929,10 +32229,22 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             @test isapprox(one["maxpx"], reference_sig.maxpx; rtol=1.0e-12, atol=0.0)
             @test isapprox(one["rmspx"], reference_sig.rmspx; rtol=1.0e-12, atol=0.0)
 
-            # The shard rule itself, as the ranks report having applied it.
-            offsets = [parse(Int, match(r"offset=(\d+)", line).captures[1])
-                       for line in split(out2, '\n') if startswith(line, "MPI-SHARD ")]
-            @test sort(offsets) == [0, div(_mpi_check_global_n(), 2)]
+            # The shard rule itself, as the ranks report having applied it to
+            # the tracked beam: the offsets every launch printed are the ones
+            # the rule it ran under derives, one per rank.
+            offsets(out) = sort([parse(Int, match(r"offset=(\d+)", line).captures[1])
+                                 for line in split(out, '\n') if startswith(line, "MPI-SHARDOFFSET ")])
+            rule_offsets(ranks, shard) =
+                sort([first(Octopus._mp_shard_range(_mpi_check_global_n(), ranks, r; shard=shard)) - 1
+                      for r in 0:(ranks - 1)])
+            @test offsets(out2) == [0, div(_mpi_check_global_n(), 2)]
+            for (out, ranks, shard) in ((out1, 1, :chunk_aligned), (out2, 2, :chunk_aligned),
+                                        (out4, 4, :chunk_aligned), (out2b, 2, :balanced),
+                                        (out3b, 3, :balanced))
+                @test length(offsets(out)) == ranks
+                @test offsets(out) == rule_offsets(ranks, shard)
+            end
+            @test rule_offsets(3, :balanced) != rule_offsets(4, :chunk_aligned)[1:3]   # anti-vacuity
 
             # --- step 4b: the strong-strong TASK divides ------------------
             #
@@ -31973,15 +32285,24 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                                 ("MPI-SSMOMROWS ", reference.rows))
                 @test length(tagged(out1, tag)) == 1               # rank 0 alone reports
                 @test length(tagged(out2, tag)) == 1
+                @test length(tagged(out3b, tag)) == 1 && length(tagged(out2b, tag)) == 1
                 @test first(tagged(out1, tag)) == want              # one rank: bit for bit
             end
             @test first(tagged(out2, "MPI-SSLUMTURNS ")) == "0,1,2"
             @test first(tagged(out2, "MPI-SSMOMROWS ")) == "3 3"   # rank 0 wrote, once per turn
+            @test first(tagged(out3b, "MPI-SSLUMTURNS ")) == "0,1,2"
+            @test first(tagged(out3b, "MPI-SSMOMROWS ")) == "3 3"  # at three ranks too
             floats(s) = [parse(Float64, v) for v in split(s)]
             for tag in ("MPI-SSLUM ", "MPI-SSMOM1 ", "MPI-SSMOM2 ", "MPI-SSBEAM1 ", "MPI-SSBEAM2 ")
                 one, two = floats(first(tagged(out1, tag))), floats(first(tagged(out2, tag)))
                 @test length(one) == length(two) >= 3
                 for (a, b) in zip(one, two)
+                    @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
+                end
+                # Three balanced ranks: the parity class, as two ranks are.
+                three = floats(first(tagged(out3b, tag)))
+                @test length(three) == length(one)
+                for (a, b) in zip(one, three)
                     @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
                 end
             end
@@ -31997,16 +32318,34 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             # until the 2026-10-19 fix batch (F-222).
             @test tagged(out1, "MPI-SSREFUSE ") == ["spectral_ran=true action=false action_calls=1"]
             @test tagged(out2, "MPI-SSREFUSE ") == ["spectral_ran=true action=true action_calls=0"]
+            @test tagged(out3b, "MPI-SSREFUSE ") == ["spectral_ran=true action=true action_calls=0"]
+            @test tagged(out2b, "MPI-SSREFUSE ") == ["spectral_ran=true action=true action_calls=0"]
             # The child prints this only when the spectral TASK threw; an empty
             # list is the claim, and a non-empty one carries the message.
             @test isempty(tagged(out1, "MPI-SPECTASKERR ")) &&
                   isempty(tagged(out2, "MPI-SPECTASKERR "))
+            @test isempty(tagged(out3b, "MPI-SPECTASKERR ")) &&
+                  isempty(tagged(out2b, "MPI-SPECTASKERR "))
             # Each beam's shard, as each rank resolved it: the two beams
             # differ in size, so their offsets differ on rank 1 and a scope
             # that handed beam 2 beam 1's shard would print 128 for both.
             @test tagged(out1, "MPI-SSSHARD ") == ["rank=0 b1=0/256 b2=0/192"]
             @test sort(tagged(out2, "MPI-SSSHARD ")) ==
                   ["rank=0 b1=0/256 b2=0/192", "rank=1 b1=128/256 b2=96/192"]
+            # The same lines derived from the rule for the other launches: at
+            # two ranks the balanced rule is the aligned one (the pins above),
+            # at three it cuts each beam into thirds, and the two beams'
+            # offsets differ on every rank but the first, so a scope that
+            # handed beam 2 beam 1's shard could not print these.
+            ss_shards(ranks, shard) =
+                sort(["rank=$(r) b1=$(first(Octopus._mp_shard_range(256, ranks, r; shard=shard)) - 1)/256 " *
+                      "b2=$(first(Octopus._mp_shard_range(192, ranks, r; shard=shard)) - 1)/192"
+                      for r in 0:(ranks - 1)])
+            @test ss_shards(2, :chunk_aligned) == sort(tagged(out2, "MPI-SSSHARD "))
+            @test sort(tagged(out2b, "MPI-SSSHARD ")) == ss_shards(2, :balanced)
+            @test sort(tagged(out3b, "MPI-SSSHARD ")) == ss_shards(3, :balanced)
+            @test all(first(Octopus._mp_shard_range(256, 3, r; shard=:balanced)) !=
+                      first(Octopus._mp_shard_range(192, 3, r; shard=:balanced)) for r in 1:2)
 
             # Above the chunked thresholds (see the fixture): the same three
             # claims on a pair whose slices chunk on every rank, signatures
@@ -32033,6 +32372,16 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 for (a, b) in zip(one, two)
                     @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
                 end
+                # Two balanced ranks: the default child's bits, on the one
+                # pair whose slices chunk on every rank (the superset
+                # property); three balanced ranks: the parity class.
+                @test tagged(out2b, tag) == tagged(out2, tag)
+                @test length(tagged(out3b, tag)) == 1
+                three = floats(first(tagged(out3b, tag)))
+                @test length(three) == length(one)
+                for (a, b) in zip(one, three)
+                    @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
+                end
             end
 
             # A shard with no live particle must not hang its peers: the
@@ -32041,6 +32390,11 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             # did not refuse the all-dead one; rank 0 reports.
             @test tagged(out1, "MPI-SSPOISON ") == ["half_dead_sliced=true all_dead_refused=true"]
             @test tagged(out2, "MPI-SSPOISON ") == ["half_dead_sliced=true all_dead_refused=true"]
+            # At three balanced ranks the killed range 129:256 covers the last
+            # rank's whole third (the child derives that from the rule and
+            # fails if no rank's shard lies within it).
+            @test tagged(out3b, "MPI-SSPOISON ") == ["half_dead_sliced=true all_dead_refused=true"]
+            @test tagged(out2b, "MPI-SSPOISON ") == ["half_dead_sliced=true all_dead_refused=true"]
 
             # --- step 4c: the PIC collide divides -------------------------
             #
@@ -32087,13 +32441,20 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             for (tag, want) in (("MPI-PICLUM ", picref.lum), ("MPI-PICBEAM1 ", picref.beam1),
                                 ("MPI-PICBEAM2 ", picref.beam2), ("MPI-PICMOMROWS ", picref.rows))
                 @test length(tagged(out1, tag)) == 1 && length(tagged(out2, tag)) == 1
+                @test length(tagged(out3b, tag)) == 1
                 @test first(tagged(out1, tag)) == want              # one rank: bit for bit
             end
             @test first(tagged(out2, "MPI-PICMOMROWS ")) == "2 2"   # rank 0 wrote, once per turn
+            @test first(tagged(out3b, "MPI-PICMOMROWS ")) == "2 2"
             for tag in ("MPI-PICLUM ", "MPI-PICBEAM1 ", "MPI-PICBEAM2 ")
                 one, two = floats(first(tagged(out1, tag))), floats(first(tagged(out2, tag)))
                 @test length(one) == length(two) >= 2
                 for (a, b) in zip(one, two)
+                    @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
+                end
+                three = floats(first(tagged(out3b, tag)))
+                @test length(three) == length(one)
+                for (a, b) in zip(one, three)
                     @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
                 end
             end
@@ -32120,7 +32481,7 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             # times the rank count.
             let (cb1, cb2) = _mpi_check_ss_beams(CPUThreadsExecutionPolicy(threads=1)),
                 psolver = _mpi_check_pic_solver()
-                for (out, P) in ((out1, 1), (out2, 2), (out4, 4))
+                for (out, P) in ((out1, 1), (out2, 2), (out4, 4), (out3b, 3))
                     partials = 2 * _mpi_check_pic_partials(cb1, cb2, psolver, P)
                     # Which loop, from the layout rule (step 4e): a slice
                     # split across a group gets the dataflow loop, a rank
@@ -32167,21 +32528,22 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 key = String(name)
                 ref = picref.variants[key]
                 v1, v2, v4 = variant(out1, key), variant(out2, key), variant(out4, key)
-                @test v1 !== nothing && v2 !== nothing && v4 !== nothing
-                (v1 === nothing || v2 === nothing || v4 === nothing) && continue
+                v3 = variant(out3b, key)
+                @test v1 !== nothing && v2 !== nothing && v4 !== nothing && v3 !== nothing
+                (v1 === nothing || v2 === nothing || v4 === nothing || v3 === nothing) && continue
                 @test v1 == ref.line                                # one rank: bit for bit
-                for vP in (v2, v4), (a, b) in zip(floats(v1), floats(vP))
+                for vP in (v2, v4, v3), (a, b) in zip(floats(v1), floats(vP))
                     @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
                 end
                 # `z` came home to its slot on every rank at every rank count.
-                for out in (out1, out2, out4)
+                for out in (out1, out2, out4, out3b)
                     zs = [last(split(s)) for s in ranklines(out, "MPI-PICVARZ ", key)]
                     @test !isempty(zs) && all(==("true"), zs)
                 end
                 # Fixed rank count, same bits whatever order the messages
                 # arrived in: the arms that ran twice.
                 if name in (:skewed, :sparse)
-                    for out in (out1, out2, out4)
+                    for out in (out1, out2, out4, out3b)
                         @test tagged(out, "MPI-PICVAR2 $(key) ") == [variant(out, key)]
                     end
                 end
@@ -32197,6 +32559,7 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                     @test v1 == picref.variants[String(same_as)].line
                     @test v2 == variant(out2, String(same_as))
                     @test v4 == variant(out4, String(same_as))
+                    @test v3 == variant(out3b, String(same_as))
                 elseif name !== :default
                     @test v1 != picref.variants["default"].line
                 end
@@ -32210,6 +32573,10 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 @test length(lums2) == 2 && lums2[1] == lums2[2]    # two ranks: the same bits
                 isempty(lums2) || @test isapprox(floats(ref.lum)[1], floats(lums2[1])[1];
                                                   rtol=1.0e-12, atol=0.0)
+                lums3 = [last(split(s)) for s in ranklines(out3b, "MPI-PICVARLUM ", key)]
+                @test length(lums3) == 3 && allequal(lums3)         # three balanced ranks: the same bits
+                isempty(lums3) || @test isapprox(floats(ref.lum)[1], floats(lums3[1])[1];
+                                                  rtol=1.0e-12, atol=0.0)
                 # The dropped-particle count is the BEAM's at every rank
                 # count (the pool's sum, then the ranks'); the `:node` arm is
                 # the one that drops, so the cross-rank sum is exercised. The
@@ -32220,6 +32587,7 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                     drop = "$(ref.dropped)"
                     @test ranklines(out1, "MPI-PICVARDROP ", key) == [drop]
                     @test ranklines(out2, "MPI-PICVARDROP ", key) == [drop]
+                    @test ranklines(out3b, "MPI-PICVARDROP ", key) == [drop]
                     name === :node && @test ref.dropped > 0
                 end
                 # The schedule: at one rank the run is the CPU policy's. At
@@ -32239,6 +32607,7 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 sched1 = ranklines(out1, "MPI-PICVARSCHED ", key)
                 sched2 = ranklines(out2, "MPI-PICVARSCHED ", key)
                 sched4 = ranklines(out4, "MPI-PICVARSCHED ", key)
+                sched3 = ranklines(out3b, "MPI-PICVARSCHED ", key)
                 # Gaussian-PIC has no node or source-slice mesh (it rejects
                 # `interaction_grid`), so every gpic arm is on the sliced path.
                 per_pair = name in (:node, :node2, :source_slice)
@@ -32263,11 +32632,11 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                     end
                 if per_pair
                     @test sched1 == ["pair_workers=$(ref.pair_workers) inner_workers=$(ref.inner_workers) exchange=none schedule=none"]
-                    for sched in (sched2, sched4)
+                    for sched in (sched2, sched4, sched3)
                         @test sched == ["pair_workers=1 inner_workers=$(threads) exchange=per_pair schedule=none"]
                     end
                 else
-                    for (sched, P) in ((sched1, 1), (sched2, 2), (sched4, 4))
+                    for (sched, P) in ((sched1, 1), (sched2, 2), (sched4, 4), (sched3, 3))
                         @test sched == ["pair_workers=1 inner_workers=$(threads) exchange=sliced schedule=$(armloop(P))"]
                     end
                 end
@@ -32295,13 +32664,14 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 key = String(name)
                 ref = specref[key]
                 v1, v2, v4 = svariant(out1, key), svariant(out2, key), svariant(out4, key)
-                @test v1 !== nothing && v2 !== nothing && v4 !== nothing
-                (v1 === nothing || v2 === nothing || v4 === nothing) && continue
+                v3 = svariant(out3b, key)
+                @test v1 !== nothing && v2 !== nothing && v4 !== nothing && v3 !== nothing
+                (v1 === nothing || v2 === nothing || v4 === nothing || v3 === nothing) && continue
                 @test v1 == ref.line                                # one rank: bit for bit
-                for vP in (v2, v4), (a, b) in zip(floats(v1), floats(vP))
+                for vP in (v2, v4, v3), (a, b) in zip(floats(v1), floats(vP))
                     @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
                 end
-                for out in (out1, out2, out4)
+                for out in (out1, out2, out4, out3b)
                     zs = [last(split(s)) for s in ranklines(out, "MPI-SPECVARZ ", key)]
                     @test !isempty(zs) && all(==("true"), zs)
                 end
@@ -32313,6 +32683,7 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                     @test v1 == specref[String(same_as)].line
                     @test v2 == svariant(out2, String(same_as))
                     @test v4 == svariant(out4, String(same_as))
+                    @test v3 == svariant(out3b, String(same_as))
                 elseif name !== :spec
                     @test v1 != specref["spec"].line
                 end
@@ -32320,7 +32691,7 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 # the coordinators hold their pairs' values and one all-sum
                 # publishes the vector, so a rank whose fold differed from its
                 # peers' would show here first.
-                for out in (out1, out2, out4)
+                for out in (out1, out2, out4, out3b)
                     lums = [last(split(s)) for s in ranklines(out, "MPI-SPECVARLUM ", key)]
                     @test !isempty(lums) && all(==(lums[1]), lums)
                 end
@@ -32330,7 +32701,7 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 # which one each actually ran so an arm cannot pass by running
                 # the same loop twice.
                 if solver.longitudinal_kick
-                    for out in (out1, out2, out4)
+                    for out in (out1, out2, out4, out3b)
                         lp = ranklines(out, "MPI-SPECLOOP ", key)
                         @test length(lp) == 1
                         length(lp) == 1 || continue
@@ -32347,7 +32718,7 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                 # that silently ran the same schedule twice.
                 want_mode = !solver.longitudinal_kick ? "order_free" :
                             solver.batch_mode === :sequential ? "sequential" : "wavefront"
-                for (out, P) in ((out1, 1), (out2, 2), (out4, 4))
+                for (out, P) in ((out1, 1), (out2, 2), (out4, 4), (out3b, 3))
                     sched = ranklines(out, "MPI-SPECVARSCHED ", key)
                     @test length(sched) == 1
                     length(sched) == 1 || continue
@@ -32375,7 +32746,7 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
                     count(!isempty, s1.indices) * count(!isempty, s2.indices)
                 end
                 @test np > 0
-                for (out, P) in ((out1, 1), (out2, 2), (out4, 4))
+                for (out, P) in ((out1, 1), (out2, 2), (out4, 4), (out3b, 3))
                     works = [split(s) for s in ranklines(out, "MPI-SPECVARWORK ", key)]
                     @test length(works) == P
                     length(works) == P || continue
@@ -32411,6 +32782,7 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             @test tagged(out1, "MPI-SPECDENY ") == ["undivided_refused=false divides=false"]
             @test tagged(out2, "MPI-SPECDENY ") == ["undivided_refused=true divides=false"]
             @test tagged(out4, "MPI-SPECDENY ") == ["undivided_refused=true divides=false"]
+            @test tagged(out3b, "MPI-SPECDENY ") == ["undivided_refused=true divides=false"]
             # The arms' premises, from the layout rule (step 4d): `:sparse`
             # is many WHOLE slices per rank (64 slices on two ranks), `:skewed`
             # is a slice split over two ranks at four (its middle slice holds
@@ -32426,14 +32798,42 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             end
             @test Octopus._pic_deposit_parallel(_mpi_check_pic_big_min_local_slice(2), 5, 5)
             @test Octopus._pic_deposit_parallel(_mpi_check_pic_big_min_local_slice(4), 5, 5)
+            @test Octopus._pic_deposit_parallel(_mpi_check_pic_big_min_local_slice(3), 5, 5)
             @test tagged(out1, "MPI-PICBIG ") == [picref.big.line]
-            for out in (out2, out4), (a, b) in zip(floats(picref.big.line), floats(first(tagged(out, "MPI-PICBIG "))))
+            for out in (out2, out4, out3b), (a, b) in zip(floats(picref.big.line), floats(first(tagged(out, "MPI-PICBIG "))))
                 @test isapprox(a, b; rtol=1.0e-12, atol=0.0)
             end
             @test [last(split(s)) for s in ranklines(out1, "MPI-PICBIGLUM", "")] == [picref.big.lum]
-            for (out, P) in ((out2, 2), (out4, 4))
+            for (out, P) in ((out2, 2), (out4, 4), (out3b, 3))
                 biglums = [last(split(s)) for s in ranklines(out, "MPI-PICBIGLUM", "")]
                 @test length(biglums) == P && allequal(biglums)
+            end
+
+            # --- the superset property, end to end --------------------------
+            #
+            # Two ranks divide the chunks, so the balanced child at two ranks
+            # IS the default child at two ranks: every receipt the same, to
+            # the character, except the shard receipt itself, which names the
+            # rule requested, and the dataflow loop's overlap statistics
+            # (`MPI-PICFLOW`), which count pairs that happened to start while
+            # an earlier batch was still in flight -- a measurement of message
+            # timing, asserted on its own above and not a statement about
+            # bits. The three receipt kinds the design singles out -- the
+            # tracked shards, the strong beam's luminosity, the chunked
+            # strong-strong pair -- are pinned by name as well, so a reader
+            # finds them without diffing.
+            comparable(out) = [line for line in split(out, '\n')
+                               if !startswith(line, "MPI-SHARD ") && !startswith(line, "MPI-PICFLOW ")]
+            @test length(comparable(out2b)) == length(comparable(out2)) > 100     # anti-vacuity
+            differing = [(a, b) for (a, b) in zip(comparable(out2), comparable(out2b)) if a != b]
+            @test length(differing) == 0
+            isempty(differing) ||
+                @info "receipts differing between the two-rank default and balanced children" first(differing, 3)
+            @test shards(out2b, "MPI-TRACK") == shards(out2, "MPI-TRACK")
+            @test [l for l in split(out2b, '\n') if startswith(l, "MPI-LUM ")] ==
+                  [l for l in split(out2, '\n') if startswith(l, "MPI-LUM ")]
+            for tag in ("MPI-SSBIGLUM ", "MPI-SSBIGBEAM1 ", "MPI-SSBIGBEAM2 ")
+                @test tagged(out2b, tag) == tagged(out2, tag) && length(tagged(out2, tag)) == 1
             end
 
             # --- step 4c: the CPU/MPI/CUDA consistency contract ----------

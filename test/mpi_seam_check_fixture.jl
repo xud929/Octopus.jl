@@ -92,7 +92,9 @@ _mpi_check_artifact_path(dir::AbstractString, step::AbstractString) =
 has something to count and the moment reductions have something to mask."""
 function _mpi_check_poisoned_beam(policy)
     beam = _mpi_check_build_beam(policy)
-    # Global indices, chosen to fall in different ranks' shards at P = 2 and 4.
+    # Global indices, chosen to fall in different ranks' shards at P = 2 and 4
+    # under the default shard rule and at P = 3 under the balanced one (the
+    # anti-vacuity check below derives that from the rule in force).
     #
     # The shard resolution must happen INSIDE the execution-policy scope.
     # `_mp_resolve_shard` reads the policy in force and all-sums the ranks'
@@ -113,6 +115,14 @@ function _mpi_check_poisoned_beam(policy)
         # non-zero offset, or the scope was not in force after all.
         Octopus._mp_nranks() == 1 || Octopus._mp_rank() == 0 || offset != 0 ||
             error("MPI-CHECK FAIL poisoned beam resolved offset 0 off rank 0")
+        # And the four indices fall in at least two ranks' shards under the
+        # rule in force (the context's), so "spans the ranks" is measured.
+        if Octopus._mp_nranks() > 1
+            nranks, shard = Octopus._mp_nranks(), Octopus._multi_process_context().shard
+            owner(g) = findfirst(r -> g in Octopus._mp_shard_range(_global_n, nranks, r; shard=shard), 0:(nranks - 1))
+            length(unique(owner(g) for g in (7, 70, 150, 249))) >= 2 ||
+                error("MPI-CHECK FAIL the poisoned indices all fall in one rank's shard at $(nranks) ranks")
+        end
         for g in (7, 70, 150, 249)
             local_i = g - offset
             1 <= local_i <= length(beam.rep) || continue
@@ -239,7 +249,8 @@ _mpi_check_ss_task(policy, path; solver=_mpi_check_gaussian_solver(),
 
 """
 A pair sized so every rank's slices enter the CHUNKED moment and kick
-branches at 1, 2 and 4 ranks: `_STRONG_STRONG_PARALLEL_MOMENT_MIN` and
+branches at 1, 2 and 4 ranks (and at 3 balanced ranks: 32768 per rank per
+beam, three slices): `_STRONG_STRONG_PARALLEL_MOMENT_MIN` and
 `_STRONG_STRONG_PARALLEL_KICK_MIN` are 4096 members per slice, and the 256/192
 pair above never reaches them -- the 4a segfault appeared only when a divided
 run first met a slice big enough to chunk (64 x 1536 and 64 x 1280 particles,
