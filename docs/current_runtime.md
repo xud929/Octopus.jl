@@ -283,10 +283,20 @@ launcher started; an integer must match the communicator exactly. MPI itself is
 a weak dependency: without it loaded the process is a communicator of one and
 the collective seam runs its serial passthrough. A tracking task is divided by
 holding a shard of the beam: `Beam(n, policy, ...)` takes `n` as the WHOLE
-beam and hands each rank its own contiguous, chunk-aligned slice. A divided
-TRACKING task reproduces the undivided one bit for bit in the tracked beam and
-in the luminosity series (a per-turn sum folded on the fixed chunk grid in
-chunk order); a strong-strong task is bitwise at one rank and, across rank
+beam and hands each rank its own contiguous slice. Under the default
+`shard = :chunk_aligned` that slice is a run of whole reduction chunks, so the
+rank count must divide the 64 chunks (1, 2, 4, 8, 16, 32, 64) and any other
+count is refused by name. `shard = :balanced` (2026-11-23) lifts that
+restriction: where the rank count divides 64 it is the aligned rule bit for
+bit; elsewhere each rank gets an equal contiguous range and the cross-rank
+luminosity fold sums the ranks' partials in rank order, so the run is
+repeatable at a fixed rank count and agrees with a single process to rounding
+(the parity class below) rather than bitwise, while the tracked beam, which
+never reduces, stays bitwise
+(`history/multi_process_shard_option_2026_11_23.md`). Under a chunk-aligned
+shard a divided TRACKING task reproduces the undivided one bit for bit in the
+tracked beam and in the luminosity series (a per-turn sum folded on the fixed
+chunk grid in chunk order); a strong-strong task is bitwise at one rank and, across rank
 counts, in the parity class of `design/multi_process_policy.md`'s
 consistency table in its collides, its tracked beams and its luminosity
 series (the suite pins rtol 1e-12; measured 3.4e-15 in the luminosity and

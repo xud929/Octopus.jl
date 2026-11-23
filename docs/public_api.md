@@ -148,7 +148,7 @@ Use Julia help:
 ?TrackingTask
 ?StrongStrongTask
 ?CPUThreadsExecutionPolicy
-?MultiProcessExecutionPolicy
+?MultiProcessExecutionPolicy      # threads, ranks, and shard = :chunk_aligned | :balanced (the rank-count rule)
 ?CUDAExecutionPolicy
 ?CUDALaunchConfig
 ?CUDAPICLaunchConfig

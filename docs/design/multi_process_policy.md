@@ -34,10 +34,13 @@ single-process one coordinate by coordinate.
 
 ## The policy and where its state lives
 
-`MultiProcessExecutionPolicy(; threads=:auto, ranks=:auto)` composes
-`CPUThreadsExecutionPolicy(threads)` for the per-rank core. `ranks` is
+`MultiProcessExecutionPolicy(; threads=:auto, ranks=:auto, shard=:chunk_aligned)`
+composes `CPUThreadsExecutionPolicy(threads)` for the per-rank core. `ranks` is
 `:auto` (accept the launcher's communicator) or an integer the run must match
-exactly; a mismatch is rejected, never adjusted.
+exactly; a mismatch is rejected, never adjusted. `shard` (2026-11-23) is the
+step-3a shard rule, `:chunk_aligned` by default or `:balanced`; the request
+carries the rule asked for, and the context carries it beside the alignment in
+force (`MultiProcessContext.chunk_aligned`), which is what the receipt records.
 
 The resolved form is **not** a wrapper around `ResolvedCPUExecutionPolicy`.
 It is that type, with a slot:
@@ -81,7 +84,7 @@ rest arrived with the steps that needed them):
 
 | function | passthrough | MPI |
 |---|---|---|
-| `_mp_allsum!(A)` | `A` | below 2048 elements Allgather, then fold the blocks into `A` in rank order; above, an Alltoall of `P` blocks, the rank-ordered fold of each, then Allgather -- the same sum per element, `2n` per rank instead of `nP` (step 4c performance phase) |
+| `_mp_allsum!(A)` | `A` | below 2048 elements Allgather, then fold the blocks into `A` in rank order; above, an Alltoall of `P` blocks, the rank-ordered fold of each, then Allgather -- the same sum per element, `2n` per rank instead of `nP` (step 4c performance phase). The step-3a luminosity fold `_mp_chunk_fold` rides on it: under a chunk-aligned shard each rank's partials are scattered into their global chunk slots first, so the fold is chunk-ordered and bitwise; under a balanced shard that is not chunk-aligned (`shard = :balanced`, 2026-11-23) each rank folds its own 64 partials to one number and the ranks' numbers are folded in rank order |
 | `_mp_lane_fold!(lanes)` | `lanes` | the gather-and-fold, named apart because the shard contract differs |
 | `_mp_allminmax(lo, hi)` | `(lo, hi)` | `Allreduce` with `min` and `max` |
 | `_mp_allmin!(A)` / `_mp_allmax!(A)` | `A` | vector `Allreduce!` with `min` / `max` (step 4c) |
@@ -132,7 +135,29 @@ a result independent of the worker count. Give each rank whole chunks and the
 same property extends across processes for free: the ranks' partials,
 gathered and folded in chunk order, are the single-process sum bit for bit.
 The price is that the rank count must divide the chunk count, which is
-enforced rather than worked around.
+enforced rather than worked around. Since 2026-11-23 that enforcement is the
+default of an explicit option, `shard = :chunk_aligned`, and the next
+paragraph states the alternative
+([`../history/multi_process_shard_option_2026_11_23.md`](../history/multi_process_shard_option_2026_11_23.md)).
+
+**`shard = :balanced` accepts any rank count (2026-11-23).** The option is a
+strict superset of the default. Where the rank count divides the 64 chunks it
+IS the aligned rule: the same shards and the same folds, so no run the default
+accepts changes a bit. Where it does not, rank `r` owns the `r`-th of `nranks`
+equal contiguous particle ranges (`_chunk_bounds(global_n, nranks, r + 1)`),
+every rank keeps all 64 chunks for its own reductions, and `_mp_chunk_fold`
+sums each rank's 64 partials in chunk order to one number and the ranks'
+numbers in rank order. What stays bitwise: tracking, which does not reduce,
+so the tracked beam equals the single-process beam at any rank count; a rank's
+result against its own thread count, because the 64 chunks within a rank are
+untouched; and a run against itself at a fixed rank count, because the fold is
+rank-ordered. What does not: the chunk-grid fold that crosses ranks, the
+strong-beam luminosity, agrees with a single process only to rounding, the
+CPU/CUDA parity tolerance class the scalar diagnostics were already in at any
+rank count above one. The receipt `:multi_process_communicator` records the
+rule requested (`shard`) and the alignment in force (`chunk_aligned`), so a
+reader sees which case a run was in. Why an option, and not an environment
+variable or a second option for the chunk count, is in the record.
 
 **The shard is derived and verified, never stored.** Nothing in the particle
 representation records which slice of a larger beam it is, and a field that
@@ -847,7 +872,9 @@ nothing, which is the point: a group of one is the rule it replaced.
 
 Two constraints shape how a run should be laid out on a box with more CPUs
 than slices. The shard rule (step 3a) rejects any rank count that does not
-divide 64, so the choices are 1, 2, 4, 8, 16, 32 and 64; and the wavefront
+divide 64, so the choices are 1, 2, 4, 8, 16, 32 and 64 (under the default
+`shard = :chunk_aligned`; `shard = :balanced`, 2026-11-23, accepts any count at
+the cost step 3a states); and the wavefront
 gives at most `4 * min(n1, n2)` concurrent solves whatever the rank count is.
 With fifteen slices that puts the useful point at 32 ranks rather than the 16
 the head rule allowed, and THREADS take up the rest: a rank's per-batch solve
@@ -1125,7 +1152,7 @@ places rather than three, because the third follows:
 
 | pair | relation | measured by |
 |---|---|---|
-| CPU vs MPI, tracking | **bitwise**, at every rank count that divides the chunks | the suite's multi-process section, under a launcher, comparing gathered shards against a single-process run |
+| CPU vs MPI, tracking | **bitwise** under the default `shard = :chunk_aligned`, at every rank count that divides the chunks, the only counts it accepts; under `shard = :balanced` (2026-11-23) at a rank count that does not divide them the tracked beam is still bitwise and the luminosity fold is in the next row's class, a rank-ordered fold of per-rank chunk sums | the suite's multi-process section, under a launcher, comparing gathered shards against a single-process run; for the balanced shard at a non-dividing rank count, the checks named in `../history/multi_process_shard_option_2026_11_23.md` |
 | CPU vs MPI, scalar diagnostics | agreement to the accumulation difference between one serial sum and P of them: 1.7e-14 at two ranks, 8.7e-14 at four | the same section, comparing a divided run's moment row against a single-process one |
 | CPU vs MPI, strong-strong collides | **bitwise at one rank**; across rank counts the parity class -- the soft-Gaussian's aggregates to 5e-16; PIC's deposits fold over a slice's group of ranks in a fixed order (step 4d), measured 6e-15 worst over the option routes at 2 and 4 ranks and 9e-14 on a 64-slice, 4096-pair arm | the same section: the child's luminosity series, fingerprints and per-route lines against a single-process run at 1, 2 and 4 ranks; for PIC also `StrongStrongPICMultiProcessConsistencyContract` |
 | CPU vs CUDA | agreement to the contract's tolerance | `ElementTrackingBackendConsistencyContract` and `validation/tracking_backend_consistency.jl`; for the collides the two `StrongStrong*BackendConsistencyContract`s |
@@ -1172,6 +1199,14 @@ The two aligned rules are mutually exclusive distributions. Step 3a picked the
 contiguous whole-chunk one (`P | 64`; the rule and the rejection of counts that
 do not divide 64 are stated in the step-3a section above), which buys the
 chunk-ordered folds across processes unchanged.
+Since 2026-11-23 that is the default of the policy's `shard` option. The
+opt-in `shard = :balanced` keeps the aligned rule wherever `P | 64` and, where
+`P` does not divide 64, cuts equal contiguous ranges instead: fixed-P
+bit-repeatability holds there too (the first sentence of this section), the
+tracked beam stays bitwise, and the chunk-grid fold that crosses ranks drops to
+the tolerance class above. The PIC collide's per-slice folds were in that class
+at any rank count above one already, so for a strong-strong run the relaxed
+shard moves only the whole-beam moments and luminosity in the last bits.
 
 Three more things step 3 owned, listed here because the seam is shaped for
 them and they are easy to discover late; all three landed, and each is

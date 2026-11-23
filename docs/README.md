@@ -1408,6 +1408,15 @@ frozen pre-2026-08-16 TODO ledger is [`todo_ledger_archive.md`](history/todo_led
   detection, the CUDA `:quadratic` batched-route port, the re-slicing jitter
   quantification, and the corrected hybrid z-scan).
 
+- [`multi_process_shard_option_2026_11_23.md`](history/multi_process_shard_option_2026_11_23.md)
+  (the Perlmutter strong-strong scan launched at 128 ranks was refused because
+  128 does not divide the 64 reduction chunks, the step-3a design working as
+  intended; the three ways out that were weighed -- a `shard` policy option, an
+  environment variable for `_REDUCTION_CHUNKS`, a chunk-count option -- and why
+  the option won; `MultiProcessExecutionPolicy(; shard = :chunk_aligned |
+  :balanced)`, the default unchanged and the opt-in a strict superset that
+  trades the cross-rank bit identity of the luminosity fold for any rank count;
+  the touch points, the three-rank measurements, and the batch's gate).
 - [`multi_process_exchange_leak_2026_11_23.md`](history/multi_process_exchange_leak_2026_11_23.md)
   (the Perlmutter strong-strong scan ran out of memory after 4000 turns: the MPI
   migration cached one exchange matrix per distinct column count, one or two per
