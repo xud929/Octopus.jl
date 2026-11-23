@@ -429,7 +429,7 @@ function _resolve_execution_policy(policy::Union{Nothing,AbstractExecutionPolicy
 		# asking a question.
 		return ResolvedCPUExecutionPolicy(
 			_resolved_cpu_threads(_composed_cpu_policy(policy)),
-			MultiProcessRequest(policy.ranks))
+			MultiProcessRequest(policy.ranks, policy.shard))
 	end
 	cuda_policy = policy isa GPUExecutionPolicy ? _legacy_cuda_policy(policy) : policy
 	cuda_policy isa CUDAExecutionPolicy || throw(ArgumentError(
@@ -516,10 +516,16 @@ function _open_multi_process_context(request::MultiProcessRequest, threads::Int)
 				" (no MPI communicator: this process is its own communicator of one)" :
 				"") * "; requests are matched exactly, never adjusted."))
 	end
+	# The shard rule in force: whole chunks under :chunk_aligned, and under
+	# :balanced whenever the communicator's rank count divides the chunks; a
+	# receipt reader sees both the request and what it got.
+	chunk_aligned = _mp_chunk_aligned(nranks, request.shard)
 	_record_execution!(:multi_process_communicator, CPUThreadsBackend,
 	                   (nranks=nranks, rank=rank, requested_ranks=request.ranks,
-	                    resolved_by=resolved_by, threads=threads))
-	return MultiProcessContext(comm, nranks, rank, request.ranks, resolved_by)
+	                    resolved_by=resolved_by, threads=threads,
+	                    shard=request.shard, chunk_aligned=chunk_aligned))
+	return MultiProcessContext(comm, nranks, rank, request.ranks, resolved_by,
+	                           request.shard, chunk_aligned)
 end
 
 function _activate_resolved_policy!(policy::ResolvedCUDAExecutionPolicy)
@@ -721,8 +727,10 @@ Construct the shard of an `n_global`-particle beam that this rank owns.
 `n_global` is the WHOLE beam, not this process's share, so the same call gives
 the same physics at any rank count and a script does not have to divide by P.
 
-Every rank draws the whole beam and keeps its own contiguous, chunk-aligned
-slice. Drawing the whole thing on each rank looks wasteful, and it is, once,
+Every rank draws the whole beam and keeps its own contiguous slice -- whole
+reduction chunks under the policy's default `shard = :chunk_aligned`, an equal
+share of the particles under `shard = :balanced` at a rank count that does not
+divide the chunks. Drawing the whole thing on each rank looks wasteful, and it is, once,
 at startup -- but the alternative is not equivalent: the standardization that
 turns the raw normal draws into a unit beam takes the mean and variance over
 the ARRAY, so a rank that standardized its own slice would produce a
@@ -742,11 +750,13 @@ function _prepare_beam_initialization(policy, n)
         # Resolve/refuse the communicator after keyword validation but BEFORE
         # drawing. A rank mismatch must not leave a claimed random stream or
         # a successful initialization receipt (2026-10-29 neighbour audit).
-        context = _open_multi_process_context(MultiProcessRequest(policy.ranks),
+        context = _open_multi_process_context(MultiProcessRequest(policy.ranks, policy.shard),
             _resolved_cpu_threads(_composed_cpu_policy(policy)))
         # The chunk-alignment restriction is a second possible refusal. Resolve
-        # the range here too, before sampling, including non-divisor rank counts.
-        return context.nranks == 1 ? nothing : _mp_shard_range(n, context.nranks, context.rank)
+        # the range here too, before sampling, including non-divisor rank counts
+        # (refused under :chunk_aligned, balanced under :balanced).
+        return context.nranks == 1 ? nothing :
+            _mp_shard_range(n, context.nranks, context.rank; shard=context.shard)
     end
     policy === nothing || activate_policy!(policy)
     return nothing

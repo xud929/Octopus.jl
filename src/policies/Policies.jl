@@ -248,7 +248,9 @@ strong-strong task resolves once per beam.
 """
 struct MultiProcessRequest
     ranks::Union{Int,Symbol}
+    shard::Symbol
 end
+MultiProcessRequest(ranks::Union{Int,Symbol}) = MultiProcessRequest(ranks, :chunk_aligned)
 
 """
 What the run actually got: the communicator (`nothing` in the serial
@@ -265,10 +267,16 @@ struct MultiProcessContext
     rank::Int
     ranks::Union{Int,Symbol}
     resolved_by::Symbol
+    shard::Symbol            # the rule requested: :chunk_aligned or :balanced
+    chunk_aligned::Bool      # the rule IN FORCE: whole-chunk shards (always under
+                             # :chunk_aligned; under :balanced when the rank count
+                             # divides the chunks), else balanced contiguous ranges
 end
+MultiProcessContext(comm, nranks::Int, rank::Int, ranks::Union{Int,Symbol}, resolved_by::Symbol) =
+    MultiProcessContext(comm, nranks, rank, ranks, resolved_by, :chunk_aligned, true)
 
 """
-    MultiProcessExecutionPolicy(; threads=:auto, ranks=:auto)
+    MultiProcessExecutionPolicy(; threads=:auto, ranks=:auto, shard=:chunk_aligned)
 
 Run one Octopus process per MPI rank, each with its own CPU logical workers.
 The per-rank core is `CPUThreadsExecutionPolicy(threads)` unchanged, so at one
@@ -288,27 +296,47 @@ are in `docs/design/multi_process_policy.md`). What still refuses at more
 than one rank, naming what is missing: task and line ACTIONS and observers
 on a `PredicateSchedule` (callbacks Octopus cannot reason about), and
 `:equal_count` slicing (a global sort). CPU storage only.
+
+`shard` is how the beam is cut into rank shards. `:chunk_aligned` (the
+default) gives every rank a contiguous run of whole reduction chunks, which
+makes every cross-rank fold the single-process sum bit for bit and REQUIRES a
+rank count that divides the `_REDUCTION_CHUNKS` (64) chunks -- any other count
+is refused by name. `:balanced` accepts any rank count: where the count divides
+the chunks it is the aligned rule, bit for bit; where it does not, every rank
+gets an equal contiguous particle range, keeps all 64 chunks for its own
+reductions (so a rank's result is still independent of its thread count), and
+the cross-rank folds sum the ranks' partials in rank order -- repeatable at a
+fixed rank count, and within the CPU/CUDA parity tolerance of a single process
+rather than bitwise. The receipt `:multi_process_communicator` records the
+rule requested (`shard`) and the one in force (`chunk_aligned`).
 """
 struct MultiProcessExecutionPolicy <: AbstractExecutionPolicy
     threads::Union{Int,Symbol}
     ranks::Union{Int,Symbol}
+    shard::Symbol
     function MultiProcessExecutionPolicy(threads::Union{Integer,Symbol},
-                                         ranks::Union{Integer,Symbol})
+                                         ranks::Union{Integer,Symbol},
+                                         shard::Symbol=:chunk_aligned)
         # The composed CPU policy validates `threads` with its own message, so
         # there is one rule for thread counts and one place that states it.
         cpu = CPUThreadsExecutionPolicy(threads)
+        shard in _MULTI_PROCESS_SHARD_RULES || throw(ArgumentError(
+            "shard must be one of $(_MULTI_PROCESS_SHARD_RULES); got $(repr(shard))."))
         if ranks isa Symbol
             ranks === :auto || throw(ArgumentError(
                 "ranks must be :auto or a positive integer; got $(repr(ranks))."))
-            return new(cpu.threads, :auto)
+            return new(cpu.threads, :auto, shard)
         end
         n = Int(ranks)
         n >= 1 || throw(ArgumentError("ranks must be a positive integer; got $(n)."))
-        return new(cpu.threads, n)
+        return new(cpu.threads, n, shard)
     end
 end
-MultiProcessExecutionPolicy(; threads=:auto, ranks=:auto) =
-    MultiProcessExecutionPolicy(threads, ranks)
+MultiProcessExecutionPolicy(; threads=:auto, ranks=:auto, shard::Symbol=:chunk_aligned) =
+    MultiProcessExecutionPolicy(threads, ranks, shard)
+
+"The shard rules `MultiProcessExecutionPolicy(; shard)` accepts."
+const _MULTI_PROCESS_SHARD_RULES = (:chunk_aligned, :balanced)
 
 """The CPU policy a `MultiProcessExecutionPolicy` runs inside each rank."""
 _composed_cpu_policy(policy::MultiProcessExecutionPolicy) =
@@ -731,22 +759,49 @@ anything else and the fold has to be rearranged, which moves last bits for no
 physical reason.
 
 The price is that the rank count must divide `_REDUCTION_CHUNKS`. That is a
-real restriction and it is enforced rather than worked around: a rank count
-that would silently cost bitwise reproducibility is rejected.
+real restriction and under `shard = :chunk_aligned` (the default) it is
+enforced rather than worked around: a rank count that would silently cost
+bitwise reproducibility is rejected. `shard = :balanced` is the explicit way
+out (2026-11-23, the owner's 128-rank scan): where the rank count divides the
+chunks it IS the aligned rule, so no run that was accepted before changes a
+bit; where it does not, rank `r` gets the `r`-th of `nranks` equal contiguous
+ranges (`_chunk_bounds(global_n, nranks, r + 1)`), each rank keeps all
+`_REDUCTION_CHUNKS` chunks for its own reductions, and `_mp_chunk_fold` sums
+the ranks' partials in rank order: repeatable at a fixed rank count, within the
+CPU/CUDA parity tolerance of a single process rather than bitwise.
 """
-function _mp_shard_range(global_n::Integer, nranks::Integer, rank::Integer)
+function _mp_shard_range(global_n::Integer, nranks::Integer, rank::Integer;
+                         shard::Symbol=:chunk_aligned)
     chunks = _REDUCTION_CHUNKS
     per_rank, leftover = divrem(chunks, Int(nranks))
-    leftover == 0 || throw(ArgumentError(
-        "$(nranks) ranks cannot divide the $(chunks) fixed reduction chunks " *
-        "evenly, so no shard of the beam is chunk-aligned and a cross-rank " *
-        "fold could not reproduce the single-process sum bit for bit. Use a " *
-        "rank count that divides $(chunks): " *
-        join((p for p in 1:chunks if chunks % p == 0), ", ") * "."))
+    if leftover != 0
+        shard === :chunk_aligned && throw(ArgumentError(
+            "$(nranks) ranks cannot divide the $(chunks) fixed reduction chunks " *
+            "evenly, so no shard of the beam is chunk-aligned and a cross-rank " *
+            "fold could not reproduce the single-process sum bit for bit. Use a " *
+            "rank count that divides $(chunks): " *
+            join((p for p in 1:chunks if chunks % p == 0), ", ") * "; or construct " *
+            "the policy with `shard = :balanced` to accept any rank count at the " *
+            "cost of cross-rank bit identity (results repeatable at a fixed rank " *
+            "count, within the CPU/CUDA parity tolerance of a single process)."))
+        lo, hi = _chunk_bounds(Int(global_n), Int(nranks), Int(rank) + 1)
+        return lo:hi
+    end
     lo = _chunk_bounds(Int(global_n), chunks, Int(rank) * per_rank + 1)[1]
     hi = _chunk_bounds(Int(global_n), chunks, (Int(rank) + 1) * per_rank)[2]
     return lo:hi
 end
+
+"""
+    _mp_chunk_aligned(nranks, shard) -> Bool
+
+Whether the shards of a run with `nranks` ranks under rule `shard` are runs of
+whole reduction chunks (the rule in force that `MultiProcessContext.chunk_aligned`
+and the receipt record): always under `:chunk_aligned`, and under `:balanced`
+exactly when the rank count divides the chunks.
+"""
+_mp_chunk_aligned(nranks::Integer, shard::Symbol) =
+    shard === :chunk_aligned || _REDUCTION_CHUNKS % Int(nranks) == 0
 
 """
     _mp_resolve_shard(local_n) -> (offset, global_n)
@@ -783,17 +838,18 @@ function _mp_resolve_shard(local_n::Integer)
     counts[context.rank + 1] = Int(local_n)
     _mp_allsum!(counts)
     global_n = sum(counts)
-    wrong = _mp_shard_verdict(counts, nranks)
+    shard = context.shard
+    wrong = _mp_shard_verdict(counts, nranks; shard=shard)
     isempty(wrong) || throw(ArgumentError(
         "the particle counts the $(nranks) ranks hold, $(counts), are not the " *
-        "chunk-aligned shards of a $(global_n)-particle beam, " *
-        "$([length(_mp_shard_range(global_n, nranks, r)) for r in 0:(nranks - 1)]): " *
+        "$(context.chunk_aligned ? "chunk-aligned" : "balanced") shards of a $(global_n)-particle beam, " *
+        "$([length(_mp_shard_range(global_n, nranks, r; shard=shard)) for r in 0:(nranks - 1)]): " *
         "rank(s) $(join(wrong, ", ")) hold the wrong count (this is rank " *
         "$(context.rank); the same error is thrown on every rank, from the same " *
         "all-summed counts). Build the beam with " *
         "`Beam(n_global, MultiProcessExecutionPolicy(...), ...)`, which shards it " *
         "by this rule, or split it yourself on the same boundaries."))
-    mine = _mp_shard_range(global_n, nranks, context.rank)
+    mine = _mp_shard_range(global_n, nranks, context.rank; shard=shard)
     return (first(mine) - 1, global_n)
 end
 
@@ -806,10 +862,11 @@ The ranks (0-based) whose particle count is not the chunk-aligned shard
 all-summed count vector, so every rank holding that vector reaches the same
 verdict -- the property `_mp_resolve_shard` needs and did not have (F-170).
 """
-function _mp_shard_verdict(counts::AbstractVector{<:Integer}, nranks::Integer)
+function _mp_shard_verdict(counts::AbstractVector{<:Integer}, nranks::Integer;
+                           shard::Symbol=:chunk_aligned)
     global_n = sum(counts)
     return [r for r in 0:(Int(nranks) - 1)
-            if length(_mp_shard_range(global_n, nranks, r)) != counts[r + 1]]
+            if length(_mp_shard_range(global_n, nranks, r; shard=shard)) != counts[r + 1]]
 end
 
 """
@@ -1034,16 +1091,30 @@ Fold this rank's chunk partials -- which occupy the global chunk slots
 `first_chunk` onwards, `_mp_first_chunk()` -- into the global chunk-ordered sum.
 
 The single-process fold is `sum(partials)` over `_REDUCTION_CHUNKS` entries in
-chunk order. Across ranks each rank holds a contiguous run of those entries, so
-scattering them into their global slots, one all-sum, and the same ordered sum
-reproduces it exactly. The all-sum is over `_REDUCTION_CHUNKS` numbers, once
-per fold, whatever the beam size. (The signature line read `(partials,
-offset_chunk, nchunks_local)` until the 2026-10-20 fix batch; the one method
-and its three callers have always taken two arguments -- F-175.)
+chunk order. Across chunk-aligned ranks each rank holds a contiguous run of
+those entries, so scattering them into their global slots, one all-sum, and the
+same ordered sum reproduces it exactly. The all-sum is over `_REDUCTION_CHUNKS`
+numbers, once per fold, whatever the beam size. (The signature line read
+`(partials, offset_chunk, nchunks_local)` until the 2026-10-20 fix batch; the
+one method and its three callers have always taken two arguments -- F-175.)
+
+Under a balanced shard that is not chunk-aligned (`shard = :balanced` at a
+rank count that does not divide the chunks) every rank holds all
+`_REDUCTION_CHUNKS` partials of its own range: each rank folds them in chunk
+order to one number and the ranks' numbers are summed in rank order through
+the same gather-and-fold all-sum, so the result is repeatable at a fixed rank
+count and differs from the single-process sum only by the reassociation --
+the CPU/CUDA parity tolerance class.
 """
 function _mp_chunk_fold(partials::AbstractVector{T}, first_chunk::Integer) where {T}
     context = _multi_process_context()
     (context === nothing || context.nranks == 1) && return sum(partials)
+    if !context.chunk_aligned
+        ranks_sum = zeros(T, context.nranks)
+        ranks_sum[context.rank + 1] = sum(partials)
+        _mp_allsum!(ranks_sum)
+        return sum(ranks_sum)
+    end
     global_partials = zeros(T, _REDUCTION_CHUNKS)
     @inbounds for (j, value) in enumerate(partials)
         global_partials[Int(first_chunk) + j - 1] = value
@@ -1052,17 +1123,20 @@ function _mp_chunk_fold(partials::AbstractVector{T}, first_chunk::Integer) where
     return sum(global_partials)
 end
 
-"""The first global reduction chunk this rank owns (1 outside a sharded run)."""
+"""The first global reduction chunk this rank owns (1 outside a sharded run,
+and 1 under a balanced shard that is not chunk-aligned, where every rank
+folds all the chunks of its own range)."""
 function _mp_first_chunk()
     context = _multi_process_context()
-    (context === nothing || context.nranks == 1) && return 1
+    (context === nothing || context.nranks == 1 || !context.chunk_aligned) && return 1
     return context.rank * div(_REDUCTION_CHUNKS, context.nranks) + 1
 end
 
-"""The number of reduction chunks this rank owns."""
+"""The number of reduction chunks this rank owns: its share of the global
+chunks when the shards are chunk-aligned, all of them otherwise."""
 function _mp_local_chunks()
     context = _multi_process_context()
-    (context === nothing || context.nranks == 1) && return _REDUCTION_CHUNKS
+    (context === nothing || context.nranks == 1 || !context.chunk_aligned) && return _REDUCTION_CHUNKS
     return div(_REDUCTION_CHUNKS, context.nranks)
 end
 
@@ -1423,6 +1497,17 @@ const _MULTI_PROCESS_POLICY_OPTION_SCHEMA = (
          provided. Read back from the communicator at execution, never assumed.";
         supported_backends=(CPUThreadsBackend,),
         consumer=:multi_process_communicator),
+    shard=ConfigurationOptionMeta(Symbol, :chunk_aligned,
+        "How the beam is cut into rank shards. :chunk_aligned gives every rank \
+         whole reduction chunks, so every cross-rank fold is the single-process \
+         sum bit for bit, and refuses a rank count that does not divide the 64 \
+         chunks. :balanced accepts any rank count: the aligned rule where the \
+         count divides the chunks, else equal contiguous ranges with a \
+         rank-ordered fold, repeatable at a fixed rank count and within the \
+         CPU/CUDA parity tolerance of a single process. The receipt records the \
+         rule requested and the alignment in force.";
+        supported_backends=(CPUThreadsBackend,),
+        consumer=:multi_process_communicator),
 )
 
 const _CUDA_POLICY_OPTION_SCHEMA = (
@@ -1523,6 +1608,13 @@ function configuration_report(policy::MultiProcessExecutionPolicy)
             policy.ranks === :auto ?
                 "read from the MPI communicator at execution" :
                 "checked against the MPI communicator at execution",
+            :multi_process_communicator),
+        # The rule requested; whether the shards in force are chunk-aligned
+        # depends on the communicator's rank count, read at activation.
+        ConfigurationEntry(:shard, policy.shard, policy.shard, :unresolved,
+            policy.shard === :chunk_aligned ?
+                "whole reduction chunks per rank; a rank count that does not divide them is refused" :
+                "the aligned rule where the rank count divides the chunks, else balanced contiguous ranges (alignment in force recorded at execution)",
             :multi_process_communicator),
     )
 end

@@ -45,7 +45,8 @@ function strong_strong(;artifact_path, artifact_option=(capacity=1000, append=fa
         npart_e = 1.7203e11, emit_e=(17e-9, 1.9e-9), bip_e=(0.4, 0.052), sigz_e=8e-3, sigd_e=4.9e-4, tune_e = (0.08, 0.14, -0.056),
         npart_p = 0.6881e11, emit_p=(8.5e-9, 1.0e-9), bip_p=(0.8, 0.096), sigz_p=6e-2, sigd_p=6.0e-4, tune_p = (0.228, 0.210, -0.010),
     )
-    policy = MultiProcessExecutionPolicy()
+    # REPRO_SHARD=balanced accepts a rank count that does not divide the 64 reduction chunks
+    policy = MultiProcessExecutionPolicy(shard = Symbol(get(ENV, "REPRO_SHARD", "chunk_aligned")))
     set_global_rng!(seed = seed, method = :philox)
 
     bcc_e=(150.0, 30.0, sigz_e/sigd_e)
