@@ -1808,6 +1808,29 @@ walk (F-75). Each fix had a neighbour audit that re-read the file it changed
 and not the twin that consumes the same object. Re-walk the other task type,
 the other container form and the early returns above the new branch.
 
+## A new case in an accessor's return is a rename for its callers
+
+The shard option's core commit (5e91b99, 2026-11-23) taught `_mp_first_chunk`
+and `_mp_local_chunks` a third case: under a balanced shard that is not
+chunk-aligned they return `1` and `64`, meaning "no global position, chunk
+the local range". Their only three callers, the weak-strong luminosity loops
+of `_track_thin_strong_beam!`, `_track_gaussian_strong_beam!` and
+`_track_fused_luminous!`, read those two numbers as a position on the GLOBAL
+grid and subtracted the shard offset, exactly what the comment above each
+loop argued for ("the local partition IS the global one"). At three balanced
+ranks every rank walked all 64 global chunks minus its own offset:
+`BoundsError ... at index [-84]`, found by the batch's tests unit in the MPI
+child, not by the core commit's own checks, which exercised the strong-strong
+path (it chunks the local range everywhere and never read the accessors).
+The invariant says to grep `src/` when a symbol, arity or launch site
+changes; here the symbol and arity did not change, its MEANING did, for one
+case the callers could not know about. Treat a new case in a return value as
+a rename: walk every caller before committing, and prefer a helper that
+returns what the callers need (local bounds) over two numbers they must
+interpret. The fix (`_mp_chunk_grid`, `_mp_chunk_local_bounds`; d11c25b)
+made the local-bounds rule one function and left the callers nothing to
+interpret.
+
 ## A contract whose override and fallback coincide verifies nothing
 
 The public-configuration contract built its CUDA PIC launch-family overrides

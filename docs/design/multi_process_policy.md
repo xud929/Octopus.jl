@@ -145,9 +145,16 @@ strict superset of the default. Where the rank count divides the 64 chunks it
 IS the aligned rule: the same shards and the same folds, so no run the default
 accepts changes a bit. Where it does not, rank `r` owns the `r`-th of `nranks`
 equal contiguous particle ranges (`_chunk_bounds(global_n, nranks, r + 1)`),
-every rank keeps all 64 chunks for its own reductions, and `_mp_chunk_fold`
-sums each rank's 64 partials in chunk order to one number and the ranks'
-numbers in rank order. What stays bitwise: tracking, which does not reduce,
+every rank keeps all 64 chunks for its own reductions, cut from its LOCAL
+range by `_mp_chunk_local_bounds` on the `_mp_chunk_grid` of its shard (the
+one place that knows which rule is in force: under an aligned shard the same
+call returns the global partition through the shard offset), and
+`_mp_chunk_fold` sums each rank's 64 partials in chunk order to one number
+and the ranks' numbers in rank order. The core commit left the three
+weak-strong luminosity loops cutting the global partition through the offset,
+which indexes outside a non-aligned shard; the batch's tests unit found it at
+three ranks and the fix (d11c25b) made the grid the consumers' only source of
+bounds. What stays bitwise: tracking, which does not reduce,
 so the tracked beam equals the single-process beam at any rank count; a rank's
 result against its own thread count, because the 64 chunks within a rank are
 untouched; and a run against itself at a fixed rank count, because the fold is

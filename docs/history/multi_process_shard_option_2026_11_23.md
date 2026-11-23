@@ -96,6 +96,11 @@ one already.
   `shard` and `chunk_aligned` in the receipt; the `Beam` docstring states both rules.
 - `validation/multi_process_memory/repro_exchange_leak.jl`: the reproduction script of the
   exchange-leak record reads `REPRO_SHARD`, which is how the three-rank measurement below was made.
+- `src/policies/Policies.jl`, `src/track/strong_beam_track.jl`, `src/tasks/Tasks.jl` (fix
+  `d11c25b`, the tests unit): `_MPChunkGrid`, `_mp_chunk_grid(rep)` and
+  `_mp_chunk_local_bounds(grid, chunk)` beside `_mp_chunk_fold`, and the three weak-strong
+  luminosity loops (`_track_thin_strong_beam!`, `_track_gaussian_strong_beam!`,
+  `_track_fused_luminous!`) read their chunk bounds from the grid; see section 6 for the defect.
 - The rest of the batch, after the core: the tests, the PIC multi-process contract
   (`StrongStrongPICMultiProcessConsistencyContract`, whose own rank-count check admits only the
   divisors of 64 on the core commit), the design note, `docs/current_runtime.md`,
@@ -119,4 +124,112 @@ belong to the tests of this batch and to the section below.
 
 ## 6. Gate and further measurements
 
-[INTEGRATOR: gate and measurement lines]
+### Further measurements
+
+Made on the core commit with the reduced reproduction of the owner's scan case
+(`validation/multi_process_memory/repro_exchange_leak.jl`, `REPRO_SHARD=balanced`) under MPICH_jll's
+`mpiexec` on acnlinj4 (64 cores, 128 hardware threads, 503 GB); the logs and artifacts are in the
+git-ignored `result/oom_repro/K_balanced/`:
+
+| run | ranks x threads | macroparticles (whole beam) | turns | result |
+|---|---|---|---|---|
+| K6 | 6 x 2, `shard = :balanced` | 320,000 + 128,000 | 300 | exit 0; 695.5 s wall, 2.32 s per turn (the aligned 8-rank run D of the leak record, same beams: 578.5 s, 1.93 s per turn); peak RSS 2.02 to 2.21 GB per rank, 12.8 GB in total, flat from turn 30 on; 4 exchange-buffer entries (17.6 MiB) per rank |
+| K128 | 128 x 1, `shard = :balanced` | 64,000 + 25,600 | 30 | exit 0; 196.7 s including the start of 128 processes on 64 cores (a functional check, not a timing); peak RSS 1.96 GB on rank 0 and 238 GB in total, which is the per-process baseline of the sysimage, the compiled package and MPI at 128 copies; 4 exchange-buffer entries per rank |
+
+Physics beside the aligned reference. An aligned 6-rank run does not exist by construction, so K6
+is compared with the aligned 8-rank run D (the same beams, seed and turns) with
+`result/oom_repro/K_balanced/compare_relative.py`; the outputs are the `compare_*_vs_D_fixed.txt`
+files beside the K6 log. The comparison therefore carries two effects at once: the reassociation of
+the balanced fold and the rank-count dependence of the PIC per-slice folds, which was already in the
+CPU/CUDA parity tolerance class at any rank count.
+
+- Luminosity: bitwise identical at turn 0; the two series then separate to a maximum relative
+  difference of 1.8e-10 (turn 281) and stand 8.7e-12 apart at turn 299.
+- Moments at turn 0: every row of both beams agrees to 1.4e-11 relative or better, most rows to
+  1e-15 to 1e-13.
+- Moments over 300 turns: the six diagonal second moments of both beams stay within 2.2e-10
+  relative; the worst rows are the electron beam's small cross moments (`m100001`, `m010010`,
+  `m100010`), whose deviation reaches 7e-8 of the row's median magnitude at turn 252; every proton
+  row stays within 3.4e-9 of its median magnitude.
+
+That is the CPU/CUDA parity class the design note predicted for a non-aligned shard, amplified over
+300 turns by the beam-beam dynamics; nothing in it is specific to `:balanced` beyond the turn-0
+reassociation.
+
+### The defect the tests unit found in the core
+
+The core commit made `_mp_first_chunk()` and `_mp_local_chunks()` return `1` and `64` under a
+balanced shard that is not chunk-aligned, meaning "no global position; chunk the local range".
+Their only three callers, the weak-strong luminosity loops named in section 4, read the two
+numbers as a position on the GLOBAL 64-chunk grid and subtracted the shard offset, which the
+comment above each loop argued for ("the local partition IS the global one"). Under
+`OCTOPUS_MPI_CHECK_SHARD=balanced` at `mpiexec -n 3` the suite's MPI child died in
+`_track_gaussian_strong_beam!` with `BoundsError: attempt to access 85-element Vector{Float64}
+at index [-84]` on rank 1 and `86-element ... at index [-169]` on rank 2: every rank walked all
+64 global chunks minus its own offset. The strong-strong solvers chunk the local range
+everywhere and never read the accessors, which is why the owner's case, the three-rank run of
+section 5 and K6/K128 ran to completion; the core commit's own checks exercised only that path.
+
+The fix (`d11c25b`) is one helper beside the fold it feeds: `_mp_chunk_grid(rep)` resolves the
+shard and the alignment in force once per call site, and `_mp_chunk_local_bounds(grid, chunk)`
+returns LOCAL bounds in both cases (the global partition through the offset under an aligned
+shard, bit for bit what the loops computed before; the same fixed partition of the local range
+otherwise). Measured with it: the 1-rank and 2-rank children (default and balanced) print
+receipts bitwise identical to the unfixed tree's; at 3 balanced ranks the child runs end to end
+with the weak-strong luminosity 2e-16 relative to the single-process value (the rank-ordered
+fold) and the tracked shards bitwise. The testset "The reduction chunk grid follows the alignment
+in force" pins the rule on hand-built grids and holds the three call sites to the helper by a
+source scan; the launcher testset's three-rank balanced launch is the regression test that failed
+unfixed. The lesson is in `docs/experiences.md` ("A new case in an accessor's return is a rename
+for its callers").
+
+### The tests and the contract units
+
+The batch's units were implemented by three subagents in worktrees off the core commit and
+replayed onto `main` in this order: the docs unit (`68e1ece`), the contract unit (`b6de0c2`,
+merged as `3d7a77a`), the consumer fix (`d11c25b`) and the tests unit (`953686a`); the last two
+are the tests agent's commits replayed onto the merged tree, whose content is identical to the
+agent's own merge of `main`.
+
+The tests unit (`953686a`): the serial testset "A balanced shard accepts any rank count and is the
+aligned rule where that divides the chunks" (484 tests: both rules by name, the superset property
+at every divisor of 64, the balanced partition at 3, 5, 6, 7, 12, 96 and 128 ranks against
+`_chunk_bounds`, the refusal message, `_mp_chunk_aligned`, the balanced verdict, the request and
+context constructors, the schema entry, both configuration reports, the passthrough receipt, and
+the chunk bookkeeping under hand-built contexts); the MPI child reads `OCTOPUS_MPI_CHECK_SHARD`,
+builds every policy through one helper, checks the communicator receipt against the request and
+prints `MPI-SHARD rank= nranks= shard= chunk_aligned= OK` on every rank (the step-3a offset line
+is `MPI-SHARDOFFSET` now); the launcher testset gains three launches: three ranks balanced (must
+succeed: tracking shards bitwise equal to the single-process reference, `MPI-LUM` the same bits
+on every rank and within 1e-12 of the reference but not bitwise, every strong-strong receipt at
+the existing 1e-12), two ranks balanced (receipts equal to the two-rank default's to the
+character apart from the `MPI-SHARD` line and the `MPI-PICFLOW` timing statistics: the superset
+end to end) and three ranks default (must fail with "cannot divide the 64 fixed reduction
+chunks", one `MPI-CHECK FAIL` line per rank and nothing that says OK). Hand runs under
+MPICH_jll's `mpiexec`: 1 rank 239 s, 2 default 361 s, 2 balanced 359 s, 3 balanced 329 s, 3
+default refused in 9 s. The balanced shards of the fixture's 256 particles over three ranks are
+1:85, 86:170 and 171:256 (`_chunk_bounds` uses `fld`), and nothing in the tests hand-copies them.
+The extracted launcher testset on the merged tree: 2688 of 2688 in 21 min.
+
+The contract unit (`b6de0c2`): `StrongStrongPICMultiProcessConsistencyContract(; shard)` with
+the divisor refusal under `:chunk_aligned` only, `shard` carried to the child by a declared
+launch-field list and parsed back by the contract's own field type, the child recording the rule
+requested and in force and the parent failing a leg whose record disagrees; contract runs
+`(1, 2)` default (266.9 s, first run with precompilation) and `(1, 3)` balanced (91.1 s) both
+pass with the CUDA leg, the three-rank luminosity 2.05e-15 relative to the one-rank value, which
+is the two-rank default's class (1.92e-15). The suite's launcher testset runs the `(1, 3)`
+balanced contract with `cuda = false`.
+
+Two notes for the next session. Running the launcher testset extracted needs `MPICH_jll`, a test
+target and not a project dependency: bind it in an `OCTOPUS_EXTRACT_PRELUDE` file
+(`const MPICH_jll = Base.require(Base.PkgId(Base.UUID("7cb0a576-ebde-5e09-9194-50597f1243b4"),
+"MPICH_jll"))`) or the block reports one `@test_broken` and skips the seam; `run_ranks` now hands
+the child `JULIA_LOAD_PATH = join(Base.LOAD_PATH, ":")`, which is the same string under
+`Pkg.test`. And a pre-existing warning, not of this batch: with `validate_configuration_metadata()`
+and the PIC multi-process contract in one process, the counter RNG reports `rng_id 1 ... already
+held by a bpm_observer consumer` (`src/math/counter_rng.jl`); observed by the contract unit, not
+investigated.
+
+### Gate
+
+[INTEGRATOR: gate lines]
