@@ -32397,6 +32397,27 @@ if _lane_gate("The multi-process seam runs under an MPI launcher")
             # not run -- not as passed -- when it is not.
             @test rmp.metrics[:cuda_status] === (CUDA_TESTS_ACTIVE ? :passed : :not_run)
             CUDA_TESTS_ACTIVE && @test haskey(rmp.metrics, :mpi_cuda_luminosity_bound)
+
+            # shard = :balanced (2026-11-23): a rank count the default refuses runs, and
+            # the claim holds at the contract's tolerances -- one rank bit for bit (64 % 1
+            # == 0, the aligned rule is in force), three ranks at the parity class through
+            # the rank-ordered fold. The children record the rule they ran under; the
+            # metrics carry it per rank count. The CUDA leg does not depend on the shard
+            # rule and ran above, so it is not requested here.
+            rmp3 = validate(StrongStrongPICMultiProcessConsistencyContract(
+                mpiexec=launcher, ranks=(1, 3), shard=:balanced, cuda=false))
+            rmp3.status === :passed ||
+                @info "multi-process PIC contract result (shard = :balanced)" rmp3.status rmp3.message rmp3.metrics
+            @test rmp3.status === :passed
+            @test rmp3.metrics[:shard] === :balanced
+            @test rmp3.metrics[:mpi_ranks_checked] == 2
+            @test rmp3.metrics[:mpi_1_status] === :compared
+            @test rmp3.metrics[:mpi_1_bitwise] === true
+            @test rmp3.metrics[:mpi_1_chunk_aligned] === true
+            @test rmp3.metrics[:mpi_3_status] === :compared
+            @test rmp3.metrics[:mpi_3_chunk_aligned] === false
+            @test rmp3.metrics[:mpi_3_luminosity_rel_error] <= 1.0e-12
+            @test rmp3.metrics[:cuda_status] === :not_run
         end
     end
 end
@@ -33077,6 +33098,25 @@ if _lane_gate("Contract coverage guards: declared kinds, solver tree, broken bas
         r3 = validate(StrongStrongPICMultiProcessConsistencyContract(ranks=(1, 3), mpiexec="mpiexec"))
         @test r3.status === :failed
         @test occursin("cannot divide", r3.message)
+        # `shard` (2026-11-23): a rule outside the policy's fails by name before any launch; the divisor
+        # check on `ranks` is the :chunk_aligned rule's, so (1, 3) is refused under the default and clears
+        # the launch checks under :balanced on the validate path (the result is then the launcher SKIP, not
+        # the refusal), with the request recorded in the metrics either way.
+        @test r3.metrics[:shard] === :chunk_aligned
+        rbad = validate(StrongStrongPICMultiProcessConsistencyContract(shard=:spiral, mpiexec="mpiexec"))
+        @test rbad.status === :failed && occursin(":spiral", rbad.message) && occursin("shard", rbad.message)
+        r3b = validate(StrongStrongPICMultiProcessConsistencyContract(ranks=(1, 3), shard=:balanced))
+        @test r3b.status === :skipped && !occursin("cannot divide", r3b.message)
+        @test r3b.metrics[:shard] === :balanced && r3b.metrics[:mpi_status] === :skipped
+        @test validate(StrongStrongPICMultiProcessConsistencyContract(ranks=(0,), shard=:balanced, mpiexec="mpiexec")).status === :failed
+        # the refusal under the default IS the policy's (`_mp_shard_range` at that rank count), and :balanced
+        # clears every count the policy's balanced rule shards -- checked against the policy, not a second list
+        for p in 1:9
+            policy_refuses = try; Octopus._mp_shard_range(64, p, 0); false; catch e; e isa ArgumentError || rethrow(); true; end
+            @test (validate(StrongStrongPICMultiProcessConsistencyContract(ranks=(p,))).status === :failed) == policy_refuses
+            @test validate(StrongStrongPICMultiProcessConsistencyContract(ranks=(p,), shard=:balanced)).status === :skipped
+            @test length(Octopus._mp_shard_range(64, p, 0; shard=:balanced)) >= 1
+        end
         # The forwarded fields are DERIVED (2026-10-18 audit, F-53; fix batch 2): every field of the contract
         # is either kept by the launch (`_MPI_PIC_CONTRACT_OWN_FIELDS`) or forwarded, every forwarded field is
         # a field of the PIC contract, and the child's command line round-trips each one -- a loop over the
@@ -33093,6 +33133,17 @@ if _lane_gate("Contract coverage guards: declared kinds, solver tree, broken bas
         end
         @test spec.threads_per_rank == c.threads_per_rank
         @test spec.ranks == 2 && spec.out == "out.h5"
+        # `shard` and `threads_per_rank` are LAUNCH fields (the CUDA leg has no rank shard), carried to the
+        # child's command line and parsed back by the contract's own field type through one declared list
+        @test :shard in Octopus._MPI_PIC_CONTRACT_OWN_FIELDS && !(:shard in forwarded)
+        child_fields = Octopus._mpi_pic_contract_child_policy_fields()
+        @test :shard in child_fields && :threads_per_rank in child_fields
+        @test all(f -> f in Octopus._MPI_PIC_CONTRACT_OWN_FIELDS, child_fields)
+        @test spec.shard === :chunk_aligned     # the default travels, not only a non-default
+        csh = StrongStrongPICMultiProcessConsistencyContract(shard=:balanced, threads_per_rank=2)
+        ssh = Octopus._mpi_pic_contract_spec(Octopus._mpi_pic_contract_args(csh, 3, "o.h5"))
+        @test ssh.shard === :balanced && ssh.threads_per_rank == 2 && ssh.ranks == 3
+        @test_throws ArgumentError Octopus._mpi_pic_contract_spec(filter(w -> !startswith(w, "shard="), Octopus._mpi_pic_contract_args(csh, 3, "o.h5")))
         base = Octopus._mpi_pic_contract_base(c)
         @test all(f -> isequal(getfield(base, f), getfield(c, f)), forwarded)
         # a value that is not the default travels: the derivation forwards the FIELD, not the default

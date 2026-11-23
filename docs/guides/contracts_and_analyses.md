@@ -76,9 +76,16 @@ through `StrongStrongPICBackendConsistencyContract`, MPI against CUDA by
 composition. Its MPI legs are launched processes, so it needs the launcher
 command (`mpiexec=MPICH_jll.mpiexec()` in the suite; `nothing`, the default,
 returns `:skipped`) and a project that carries `MPI`; the child is
-`src/contracts/mpi_pic_consistency_child.jl`. After changing the divided PIC
-collide (`pic_cpu_sliced.jl`, or `pic_cpu.jl` under `divided`), the seam, or
-the layout rule, run it at the rank counts you can launch. See `../design/multi_process_policy.md`.
+`src/contracts/mpi_pic_consistency_child.jl`. Its `shard` is the
+`MultiProcessExecutionPolicy(; shard)` rule the children run under:
+`:chunk_aligned` (the default) refuses a rank count that does not divide the
+reduction chunks, as the policy does; `:balanced` accepts any rank count, and
+the claim does not change (one rank bit for bit, more ranks at the stated
+tolerances, which cover the rank-ordered fold); each child records the rule it
+ran under and the contract checks it against the request. After changing the
+divided PIC collide (`pic_cpu_sliced.jl`, or `pic_cpu.jl` under `divided`),
+the seam, or the layout rule, run it at the rank counts you can launch -- under
+`shard=:balanced` for a count the default refuses. See `../design/multi_process_policy.md`.
 
 ## Analyses
 
