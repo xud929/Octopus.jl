@@ -232,4 +232,21 @@ investigated.
 
 ### Gate
 
-[INTEGRATOR: gate lines]
+Before the gate, on the merged tree: the registry snapshot unchanged, `validate_configuration_metadata()`
+and `validate_element_metadata()` passing, the four source sweeps (Core.Box, detached docstrings,
+documented exports, exported names in the snapshot) and the three new or changed serial testsets
+green extracted; the fast lane green (exit 0, 451 summaries, 39 min).
+
+The two-arm full gate at CI settings on `c17b717`, the tree the batch's commits add up to
+(core `5e91b99`, docs `68e1ece`, contract `b6de0c2` and its merge `3d7a77a`, fix `d11c25b`, tests
+`953686a`, ledger `c17b717`), on acnlinj4 (sapphirerapids), nothing else compiling meanwhile:
+
+| arm | clock | result |
+|---|---|---|
+| native, CUDA active | 2026-11-23 18:32:14 to 20:37:09 (125 min) | exit 0, 467 summaries, 0 failures, the two pre-existing broken pins of "Misalignment maps"; the launcher testset 2688 of 2688 in 22 min at 1, 2, 4, 3 balanced, 2 balanced and 3 default ranks; the CUDA validation scripts 218 of 218 |
+| AVX2 parity (`OPENBLAS_CORETYPE=Haswell`, `julia -C haswell`) | 20:37:09 to 22:09:20 (92 min) | exit 0, 467 summaries, 0 failures, the same two broken pins; the launcher testset 2688 of 2688 in 21 min; the CUDA validation scripts 218 of 218 |
+
+The native arm is 38 min longer than the leak record's because the launcher testset gained three
+launches and the contract coverage guards run the three-rank balanced contract. The gate logs are
+the git-ignored `result/gates/shard/full_gate_{native,avx2}.log`. The gate record itself is a
+markdown-only commit after the gate and rides it, as the leak record's did.
