@@ -2427,6 +2427,30 @@ before adding the warning, since they call it at load and in every gate.
 block sees the warning however often the process has printed it; assert
 "built twice, one record" there.
 
+## A gate-record commit message is filled from the log
+
+The shard option batch's gate record (`78a7d47`, 2026-11-23) reached `origin`
+with its body still a template: `(TIP)`, `NATIVE_LINE` and `AVX2_LINE` stand
+where the tree and the two arms' summary lines belong, while the record it
+announces ([`history/multi_process_shard_option_2026_11_23.md`](history/multi_process_shard_option_2026_11_23.md),
+section 6) holds every number. The gate-record commit one batch earlier
+(`d89dee0`) was filled in; the in-memory artifact batch's addendum (`1194818`,
+2026-11-04) misstated its lane clock and was corrected beside it in the next
+commit. Both have the shape of a predicted number entering a pin without its
+brackets ("A floor's kappa belongs to the quantity the floor bounds", above):
+the message was written before the measurement it names existed, and nothing
+read it back. Found 2026-11-24 by the ledger touch, which read the commit
+messages for the gates they name. The message cannot be amended (history is
+not rewritten), so the correction sits beside it, in the multi-process row of
+`todo.md` and here.
+
+Rule: a gate-record commit's message is written AFTER the gate from the log's
+own lines (exit code, summaries, failures, clocks), never from a template to
+be filled later; `git log -1 --format=%B` is read back for placeholders and
+against the record's gate section before the push; and a message that went
+out wrong is corrected beside it in the next commit that touches the ledger,
+as a frozen record would be.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.
