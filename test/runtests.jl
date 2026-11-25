@@ -20092,6 +20092,274 @@ end
 # knob-root and numeric-type tripwires, and the task and analysis acceptance of a lattice.
 # Unit A's testsets land directly below this comment and nowhere else.
 
+@testset "Machine description: ReferenceParticle builds from E0 or p0c and refuses by name" begin
+    # A Pythagorean triple, so the p0c form's sqrt(p0c^2 + mc2^2) is EXACT and
+    # the two forms compare bitwise: mc2 = 3e8, p0c = 4e8, E0 = 5e8 (all in eV).
+    by_energy = ReferenceParticle(charge=1.0, mc2=3.0e8, E0=5.0e8)
+    by_momentum = ReferenceParticle(charge=1, mc2=3.0e8, p0c=4.0e8)
+    @test isbits(by_energy)
+    @test by_energy == by_momentum
+    @test by_energy.E0 == 5.0e8 && by_momentum.charge === 1.0
+    # Anti-vacuity: a different momentum is a different reference.
+    @test by_energy != ReferenceParticle(charge=1.0, mc2=3.0e8, p0c=4.5e8)
+    # The relativistic factors come from the existing accessors, unchanged.
+    proton = ReferenceParticle(charge=1.0, mc2=PMASS_EV, E0=3.0e9)
+    @test reference_beta_gamma(proton) == reference_beta_gamma(3.0e9, PMASS_EV)
+    @test reference_beta(proton) == reference_beta(3.0e9, PMASS_EV)
+    @test reference_gamma(proton) == reference_gamma(3.0e9, PMASS_EV)
+    @test reference_gamma(proton) > 3.0            # 3 GeV total over 0.938 GeV rest
+    @test occursin("charge = 1.0", sprint(show, proton)) && occursin("E0 = 3.0e9 eV", sprint(show, proton))
+
+    # Every refusal of the docstring, shown red by the field it names.
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    @test occursin("`charge`", msg(() -> ReferenceParticle(charge=0.0, mc2=1.0, E0=2.0)))
+    @test occursin("`charge`", msg(() -> ReferenceParticle(charge=NaN, mc2=1.0, E0=2.0)))
+    @test occursin("`mc2`", msg(() -> ReferenceParticle(charge=1.0, mc2=-1.0, E0=2.0)))
+    @test occursin("`mc2`", msg(() -> ReferenceParticle(charge=1.0, mc2=Inf, E0=2.0)))
+    let both = msg(() -> ReferenceParticle(charge=1.0, mc2=1.0, E0=2.0, p0c=1.0))
+        @test occursin("`E0`", both) && occursin("`p0c`", both) && occursin("not both", both)
+    end
+    let neither = msg(() -> ReferenceParticle(charge=1.0, mc2=1.0))
+        @test occursin("`E0`", neither) && occursin("`p0c`", neither) && occursin("neither", neither)
+    end
+    @test occursin("`E0`", msg(() -> ReferenceParticle(charge=1.0, mc2=1.0, E0=1.0)))   # at rest
+    @test occursin("`E0`", msg(() -> ReferenceParticle(charge=1.0, mc2=1.0, E0=Inf)))
+    @test occursin("`p0c`", msg(() -> ReferenceParticle(charge=1.0, mc2=1.0, p0c=0.0)))
+    @test occursin("`p0c`", msg(() -> ReferenceParticle(charge=1.0, mc2=1.0, p0c=NaN)))
+    # The guard is the keyword constructor: a valid call does reach `ACCEPTED`.
+    @test msg(() -> ReferenceParticle(charge=-1.0, mc2=EMASS_EV, E0=1.0e10)) == "ACCEPTED"
+end
+
+@testset "Machine description: a Lattice wraps a line and is accepted where the line is" begin
+    # The DBA ring of examples/twiss_dispersion_dba_ring.jl closed by a thin RF
+    # cavity, with the focusing strength on a knob so the wiring report has a
+    # site to show (the knob's value is the example's literal 1.5; the flexible
+    # constructor, because the friendly form folds `kn` to numbers eagerly).
+    @knob md2a_dba.kf = 1.5
+    beta0, gamma0 = reference_beta_gamma(3.0e9, PMASS_EV)
+    qd   = QuadrupoleSpec(L=0.25, kn=(0.0, -1.1), nst=4, integrator_order=4)
+    qf   = ElementSpec{:quadrupole}(; L=0.35, kn=(0.0, @knob_expr(md2a_dba.kf)), nst=4, integrator_order=4)
+    d    = DriftSpec(L=0.6)
+    bend = SBendSpec(L=1.0, h=0.2, b0=0.2, nst=4, integrator_order=4)
+    rf   = ThinRFCavitySpec(400.0e6; strength=0.02, beta0=beta0, gamma0=gamma0)
+    ring = BeamLine("DBA", qd, d, bend, d, qf, d, bend, d, qd, rf)
+    proton = ReferenceParticle(charge=1.0, mc2=PMASS_EV, E0=3.0e9)
+    lattice = Lattice("DBA_RING"; line=ring, reference=proton, knob_root=:md2a_dba)
+    @test lattice.name == "DBA_RING" && lattice.line === ring && lattice.reference == proton
+    @test lattice.knob_roots === (:md2a_dba,) && eltype(lattice) === Float64
+
+    # The task sees exactly the placements the bare line gives (D15): the same
+    # LineEntry objects, entry for entry.
+    let tl = Octopus._element_tuple(lattice), tr = Octopus._element_tuple(ring)
+        @test length(tl) == 10 && length(tl) == length(tr)
+        @test all(x === y for (x, y) in zip(tl, tr))
+    end
+    # ... so it tracks bitwise like the line (which tracks like the bare tuple,
+    # the BeamLine testset). Anti-vacuity: the particles did move.
+    mk() = Phase6DRep([1.0e-3, 2.0e-3], [0.0, 1.0e-4], [0.5e-3, -1.0e-3],
+                      [0.0, -1.0e-4], [0.0, 0.0], [1.0e-3, 0.0])
+    let a = mk(), b = mk()
+        execute!(TrackingTask(lattice), a; turns=3)
+        execute!(TrackingTask(ring), b; turns=3)
+        @test collect(a[1]) == collect(b[1]) && collect(a[2]) == collect(b[2])
+        @test collect(a[1]) != collect(mk()[1])
+    end
+    # The analysis route: one and the same one-turn matrix (bitwise; the
+    # `LinearizedMap` record itself has identity `==`), the same Twiss status.
+    let Ml = one_turn_matrix(lattice).matrix, Mr = one_turn_matrix(ring).matrix
+        @test Ml == Mr && size(Ml) == (6, 6) && Ml != one(Ml)
+        @test analyze(TwissDispersionAnalysis(strict=false), lattice).status ==
+              analyze(TwissDispersionAnalysis(strict=false), ring).status
+    end
+    # The forwards to the line.
+    @test line_entries(lattice) === line_entries(ring)
+    @test s_positions(lattice) == s_positions(ring) && s_positions(lattice)[end] > 0
+    @test find_entries(lattice, sel"DBA/QUADRUPOLE[*]") == [1, 5, 9]
+    @test find_entries(lattice, sel"DBA/SBEND[2]") == [7]
+    let bl = IOBuffer(), br = IOBuffer()
+        knob_report(lattice; io=bl)
+        knob_report(ring; io=br)
+        text = String(take!(bl))
+        @test text == String(take!(br))
+        @test occursin("md2a_dba.kf", text) && occursin("DBA/QUADRUPOLE[2] :: kn[2]", text)
+    end
+
+    # Refusals, each by name, with the remedy.
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    let m = msg(() -> Lattice("T"; line=(qd, d)))
+        @test occursin("`line`", m) && occursin("Tuple of 2", m) && occursin("BeamLine(\"T\"", m)
+    end
+    let m = msg(() -> Lattice("T"; line=qd))
+        @test occursin("`line`", m) && occursin("bare ElementSpec{:quadrupole}", m) && occursin("BeamLine(", m)
+    end
+    @test occursin("Vector of 2", msg(() -> Lattice("T"; line=[qd, d])))
+    let m = msg(() -> Lattice("T"; line=ring, eltype=String))
+        @test occursin("`eltype`", m) && occursin("String", m) && occursin("Number", m)
+    end
+    @test occursin("`knob_root` is empty", msg(() -> Lattice("T"; line=ring, knob_root="")))
+    @test occursin("malformed", msg(() -> Lattice("T"; line=ring, knob_root=".a")))
+    @test occursin("malformed", msg(() -> Lattice("T"; line=ring, knob_root="a.")))
+    @test occursin("got nothing", msg(() -> Lattice("T"; line=ring, knob_root=(:a, nothing))))
+    @test occursin("`knob_root` must be", msg(() -> Lattice("T"; line=ring, knob_root=3)))
+    @test occursin("empty tuple", msg(() -> Lattice("T"; line=ring, knob_root=())))
+    # The guard is the constructor: the ring without its knob reaches ACCEPTED with no root.
+    @test msg(() -> Lattice("T"; line=BeamLine("DBA", qd, d, bend, d, qd, d, bend, d, qd, rf))) == "ACCEPTED"
+end
+
+@testset "Machine description: the knob-root tripwire refuses a dependency outside the declared roots" begin
+    # Declared at the testset's top level through the macro forms, which
+    # resolve paths by name and never read the root constant (knob_control.md,
+    # F-184). `md2a_ring.dep` is a ring knob whose INPUT lives under md2a_ip.
+    @knob md2a_ring.k1 = 1.5
+    @knob md2a_ip.angle = 0.0125
+    @knob md2a_ring.dep = md2a_ip.angle * 2
+    @knob md2a_ringx.z = 1.0
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    # The flexible constructor carries an expression inside `kn`; the friendly
+    # form folds the tuple to numbers eagerly today.
+    quad(expr) = ElementSpec{:quadrupole}(; L=0.35, kn=(0.0, expr))
+
+    ring_line = BeamLine("L1", quad(@knob_expr(md2a_ring.k1)), DriftSpec(L=0.5))
+    # No root declared: any dependency is refused, naming the remedy and the site.
+    let m = msg(() -> Lattice("T"; line=ring_line))
+        @test occursin("knob_root=", m) && occursin("md2a_ring.k1", m) && occursin("L1/QUADRUPOLE :: kn[2]", m)
+    end
+    # The ring's knob under the ring root: accepted, the root as a Symbol or a String.
+    @test Lattice("T"; line=ring_line, knob_root=:md2a_ring).knob_roots === (:md2a_ring,)
+    @test Lattice("T"; line=ring_line, knob_root="md2a_ring").knob_roots === (:md2a_ring,)
+    # A site under another namespace: refused by path, parameter, expression, knob and roots.
+    ip_line = BeamLine("L2", quad(@knob_expr(md2a_ip.angle)))
+    let m = msg(() -> Lattice("T"; line=ip_line, knob_root=:md2a_ring))
+        @test occursin("knob md2a_ip.angle, read at L2/QUADRUPOLE :: kn[2] = ", m) &&
+              occursin("outside the declared knob root(s) md2a_ring", m)
+    end
+    @test Lattice("T"; line=ip_line, knob_root=(:md2a_ring, :md2a_ip)).knob_roots === (:md2a_ring, :md2a_ip)
+    # Transitive: the dependent knob sits under the ring root; its input does not.
+    dep_line = BeamLine("L3", quad(@knob_expr(md2a_ring.dep)))
+    let m = msg(() -> Lattice("T"; line=dep_line, knob_root=:md2a_ring))
+        @test occursin("md2a_ip.angle (a dependency of knob md2a_ring.dep)", m) &&
+              occursin("L3/QUADRUPOLE :: kn[2]", m)
+    end
+    @test msg(() -> Lattice("T"; line=dep_line, knob_root=(:md2a_ring, :md2a_ip))) == "ACCEPTED"
+    # A placement override is a site too (the merged view): the same line is
+    # accepted before the override is written and refused after.
+    ovr_line = BeamLine("L4", QuadrupoleSpec(L=0.35, k1=1.0), DriftSpec(L=0.5))
+    @test msg(() -> Lattice("T"; line=ovr_line, knob_root=:md2a_ring)) == "ACCEPTED"
+    ovr_line[1].x_offset = @knob_expr(md2a_ip.angle)
+    let m = msg(() -> Lattice("T"; line=ovr_line, knob_root=:md2a_ring))
+        @test occursin("L4/QUADRUPOLE :: x_offset", m) && occursin("md2a_ip.angle", m)
+    end
+    @test msg(() -> Lattice("T"; line=ovr_line, knob_root=:md2a_ip)) == "ACCEPTED"
+    # The dot rule: md2a_ringx.z is not under md2a_ring (prefix match on the dot).
+    dot_line = BeamLine("L5", quad(@knob_expr(md2a_ringx.z)))
+    @test occursin("knob md2a_ringx.z, read at", msg(() -> Lattice("T"; line=dot_line, knob_root=:md2a_ring)))
+    @test msg(() -> Lattice("T"; line=dot_line, knob_root=:md2a_ringx)) == "ACCEPTED"
+    # A line's OWN knob-driven parameter (a girder on a knob) is a site as well.
+    girder = BeamLine("G", DriftSpec(L=0.5); x_offset=@knob_expr(md2a_ip.angle))
+    @test occursin("read at G :: x_offset", msg(() -> Lattice("T"; line=girder, knob_root=:md2a_ring)))
+end
+
+@testset "Machine description: the numeric-type tripwire follows the compile rule" begin
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    # Untyped Float64 elements in a Float64 lattice: the fold over Float64 is Float64.
+    @test eltype(Lattice("F64"; line=BeamLine("F64", QuadrupoleSpec(L=0.3, k1=1.0), DriftSpec(L=0.5)))) === Float64
+    # A typed Float32 element in a Float64 lattice: a stored type must be exactly eltype.
+    let m = msg(() -> Lattice("MIX"; line=BeamLine("MIX", QuadrupoleSpec{Float32}(L=0.3, k1=1.0), DriftSpec(L=0.5))))
+        @test occursin("MIX/QUADRUPOLE (quadrupole) stores numeric_type = Float32", m) &&
+              occursin("numeric type is Float64", m) && occursin("QuadrupoleSpec{Float64}(...)", m)
+    end
+    # An untyped Float64 element in a Float32 lattice: wider than eltype, refused
+    # with the typed-form and `@elements` remedies.
+    let m = msg(() -> Lattice("F32"; line=BeamLine("B", DriftSpec(L=0.5)), eltype=Float32))
+        @test occursin("B/DRIFT (drift)", m) && occursin("over Float32 is Float64", m) &&
+              occursin("DriftSpec{Float32}(...)", m) && occursin("@elements Float32", m)
+    end
+    # The typed form passes, and so does a kind storing no numeric value: the
+    # marker's pass is the empty fold, not a typed form.
+    @test eltype(Lattice("F32"; line=BeamLine("F32", DriftSpec{Float32}(L=0.5), MarkerSpec()), eltype=Float32)) === Float32
+    @test isempty(Octopus.params(MarkerSpec()))
+    @test Octopus._lattice_params_numeric_type(Octopus.params(DriftSpec(L=0.5)), Float32) === Float64
+    @test Octopus._lattice_params_numeric_type(Dict{Symbol,Any}(:nst => 4, :name => "Q", :on => true), Float32) === Float32
+    # A nested line kept whole is checked on its OWN merged parameters, at its
+    # path: a Float64 girder offset in a Float32 lattice ...
+    let cryo = BeamLine("CRYO", DriftSpec{Float32}(L=0.3); x_offset=1.0e-3),
+        m = msg(() -> Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), cryo), eltype=Float32))
+        @test occursin("TOP/CRYO (line)", m) && occursin("x_offset = Float32(", m)
+    end
+    # ... the same girder with a Float32 offset passes, members included, and a
+    # Float64 member inside the kept-whole line is found at its own path (the
+    # members of a line kept whole report under the nested line's name, as the
+    # knob wiring walker reports them, not re-rooted under the parent).
+    let cryo = BeamLine("CRYO", DriftSpec{Float32}(L=0.3); x_offset=1.0f-3),
+        cryo_bad = BeamLine("CRYO", DriftSpec(L=0.3); x_offset=1.0f-3)
+        @test eltype(Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), cryo), eltype=Float32)) === Float32
+        @test occursin("CRYO/DRIFT (drift)",
+                       msg(() -> Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), cryo_bad), eltype=Float32)))
+    end
+    # A placement override is a stored value too (the merged view): the same
+    # line is accepted before a BigFloat offset is written on one placement and
+    # refused at that placement's path after ...
+    let line = BeamLine("OVR", DriftSpec(L=0.5), DriftSpec(L=0.5))
+        @test msg(() -> Lattice("OVR"; line=line)) == "ACCEPTED"
+        line[2].x_offset = big"1.0e-3"
+        @test occursin("OVR/DRIFT[2] (drift)", msg(() -> Lattice("OVR"; line=line)))
+    end
+    # ... while on a TYPED element the stored type wins, as in `numeric_type`
+    # (the compile converts the override to the element's type).
+    let line = BeamLine("TYPED", DriftSpec{Float32}(L=0.5))
+        line[1].x_offset = 1.0e-3
+        @test eltype(Lattice("TYPED"; line=line, eltype=Float32)) === Float32
+    end
+    # The top-level line's own parameters are checked as well, under its name.
+    @test occursin("G (line)", msg(() -> Lattice("G"; line=BeamLine("G", DriftSpec{Float32}(L=0.5); x_offset=1.0e-3), eltype=Float32)))
+end
+
+@testset "Machine description: lattice equality is structural and the record prints" begin
+    @knob md2a_eq.k1 = 1.5
+    proton = ReferenceParticle(charge=1.0, mc2=PMASS_EV, E0=3.0e9)
+    quad(; nst=4) = ElementSpec{:quadrupole}(; L=0.25, kn=(0.0, @knob_expr(md2a_eq.k1)), nst=nst, integrator_order=4)
+    mkline(; L=0.6, tags=(), swap=false) = swap ?
+        BeamLine("DBA", DriftSpec(L=L; name="D1"), quad(); tags=tags) :
+        BeamLine("DBA", quad(), DriftSpec(L=L; name="D1"); tags=tags)
+    a = Lattice("A"; line=mkline(), reference=proton, knob_root=:md2a_eq)
+    b = Lattice("A"; line=mkline(), reference=proton, knob_root=:md2a_eq)
+    @test a.line !== b.line                   # independently built ...
+    @test a == b && hash(a) == hash(b)        # ... yet equal, with equal hashes
+    # Each ingredient changes the verdict.
+    @test a != Lattice("B"; line=mkline(), reference=proton, knob_root=:md2a_eq)                # the name
+    @test a != Lattice("A"; line=mkline(), reference=nothing, knob_root=:md2a_eq)               # the reference
+    @test a != Lattice("A"; line=mkline(), knob_root=:md2a_eq,
+                       reference=ReferenceParticle(charge=1.0, mc2=PMASS_EV, E0=4.0e9))
+    @test a != Lattice("A"; line=mkline(), reference=proton, knob_root=(:md2a_eq, :md2a_ip))    # the roots
+    @test a != Lattice("A"; line=mkline(L=0.7), reference=proton, knob_root=:md2a_eq)           # an element parameter
+    @test a != Lattice("A"; line=mkline(tags=(:md2a_t,)), reference=proton, knob_root=:md2a_eq) # a tag
+    @test a != Lattice("A"; line=mkline(swap=true), reference=proton, knob_root=:md2a_eq)       # the order
+    let line = mkline()
+        line[2].x_offset = 1.0e-4
+        @test a != Lattice("A"; line=line, reference=proton, knob_root=:md2a_eq)                 # a placement override
+    end
+    let m = BeamLine("M", MarkerSpec())    # one line, two numeric types: eltype alone decides
+        @test Lattice("M"; line=m) == Lattice("M"; line=m) && Lattice("M"; line=m) != Lattice("M"; line=m, eltype=Float32)
+    end
+    # A knob expression compares as a tree: separately built expressions are
+    # equal, a different tree is not; the walker sees specs by content while
+    # the specs' own `==` stays identity (defined on Lattice ONLY).
+    @test @knob_expr(2 * md2a_eq.k1) == @knob_expr(2 * md2a_eq.k1)
+    @test @knob_expr(2 * md2a_eq.k1) != @knob_expr(3 * md2a_eq.k1)
+    @test quad() != quad() && Octopus._lattice_structurally_equal(quad(), quad())
+    @test !Octopus._lattice_structurally_equal(quad(), quad(nst=8))
+    @test Octopus._lattice_structurally_equal((1.0, NaN, :x, nothing), (1.0, NaN, :x, nothing))   # isequal on numbers
+    @test !Octopus._lattice_structurally_equal([1.0, 2.0], (1.0, 2.0))                           # a vector is not a tuple
+    # The record prints on one line with the name and the placement count.
+    let s = sprint(show, a)
+        @test occursin("Lattice(\"A\": 2 placements, 0.85 m, Float64", s) && occursin("knob roots (md2a_eq,)", s) &&
+              occursin("reference ReferenceParticle(charge = 1.0", s) && !occursin('\n', s)
+    end
+    let s = sprint(show, Lattice("M"; line=BeamLine("M", MarkerSpec())))
+        @test occursin("1 placement, 0.0 m", s) && occursin("no reference, no knob roots)", s)
+    end
+end
+
 
 mutable struct _PhaseResetFailureObserver <: Octopus.AbstractBeamObserver
     failure_turn::Int
