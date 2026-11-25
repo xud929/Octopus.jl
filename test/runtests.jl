@@ -21245,6 +21245,72 @@ end
 # through two lattices and a machine. Unit B's testsets land directly below this comment and
 # nowhere else.
 
+@testset "Machine description: the shipped strong-strong example declares two lattices in a machine whose placements the task holds" begin
+    # examples/strong_strong_tracking.jl declares each ring as a BeamLine of its
+    # elements (the moment probe placed in-line), gives each its Lattice with
+    # its entrance ReferenceParticle, gathers both in Machine("EIC") and builds
+    # the task through StrongStrongTask(machine, :ESR, :HSR) (design D5, D15;
+    # stage 3). Included here into a fresh sandbox module at its default size
+    # (200 + 200 macro-particles, 2 turns), writing its artifact under
+    # result/123456789/ as the suite's example runner does, printing to devnull.
+    # The example's `execution = :auto` imports CUDA by name, a package the test
+    # environment does not list (CUDA reaches the suite through Octopus), so the
+    # include maps that one keyword to :threads -- the fingerprint recipe's own
+    # edit -- and asserts it happened exactly once: a reworded config line fails
+    # here instead of running whatever it now says.
+    script = joinpath(pkgdir(Octopus), "examples", "strong_strong_tracking.jl")
+    retargeted = Ref(0)
+    retarget(ex) = begin
+        if ex isa Expr && ex.head === :(=) && ex.args[1] === :config && ex.args[2] isa Expr
+            for (i, kw) in pairs(ex.args[2].args)
+                if kw isa Expr && kw.head === :(=) && kw.args[1] === :execution &&
+                   kw.args[2] isa QuoteNode && kw.args[2].value === :auto
+                    ex.args[2].args[i] = Expr(:(=), :execution, QuoteNode(:threads))
+                    retargeted[] += 1
+                end
+            end
+        end
+        ex
+    end
+    m = Module(gensym(:SSMachine))
+    Core.eval(m, :(const Octopus = $Octopus))
+    redirect_stdout(devnull) do
+        Base.include(retarget, m, script)
+    end
+    @test retargeted[] == 1
+    # Bindings created by include are read back through eval: the testset body
+    # runs in the world age it started in (Julia 1.12).
+    machine = Core.eval(m, :machine)
+    task = Core.eval(m, :task)
+    @test machine isa Machine
+    @test keys(machine) == ("ESR", "HSR")
+    esr, hsr = machine[:ESR], machine[:HSR]
+    @test esr.reference isa ReferenceParticle && hsr.reference isa ReferenceParticle
+    @test esr.reference != hsr.reference    # the electron's and the proton's: two references, not one copied
+    # The task holds exactly the placements the two lattices' lines give (D15):
+    # the same placed objects in order, as many as the former tuples held (13
+    # electron-side, 12 proton-side: the electron line has the radiation
+    # element), the in-line moment probes included.
+    e_entries, p_entries = line_entries(esr), line_entries(hsr)
+    @test length(task.line1) == length(e_entries) == 13
+    @test length(task.line2) == length(p_entries) == 12
+    @test all(getfield(a, :spec) === getfield(b, :spec) for (a, b) in zip(task.line1, e_entries))
+    @test all(getfield(a, :spec) === getfield(b, :spec) for (a, b) in zip(task.line2, p_entries))
+    @test getfield(task.line1[1], :spec) !== getfield(task.line2[1], :spec)   # anti-vacuity: the two rings' transports are distinct objects
+    @test getfield(last(task.line1), :spec) isa ScheduledObserver && getfield(last(task.line2), :spec) isa ScheduledObserver
+    # The collision marker is ONE object placed in both lines, as the bare
+    # tuples placed it: the pairing reads one solver.
+    markers1 = filter(e -> getfield(e, :spec) isa StrongStrongCollision, collect(task.line1))
+    markers2 = filter(e -> getfield(e, :spec) isa StrongStrongCollision, collect(task.line2))
+    @test length(markers1) == 1 && length(markers2) == 1
+    @test getfield(markers1[1], :spec) === getfield(markers2[1], :spec)
+    # The run went through the machine form: the artifact's luminosity channel
+    # holds one row per turn of the default config, every value a collision's.
+    lum = read(TaskOutput(Core.eval(m, :artifact_path)), :luminosity; name = "ip")
+    @test length(lum.turn) == 2 && length(lum.value) == 2
+    @test all(v -> isfinite(v) && v > 0, lum.value)
+end
+
 
 mutable struct _PhaseResetFailureObserver <: Octopus.AbstractBeamObserver
     failure_turn::Int

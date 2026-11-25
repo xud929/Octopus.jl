@@ -72,13 +72,18 @@ function example_catalog()
         ReferenceExample(
             "examples/strong_strong_tracking.jl",
             "Crab-crossing electron-proton collision with two live beams through a " *
-            "Poisson solver. The production-shaped precedent for a strong-strong " *
+            "Poisson solver, the two rings declared as the lattices of one " *
+            "machine. The production-shaped precedent for a strong-strong " *
             "simulation: how to build the two beams (each from its species and " *
             "energy as one ReferenceParticle), the collision element, the " *
-            "solver and its slicing, and what to observe. Its configurable " *
+            "solver and its slicing, what to observe, and how to declare each " *
+            "ring as a BeamLine with its Lattice (name, entrance reference) and " *
+            "gather both in a Machine the task pairs by name " *
+            "(StrongStrongTask(machine, :ESR, :HSR)). Its configurable " *
             "development harness is test/examples/strong_strong_tracking.jl.",
             Type[StrongStrongTask, StrongStrongCollision, PICPoissonSolver,
-                     LongitudinalSlicing, Beam, LinearOptics, ReferenceParticle]),
+                     LongitudinalSlicing, Beam, LinearOptics, ReferenceParticle,
+                     Machine, Lattice, BeamLine]),
         ReferenceExample(
             "examples/weak_strong_tracking.jl",
             "A live weak proton beam colliding with a fixed soft-Gaussian strong " *

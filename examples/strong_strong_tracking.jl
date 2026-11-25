@@ -1,6 +1,7 @@
 #=
 Strong-strong tracking example: a crab-crossing electron-proton collision with
-two live beams colliding through a Poisson solver.
+two live beams colliding through a Poisson solver, the two rings declared as
+the lattices of one machine.
 
 This is the clean, production-shaped example meant as a precedent for writing
 your own strong-strong simulations. Edit the small `config` block below, then run
@@ -23,8 +24,12 @@ The pattern this example follows:
 4. Build a Poisson solver. PIC is used here; the soft-Gaussian, spectral, and
    Gaussian-subtracted-PIC alternatives are shown commented below and share the
    same interface (see `?AbstractPoissonSolver`).
-5. Build both ring lines with matching `StrongStrongCollision` markers.
-6. Build a `StrongStrongTask` and `execute!` it.
+5. Declare each ring as a `BeamLine` holding the same `StrongStrongCollision`
+   marker, give each its `Lattice` with its entrance `ReferenceParticle`, and
+   gather the two lattices in one `Machine` (the machine description,
+   docs/design/machine_description.md).
+6. Build a `StrongStrongTask` from the machine's two lattices by name and
+   `execute!` it.
 
 Output is ONE run artifact under `result/<seed>/` (docs/design/run_artifact.md):
 
@@ -320,8 +325,9 @@ solver = PICPoissonSolver(;
 #                                   longitudinal_kick = true)
 
 # ---------------------------------------------------------------------------
-# Beam lines. Each ring carries the same collision marker at the IP, framed by
-# crab-cavity transport, the Lorentz boost pair, and one-turn optics.
+# Ring elements. Each ring carries the same collision marker at the IP, framed
+# by crab-cavity transport, the Lorentz boost pair, and one-turn optics; the
+# lines, lattices and machine that place them follow the output block below.
 # ---------------------------------------------------------------------------
 electron_tccb2ip = Linear6DSpec{Float64}(ele_crab, ele_ip; dmu = (pi / 2.0, 0.0, 0.0))
 electron_tccb2ip_inv = Linear6DSpec{Float64}(matrix = inv(Matrix(Linear6D(electron_tccb2ip))))
@@ -366,16 +372,30 @@ electron_observer = ScheduledObserver(
 proton_observer = ScheduledObserver(
     MomentObserver(; name = "proton"), moment_schedule)
 
-line_ele = (
+# ---------------------------------------------------------------------------
+# The machine description (docs/design/machine_description.md). Each ring is a
+# `BeamLine` of the elements above in tracking order, its moment probe placed
+# in-line where it reads; a `Lattice` adds the context the line does not carry
+# (its name and its entrance `ReferenceParticle`, the one its beam was built
+# from); the `Machine` is the facility's namespace of lattices by name, which
+# the task pairs below. The task sees exactly the placements the bare tuples
+# gave, so this layer changes neither the physics nor the runtime (the suite
+# pins both).
+# ---------------------------------------------------------------------------
+line_ele = BeamLine("ESR",
     electron_tccb2ip_inv, electron_tccb, electron_tccb2ip, lb, ip, rlb,
     electron_ip2tcca, electron_tcca, electron_ip2tcca_inv,
     electron_one_turn, electron_chrom, electron_rad, electron_observer,
 )
-line_pro = (
+line_pro = BeamLine("HSR",
     proton_tccb2ip_inv, proton_tccb, proton_tccb2ip, lb, ip, rlb,
     proton_ip2tcca, proton_tcca, proton_ip2tcca_inv,
     proton_one_turn, proton_chrom, proton_observer,
 )
+esr = Lattice("ESR"; line = line_ele, reference = ele_ref)
+hsr = Lattice("HSR"; line = line_pro, reference = pro_ref)
+machine = Machine("EIC"; lattices = (esr, hsr))
+println("Machine: ", machine)
 
 # ---------------------------------------------------------------------------
 # Build and run.
@@ -391,7 +411,10 @@ line_pro = (
 # executions and restarts instead of rewriting it per run; `capacity` is the
 # one buffering knob for every producer (worthwhile on networked
 # filesystems).
-task = StrongStrongTask(line_ele, line_pro; policy = policy,
+# The task pairs the machine's lattices by name: beam 1 (`beam_ele`) tracks
+# :ESR and beam 2 (`beam_pro`) tracks :HSR. `StrongStrongTask(esr, hsr; ...)`
+# and the two bare lines spell the same task.
+task = StrongStrongTask(machine, :ESR, :HSR; policy = policy,
                         artifact = RunArtifact(artifact_path;
                                                capacity = input.output.capacity))
 execute!(task, beam_ele, beam_pro; turns = config.turns)

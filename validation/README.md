@@ -86,6 +86,7 @@ whole arm:
 | `tracking_context_policy_consistency.jl` | GPU legs required | 41.2 s |
 | `profiling/benchmark_strong_strong_pic.jl` | 2000 per beam, grid 32, 5 slices, 1 turn, 1 repeat | 120.6 s |
 | `profiling/crab_cavity_noise_backends.jl` | crab harness, 2000 macroparticles, 30 turns, arms `threads:4` and `cuda` | 102.4 s |
+| `profiling/machine_description_parity.jl` | the weak-strong case, 2000 particles, 2 turns, 1 timed run, the four routes (tuple, control, Lattice, Machine), CUDA; verdict `digests_equal=true` | 88 s (2026-11-25, measured alone at --threads=4; joined with stage 3 of the machine description) |
 
 The two benchmarks' timings at these sizes are run receipts, not performance
 records. The arm's total above is the 2026-10-20 measurement of 18 scripts;
