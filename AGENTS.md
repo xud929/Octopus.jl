@@ -78,6 +78,10 @@ submodules. Every directory under `src/` has a bullet below; the suite checks.
 - `src/constants/`: shared physical constants, units documented.
 - `src/beam/`: `BeamParams`, `Phase6DRep`, `Beam`, accessors, statistics.
 - `src/knobs/`: the knob system; design note `docs/knob_control.md`.
+- `src/lattice/`: the machine description's records over the line layer:
+  `Lattice` (a top-level `BeamLine` with its entrance `ReferenceParticle`,
+  knob roots and numeric type) and the `@elements` block macro; design note
+  `docs/design/machine_description.md`. Records, not Core Objects.
 - `src/knowledge/`: `ElementSpec`, `ElementMeta`, schemas, abstract roots.
 - `src/registry/`: the reflection registry and the generated snapshot.
 - `src/math/`: shared numerics with no accelerator semantics.

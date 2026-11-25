@@ -907,6 +907,12 @@ function _element_tuple(line::ElementSpec{:line})
 end
 _element_tuple(elements::Tuple) = elements
 _element_tuple(elements::AbstractVector) = Tuple(elements)
+# A lattice hands the task its line (design D15: `Lattice` joins here, one
+# site). The record's context -- the reference, the knob roots, the numeric
+# type -- was checked at its construction; the task sees exactly the
+# placements the bare line gives, so `TrackingTask(lattice)` and
+# `TrackingTask(lattice.line)` compile one and the same runtime line.
+_element_tuple(lattice::Lattice) = _element_tuple(getfield(lattice, :line))
 
 """
     _refuse_hooks_in_whole_line(line::ElementSpec{:line})

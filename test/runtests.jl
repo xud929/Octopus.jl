@@ -20088,6 +20088,11 @@ end # _lane_gate("ForwardDiff differentiates the lattice")
     end
 end
 
+# [MD2-A] Machine description stage 2, unit A: the Lattice record, ReferenceParticle, the
+# knob-root and numeric-type tripwires, and the task and analysis acceptance of a lattice.
+# Unit A's testsets land directly below this comment and nowhere else.
+
+
 mutable struct _PhaseResetFailureObserver <: Octopus.AbstractBeamObserver
     failure_turn::Int
     fail_finalize::Bool
@@ -23071,6 +23076,10 @@ end
         @test rel_y <= 1.0e-12
     end
 end
+
+# [MD2-B] Machine description stage 2, unit B: the @elements and @element block macro,
+# its expansion fixtures and the registry-derived kind tripwire.
+# Unit B's testsets land directly below this comment and nowhere else.
 
 if _lane_gate("Every example script runs against the current interface")
 @testset "Every example script runs against the current interface" begin
@@ -41040,6 +41049,10 @@ else
         @test_skip "CUDA device not available -- $(n_gpu_only) GPU-only testsets did not run"
     end
 end
+
+# [MD2-C] Machine description stage 2, unit C: the friendly constructors accepting knob
+# expressions (design D10), the fold sites and the expression arm of the effectiveness contract.
+# Unit C's testsets land directly below this comment and nowhere else.
 
 @testset "Knob control" begin
     reset_knobs!()

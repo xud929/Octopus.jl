@@ -90,6 +90,14 @@ include("track/longitudinal.jl")
 # Element specs, runtime maps, and element-local tracking implementations.
 include("elements/Elements.jl")
 
+# The machine description (design note docs/design/machine_description.md):
+# the `Lattice` record with its `ReferenceParticle`, and the `@elements`
+# block macro. Records over the line layer, not Core Objects; after the
+# elements they wrap, before the beam, the one-turn-matrix helper and the
+# tasks, which accept them.
+include("lattice/Lattice.jl")
+include("lattice/elements_macro.jl")
+
 # Particle/beam representations and backend tracking kernels.
 include("beam/Beam.jl")
 

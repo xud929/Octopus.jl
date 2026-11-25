@@ -192,6 +192,10 @@ _source_kind(::AbstractElementSpec) = :element_spec
 # its Jacobian from this helper.
 _linearizable(map) = map
 _linearizable(spec::AbstractElementSpec) = compile_runtime(spec)
+# A lattice linearizes as its line (design D15): `analyze(analysis, lattice)`
+# and `one_turn_matrix(lattice)` compile the same runtime line the bare
+# `BeamLine` gives.
+_linearizable(lattice::Lattice) = _linearizable(getfield(lattice, :line))
 function _linearizable(maps::Tuple)
     isempty(maps) && throw(ArgumentError(
         "an empty tuple has no map to linearize; pass compiled runtime elements"))
