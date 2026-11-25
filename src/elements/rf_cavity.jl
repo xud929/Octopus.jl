@@ -264,6 +264,7 @@ abstract type ThinRFCavitySpec{T} end
 """
     ThinRFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0)
     ThinRFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0)
+    ThinRFCavitySpec(frequency; strength | voltage, reference, phase=0, L=0)
     ThinRFCavitySpec(frequency; ..., phase_noise=nothing, strength_noise=nothing)
     ThinRFCavitySpec{T}(frequency; ...)
 
@@ -316,6 +317,22 @@ The second form is the friendly one: give a voltage and the beam's `e0`/`mc2`
 and the spec stores the dimensionless results. **The energy is an argument, not
 a field** — nothing here can drift out of step with `BeamParams.E0`, because
 nothing here remembers it.
+
+Reference particle (design D12, `docs/design/machine_description.md`):
+`reference = ReferenceParticle(; charge, mc2, E0 | p0c)` stands in for the
+flat reference keywords on either route -- for `beta0` and `gamma0` beside
+`strength`, for `e0`, `mc2` and `charge` beside `voltage` -- and the spec
+stores the numbers a flat call stores, bit for bit
+(`reference_beta_gamma(reference)` is the same derivation); the reference
+itself is not stored, so the element and everything downstream are unchanged.
+A flat reference keyword given beside `reference` is refused by name, whatever
+its value, and so is a `reference` that is not a `ReferenceParticle`. The flat
+keywords stay accepted on their own.
+
+```julia
+ThinRFCavitySpec(400.8e6; voltage = 12e6,
+                 reference = ReferenceParticle(; charge = 1, mc2 = PMASS_EV, E0 = 275e9))
+```
 
 Numeric type: the untyped form stores its parameters at their promoted type,
 and the compiled cavity is `numeric_type(spec)` -- the promotion over a
@@ -410,14 +427,61 @@ _rf_strength_fold(voltage, e0, charge, beta0) =
         _knob_arith(:/, _knob_arith(:*, charge, voltage), _knob_arith(:*, beta0, e0)) :
         rf_strength(; voltage=voltage, e0=e0, charge=charge, beta0=beta0)
 
+"""
+    _fold_reference(source, reference, voltage; beta0, gamma0, e0, mc2, charge)
+        -> (beta0, gamma0, e0, mc2, charge)
+
+The cavity constructors' reading of `reference` (design D12,
+`docs/design/machine_description.md`): a `ReferenceParticle` stands in for the
+flat reference keywords. With `reference = nothing` the flat keywords pass
+through, `charge` defaulting to 1 as before (the signatures take
+`charge = nothing` so a given charge can be told from a defaulted one). With a
+`ReferenceParticle`, the `strength` route gets
+`beta0, gamma0 = reference_beta_gamma(reference)` and the `voltage` route gets
+`e0`, `mc2` and `charge` from its fields, the pair then derived by the same
+`_reference_pair_fold` a flat call uses -- the same `reference_beta_gamma(E0, mc2)`,
+so the stored numbers are the flat call's bit for bit. Refused by name: any of
+`beta0`, `gamma0`, `e0`, `mc2`, `charge` given beside `reference`, whatever its
+value (the reference fixes all five; a second spelling is a second place to be
+wrong), and a `reference` that is not a `ReferenceParticle`. Nothing of the
+reference itself is stored: the element keeps the flat `beta0`/`gamma0` (and
+the derived `strength`), so nothing downstream changes. `ReferenceParticle`
+lives in `src/lattice/Lattice.jl`, included after the elements, hence the `isa`
+here rather than a dispatch.
+"""
+function _fold_reference(source::AbstractString, reference, voltage;
+                         beta0, gamma0, e0, mc2, charge)
+    reference === nothing && return beta0, gamma0, e0, mc2, (charge === nothing ? 1 : charge)
+    reference isa ReferenceParticle || throw(ArgumentError(
+        "$source: `reference` must be a ReferenceParticle (ReferenceParticle(; charge, mc2, \
+         E0 | p0c), design D12); got $(repr(reference))"))
+    for (name, value) in ((:beta0, beta0), (:gamma0, gamma0), (:e0, e0), (:mc2, mc2),
+                          (:charge, charge))
+        value === nothing || throw(ArgumentError(
+            "$source: `$name` was given beside `reference`; the reference particle fixes \
+             beta0, gamma0, e0, mc2 and charge, so drop `$name` and let `reference` supply \
+             it, or drop `reference` and give the flat keywords"))
+    end
+    voltage === nothing || return nothing, nothing, reference.E0, reference.mc2, reference.charge
+    b, g = reference_beta_gamma(reference)
+    return b, g, nothing, nothing, 1
+end
+
 # The stored parameters of both forms: the strength derivation, the
 # reference-pair refusal and the rule coercion, shared so the two forms cannot
 # drift apart.
 function _rf_cavity_params(frequency;
                       strength=nothing, beta0=nothing, gamma0=nothing,
-                      voltage=nothing, e0=nothing, mc2=nothing, charge=1,
+                      voltage=nothing, e0=nothing, mc2=nothing, charge=nothing,
+                      reference=nothing,
                       phase=0, L=0, phase_noise=nothing, strength_noise=nothing,
                       tracking_method=Symplectic6DMap(), kwargs...)
+    # `reference = ReferenceParticle(...)` stands in for the flat reference
+    # keywords (design D12): a flat keyword given beside it is refused by name,
+    # and `charge` takes its default of 1 here, once the fold has seen whether
+    # it was given (`_fold_reference`).
+    beta0, gamma0, e0, mc2, charge = _fold_reference("ThinRFCavitySpec", reference, voltage;
+                                                     beta0, gamma0, e0, mc2, charge)
     if voltage !== nothing
         (e0 === nothing || mc2 === nothing) && throw(ArgumentError(
             "ThinRFCavitySpec with `voltage` also needs `e0` and `mc2`, so the \
@@ -434,10 +498,11 @@ function _rf_cavity_params(frequency;
     end
     strength === nothing && throw(ArgumentError(
         "ThinRFCavitySpec needs either `voltage` with `e0` and `mc2`, or `strength` \
-         with `beta0` and `gamma0`"))
+         with `beta0` and `gamma0` (a `reference = ReferenceParticle(...)` stands in \
+         for e0/mc2 or for beta0/gamma0)"))
     (beta0 === nothing || gamma0 === nothing) && throw(ArgumentError(
         "ThinRFCavitySpec needs `beta0` and `gamma0`; derive them with \
-         reference_beta_gamma(e0, mc2)"))
+         reference_beta_gamma(e0, mc2), or give `reference = ReferenceParticle(...)`"))
     # The eager checks run on numbers; a knob expression resolves at compile
     # (design D10; the docstring names what the compile re-checks).
     frequency isa AbstractKnobExpression ||
@@ -676,7 +741,7 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = ThinRFCavitySpec(400.8e6; voltage=12.0e6, e0=275.0e9, mc2=PMASS_EV)
-    construction_help = "Friendly constructor: ThinRFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0) or ThinRFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0, tracking_method=Symplectic6DMap()); keyword-only alternative ThinRFCavitySpec(harmon=h; ...) stores the harmonic number instead of a frequency -- f = h*beta0*c/C resolves against the line's total arc length when a task compiles the line, and a harmon cavity compiled bare throws at its first kick rather than guess a circumference (give exactly one of frequency/harmon). Turn-by-turn modulation: phase_noise and strength_noise are each nothing (inactive, the default) or ONE rule, WhiteNoise(sigma; rng_id), PinkNoise(sigma; rng_id, octaves), TurnTable(offsets; name) or SpectralNoise(sigma, band, spectrum; rng_id, turns), which resolves to a TurnTable when the line compiles -- the phase and the strength are scalars, so a tuple is refused -- whose realised per-turn value (an offset in rad added to the phase for phase_noise; for strength_noise a dimensionless relative factor d scaling the strength to strength (1 + d), one voltage driver, so a relative voltage jitter's rms is the rule's sigma itself and a table holds relative factors -- relative, 2026-10-15) is applied once per turn by the TurnModulated wrap that compile_runtime builds, never by the kernel; the survey binding (ds_turn, a harmon cavity's k) is carried into every realised cavity. Numeric type: the compiled cavity is numeric_type(spec), the promotion of the parameters over a Float64 floor for the untyped form, so Float32 inputs compile to a Float64 cavity and nothing is narrowed; ThinRFCavitySpec{Float32}(frequency; ...) is the typed form (numeric_type = Float32 stored), the Float32 cavity, where a Float64 turn table is refused rather than promoted. A THIN RF cavity WITHOUT acceleration -- Bmad's rfcavity, not its lcavity -- so the reference energy is constant through it and phase = 0 is no net acceleration. Thin means ONE localised kick: L buys drift space so the cavity occupies its proper arc length, but there is no transit-time factor and no RF focusing, the same standing as ThinCrabCavity and ThinMultipole. THIRD model boundary, CONDITIONAL since the F16 closure (2026-08-14): a cavity compiled BARE -- outside a task line -- has no velocity-slip term, so a ring it closes has slip factor alpha_c alone, missing -1/gamma0^2 (the recorded 1.84x synchrotron-tune error at a 2.5 GeV proton with alpha_c = 0.2, and the wrong side of transition whenever alpha_c < 1/gamma0^2). A cavity compiled THROUGH A TASK LINE is bound to the geometric survey and applies the exact velocity slip as a symplectic z-shift ds_turn*(beta/beta0 - 1) before its kick, closing the ring with the full eta = alpha_c - 1/gamma0^2 on every path and backend -- whatever the voltage, so a survey-bound cavity at zero voltage is its slip share alone and only a BARE cavity at zero voltage is exactly the identity (F-91, 2026-10-19); a cavity inside a kept-whole own-state sub-line is surveyed through the line and bound like one at task level (since 2026-10-18; before that it was refused loudly at compile). Physics: docs/theory/arc_survey_and_velocity_slip.md. Frequency in Hz and phase in radians, matching ThinCrabCavity so that `phase` means one thing across every RF element. The energy is an ARGUMENT and not a field: voltage and e0 are reduced to a dimensionless strength at construction, so nothing on the element can disagree with BeamParams.E0. The body is written in the TIME_ENERGY convention and conjugated back by convert_longitudinal, which is why there is no beta factor in it. Design: docs/theory/rf_cavity_and_reference_energy.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinRFCavitySpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "Friendly constructor: ThinRFCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0) or ThinRFCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0, tracking_method=Symplectic6DMap()), or either with reference = ReferenceParticle(; charge, mc2, E0 | p0c) in place of the flat reference keywords (design D12: beta0/gamma0 beside strength, e0/mc2/charge beside voltage; the stored beta0, gamma0 and strength are the flat call's bit for bit and the reference itself is not stored; a flat reference keyword given beside reference is refused by name, as is a reference that is not a ReferenceParticle); keyword-only alternative ThinRFCavitySpec(harmon=h; ...) stores the harmonic number instead of a frequency -- f = h*beta0*c/C resolves against the line's total arc length when a task compiles the line, and a harmon cavity compiled bare throws at its first kick rather than guess a circumference (give exactly one of frequency/harmon). Turn-by-turn modulation: phase_noise and strength_noise are each nothing (inactive, the default) or ONE rule, WhiteNoise(sigma; rng_id), PinkNoise(sigma; rng_id, octaves), TurnTable(offsets; name) or SpectralNoise(sigma, band, spectrum; rng_id, turns), which resolves to a TurnTable when the line compiles -- the phase and the strength are scalars, so a tuple is refused -- whose realised per-turn value (an offset in rad added to the phase for phase_noise; for strength_noise a dimensionless relative factor d scaling the strength to strength (1 + d), one voltage driver, so a relative voltage jitter's rms is the rule's sigma itself and a table holds relative factors -- relative, 2026-10-15) is applied once per turn by the TurnModulated wrap that compile_runtime builds, never by the kernel; the survey binding (ds_turn, a harmon cavity's k) is carried into every realised cavity. Numeric type: the compiled cavity is numeric_type(spec), the promotion of the parameters over a Float64 floor for the untyped form, so Float32 inputs compile to a Float64 cavity and nothing is narrowed; ThinRFCavitySpec{Float32}(frequency; ...) is the typed form (numeric_type = Float32 stored), the Float32 cavity, where a Float64 turn table is refused rather than promoted. A THIN RF cavity WITHOUT acceleration -- Bmad's rfcavity, not its lcavity -- so the reference energy is constant through it and phase = 0 is no net acceleration. Thin means ONE localised kick: L buys drift space so the cavity occupies its proper arc length, but there is no transit-time factor and no RF focusing, the same standing as ThinCrabCavity and ThinMultipole. THIRD model boundary, CONDITIONAL since the F16 closure (2026-08-14): a cavity compiled BARE -- outside a task line -- has no velocity-slip term, so a ring it closes has slip factor alpha_c alone, missing -1/gamma0^2 (the recorded 1.84x synchrotron-tune error at a 2.5 GeV proton with alpha_c = 0.2, and the wrong side of transition whenever alpha_c < 1/gamma0^2). A cavity compiled THROUGH A TASK LINE is bound to the geometric survey and applies the exact velocity slip as a symplectic z-shift ds_turn*(beta/beta0 - 1) before its kick, closing the ring with the full eta = alpha_c - 1/gamma0^2 on every path and backend -- whatever the voltage, so a survey-bound cavity at zero voltage is its slip share alone and only a BARE cavity at zero voltage is exactly the identity (F-91, 2026-10-19); a cavity inside a kept-whole own-state sub-line is surveyed through the line and bound like one at task level (since 2026-10-18; before that it was refused loudly at compile). Physics: docs/theory/arc_survey_and_velocity_slip.md. Frequency in Hz and phase in radians, matching ThinCrabCavity so that `phase` means one thing across every RF element. The energy is an ARGUMENT and not a field: voltage and e0 are reduced to a dimensionless strength at construction, so nothing on the element can disagree with BeamParams.E0. The body is written in the TIME_ENERGY convention and conjugated back by convert_longitudinal, which is why there is no beta factor in it. Design: docs/theory/rf_cavity_and_reference_energy.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinRFCavitySpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
 
 # ---------------------------------------------------------------------------
@@ -872,6 +937,7 @@ _turn_rule_values(spec::ElementSpec{:thin_rf_cavity}) =
 """
     ThinAcceleratingCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0)
     ThinAcceleratingCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0)
+    ThinAcceleratingCavitySpec(frequency; voltage | strength, reference, phase=0, L=0)
 
 A **thin accelerating** cavity — Bmad's `lcavity`, where `ThinRFCavitySpec`
 is its `rfcavity`. The reference energy **changes across the element**:
@@ -887,6 +953,13 @@ re-references: design gain subtracted from `p_t`, momenta rescaled by `ρ`
 (`px, py` directly — this **is** adiabatic damping, det J = ρ³ exactly), and
 the longitudinal pair converted back at the exit reference. The design
 particle maps to itself exactly.
+
+`reference = ReferenceParticle(; charge, mc2, E0 | p0c)` (design D12) is the
+ENTRY reference spelled once, in place of `e0`, `mc2` and `charge` beside
+`voltage` or of `beta0` and `gamma0` beside `strength`, exactly as on
+`ThinRFCavitySpec`: the stored numbers are the flat call's bit for bit, the
+reference itself is not stored, a flat reference keyword given beside it is
+refused by name, and so is a `reference` that is not a `ReferenceParticle`.
 
 A line's declared references must compose: cavity `i+1`'s entry pair must be
 cavity `i`'s exit pair, validated loudly when a task compiles the line.
@@ -928,8 +1001,14 @@ end
 # twin): the derivation and every refusal, shared.
 function _accelerating_cavity_params(frequency;
                       strength=nothing, beta0=nothing, gamma0=nothing,
-                      voltage=nothing, e0=nothing, mc2=nothing, charge=1,
+                      voltage=nothing, e0=nothing, mc2=nothing, charge=nothing,
+                      reference=nothing,
                       phase=0, L=0, tracking_method=NonSymplectic6DMap(), kwargs...)
+    # `reference = ReferenceParticle(...)` as on the ring cavity (design D12):
+    # the ENTRY reference, flat keywords beside it refused by name, `charge`
+    # defaulted to 1 after the fold (`_fold_reference`).
+    beta0, gamma0, e0, mc2, charge = _fold_reference("ThinAcceleratingCavitySpec", reference,
+                                                     voltage; beta0, gamma0, e0, mc2, charge)
     if voltage !== nothing
         (e0 === nothing || mc2 === nothing) && throw(ArgumentError(
             "ThinAcceleratingCavitySpec with `voltage` also needs `e0` and `mc2` \
@@ -945,10 +1024,11 @@ function _accelerating_cavity_params(frequency;
     end
     strength === nothing && throw(ArgumentError(
         "ThinAcceleratingCavitySpec needs either `voltage` with `e0` and `mc2`, \
-         or `strength` with `beta0` and `gamma0`"))
+         or `strength` with `beta0` and `gamma0` (a `reference = ReferenceParticle(...)` \
+         stands in for e0/mc2 or for beta0/gamma0)"))
     (beta0 === nothing || gamma0 === nothing) && throw(ArgumentError(
         "ThinAcceleratingCavitySpec needs `beta0` and `gamma0`; derive them with \
-         reference_beta_gamma(e0, mc2)"))
+         reference_beta_gamma(e0, mc2), or give `reference = ReferenceParticle(...)`"))
     # The eager checks run on numbers; a knob expression resolves at compile
     # (design D10; the docstring names what the compile re-checks).
     frequency isa AbstractKnobExpression ||
@@ -1149,5 +1229,5 @@ end
         _PLACEMENT_PARAMS...,
     )
     example = ThinAcceleratingCavitySpec(1.3e9; voltage=25.0e6, e0=1.0e9, mc2=EMASS_EV)
-    construction_help = "Friendly constructor: ThinAcceleratingCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0) or ThinAcceleratingCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0, tracking_method=NonSymplectic6DMap()). A THIN ACCELERATING cavity -- Bmad's lcavity, where ThinRFCavitySpec is its rfcavity -- so the reference energy CHANGES across the element and phase = 0 is ON CREST (body cos(k*z1 + phase)), the different zero the ring cavity's help promises. e0/mc2 are the ENTRY reference; the exit pair and the damping ratio rho = P0_in/P0_out are DERIVED at compile from the stored dimensionless numbers, so no absolute energy is stored and nothing can disagree with BeamParams.E0 (theory note Sec. 6a: elements carry ratios). The exit map subtracts the design gain, rescales px, py and the longitudinal momentum by rho -- adiabatic damping, det J = rho^3 exactly -- and converts the longitudinal pair at the exit reference; the design particle maps to itself exactly. A task-compiled line VALIDATES the declared chain: each accelerating cavity's entry pair must match the previous one's derived exit pair, refused loudly otherwise. Model boundaries: thin (one kick, L buys drift space, no transit-time factor, no RF focusing), relative time with no autoscale pass, no velocity-slip term (single-pass lines at accelerating energies put it far below the model's other boundaries; tracked in todo.md), and SINGLE-PASS -- a closed ring containing one is physically inconsistent, and multipass recirculation is the knob-per-pass unrolling of docs/design/survey_and_reference_channel.md, not repetition. Physics: docs/theory/rf_cavity_and_reference_energy.md (Scope B). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinAcceleratingCavitySpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
+    construction_help = "Friendly constructor: ThinAcceleratingCavitySpec(frequency; voltage, e0, mc2, charge=1, phase=0, L=0) or ThinAcceleratingCavitySpec(frequency; strength, beta0, gamma0, phase=0, L=0, tracking_method=NonSymplectic6DMap()), or either with reference = ReferenceParticle(; charge, mc2, E0 | p0c) as the ENTRY reference in place of the flat reference keywords (design D12, as on ThinRFCavitySpec: beta0/gamma0 beside strength, e0/mc2/charge beside voltage; the stored numbers are the flat call's bit for bit, the reference itself is not stored, a flat reference keyword given beside reference is refused by name, as is a reference that is not a ReferenceParticle). A THIN ACCELERATING cavity -- Bmad's lcavity, where ThinRFCavitySpec is its rfcavity -- so the reference energy CHANGES across the element and phase = 0 is ON CREST (body cos(k*z1 + phase)), the different zero the ring cavity's help promises. e0/mc2 are the ENTRY reference; the exit pair and the damping ratio rho = P0_in/P0_out are DERIVED at compile from the stored dimensionless numbers, so no absolute energy is stored and nothing can disagree with BeamParams.E0 (theory note Sec. 6a: elements carry ratios). The exit map subtracts the design gain, rescales px, py and the longitudinal momentum by rho -- adiabatic damping, det J = rho^3 exactly -- and converts the longitudinal pair at the exit reference; the design particle maps to itself exactly. A task-compiled line VALIDATES the declared chain: each accelerating cavity's entry pair must match the previous one's derived exit pair, refused loudly otherwise. Model boundaries: thin (one kick, L buys drift space, no transit-time factor, no RF focusing), relative time with no autoscale pass, no velocity-slip term (single-pass lines at accelerating energies put it far below the model's other boundaries; tracked in todo.md), and SINGLE-PASS -- a closed ring containing one is physically inconsistent, and multipass recirculation is the knob-per-pass unrolling of docs/design/survey_and_reference_channel.md, not repetition. Physics: docs/theory/rf_cavity_and_reference_energy.md (Scope B). Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ThinAcceleratingCavitySpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."
 end
