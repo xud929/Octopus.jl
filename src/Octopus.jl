@@ -6,6 +6,8 @@ using JLD2
 using HDF5
 using FFTW
 using NVTX
+using TOML
+using SHA
 
 export AbstractExecutionBackend, CPUThreadsBackend, CUDABackend,
        AbstractPhaseRep, track!
@@ -92,11 +94,13 @@ include("elements/Elements.jl")
 
 # The machine description (design note docs/design/machine_description.md):
 # the `Lattice` record with its `ReferenceParticle`, the `Machine` namespace
-# of lattices, and the `@elements` block macro. Records over the line layer,
+# of lattices, the TOML snapshot's writer and reader, and the `@elements`
+# block macro. Records over the line layer,
 # not Core Objects; after the elements they wrap, before the beam, the
 # one-turn-matrix helper and the tasks, which accept them.
 include("lattice/Lattice.jl")
 include("lattice/Machine.jl")
+include("lattice/toml.jl")
 include("lattice/elements_macro.jl")
 
 # Particle/beam representations and backend tracking kernels.
@@ -138,6 +142,10 @@ include("tasks/PhaseSpaceReset.jl")
 include("tasks/ParticleTunes.jl")
 include("tasks/BPMObserver.jl")
 include("tasks/StrongStrong.jl")
+# The snapshot codec's methods for the objects a line holds beside its elements
+# (hooks, markers, solvers, schedules, rules): after the tasks, whose types they
+# name; the format and the element rules are in lattice/toml.jl.
+include("lattice/toml_hooks.jl")
 # Stage 4b: the analysis option effectiveness contract (needs
 # validate_configuration_metadata from tasks/strongstrong; before Registry so
 # the registry discovers it).

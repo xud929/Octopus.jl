@@ -21312,6 +21312,20 @@ end
 end
 
 
+# [MD4-A] Machine description stage 4, unit A: the TOML snapshot's core codec (write_machine,
+# machine_toml, read_machine, parse_machine; elements by stored parameters, the value rules,
+# lines with members, knobs by path, references, lattices, the machine; the deterministic
+# emitter; the refusals). Unit A's testsets land directly below this comment and nowhere else.
+
+# [MD4-B] Machine description stage 4, unit B: the objects beside the elements (hooks, markers,
+# solvers, schedules, turn rules and the tables sidecar) through the codec, and the
+# registry-derived tripwire over every object type. Unit B's testsets land directly below this
+# comment and nowhere else.
+
+# [MD4-C] Machine description stage 4, unit C: the run artifact embedding the snapshot (D14) and
+# the shipped strong-strong example writing its machine. Unit C's testsets land directly below
+# this comment and nowhere else.
+
 mutable struct _PhaseResetFailureObserver <: Octopus.AbstractBeamObserver
     failure_turn::Int
     fail_finalize::Bool
