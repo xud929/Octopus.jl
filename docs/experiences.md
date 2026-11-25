@@ -2486,6 +2486,30 @@ tripwire that mirrors a rule the code already has calls that code (here
 `numeric_type` and `_wrap_numeric_type`) rather than restating it with its
 own constants, because the restatement is a hand-copy of the rule.
 
+## A pin that inspects the stored form has not accepted the input
+
+The machine description's stage 2 (2026-11-25) made `StrongStrongTask` take
+two `Lattice`s and pinned it: the task built from the lattices held, entry
+for entry, the same placement objects as the task built from the lines. True,
+and the task had never executed: a collision marker placed in a line is a
+`LineEntry` whose spec is the marker, the strong-strong compile walker
+recognised markers by `::StrongStrongCollision` dispatch alone, so the wrapped
+marker fell to the element arm, compiled as a physics entry and was called as
+a map at the first turn. Stage 3 found it (record
+[`history/machine_description_stage3_2026_11_25.md`](history/machine_description_stage3_2026_11_25.md))
+because its pin compared the COMPILED runtime blocks of the two spellings and
+tracked both for three turns, which is what the construction pin should have
+done: a new input accepted at an entry point is accepted when the consumer has
+run it through to its output, and a pin that stops at the stored form proves
+only that the storing worked. The lesson beside the stage-2 one above: that
+one says every helper dispatching on the old type needs a method for the new
+one; this one says the test that would have found the missing method is the
+one that executes, so write the executing pin first and let the stored-form
+identity be its anti-vacuity arm, never the other way round. The same
+measurement answered the owner's performance question for free: identical
+compiled blocks are identical kernels, so the parity driver had only to show
+that nothing per turn sits in front of them.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

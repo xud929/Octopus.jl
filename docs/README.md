@@ -232,7 +232,11 @@ Procedures, one per task class, routed from the Task Routing table in
   [`history/machine_description_stage2_2026_11_25.md`](history/machine_description_stage2_2026_11_25.md),
   its reference batch (`Beam` and the cavities taking the `ReferenceParticle`)
   in [`history/machine_description_reference_2026_11_25.md`](history/machine_description_reference_2026_11_25.md),
-  stages 3 to 5 (`Machine`, the TOML form, `with_overrides`) are not started.
+  its stage 3 (`Machine`, the namespace of lattices by name and shared knob
+  roots; `StrongStrongTask`, `TrackingTask`, `analyze` and `one_turn_matrix`
+  taking a machine; the strong-strong example as two lattices) in
+  [`history/machine_description_stage3_2026_11_25.md`](history/machine_description_stage3_2026_11_25.md),
+  stages 4 and 5 (the TOML form, `with_overrides`) are not started.
   The note: Julia stays the
   input language (no lattice language, no operator algebra); `Lattice` as a
   record around a top-level `BeamLine` with the entrance reference particle,
@@ -284,6 +288,23 @@ Procedures, one per task class, routed from the Task Routing table in
   compares the beam's reference with a cavity's pair at compile), the
   per-unit verification and the gate, and the previous push's ledger (CI
   run 489, the 5edd08a intermediate commit).
+- [`machine_description_stage3_2026_11_25.md`](history/machine_description_stage3_2026_11_25.md)
+  — the machine description's stage 3: the `Machine` record (the facility's
+  lattices by name in declaration order and the knob roots they share; the
+  machine-level knob-root tripwire, a root two lattices declare must be
+  declared shared and no two roots may overlap as dotted prefixes; the
+  readers, structural equality, one-line `show`), the implicit one-lattice
+  machine, `TrackingTask`, `analyze` and `one_turn_matrix` taking a
+  one-lattice machine through the lattice's own entry site, the two
+  `StrongStrongTask` machine forms (by name, the same name twice legal; the
+  two-lattice convenience in declaration order), the shipped strong-strong
+  example as the lattices `ESR` and `HSR` in `Machine("EIC")` with its
+  fingerprints against the reference batch's tree on CPU and CUDA, the
+  tuple-versus-machine performance parity by construction and by the
+  interleaved measurement of `profiling/machine_description_parity.jl`
+  (threads, CUDA, MPI), the decisions (lattices and shared roots only, beam
+  definitions and machine-level references deferred as an owner question),
+  the per-unit verification and the gate, and the previous push's ledger.
 - [`linear_optics_owner_items_2026_11_21.md`](history/linear_optics_owner_items_2026_11_21.md)
   — the second LinearOptics batch, closing the design note's owner items 1, 4
   and 5 (D11-D13): form 2 reaching `ChromaticityKickSpec` and `LumpedRadSpec`

@@ -243,6 +243,14 @@ Use Julia help:
 ?TaskOutput
 ```
 
+`TrackingTask` takes a tuple or vector of elements, a `BeamLine`, a `Lattice`
+or a one-lattice `Machine`; `StrongStrongTask` takes two of the same, one per
+beam (the same line or lattice twice included), or a `Machine` with two
+lattice names, `StrongStrongTask(machine, :ESR, :HSR; ...)`, beam 1 tracking
+the first, or `StrongStrongTask(machine; ...)` for a machine of exactly two
+lattices in declaration order; every form compiles the runtime the tuple
+spelling compiles (see "Describe A Lattice").
+
 Runnable examples live in `examples/` and are self-documenting at the top of
 each source file. They are clean precedents with a small top-of-file `config`
 block; the matching configurable developer harnesses (driven by `OCTOPUS_*`
@@ -656,6 +664,7 @@ shipped DBA example declares its ring this way in a module. Use Julia help:
 
 ```julia
 ?Lattice
+?Machine
 ?ReferenceParticle
 ?@elements
 ?@element
@@ -704,7 +713,46 @@ policy; reference = ref)` in place of `charge`, `mc2`, `E0`, and
 compares the beam's reference with a cavity's stored pair at compile, the
 compile-path half of D12 (`todo.md`). `Lattice` forwards `line_entries`, `s_positions`,
 `find_entries` and `knob_report` to its line, and `eltype(lattice)` is its
-numeric type. `StrongStrongTask` and `Machine` are stage 3.
+numeric type. `StrongStrongTask` takes two lattices as it takes two lines,
+one per beam, and a `Machine` since stage 3 (below).
+
+`Machine` (stage 3; record
+`docs/history/machine_description_stage3_2026_11_25.md`) is the facility's
+namespace of lattices by name, in declaration order, with the knob roots the
+lattices share: nothing about how lattices connect, no closure and no
+interaction-point concept (design D5). A bare `Lattice` is a one-lattice
+machine implicitly, so the single-ring user never sees this level;
+`Machine(lattice)` spells it explicitly, and `TrackingTask`, `analyze` and
+`one_turn_matrix` take a one-lattice machine as they take the lattice.
+`StrongStrongTask(machine, :ESR, :HSR)` pairs two lattices by name (beam 1
+tracks the first; the same name twice is legal, two beams in one ring), and
+`StrongStrongTask(machine)` takes a machine of exactly two lattices in
+declaration order. In every form the task stores the placements the bare
+line gives, so the runtime it compiles, its kernels and its per-turn work are
+the tuple spelling's (the suite pins the compiled runtimes and the tracked
+coordinates of the two spellings equal). One tripwire runs at construction,
+the machine-level half of the knob-root check: a root two lattices declare
+must be declared shared on the machine (`knob_root = :ip` below), and no two
+distinct roots may overlap as dotted prefixes (`ring` and `ring.arc`); both
+are refused by name with the remedy, as are a duplicate lattice name, an
+entry that is not a `Lattice`, an unknown name in `machine[:X]` (the message
+lists the names held) and a machine of several lattices handed where one
+line is wanted (`machine[:NAME]`, or the pairing form, is the remedy).
+`keys`, `haskey`, `length` and iteration read it; `==` and `hash` are
+structural; `show` is one line. The machine stores lattices and shared roots
+only: beam definitions and machine-level reference particles are deferred
+until a consumer reads them (the record), the TOML form is stage 4 and
+`with_overrides` stage 5.
+
+```julia
+esr = Lattice("ESR"; line = ESR_LINE, reference = electron, knob_root = (:esr, :ip))
+hsr = Lattice("HSR"; line = HSR_LINE, reference = proton,   knob_root = (:hsr, :ip))
+eic = Machine("EIC"; lattices = (esr, hsr), knob_root = :ip)   # `ip`: the root both rings read
+task = StrongStrongTask(eic, :ESR, :HSR; policy = policy, ...)  # beam 1 tracks ESR
+keys(eic)                     # ("ESR", "HSR"), declaration order
+eic[:HSR] === hsr             # true; eic["HSR"] likewise
+Machine(esr) == Machine("ESR"; lattices = (esr,))   # the implicit one-lattice machine
+```
 
 ## Fixed Particle Tunes
 

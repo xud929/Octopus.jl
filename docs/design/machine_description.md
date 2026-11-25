@@ -13,7 +13,13 @@
 > `Beam` and both cavities take it as `reference = ReferenceParticle` in
 > place of their flat keywords, while the compile-path unification of D12
 > remains proposed), D15 for `TrackingTask` and `analyze`, and D16
-> (`src/lattice/`). `Machine` (D5), the TOML form (D13, D14) and
+> (`src/lattice/`). Stage 3 landed 2026-11-25, record
+> [`../history/machine_description_stage3_2026_11_25.md`](../history/machine_description_stage3_2026_11_25.md):
+> D5 implemented as the namespace of lattices by name and the knob roots they
+> share (beam definitions and machine-level reference particles, which D5
+> lists, are deferred until a runtime consumer reads them, an owner question
+> that record carries), the machine-level half of D7's tripwire, and D15 for
+> `StrongStrongTask` and `one_turn_matrix`. The TOML form (D13, D14) and
 > `with_overrides` (D11) remain proposed, and the "(proposed)" markers below
 > read as the state when the note was written.** Parent notes:
 > [`../theory/beam_line_composition.md`](../theory/beam_line_composition.md)
@@ -152,6 +158,15 @@ left out is in section 2's last decision.
   consumer, and pairing is the task's business (D6). The revolution-period
   consistency of two rings that meet every turn is a check for the task that
   pairs them, the only place that knows they do.
+  Status 2026-11-25: implemented in stage 3 as `Machine(name; lattices,
+  knob_root)`, the lattices by name in declaration order and the knob roots
+  they share, with the readers (`machine[:ESR]`, `keys`, `haskey`, `length`,
+  iteration), structural equality and the machine-level root tripwire of D7,
+  and `Machine(lattice)` as the explicit one-lattice machine (record
+  [`../history/machine_description_stage3_2026_11_25.md`](../history/machine_description_stage3_2026_11_25.md));
+  reference particles and beam definitions are not stored, since no runtime
+  consumer reads a machine-level one while each `Lattice` carries its
+  entrance reference (D3), an owner question that record carries.
 
 - **D6 Observers and solvers stay inside the lines; the solver stays on the
   collision marker.** Nothing changes in how a line is built or how
@@ -417,6 +432,10 @@ in the same commits (`AGENTS.md`, Definition of Done).
    lattice equals the explicit one; the two-lattice machine's lines reach the
    task bitwise as the two tuples do today; the strong-strong example's
    fingerprints on CPU threads, and on CUDA within run-to-run noise.
+   Landed 2026-11-25, record
+   [`../history/machine_description_stage3_2026_11_25.md`](../history/machine_description_stage3_2026_11_25.md)
+   (the fingerprints, the tuple-versus-machine parity measurement and the
+   gate are in it).
 4. **The TOML writer and reader; the artifact embedding.** Tests: the
    registry-derived round trip per kind (friendly constructor to object to
    file to object, equal in every parameter, knob and placement, which also
