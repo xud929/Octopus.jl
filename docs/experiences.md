@@ -2460,6 +2460,32 @@ against the record's gate section before the push; and a message that went
 out wrong is corrected beside it in the next commit that touches the ledger,
 as a frozen record would be.
 
+## A new input type at an entry point is a method on every helper that dispatches on the old ones
+
+The machine description's stage 2 (2026-11-25, record
+[`history/machine_description_stage2_2026_11_25.md`](history/machine_description_stage2_2026_11_25.md))
+let `analyze` and `one_turn_matrix` take a `Lattice` by forwarding ONE method,
+`_linearizable(::Lattice)`, to the line. The matrix came out bitwise the
+line's and the example's one-turn-matrix fingerprint still moved: the
+`LinearizedMap` provenance read `source_kind = :callable`, `source =
+"Lattice"`, because the two describers beside the forward, `_describe_map`
+and `_source_kind`, kept their generic fallbacks. Nothing failed; a label was
+wrong, and only a fingerprint that hashed the provenance beside the numbers
+saw it. The same shape sat in the stage's own tripwire: the numeric-type
+check re-derived `numeric_type(spec)`'s fold with the lattice's type as the
+floor where the compile uses `Float64`, so a Float32 lattice accepted an
+untyped marker that compiled in Float64 and refused the Float32 beam at
+`execute!` (found by the review, not by the tests, which pinned the
+re-derivation as correct).
+
+Rules adopted: when an entry point learns a new input type, grep every
+helper that dispatches on the old input types (describe, classify, source,
+validate) and give each the forwarding method, then pin the new input's
+receipt or provenance equal to the old input's, not only its numbers; and a
+tripwire that mirrors a rule the code already has calls that code (here
+`numeric_type` and `_wrap_numeric_type`) rather than restating it with its
+own constants, because the restatement is a hand-copy of the rule.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

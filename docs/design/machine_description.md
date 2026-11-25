@@ -2,11 +2,11 @@
 
 > **Status: designed 2026-11-24 in owner discussion; the owner authorised this
 > note and the staging of section 3 the same day ("Ok. Do it now."). Stage 2
-> landed [MEASURE: date], record
+> landed 2026-11-25, record
 > [`../history/machine_description_stage2_2026_11_25.md`](../history/machine_description_stage2_2026_11_25.md):
 > implemented are D3 (`Lattice`), D7 (the knob-root tripwire), D9
 > (`@elements`, `@element`), D10 (the friendly constructors accepting knob
-> expressions; [MEASURE: unit C scope]), D12 as acceptance only
+> expressions at every fold site and typed-by-hand form of section 4, the `LinearOptics` point measured and kept numeric by name), D12 as acceptance only
 > (`ReferenceParticle` exists and is carried on the lattice; the consumers
 > keep their keywords), D15 for `TrackingTask` and `analyze`, and D16
 > (`src/lattice/`). `Machine` (D5), the TOML form (D13, D14) and

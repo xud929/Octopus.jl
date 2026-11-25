@@ -183,6 +183,15 @@ end
 _source_kind(::Any) = :callable
 _source_kind(::Tuple) = :runtime_tuple
 _source_kind(::AbstractElementSpec) = :element_spec
+# A lattice is described and classed as its line (design D15): the provenance
+# of `one_turn_matrix(lattice)` reads `:element_spec` and the line's own
+# description, so the analysis of a lattice and of its bare line carry one
+# provenance. Found by the stage 2 fingerprint of the DBA example: with the
+# `_linearizable` forward alone the matrix was bitwise the line's while the
+# provenance read `:callable`, "Lattice" (record
+# docs/history/machine_description_stage2_2026_11_25.md, section 3).
+_describe_map(lattice::Lattice) = _describe_map(getfield(lattice, :line))
+_source_kind(lattice::Lattice) = _source_kind(getfield(lattice, :line))
 
 # Anything compile_runtime accepts is linearized through its compiled map; a
 # tuple of compiled maps is folded in order exactly as the suite's witness

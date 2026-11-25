@@ -31,26 +31,36 @@ export EdwardsTengTwiss, CanonicalDispersion, LinearOptics, advance_phase, slope
     _optics_expression_refusal(name) -> ArgumentError
 
 The by-name refusal of a knob expression in a `LinearOptics` component (design
-D10, `docs/design/machine_description.md`, the measurement stage 2 deferred to
-itself). A point is flattened into its consumers at construction -- the
-Edwards-Teng block, the phase advance, a linear map's matrix -- and the trees
-that flattening would build were measured on 2026-11-24 (`_knob_arith`, one
-process, 1000 repetitions): one knob in `beta[1]` makes 4 of the 36 matrix
-entries of `Linear6DSpec(o1, o2)` trees of 6 nodes each (24 nodes in all; the
-other 32 entries stay numbers) and evaluating the 36 through `knob_value`
-takes 4.8 us against 0.07 us for the numeric build, 67x; one knob in `R` makes
-the Edwards-Teng block four trees of 12 to 13 nodes, 50 in all. The design's
-bounds were a mean of 8 nodes per tree and 10x the numeric build; the second
-is exceeded sixfold and the block exceeds the first, so the point stays
-numeric and the expression is refused here by name, with the remedy: the
-consumers' flat keywords accept knob expressions.
+D10, `docs/design/machine_description.md`, which defers the measurement and
+the decision to stage 2 and sets no bounds itself). A point is flattened into
+its consumers at construction -- the Edwards-Teng block, the phase advance, a
+linear map's matrix -- so a knob inside a point would have to ride through
+that flattening as expression trees. Stage 2 measured the trees it would
+build and decided by the rule it recorded (the stage record
+`docs/history/machine_description_stage2_2026_11_25.md`; the harness
+`docs/history/machine_description_stage2_2026_11_25_optics_trees.jl`
+reproduces every number here): a component may be an expression only while
+the trees stay small, a mean of at most 8 nodes per tree, and cheap, their
+evaluation at most 10x the numeric build. Measured by the harness with
+`_knob_arith` on the source's own formulas, one process, 1000 repetitions,
+best of 5: one knob in `R` makes the Edwards-Teng block four trees of 11, 12,
+12 and 11 nodes over a shared 9-node normalizer, 46 nodes traversed; one knob
+in `beta[1]` makes 4 of the 36 matrix entries of `Linear6DSpec(o1, o2)`
+6-node trees (the other 32 stay numbers) and evaluating the 36 entries through
+`knob_value` costs 4.75 us against 0.06 us for the numeric build, 78x on the
+recording machine (the ratio moves with the machine -- the stage's first probe
+measured 67x -- the node counts do not). The block fails the node bound, the
+matrix fails the cost bound, so the point stays numeric and the expression is
+refused here by name, with the remedy: the consumers' flat keywords accept
+knob expressions.
 """
 _optics_expression_refusal(name::Symbol) = ArgumentError(
     "LinearOptics: $(name) cannot hold a knob expression. A point is flattened into its consumers at " *
     "construction (the Edwards-Teng block, the phase advance, a linear map's matrix), and the trees that " *
-    "flattening would build were measured on 2026-11-24 (design D10, stage 2): one knob in beta[1] gives 4 " *
-    "matrix entries of 6 nodes evaluating 67x slower than the numeric build, one knob in R an Edwards-Teng " *
-    "block of 50 nodes, past the 8-node and 10x bounds the design set, so the point stays numeric. Give the " *
+    "flattening would build fail the stage 2 decision rule (a mean of at most 8 nodes per tree and at most " *
+    "10x the numeric build; docs/history/machine_description_stage2_2026_11_25.md): one knob in R makes " *
+    "the Edwards-Teng block four trees of 11 to 12 nodes (46 in all), one knob in beta[1] makes 4 of the 36 " *
+    "matrix entries 6-node trees whose evaluation costs about 80x the numeric build, so the point stays numeric. Give the " *
     "consumer its flat keywords, which accept knob expressions -- ChromaticityKickSpec(; beta=..., alpha=...), " *
     "LumpedRadSpec(; beta=...), Linear6DSpec(; beta1=..., dmu=...) -- or rebuild the point from " *
     "knob_value(expression)")

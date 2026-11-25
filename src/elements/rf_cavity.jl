@@ -343,11 +343,13 @@ Knob expressions (design D10, `docs/design/machine_description.md`):
 is stored, and the `voltage` derivation builds `beta0`, `gamma0` and
 `strength` as expression trees (`_reference_pair_fold`, `_rf_strength_fold`),
 so the stored pair stays consistent by construction. The eager checks --
-a positive frequency, the reference-pair consistency -- run on numbers only;
-the compile constructor does NOT repeat them on the resolved values (measured
-2026-11-24: a knob frequency of -1 and a knob `beta0` inconsistent with
-`gamma0` both compile and track), so a knob driving one of these must be kept
-in range by its owner. `harmon` is refused as an expression, by name.
+a positive frequency, the reference-pair consistency, `gamma0 >= 1` -- run
+on numbers here, and the compile constructor repeats them by name on the
+values it reads (`_check_cavity_at_compile`), so a knob resolving out of
+range, or a flexible-form literal never checked here, is refused at
+`compile_runtime` and never tracks (stage 2 review of unit C, finding 3: until
+then a knob frequency of -1 and a knob `beta0 = 0.5` beside `gamma0 = 293`
+compiled and tracked). `harmon` is refused as an expression, by name.
 """
 function ThinRFCavitySpec(frequency; numeric_type=nothing, kwargs...)
     numeric_type === nothing || return ThinRFCavitySpec{numeric_type}(frequency; kwargs...)
@@ -381,7 +383,11 @@ end
 the same derivation as whitelisted expression trees, `gamma0 = e0 / mc2` and
 `beta0 = sqrt((gamma0 - 1) * (gamma0 + 1)) / gamma0`, so the stored pair is
 consistent by construction and resolves at compile (design D10). The
-`gamma >= 1` refusal of `reference_beta` runs on numbers only.
+`gamma >= 1` refusal of `reference_beta` runs on numbers only: the compile
+constructors re-check `gamma0 >= 1` on the resolved pair
+(`_check_cavity_at_compile`), but a knob `e0` resolving below `mc2` dies
+before that, in the tree's `sqrt` of a negative number at resolve -- a
+`DomainError`, not a refusal by name.
 """
 function _reference_pair_fold(e0, mc2)
     (e0 isa AbstractKnobExpression || mc2 isa AbstractKnobExpression) ||
@@ -526,15 +532,81 @@ function ThinRFCavity(spec::ElementSpec{:thin_rf_cavity},
                   method::AbstractTrackingMethod=tracking_method(spec))
     T = numeric_type(spec)
     f = getparam(spec, :frequency, nothing)
+    b_stored = param(spec, :beta0)
+    g_stored = param(spec, :gamma0)
+    beta0 = T(b_stored)
+    gamma0 = T(g_stored)
     # A harmon cavity has no frequency until a line's circumference resolves
     # it: k stays NaN out of a bare compile, `_bind_survey` fills it, and the
     # kick refuses to run on NaN rather than track garbage (Sec. 9 item 3).
+    _check_cavity_at_compile("ThinRFCavitySpec", f === nothing ? nothing : T(f), beta0, gamma0,
+                             max(_rounding_unit(b_stored), _rounding_unit(g_stored)))
     k = f === nothing ? T(NaN) : T(2) * T(pi) * T(f) / T(CLIGHT)
     return ThinRFCavity{typeof(method),T}(
         method, T(param(spec, :strength)), k, T(getparam(spec, :phase, 0)),
-        T(getparam(spec, :L, 0)), T(param(spec, :beta0)), T(param(spec, :gamma0)),
+        T(getparam(spec, :L, 0)), beta0, gamma0,
         T(NaN))
 end
+
+"""
+    _check_cavity_at_compile(source, frequency, beta0, gamma0, stored_unit)
+
+The value checks of the cavity construction paths, re-run on the values the
+compile reads. The friendly constructors check the NUMBERS they are given (a
+positive frequency, `_check_reference_pair`, `gamma0 >= 1` through
+`reference_beta`); a knob expression resolves only at compile (design D10),
+and the flexible form `ElementSpec{kind}(; ...)` checks nothing, so this is
+the one site both routes pass (stage 2 review of unit C, findings 3 and 4: a
+knob frequency of -1 and a knob `beta0 = 0.5` beside `gamma0 = 293` compiled
+and tracked, the quietly non-symplectic pair of U14-4 back through the knob
+door). `frequency` is `nothing` for a harmon cavity, bound later.
+
+The compile reads the pair in the cavity's numeric type `T`, and the pair is
+consistent only to the rounding of the floating type it was derived and
+stored in: the typed form `ThinRFCavitySpec{Float32}` rounds a Float64 pair
+to Float32, and the untyped form given Float32 `voltage`, `e0` and `mc2`
+derives the pair in Float32 arithmetic, stores it as Float32 and compiles in
+Float64 (the promotion floor). Rounding is relative (`|d| <= eps/2` of the
+value), and the residual `R = 1/beta0^2 - 1/(beta0 gamma0)^2 - 1` moves by
+`|dR/dbeta0| |dbeta0| <= (2/beta0)(eps/2)beta0 = eps` and `|dR/dgamma0|
+|dgamma0| <= (2/(beta0^2 gamma0^3))(eps/2)gamma0 = eps/(beta0 gamma0)^2`;
+the derivation and the evaluation of `R` add a few `eps` more, so the pair is
+allowed `4 eps (1 + 1/(beta0 gamma0)^2)` on top of the construction
+tolerance, with `eps` the coarser of the stored pair's rounding unit
+(`stored_unit`, `_rounding_unit` of the stored values) and `eps(T)`: 4.8e-7
+for a Float32-stored pair (measured residuals 4.1e-8 for the untyped Float32
+derivation), below 5e-16 for a Float64 one, whose stored pair IS the
+construction-checked pair. A Float64-typed cavity whose pair was derived from
+Float32 inputs stores that Float32-level inconsistency as Float64 and is
+refused here; the remedy in the message is to give the inputs in the spec's
+precision. The refusals name the parameter and quote the resolved values.
+"""
+function _check_cavity_at_compile(source::AbstractString, frequency, beta0, gamma0, stored_unit)
+    frequency === nothing || (isfinite(frequency) && real(frequency) > 0) || throw(ArgumentError(
+        "$(source): frequency must be positive and finite, got $(frequency) (the value at compile; a knob " *
+        "frequency resolves here, the flexible form is checked only here)"))
+    real(gamma0) >= 1 || throw(ArgumentError(
+        "$(source): gamma0 = $(gamma0) is below 1 (the value at compile). The reference gamma is E0/mc2 " *
+        "with E0 the TOTAL energy, not the kinetic energy; a pair with a negative gamma0 satisfies the " *
+        "beta0/gamma0 identity and is no particle either"))
+    residual = reference_pair_residual(beta0, gamma0)
+    allowance = 4 * max(stored_unit, eps(real(typeof(beta0)))) * (1 + inv(abs2(beta0 * gamma0)))
+    abs(real(residual)) <= _REFERENCE_PAIR_TOLERANCE + allowance || throw(ArgumentError(
+        "$(source): beta0 = $(beta0) and gamma0 = $(gamma0) (the values at compile) are not the same " *
+        "reference particle. They must satisfy beta0^2 = (gamma0^2-1)/gamma0^2; this pair leaves " *
+        "1/beta0^2 - 1/(beta0*gamma0)^2 - 1 = $(residual) against an allowance of " *
+        "$(_REFERENCE_PAIR_TOLERANCE + allowance), and gamma0 = $(gamma0) implies beta0 = " *
+        "$(sqrt((gamma0 - 1) * (gamma0 + 1)) / gamma0). An inconsistent pair gives a map that is not " *
+        "symplectic; derive both from the energy with reference_beta_gamma(E0, mc2) in the spec's precision " *
+        "(a pair derived from Float32 voltage/e0/mc2 is consistent to Float32 rounding only), or put the " *
+        "knob on e0 so the pair is one expression tree"))
+    return nothing
+end
+
+# The rounding unit of a stored value: `eps` of the floating type its own type
+# rounds in (an integer counts as Float64, a complex or dual value as its real
+# part's type), the precision a stored reference pair is consistent to.
+_rounding_unit(x) = eps(float(real(typeof(x))))
 
 """
     _attach_survey(elem::ThinRFCavity, ds_turn)
@@ -827,8 +899,13 @@ for a Float32 line).
 
 Knob expressions (design D10) are accepted as for `ThinRFCavitySpec`: the
 same parameters, the same `voltage` derivation as expression trees, and the
-same caveat -- the positive-frequency, reference-pair and exit-pair checks run
-on numbers only and are not repeated at compile on the resolved values.
+same compile re-check: the positive-frequency, reference-pair and
+`gamma0 >= 1` checks (`_check_cavity_at_compile`) and the exit-pair check (a
+design gain that keeps the reference above its rest energy) run on the numbers
+at construction and again, by name, on the resolved values at compile, so a
+knob strength that decelerates the reference is refused at `compile_runtime`
+(stage 2 review of unit C, finding 4: until then a knob strength of -5
+compiled and tracked with an exit gamma below -1).
 """
 abstract type ThinAcceleratingCavitySpec{T} end
 
@@ -947,11 +1024,26 @@ end
 function ThinAcceleratingCavity(spec::ElementSpec{:thin_accelerating_cavity},
                   method::AbstractTrackingMethod=tracking_method(spec))
     T = numeric_type(spec)
-    k = T(2) * T(pi) * T(param(spec, :frequency)) / T(CLIGHT)
+    f = T(param(spec, :frequency))
+    k = T(2) * T(pi) * f / T(CLIGHT)
     strength = T(param(spec, :strength))
     phase = T(getparam(spec, :phase, 0))
-    beta0 = T(param(spec, :beta0))
-    gamma0 = T(param(spec, :gamma0))
+    b_stored = param(spec, :beta0)
+    g_stored = param(spec, :gamma0)
+    beta0 = T(b_stored)
+    gamma0 = T(g_stored)
+    # The construction path's checks, on the values the compile reads (a knob
+    # strength resolves only here, the flexible form is checked only here):
+    # the entry pair, then the exit pair, which must exist as a particle
+    # (stage 2 review of unit C, finding 4: a knob strength of -5 compiled
+    # and tracked with an exit gamma below -1, -1 died in the sqrt below).
+    _check_cavity_at_compile("ThinAcceleratingCavitySpec", f, beta0, gamma0,
+                             max(_rounding_unit(b_stored), _rounding_unit(g_stored)))
+    gE = 1 + strength * beta0 * cos(phase)
+    real(gamma0 * gE) > 1 || throw(ArgumentError(
+        "ThinAcceleratingCavitySpec: the design gain decelerates the reference below its rest energy " *
+        "(the values at compile): gamma0 * (1 + strength*beta0*cos(phase)) = $(gamma0 * gE) <= 1 with " *
+        "strength = $(strength), phase = $(phase), beta0 = $(beta0), gamma0 = $(gamma0)"))
     beta1, gamma1 = _accelerating_exit_pair(strength, phase, beta0, gamma0)
     return ThinAcceleratingCavity{typeof(method),T}(
         method, strength, k, phase, T(getparam(spec, :L, 0)),

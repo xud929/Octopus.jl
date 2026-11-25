@@ -112,33 +112,50 @@ Two tripwires run at construction, so a convention becomes a check (D7):
   must sit under one of the declared roots; a dependency outside them, or any
   dependency when no root is declared, is refused by name with the element's
   provenance path, the parameter, the knob path and the declared roots.
-- **Numeric type.** An element built by a kind's typed form (`Spec{T}` or
-  `numeric_type=T`) must store exactly `eltype`; an element built by an
-  untyped friendly constructor is accepted when the promotion of its stored
-  numeric parameters over `eltype` is `eltype` itself, and refused when a
-  parameter is wider (a `Float64` literal in a `Float32` lattice: build it
-  with the typed form or the `@elements Float32` header). A kind storing no
-  numeric value (a marker, a line with nothing of its own) passes. The rule
-  is the compile rule of `numeric_type(spec)` read against the lattice's
-  type, and a nested line kept whole is checked with its own parameters and
-  its members.
+- **Numeric type.** The compile's own answer, re-read against `eltype`. An
+  element built by a kind's typed form (`Spec{T}` or `numeric_type=T`) must
+  store exactly `eltype`; an element built by an untyped friendly constructor
+  compiles in the promotion of its stored numeric parameters over a `Float64`
+  FLOOR (`numeric_type(spec)`), never narrower, and must compile in `eltype`.
+  So a `Float64` lattice accepts every untyped element whose values are
+  `Float64` or narrower (the marker, storing no numeric value, included) and
+  refuses a wider literal (a `BigFloat`, a dual); a `Float32` lattice refuses
+  EVERY untyped element, the marker included, because the compile types it
+  `Float64` and a task would then refuse the `Float32` beam by name. The
+  remedy is the typed form: `numeric_type = Float32` on the kind's
+  constructor, or the `@elements Float32` header, which types every element
+  it emits. A nested line kept whole is checked on its merged parameters by
+  the wrap's own rule (`_wrap_numeric_type`: built in its members' type while
+  the line's own parameters promote to the floor, widened by a wider offset;
+  `BeamLine(...; numeric_type = T)` declares it), then its members; the
+  top-level line's own parameters are checked when it carries state of its
+  own, since a dissolving line never compiles as an element.
+
+The two tripwires run at construction only: a knob redefined or declared
+afterwards is not re-checked (a derived lattice, stage 5, runs them again).
 
 Two lattices are `==` when their names, numeric types, roots, references and
 lines agree structurally: the same placements in order, each with the same
 spec kind and parameters (knob expressions compared as trees), the same
-provenance path, tags and overrides. Including a declarative lattice module
-twice therefore builds an equal lattice (design D8), which the suite pins on
-the shipped example.
+provenance path, tags and overrides. Equality is structural over the stored
+values, so a function-valued parameter (a `TuneFunction`) compares by identity
+and an automatically assigned stream id (`rng_id = 0`, a fresh stream per
+build) differs per build; the include-twice equality of design D8 therefore
+holds for modules whose elements carry neither, as the shipped DBA module
+does, and the suite pins it on that example.
 
-A `Lattice` is accepted wherever a task or an analysis takes a line:
-`TrackingTask(lattice; ...)` and `analyze(analysis, lattice)` see the
-placements the bare line gives (D15; `StrongStrongTask` and `Machine` are
-stage 3). `line_entries`, `s_positions`, `find_entries` and `knob_report`
-forward to the line.
+A `Lattice` is accepted wherever a task or an analysis takes a line,
+`StrongStrongTask(lattice1, lattice2; ...)` included: `TrackingTask(lattice;
+...)`, `StrongStrongTask` and `analyze(analysis, lattice)` see the placements
+the bare line gives (D15, one site: `_element_tuple`); `Machine` is stage 3.
+`line_entries`, `s_positions`, `find_entries` and `knob_report` forward to
+the line.
 
 Refused by name: a `line` that is not an `ElementSpec{:line}` (a bare spec, a
 tuple or a vector: wrap it in `BeamLine(name, ...)`); an `eltype` that is not
-a `Number` type; an empty or malformed `knob_root`.
+a concrete `Number` type (`Number` and `Real` are abstract, and every element
+must share ONE type); an empty or malformed `knob_root` (a segment that is not
+an identifier, a reserved constant name such as `pi`).
 """
 struct Lattice
     name::String
@@ -160,10 +177,18 @@ function Lattice(name::AbstractString; line, reference::Union{Nothing,ReferenceP
             "BeamLine; got $(what). Wrap the elements in a line first: " *
             "BeamLine($(repr(String(name))), element1, element2, ...)"))
     end
-    (eltype isa DataType && eltype <: Number) || throw(ArgumentError(
+    (eltype isa Type && eltype <: Number) || throw(ArgumentError(
         "Lattice($(repr(String(name)))): `eltype` must be a Number type such as Float64 or " *
         "Float32, the numeric type every element of the lattice must share; got " *
         "$(repr(eltype))"))
+    # An abstract type would void the one-type rule: `promote_type(Number, X)` is
+    # `Number` for every `X`, so a `Number` lattice accepted Float32, Float64 and
+    # BigFloat elements side by side.
+    isconcretetype(eltype) || throw(ArgumentError(
+        "Lattice($(repr(String(name)))): `eltype` must be a concrete Number type such as " *
+        "Float64 or Float32; got $(repr(eltype)) (" *
+        (isabstracttype(eltype) ? "abstract" : "not a concrete type") *
+        ": every element must share ONE type)"))
     roots = _lattice_knob_roots(knob_root)
     _lattice_check_eltype(line, eltype)
     _lattice_check_knob_roots(line, roots)
@@ -174,8 +199,12 @@ end
     _lattice_knob_roots(knob_root) -> Tuple{Vararg{Symbol}}
 
 `nothing` gives `()`; a `Symbol` or `String` gives one root; a tuple or vector
-of them gives several. An empty string, a name with leading or trailing dots,
-or a non-name value is refused by name.
+of them gives several. Refused by name: an empty string; a name with leading,
+trailing or doubled dots; a segment that is not a Julia identifier
+(`Base.isidentifier`; `1abc`); a root that is one of the knob
+expression language's reserved constant names (`pi`, `π`, `ℯ`, `NaN`, `Inf`,
+the keys of `_KNOB_NAMED_CONSTANTS`), which `@knob` itself refuses to declare;
+a non-name value.
 """
 function _lattice_knob_roots(knob_root)
     knob_root === nothing && return ()
@@ -188,9 +217,14 @@ function _lattice_knob_roots(knob_root)
         (startswith(s, ".") || endswith(s, ".") || occursin("..", s)) && throw(ArgumentError(
             "Lattice: `knob_root` $(repr(s)) is malformed: a knob namespace is a dotted name " *
             "with no leading, trailing or doubled dots (ring, HSR.arc)"))
-        all(c -> c == '.' || c == '_' || c == '!' || isletter(c) || isdigit(c), s) || throw(ArgumentError(
+        all(seg -> Base.isidentifier(seg), split(s, '.')) || throw(ArgumentError(
             "Lattice: `knob_root` $(repr(s)) is not a knob name: a knob namespace is a dotted " *
-            "name of identifiers (ring, HSR.arc), as `@knob` would declare it"))
+            "name whose every segment is a Julia identifier (ring, HSR.arc), as " *
+            "`@knob` declares it"))
+        haskey(_KNOB_NAMED_CONSTANTS, Symbol(s)) && throw(ArgumentError(
+            "Lattice: `knob_root` $(repr(s)) is a reserved name: knob expressions read " *
+            "$(s) as the literal constant $(_KNOB_NAMED_CONSTANTS[Symbol(s)]), so `@knob` " *
+            "refuses to declare a knob under it; pick a namespaced root such as consts"))
         return (Symbol(s),)
     end
     if knob_root isa Union{Tuple,AbstractVector}
@@ -265,16 +299,18 @@ _lattice_knob_declared(path::Symbol) = lock(() -> haskey(_KNOB_TABLE, path), _KN
 """
     _lattice_check_eltype(line::ElementSpec{:line}, T::Type) -> nothing
 
-The numeric-type tripwire of the docstring: the line's own parameters, then
-every placement's merged parameters (`_merged_params`), nested lines kept
-whole descended into. A stored `numeric_type` must be `T` exactly; otherwise
-`numeric_type(spec_like, T) === T` must hold (the promotion of the stored
-numeric parameters over the lattice's type is the lattice's type), which also
-admits a kind storing no numeric value. Refused by name with the provenance
-path, the kind, the offending type and the remedy.
+The numeric-type tripwire of the docstring: the compile's own answer re-read
+against `T`. Every placement is checked through its merged parameters
+(`_merged_params`; `compile_runtime(::LineEntry)` merges, then compiles), a
+nested line kept whole on its merged parameters and then its members, and the
+top-level line's own parameters only when it carries state of its own (a
+dissolving line never compiles as an element; `_element_tuple`). Refused by
+name with the provenance path, the kind, the type the element compiles in and
+the remedy.
 """
 function _lattice_check_eltype(line::ElementSpec{:line}, ::Type{T}) where {T}
-    _lattice_check_params_eltype(_line_site(line), :line, getfield(line, :params), T)
+    _line_has_own_state(line) &&
+        _lattice_check_line_eltype(_line_site(line), getfield(line, :params), line, T)
     for entry in line_entries(line)
         _lattice_check_entry_eltype(entry, T)
     end
@@ -288,29 +324,39 @@ end
 function _lattice_check_entry_eltype(entry::LineEntry, ::Type{T}) where {T}
     spec = getfield(entry, :spec)
     spec isa AbstractElementSpec || return nothing
-    k = spec isa ElementSpec ? kind(spec) : nameof(typeof(spec))
-    _lattice_check_params_eltype(entry_path(entry), k, _merged_params(entry), T)
     if spec isa ElementSpec{:line}
+        _lattice_check_line_eltype(entry_path(entry), _merged_params(entry), spec, T)
         for member in line_entries(spec)
             _lattice_check_entry_eltype(member, T)
         end
+        return nothing
     end
+    k = spec isa ElementSpec ? kind(spec) : nameof(typeof(spec))
+    _lattice_check_params_eltype(entry_path(entry), k, _merged_params(entry), T)
     return nothing
 end
 
 """
-    _lattice_params_numeric_type(params, T) -> Type
+    _lattice_params_numeric_type(params) -> Type
 
-The compile rule of `numeric_type(spec, T)` read on a parameter dictionary
+The compile rule of `numeric_type(spec)` read on a parameter dictionary
 (`numeric_type` takes a spec; a placement's merged parameters are a `Dict`):
-the fold of `_promote_param_type` over the stored values from the floor `T`,
-so non-numeric values and knob expressions are ignored and a kind storing no
-numeric value reports `T` itself. Does not read a stored `numeric_type`; the
-caller compares that one for identity.
+the fold of `_promote_param_type` over the stored values from the `Float64`
+FLOOR the compile folds from (src/knowledge/Knowledge.jl), so non-numeric
+values and knob expressions are ignored, a kind storing no numeric value
+reports `Float64`, and a `Float32` or `Int` literal lands on `Float64` exactly
+as it compiles. Does not read a stored `numeric_type`; the caller compares
+that one for identity.
 """
-_lattice_params_numeric_type(params::AbstractDict, ::Type{T}) where {T} =
-    foldl(_promote_param_type, values(params); init=T)
+_lattice_params_numeric_type(params::AbstractDict) =
+    foldl(_promote_param_type, values(params); init=Float64)
 
+# An element: a stored `numeric_type` must be `T` itself; otherwise the type
+# the compile gives it (`numeric_type(spec)`, the Float64-floor fold over the
+# merged parameters) must be `T`. In a Float32 lattice this refuses EVERY
+# untyped element, the marker included: the compile types it Float64 and a
+# task then refuses the Float32 beam by name (`_check_beam_eltype`,
+# src/track/Track.jl); the lattice says so first, at its construction.
 function _lattice_check_params_eltype(site::AbstractString, k::Symbol, params::AbstractDict,
                                       ::Type{T}) where {T}
     stored = get(params, :numeric_type, nothing)
@@ -322,25 +368,73 @@ function _lattice_check_params_eltype(site::AbstractString, k::Symbol, params::A
             "the element with $(_lattice_typed_form(k, T)), or declare the lattice with " *
             "eltype=$(stored)."))
     end
-    P = _lattice_params_numeric_type(params, T)
+    P = _lattice_params_numeric_type(params)
     P === T && return nothing
     throw(ArgumentError(
-        "Lattice: $(site) ($(k)) stores a numeric parameter wider than the lattice's " *
-        "numeric type $(T): the promotion of its stored parameters over $(T) is $(P) (an " *
-        "untyped friendly constructor stores its literals as given, so a Float64 literal " *
-        "lands in a Float32 lattice as Float64). Build the element with " *
+        "Lattice: $(site) ($(k)) compiles in $(P), not the lattice's numeric type $(T): an " *
+        "untyped element's type is the promotion of its stored numeric parameters over the " *
+        "Float64 floor (`numeric_type`), never narrower than Float64, and a task refuses a " *
+        "$(T) beam at an element compiled in $(P) by name. Build the element with " *
         "$(_lattice_typed_form(k, T)), or declare the lattice with eltype=$(P)."))
 end
 
-# The remedy's spelling: the kind's typed form through its registered friendly
-# constructor (`QuadrupoleSpec{Float32}(...)`), the `@elements T` header for a
-# block of them, or, for a line's own parameters, values of the type itself.
+# A line kept whole: its wrap is built in `_wrap_numeric_type(spec, inner)`
+# (src/elements/misalignment.jl): the members' common type when the line's
+# own promotion is the Float64 floor, otherwise the promotion of that type
+# with the line's own (a stored `numeric_type`, or own parameters that widen
+# past Float64: a BigFloat or dual offset), and the line's own type alone when
+# it holds no element member. The members are each required to be `T` by
+# their own checks, so the members' type is `T` here.
+function _lattice_check_line_eltype(site::AbstractString, params::AbstractDict,
+                                    spec::ElementSpec{:line}, ::Type{T}) where {T}
+    stored = get(params, :numeric_type, nothing)
+    if stored !== nothing
+        stored === T && return nothing
+        throw(ArgumentError(
+            "Lattice: $(site) (line) stores numeric_type = $(stored), but the lattice's " *
+            "numeric type is $(T), and every element of a lattice shares its eltype. Build " *
+            "the line with $(_lattice_typed_form(:line, T)), or declare the lattice with " *
+            "eltype=$(stored)."))
+    end
+    own = _lattice_params_numeric_type(params)
+    wrap = !_lattice_line_has_element_members(spec) ? own :
+           own === Float64 ? T : promote_type(T, own)
+    wrap === T && return nothing
+    throw(ArgumentError(
+        "Lattice: $(site) (line) compiles in $(wrap), not the lattice's numeric type $(T): " *
+        "a line kept whole is wrapped in its members' type while its own parameters " *
+        "promote to the Float64 floor; a wider value (a BigFloat or dual offset) widens " *
+        "the wrap (`_wrap_numeric_type`), and a line with no element member has only its " *
+        "own type ($(own)). Build the line with $(_lattice_typed_form(:line, T)), or " *
+        "declare the lattice with eltype=$(wrap)."))
+end
+
+# Whether a line holds at least one element placement, nested lines descended:
+# the wrap then has a members' type to be built in.
+function _lattice_line_has_element_members(line::ElementSpec{:line})
+    for entry in line_entries(line)
+        child = getfield(entry, :spec)
+        if child isa ElementSpec{:line}
+            _lattice_line_has_element_members(child) && return true
+        elseif child isa AbstractElementSpec
+            return true
+        end
+    end
+    return false
+end
+
+# The remedy's spelling: the keyword route `numeric_type = T`, which every
+# kind's friendly constructor routes to its typed form (the `@elements` macro's
+# own route) and which holds for a kind whose typed form has more parameters
+# than `Spec{T}` (`ThinCrabCavitySpec{N,T}`: `ThinCrabCavitySpec{Float32}(f)`
+# binds N and dies), the `@elements T` header for a block of them, and for a
+# line the same keyword on `BeamLine`, stored as the line's own type.
 function _lattice_typed_form(k::Symbol, ::Type{T}) where {T}
-    k === :line && return "its own parameters as $(T) values (x_offset = $(T)(1.0e-3), ...)"
+    k === :line && return "BeamLine(...; numeric_type = $(T))"
     meta = _element_meta_or_nothing(k)
     ctor = meta === nothing ? nothing : meta.friendly_constructor
-    ctor === nothing && return "the typed form (numeric_type=$(T)) or inside an `@elements $(T)` header"
-    return "the typed form $(nameof(ctor)){$(T)}(...) or inside an `@elements $(T)` header"
+    ctor === nothing && return "its typed form (numeric_type = $(T)), or inside an `@elements $(T)` header"
+    return "$(nameof(ctor))(...; numeric_type = $(T)), or inside an `@elements $(T)` header"
 end
 
 # Structural equality of two lattices. Specs compare by kind and parameters
@@ -411,9 +505,12 @@ function _lattice_structurally_equal(a, b)
     elseif a isa Union{Symbol,AbstractString,Nothing,AbstractSet}
         return a == b
     end
-    # Any other struct (a tracking method, a rule object): same type, every
-    # field structurally equal.
+    # Any other value: same type, then a primitive (an `@enum` such as
+    # `XYCouplingMode`, which has no fields, so the field walk below found
+    # every pair of its values equal) by identity, a struct (a tracking
+    # method, a rule object) field by field.
     typeof(a) === typeof(b) || return false
+    isprimitivetype(typeof(a)) && return a === b
     for f in fieldnames(typeof(a))
         _lattice_structurally_equal(getfield(a, f), getfield(b, f)) || return false
     end
@@ -432,8 +529,17 @@ function Base.show(io::IO, lattice::Lattice)
     n = length(line_entries(line))
     ref = getfield(lattice, :reference)
     roots = getfield(lattice, :knob_roots)
+    # A knob-valued length (`DriftSpec(L=@knob_expr(ring.len))`, design D10)
+    # evaluates its knob here; a knob declared and not yet assigned is a legal
+    # lattice whose display must not throw (stage 2 review, F9).
+    length_text = try
+        string(total_length(line), " m")
+    catch err
+        err isa ArgumentError || rethrow()
+        string("length pending (", err.msg, ")")
+    end
     print(io, "Lattice(", repr(getfield(lattice, :name)), ": ", n, " placement",
-          n == 1 ? "" : "s", ", ", total_length(line), " m, ", getfield(lattice, :eltype), ", ")
+          n == 1 ? "" : "s", ", ", length_text, ", ", getfield(lattice, :eltype), ", ")
     ref === nothing ? print(io, "no reference") : print(io, "reference ", ref)
     if isempty(roots)
         print(io, ", no knob roots)")

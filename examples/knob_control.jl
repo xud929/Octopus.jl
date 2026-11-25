@@ -21,9 +21,12 @@ Two production-shaped scenarios:
 Knobs are declared with `@knob` (optionally typed, `::Float64` being the
 default) and afterwards read and assigned with plain Julia syntax through
 their namespace (`ip.half_crossing_angle = 15.0e-3`) — no strings. Element
-parameters carry knob *expressions* (`@knob_expr`) through the flexible
-`ElementSpec{kind}(; ...)` constructors; `compile_runtime` evaluates them when
-the tracking line is built. Design note: `docs/knob_control.md` (§2a for the
+parameters carry knob *expressions* (`@knob_expr`); this example hands them
+to the flexible `ElementSpec{kind}(; ...)` constructors, and since design D10
+(machine description stage 2) the friendly constructors accept them too
+(`QuadrupoleSpec(L=0.5, k1=@knob_expr(HSR.arc_k1))` stores the expression in
+`kn[2]`); `compile_runtime` evaluates them when the tracking line is built.
+Design note: `docs/knob_control.md` (§2a for the
 registry-vs-wiring report split shown below).
 
 Run from the project root:
@@ -84,9 +87,11 @@ pro_crab = ElementSpec{:thin_crab_cavity}(;
 # The knob chain is the control room's wiring: a supply current, a transfer
 # function, a rigidity. `HSR.arc_k1` is the derived strength; the focusing
 # quad takes +K and the defocusing quad -K THROUGH EXPRESSIONS, so the family
-# stays on the bus. Knob-driven strengths go through the flexible
-# `ElementSpec{kind}` constructor (the friendly constructors fold named
-# strengths eagerly and refuse expressions, saying exactly this).
+# stays on the bus. Knob-driven strengths are written here through the
+# flexible `ElementSpec{kind}` constructor, which shows the stored `kn` tuple
+# as it is; the friendly form `QuadrupoleSpec(L=0.5, k1=@knob_expr(HSR.arc_k1))`
+# folds the same expression into `kn[2]` (design D10, machine description
+# stage 2; before it the friendly constructors refused expressions).
 # ---------------------------------------------------------------------------
 @knob HSR.B_rho = 81.1                             # T*m
 @knob HSR.current_transfer = 0.05                  # (strength units) per A

@@ -1190,6 +1190,16 @@ function _lattice_magnet(spec::ElementSpec, method::AbstractTrackingMethod, ::Ty
         "integrator_order must be one of $(LATTICE_INTEGRATOR_ORDERS); got $order"))
     h = T(getparam(spec, :h, zero(T)))
     b0 = T(getparam(spec, :b0, zero(T)))
+    # The bend geometry must be finite. The angle spelling stores h = b0 =
+    # angle / L; the numeric constructor refuses L == 0 before dividing, but a
+    # knob L resolves only here, and an infinite curvature tracked NaN
+    # coordinates without a word (stage 2 review of unit C, finding 8).
+    for (name, value) in ((:h, h), (:b0, b0))
+        isfinite(value) || throw(ArgumentError(
+            "$(typeof(spec)): $(name) = $(value) is not finite; the bend's curvature and field must be " *
+            "finite numbers (with the angle spelling h = b0 = angle / L, a length resolving to 0 -- a " *
+            "knob L at 0 -- is the usual cause)"))
+    end
     knraw = collect(T, getparam(spec, :kn, ()))
     ksraw = collect(T, getparam(spec, :ks, ()))
     # bend_model decides which side of the splitting carries the dipole.
@@ -1487,6 +1497,14 @@ function _fold_named_strengths(named, kwargs; nkey::Symbol=:kn, skey::Symbol=:ks
             "align them so the rejection message names the real tuple (U15-7)"))
     end
     d = Dict{Symbol,Any}(kwargs)
+    # A strength tuple spelled as one bare value: a number iterates as a
+    # 1-tuple below, a bare knob expression does not iterate, so it is made the
+    # 1-tuple here and the two spellings behave alike (stage 2 review of unit
+    # C, finding 9: `kn=@knob_expr(k)` died with a MethodError on iterate).
+    for key in (nkey, skey)
+        bare = get(d, key, nothing)
+        bare isa AbstractKnobExpression && (d[key] = (bare,))
+    end
     T = _strength_eltype(named, d, nkey, skey)
     # A number is converted to `T` as it always was; a knob expression is kept
     # as its tree (design D10), so the folded tuple may be mixed,

@@ -886,6 +886,13 @@ end
         y_pitch=_placement_param(:y_pitch; meaning="rotation of the whole line about the x axis, in radians"),
         tilt=_placement_param(:tilt; meaning="roll of the whole line about the longitudinal axis, in radians"),
         misalign_convention=_COMMON_PARAMS.misalign_convention,
+        # The composite's own numeric type when the line is kept whole: read by
+        # the misalignment wrap (`_wrap_numeric_type`, misalignment.jl), which
+        # otherwise types the composite by its members. Undeclared until the
+        # machine description's stage 2, when the `Lattice` remedy
+        # `BeamLine(...; numeric_type = T)` met the "unknown parameter" warning
+        # for a parameter the compile reads (a warning that lies).
+        numeric_type=_placement_param(:numeric_type; meaning="the number type the kept-whole composite compiles in when the line carries state of its own, read by the misalignment wrap's _wrap_numeric_type; unset, the composite takes its members' type (the promotion of both when the line's own parameters are wider than the Float64 floor); a dissolving line has no type of its own; a Lattice checks it against its eltype"),
         # No declared default: `L` is DERIVED and `BeamLine` refuses a supplied
         # one on every base, so a declared `0.0` was a default nothing could
         # pass -- the one entry the every-key default check (F-168) could only
@@ -896,7 +903,7 @@ end
         ref_tilt=_PLACEMENT_PARAMS.ref_tilt,
     )
     example = BeamLine("CELL", QuadrupoleSpec(L=0.4, k1=1.7, nst=2))
-    construction_help = "Friendly constructor: BeamLine(name, children...; tags=(), kwargs...); children may be element specs, other lines, in-line hooks, or vectors/tuples of those. Nesting, reverse (reflection -- ORDER ONLY, it does not swap e1/e2) and repeat are construction syntax and expand away, with provenance kept per placement so ARC1/CQS[3] stays addressable. A line given a misalignment does NOT dissolve: it stays one placement and moves its contents rigidly, which is how a cryostat or girder is expressed. Select with find_entries(line, sel\"ARC1/CQS[3]\"), which also takes a Regex, a tag Symbol, a Type (a kind's friendly constructor such as QuadrupoleSpec, or a spec type) or a predicate. Keyword form BeamLine(; name, entries) rebuilds a line from existing placements. The misalignment keywords x_offset, y_offset, z_offset, x_pitch, y_pitch and tilt displace the WHOLE line rigidly and are what make it a girder, with misalign_convention choosing the reference point and rotation order exactly as it does for a single magnet. A line's arc length L is COMPUTED from its entries and is not a keyword: setting it is rejected, because the walkers that read a stored L and the ones that re-sum the entries would then disagree (2026-08-05_b audit, U15-6). Design: docs/theory/beam_line_composition.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel."
+    construction_help = "Friendly constructor: BeamLine(name, children...; tags=(), kwargs...); children may be element specs, other lines, in-line hooks, or vectors/tuples of those. Nesting, reverse (reflection -- ORDER ONLY, it does not swap e1/e2) and repeat are construction syntax and expand away, with provenance kept per placement so ARC1/CQS[3] stays addressable. A line given a misalignment does NOT dissolve: it stays one placement and moves its contents rigidly, which is how a cryostat or girder is expressed. Select with find_entries(line, sel\"ARC1/CQS[3]\"), which also takes a Regex, a tag Symbol, a Type (a kind's friendly constructor such as QuadrupoleSpec, or a spec type) or a predicate. Keyword form BeamLine(; name, entries) rebuilds a line from existing placements. The misalignment keywords x_offset, y_offset, z_offset, x_pitch, y_pitch and tilt displace the WHOLE line rigidly and are what make it a girder, with misalign_convention choosing the reference point and rotation order exactly as it does for a single magnet. A line's arc length L is COMPUTED from its entries and is not a keyword: setting it is rejected, because the walkers that read a stored L and the ones that re-sum the entries would then disagree (2026-08-05_b audit, U15-6). Design: docs/theory/beam_line_composition.md. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type: the number type a kept-whole line (one carrying state of its own) compiles its composite in, read by the misalignment wrap; unset, the composite takes its members' type (the promotion of both when the line's own parameters are wider than the Float64 floor); BeamLine(...; numeric_type = Float32) is the Float32 girder and what a Float32 Lattice's remedy names; a dissolving line has no type of its own."
 end
 
 # ---------------------------------------------------------------------------
@@ -1051,6 +1058,26 @@ _knob_value_sites!(out, site, label, v::AbstractKnobExpression) =
 function _knob_value_sites!(out, site, label, v::Union{Tuple,AbstractArray})
     for (i, x) in enumerate(v)
         _param_has_knob(x) && _knob_value_sites!(out, site, "$(label)[$(i)]", x)
+    end
+    return nothing
+end
+# The two shapes `_param_has_knob` and `_resolve_knob_param` (src/knobs/Knobs.jl)
+# descend that the walker did not: a NamedTuple value (a `particle_tunes`
+# style parameter) and a nested spec (the Gaussian strong beam's `thin`
+# kernel, where `GaussianStrongBeamSpec(kbb=@knob_expr(...))` stores its knob,
+# design D10). Without them `knob_report` answered "No knob-driven parameters"
+# for a knob the compile resolved, and the lattice's knob-root tripwire never
+# saw it (stage 2 review, F3). Each field reports under `label.key`.
+function _knob_value_sites!(out, site, label, v::NamedTuple)
+    for key in keys(v)
+        x = getfield(v, key)
+        _param_has_knob(x) && _knob_value_sites!(out, site, "$(label).$(key)", x)
+    end
+    return nothing
+end
+function _knob_value_sites!(out, site, label, v::ElementSpec)
+    for (key, x) in sort!(collect(getfield(v, :params)); by=p -> string(p[1]))
+        _param_has_knob(x) && _knob_value_sites!(out, site, "$(label).$(key)", x)
     end
     return nothing
 end

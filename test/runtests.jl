@@ -17784,12 +17784,24 @@ end
             for (key, val) in sort(collect(getfield(ex, :params)); by=x -> string(x[1]))
                 val isa Real && !(val isa Bool) && !(val isa Integer) || continue
                 val == 0 && continue
+                # A constrained pair moves on its manifold. Since the machine
+                # description's stage 2 the cavity compile re-checks that
+                # `beta0` and `gamma0` are one reference particle (the knob
+                # route and the flexible form had bypassed the construction
+                # check), so a lone step of either is refused by name, as the
+                # friendly constructor refuses it. Both keys are differentiated
+                # along the manifold, gamma0 the variable and beta0 derived
+                # from it: the joint move of the effectiveness contract (U14-4).
+                pair = key in (:beta0, :gamma0) && haskey(getfield(ex, :params), :beta0) &&
+                       haskey(getfield(ex, :params), :gamma0)
+                base = pair ? float(getfield(ex, :params)[:gamma0]) : float(val)
+                seeded(v) = pair ? seed(seed(ex, :gamma0, v), :beta0, sqrt((v - 1) * (v + 1)) / v) :
+                                   seed(ex, key, v)
                 try
-                    d = [imag(x) / H for x in
-                         compile_runtime(seed(ex, key, complex(float(val), H)))(u...)]
-                    h = abs(float(val)) * 1e-6
-                    f(v) = collect(compile_runtime(seed(ex, key, v))(u...))
-                    fd = (f(float(val) + h) .- f(float(val) - h)) ./ (2h)
+                    d = [imag(x) / H for x in compile_runtime(seeded(complex(base, H)))(u...)]
+                    h = abs(base) * 1e-6
+                    f(v) = collect(compile_runtime(seeded(v))(u...))
+                    fd = (f(base + h) .- f(base - h)) ./ (2h)
                     err = maximum(abs, d .- fd) / max(maximum(abs, fd), 1e-8)
                     push!(isfinite(err) && err < 1e-4 ? verified : disagreed,
                           "$(meta.kind).$(key)")
@@ -20134,7 +20146,8 @@ end
     # The DBA ring of examples/twiss_dispersion_dba_ring.jl closed by a thin RF
     # cavity, with the focusing strength on a knob so the wiring report has a
     # site to show (the knob's value is the example's literal 1.5; the flexible
-    # constructor, because the friendly form folds `kn` to numbers eagerly).
+    # constructor spells the stored `kn` tuple directly; the friendly form
+    # accepts the expression too since D10).
     @knob md2a_dba.kf = 1.5
     beta0, gamma0 = reference_beta_gamma(3.0e9, PMASS_EV)
     qd   = QuadrupoleSpec(L=0.25, kn=(0.0, -1.1), nst=4, integrator_order=4)
@@ -20168,8 +20181,28 @@ end
     # `LinearizedMap` record itself has identity `==`), the same Twiss status.
     let Ml = one_turn_matrix(lattice).matrix, Mr = one_turn_matrix(ring).matrix
         @test Ml == Mr && size(Ml) == (6, 6) && Ml != one(Ml)
+        # ... and one provenance: the lattice is described and classed as its
+        # line (`_describe_map`, `_source_kind`), not as a bare callable, so the
+        # fingerprint of the converted DBA example matches the flat script's
+        # (the stage 2 record, section 3).
+        let pl = one_turn_matrix(lattice).provenance, pr = one_turn_matrix(ring).provenance
+            @test pl.source_kind === :element_spec && pr.source_kind === :element_spec
+            @test pl.source == pr.source && occursin("DBA", pl.source)
+        end
         @test analyze(TwissDispersionAnalysis(strict=false), lattice).status ==
               analyze(TwissDispersionAnalysis(strict=false), ring).status
+    end
+    # StrongStrongTask takes two lattices through the same one site
+    # (`_element_tuple`): the task built from the lattices stores, entry for
+    # entry, the LineEntry objects the task built from the lines stores. The
+    # smallest pair: a drift and a collision marker each way round.
+    let ip = StrongStrongCollision(:ip),
+        l1 = BeamLine("B1", DriftSpec(L=0.5), ip), l2 = BeamLine("B2", ip, DriftSpec(L=0.25)),
+        tl = StrongStrongTask(Lattice("B1"; line=l1), Lattice("B2"; line=l2)),
+        tr = StrongStrongTask(l1, l2)
+        @test length(tl.line1) == 2 && length(tl.line2) == 2
+        @test all(x === y for (x, y) in zip(tl.line1, tr.line1)) && all(x === y for (x, y) in zip(tl.line2, tr.line2))
+        @test !any(x === y for (x, y) in zip(tl.line1, tl.line2))     # anti-vacuity: two different lines
     end
     # The forwards to the line.
     @test line_entries(lattice) === line_entries(ring)
@@ -20196,7 +20229,29 @@ end
     let m = msg(() -> Lattice("T"; line=ring, eltype=String))
         @test occursin("`eltype`", m) && occursin("String", m) && occursin("Number", m)
     end
+    # An abstract eltype would void the one-type rule (promote_type(Number, X)
+    # is Number): refused by name as abstract, for Number and Real alike.
+    for T in (Number, Real)
+        let m = msg(() -> Lattice("T"; line=ring, eltype=T))
+            @test occursin("concrete Number type", m) && occursin("got $(T) (abstract", m) && occursin("ONE type", m)
+        end
+    end
+    @test occursin("not a concrete type", msg(() -> Lattice("T"; line=ring, eltype=Complex)))   # a UnionAll
     @test occursin("`knob_root` is empty", msg(() -> Lattice("T"; line=ring, knob_root="")))
+    # A root is a dotted name of Julia identifiers (a trailing `!` is one, as
+    # `@knob` accepts it), and never one
+    # of the expression language's reserved constant names (`@knob` refuses
+    # those too); the dot rules keep their "malformed" message.
+    @test occursin("\"1abc\" is not a knob name", msg(() -> Lattice("T"; line=ring, knob_root="1abc")))
+    @test occursin("\"pi\" is a reserved name", msg(() -> Lattice("T"; line=ring, knob_root=:pi)))
+    @test occursin("malformed", msg(() -> Lattice("T"; line=ring, knob_root="a..b")))
+    let plain = BeamLine("P", qd, d)   # knob-free, so a declared root is accepted on the name alone
+        @test Lattice("T"; line=plain, knob_root="ring").knob_roots === (:ring,)
+        @test Lattice("T"; line=plain, knob_root="ring!").knob_roots === (Symbol("ring!"),)   # a trailing ! is a legal identifier
+        @test Lattice("T"; line=plain, knob_root="esr.power").knob_roots === (Symbol("esr.power"),)
+        @test Lattice("T"; line=plain, knob_root=:ip).knob_roots === (:ip,)
+        @test Lattice("T"; line=plain, knob_root="consts.pi").knob_roots === (Symbol("consts.pi"),)   # namespaced: `@knob`'s own remedy
+    end
     @test occursin("malformed", msg(() -> Lattice("T"; line=ring, knob_root=".a")))
     @test occursin("malformed", msg(() -> Lattice("T"; line=ring, knob_root="a.")))
     @test occursin("got nothing", msg(() -> Lattice("T"; line=ring, knob_root=(:a, nothing))))
@@ -20215,8 +20270,8 @@ end
     @knob md2a_ring.dep = md2a_ip.angle * 2
     @knob md2a_ringx.z = 1.0
     msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
-    # The flexible constructor carries an expression inside `kn`; the friendly
-    # form folds the tuple to numbers eagerly today.
+    # The flexible constructor carries an expression inside `kn` (the friendly
+    # form accepts one too since D10; this testset is about the roots).
     quad(expr) = ElementSpec{:quadrupole}(; L=0.35, kn=(0.0, expr))
 
     ring_line = BeamLine("L1", quad(@knob_expr(md2a_ring.k1)), DriftSpec(L=0.5))
@@ -20261,48 +20316,100 @@ end
 
 @testset "Machine description: the numeric-type tripwire follows the compile rule" begin
     msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
-    # Untyped Float64 elements in a Float64 lattice: the fold over Float64 is Float64.
-    @test eltype(Lattice("F64"; line=BeamLine("F64", QuadrupoleSpec(L=0.3, k1=1.0), DriftSpec(L=0.5)))) === Float64
+    # The compile's own answer: an untyped element compiles in the promotion of
+    # its stored numeric parameters over a Float64 FLOOR (`numeric_type`), so a
+    # Float64 lattice takes untyped Float64 elements, the marker (no numeric
+    # value) and an Int literal alike, and refuses a wider literal by path,
+    # computed type and the keyword remedy.
+    @test eltype(Lattice("F64"; line=BeamLine("F64", MarkerSpec(), QuadrupoleSpec(L=0.3, k1=1.0), DriftSpec(L=1)))) === Float64
+    let m = msg(() -> Lattice("F64"; line=BeamLine("F64", DriftSpec(L=0.5), ElementSpec{:drift}(; L=big"0.5"))))
+        @test occursin("F64/DRIFT[2] (drift) compiles in BigFloat", m) && occursin("numeric type Float64", m) &&
+              occursin("DriftSpec(...; numeric_type = Float64)", m)
+    end
     # A typed Float32 element in a Float64 lattice: a stored type must be exactly eltype.
     let m = msg(() -> Lattice("MIX"; line=BeamLine("MIX", QuadrupoleSpec{Float32}(L=0.3, k1=1.0), DriftSpec(L=0.5))))
         @test occursin("MIX/QUADRUPOLE (quadrupole) stores numeric_type = Float32", m) &&
-              occursin("numeric type is Float64", m) && occursin("QuadrupoleSpec{Float64}(...)", m)
+              occursin("numeric type is Float64", m) && occursin("QuadrupoleSpec(...; numeric_type = Float64)", m)
     end
-    # An untyped Float64 element in a Float32 lattice: wider than eltype, refused
-    # with the typed-form and `@elements` remedies.
+    # A Float32 lattice refuses EVERY untyped element, the marker included
+    # (the review's P1: the lattice accepted this line and the task then
+    # refused the Float32 beam at the marker, which had compiled Float64), a
+    # Float32 literal and an Int parameter too: the floor never narrows. Each
+    # names the path, the computed type and the keyword remedy, `@elements`
+    # included.
+    let m = msg(() -> Lattice("F32"; line=BeamLine("F32", DriftSpec{Float32}(L=0.5), MarkerSpec()), eltype=Float32))
+        @test occursin("F32/MARKER (marker) compiles in Float64", m) && occursin("numeric type Float32", m) &&
+              occursin("MarkerSpec(...; numeric_type = Float32)", m) && occursin("@elements Float32", m)
+    end
+    @test occursin("F32/DRIFT (drift) compiles in Float64", msg(() -> Lattice("F32"; line=BeamLine("F32", ElementSpec{:drift}(; L=0.5f0)), eltype=Float32)))
+    @test occursin("F32/DRIFT (drift) compiles in Float64", msg(() -> Lattice("F32"; line=BeamLine("F32", ElementSpec{:drift}(; L=0.5f0, nst=4)), eltype=Float32)))
     let m = msg(() -> Lattice("F32"; line=BeamLine("B", DriftSpec(L=0.5)), eltype=Float32))
-        @test occursin("B/DRIFT (drift)", m) && occursin("over Float32 is Float64", m) &&
-              occursin("DriftSpec{Float32}(...)", m) && occursin("@elements Float32", m)
+        @test occursin("B/DRIFT (drift) compiles in Float64", m) && occursin("DriftSpec(...; numeric_type = Float32)", m)
     end
-    # The typed form passes, and so does a kind storing no numeric value: the
-    # marker's pass is the empty fold, not a typed form.
-    @test eltype(Lattice("F32"; line=BeamLine("F32", DriftSpec{Float32}(L=0.5), MarkerSpec()), eltype=Float32)) === Float32
-    @test isempty(Octopus.params(MarkerSpec()))
-    @test Octopus._lattice_params_numeric_type(Octopus.params(DriftSpec(L=0.5)), Float32) === Float64
-    @test Octopus._lattice_params_numeric_type(Dict{Symbol,Any}(:nst => 4, :name => "Q", :on => true), Float32) === Float32
-    # A nested line kept whole is checked on its OWN merged parameters, at its
-    # path: a Float64 girder offset in a Float32 lattice ...
-    let cryo = BeamLine("CRYO", DriftSpec{Float32}(L=0.3); x_offset=1.0e-3),
-        m = msg(() -> Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), cryo), eltype=Float32))
-        @test occursin("TOP/CRYO (line)", m) && occursin("x_offset = Float32(", m)
+    # The dictionary rule is `numeric_type`'s own fold from the Float64 floor:
+    # the empty fold, a Float32 literal and an Int all report Float64.
+    @test isempty(Octopus.params(MarkerSpec())) && Octopus._lattice_params_numeric_type(Octopus.params(MarkerSpec())) === Float64
+    @test Octopus._lattice_params_numeric_type(Dict{Symbol,Any}(:L => 0.5f0, :nst => 4, :name => "Q", :on => true)) === Float64
+    @test Octopus._lattice_params_numeric_type(Dict{Symbol,Any}(:L => big"0.5")) === BigFloat
+    @test Octopus._lattice_params_numeric_type(Octopus.params(DriftSpec(L=0.5))) === Octopus.numeric_type(DriftSpec(L=0.5))
+    # The remedy is the keyword route every kind accepts, never `Name{T}(...)`:
+    # `ThinCrabCavitySpec{Float32}(f)` binds the harmonic count N and dies.
+    let m = msg(() -> Lattice("C"; line=BeamLine("C", Octopus.element_meta(:thin_crab_cavity).example), eltype=Float32))
+        @test occursin("(thin_crab_cavity) compiles in Float64", m) && occursin("ThinCrabCavitySpec(...; numeric_type = Float32)", m) &&
+              !occursin("ThinCrabCavitySpec{Float32}", m)
     end
-    # ... the same girder with a Float32 offset passes, members included, and a
-    # Float64 member inside the kept-whole line is found at its own path (the
-    # members of a line kept whole report under the nested line's name, as the
-    # knob wiring walker reports them, not re-rooted under the parent).
-    let cryo = BeamLine("CRYO", DriftSpec{Float32}(L=0.3); x_offset=1.0f-3),
-        cryo_bad = BeamLine("CRYO", DriftSpec(L=0.3); x_offset=1.0f-3)
-        @test eltype(Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), cryo), eltype=Float32)) === Float32
-        @test occursin("CRYO/DRIFT (drift)",
-                       msg(() -> Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), cryo_bad), eltype=Float32)))
+    # The typed route passes and TRACKS: an `@elements Float32` block types
+    # every element it emits, the marker included, and the lattice's task takes
+    # a Float32 beam (two particles, one turn; anti-vacuity: they moved and
+    # stayed Float32).
+    @elements Float32 begin
+        M = marker()
+        D = drift(L = 0.5)
+        Q = quadrupole(L = 0.3, k1 = 1.0)
+        L = line(M, D, Q)
     end
+    rep32() = Phase6DRep(Float32[1.0e-3, -5.0e-4], Float32[2.0e-4, 1.0e-4], Float32[5.0e-4, -1.0e-3],
+                         Float32[0.0, -1.0e-4], Float32[0.0, 0.0], Float32[1.0e-3, 0.0])
+    let lat32 = Lattice("F32"; line=L, eltype=Float32), a = rep32()
+        @test eltype(lat32) === Float32 && Octopus.numeric_type(M) === Float32
+        execute!(TrackingTask(lat32), a; turns=1)
+        @test eltype(a.x) === Float32 && collect(a.x) != collect(rep32().x)
+    end
+    # A nested line kept whole follows the wrap's own rule (`_wrap_numeric_type`):
+    # built in its members' type while its own parameters promote to the floor,
+    # so a Float64 girder offset on Float32 members PASSES and tracks a Float32
+    # beam; a BigFloat offset widens the wrap and is refused at the line's path
+    # with `BeamLine(...; numeric_type = Float32)` as the remedy, which then
+    # passes; a stored type on the line must be eltype; a Float64 member inside
+    # is found at its own path; a line with no element member has only its own
+    # type.
+    let cryo = BeamLine("CRYO", DriftSpec{Float32}(L=0.3), QuadrupoleSpec{Float32}(L=0.3, k1=1.0); x_offset=1.0e-3),
+        top = Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), cryo), eltype=Float32), b = rep32()
+        @test eltype(top) === Float32 && Octopus._line_has_own_state(cryo)
+        execute!(TrackingTask(top), b; turns=1)
+        @test eltype(b.x) === Float32 && collect(b.x) != collect(rep32().x)
+    end
+    let m = msg(() -> Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), BeamLine("CRYO", DriftSpec{Float32}(L=0.3); x_offset=big"1.0e-3")), eltype=Float32))
+        @test occursin("TOP/CRYO (line) compiles in BigFloat", m) && occursin("BeamLine(...; numeric_type = Float32)", m)
+    end
+    # The `:line` kind declares `numeric_type` (the remedy's keyword; it was
+    # undeclared until this stage although `_wrap_numeric_type` reads it), so
+    # the remedy constructs silently.
+    let typed_cryo = @test_nowarn BeamLine("CRYO", DriftSpec{Float32}(L=0.3); x_offset=big"1.0e-3", numeric_type=Float32)
+        @test eltype(Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), typed_cryo), eltype=Float32)) === Float32
+    end
+    let cryo64 = @test_nowarn BeamLine("CRYO", DriftSpec{Float32}(L=0.3); numeric_type=Float64)
+        @test occursin("TOP/CRYO (line) stores numeric_type = Float64", msg(() -> Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), cryo64), eltype=Float32)))
+    end
+    @test occursin("CRYO/DRIFT (drift) compiles in Float64", msg(() -> Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), BeamLine("CRYO", DriftSpec(L=0.3); x_offset=1.0f-3)), eltype=Float32)))
+    @test occursin("TOP/EMPTY (line) compiles in Float64", msg(() -> Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), BeamLine("EMPTY"; x_offset=1.0e-3)), eltype=Float32)))
     # A placement override is a stored value too (the merged view): the same
     # line is accepted before a BigFloat offset is written on one placement and
     # refused at that placement's path after ...
     let line = BeamLine("OVR", DriftSpec(L=0.5), DriftSpec(L=0.5))
         @test msg(() -> Lattice("OVR"; line=line)) == "ACCEPTED"
         line[2].x_offset = big"1.0e-3"
-        @test occursin("OVR/DRIFT[2] (drift)", msg(() -> Lattice("OVR"; line=line)))
+        @test occursin("OVR/DRIFT[2] (drift) compiles in BigFloat", msg(() -> Lattice("OVR"; line=line)))
     end
     # ... while on a TYPED element the stored type wins, as in `numeric_type`
     # (the compile converts the override to the element's type).
@@ -20310,8 +20417,17 @@ end
         line[1].x_offset = 1.0e-3
         @test eltype(Lattice("TYPED"; line=line, eltype=Float32)) === Float32
     end
-    # The top-level line's own parameters are checked as well, under its name.
-    @test occursin("G (line)", msg(() -> Lattice("G"; line=BeamLine("G", DriftSpec{Float32}(L=0.5); x_offset=1.0e-3), eltype=Float32)))
+    # The top-level line's own parameters are checked when it carries state of
+    # its own (it then compiles whole, `_element_tuple`), by the same wrap rule:
+    # a Float64 offset on Float32 members passes and tracks, a BigFloat one is
+    # refused under the line's name in a Float32 and in a Float64 lattice; a
+    # line with nothing of its own dissolves and is no element to check.
+    let g = BeamLine("G", DriftSpec{Float32}(L=0.5), QuadrupoleSpec{Float32}(L=0.3, k1=1.0); x_offset=1.0e-3), c = rep32()
+        execute!(TrackingTask(Lattice("G"; line=g, eltype=Float32)), c; turns=1)
+        @test eltype(c.x) === Float32 && collect(c.x) != collect(rep32().x)
+    end
+    @test occursin("G (line) compiles in BigFloat", msg(() -> Lattice("G"; line=BeamLine("G", DriftSpec{Float32}(L=0.5); x_offset=big"1.0e-3"), eltype=Float32)))
+    @test occursin("G (line) compiles in BigFloat", msg(() -> Lattice("G"; line=BeamLine("G", DriftSpec(L=0.5); x_offset=big"1.0e-3"))))
 end
 
 @testset "Machine description: lattice equality is structural and the record prints" begin
@@ -20338,7 +20454,10 @@ end
         line[2].x_offset = 1.0e-4
         @test a != Lattice("A"; line=line, reference=proton, knob_root=:md2a_eq)                 # a placement override
     end
-    let m = BeamLine("M", MarkerSpec())    # one line, two numeric types: eltype alone decides
+    # One line, two numeric types: eltype alone decides. The empty line is the
+    # one line both types accept (an element is typed by exactly one of them,
+    # the numeric-type testset).
+    let m = BeamLine("M")
         @test Lattice("M"; line=m) == Lattice("M"; line=m) && Lattice("M"; line=m) != Lattice("M"; line=m, eltype=Float32)
     end
     # A knob expression compares as a tree: separately built expressions are
@@ -20350,6 +20469,14 @@ end
     @test !Octopus._lattice_structurally_equal(quad(), quad(nst=8))
     @test Octopus._lattice_structurally_equal((1.0, NaN, :x, nothing), (1.0, NaN, :x, nothing))   # isequal on numbers
     @test !Octopus._lattice_structurally_equal([1.0, 2.0], (1.0, 2.0))                           # a vector is not a tuple
+    # A primitive parameter compares by identity: an `@enum` has no fields, so
+    # the field walk found every pair of its values equal, and two lattices
+    # differing only in the coupling mode (Edwards-Teng form 1 or 2) were `==`.
+    let xa() = BeamLine("X", XYCouplingSpec(r1=0.1, mode=XY_MODEA)), xb() = BeamLine("X", XYCouplingSpec(r1=0.1, mode=XY_MODEB))
+        @test isprimitivetype(typeof(XY_MODEB)) && getparam(getfield(line_entries(xb())[1], :spec), :mode) === XY_MODEB
+        @test Lattice("X"; line=xa()) == Lattice("X"; line=xa())
+        @test Lattice("X"; line=xa()) != Lattice("X"; line=xb())
+    end
     # The record prints on one line with the name and the placement count.
     let s = sprint(show, a)
         @test occursin("Lattice(\"A\": 2 placements, 0.85 m, Float64", s) && occursin("knob roots (md2a_eq,)", s) &&
@@ -20358,6 +20485,174 @@ end
     let s = sprint(show, Lattice("M"; line=BeamLine("M", MarkerSpec())))
         @test occursin("1 placement, 0.0 m", s) && occursin("no reference, no knob roots)", s)
     end
+    # A knob-valued length whose knob is declared and not yet assigned is a
+    # legal lattice (design D10); its display prints the length as pending with
+    # the knob's own message instead of throwing, and prints the number once the
+    # knob has a value.
+    @knob md2a_show.len
+    let klat = Lattice("K"; line=BeamLine("K", ElementSpec{:drift}(; L=@knob_expr(md2a_show.len))), knob_root=:md2a_show)
+        s = sprint(show, klat)
+        @test occursin("length pending (knob md2a_show.len has no value", s) && occursin("knob roots (md2a_show,)", s) && !occursin('\n', s)
+        @knob md2a_show.len = 0.75
+        @test occursin("1 placement, 0.75 m", sprint(show, klat))
+    end
+end
+
+@testset "Machine description: the wiring walker sees the knobs the compile resolves inside a nested spec or a NamedTuple" begin
+    # `_param_has_knob` and `_resolve_knob_param` (src/knobs/Knobs.jl) descend a
+    # NamedTuple value and a nested spec (the Gaussian strong beam's `thin`
+    # kernel, where `GaussianStrongBeamSpec(kbb=@knob_expr(...))` stores its
+    # knob, design D10); the wiring walker `_knob_value_sites!` did not, so
+    # `knob_report` answered "No knob-driven parameters" for a knob the compile
+    # resolved and the lattice's knob-root tripwire never saw it (stage 2
+    # review, F3). The keyword set is the kind's registry example's.
+    @knob md2a_gsb.k = 1.0e-4
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    gsb = GaussianStrongBeamSpec(kbb=@knob_expr(md2a_gsb.k), beta=(1.0, 1.0), sigma=(1e-3, 1e-3), ns=3, sigz=0.01)
+    @test Octopus.params(gsb)[:thin] isa ElementSpec && Octopus._param_has_knob(Octopus.params(gsb)[:thin])
+    gline = BeamLine("G", gsb)
+    let buf = IOBuffer()
+        knob_report(gline; io=buf)
+        text = String(take!(buf))
+        @test occursin("G/GAUSSIAN_STRONG_BEAM :: thin.kbb = md2a_gsb.k", text) && !occursin("No knob-driven", text)
+    end
+    let m = msg(() -> Lattice("G"; line=gline))
+        @test occursin("reads knob md2a_gsb.k at G/GAUSSIAN_STRONG_BEAM :: thin.kbb", m) && occursin("knob_root=:md2a_gsb", m)
+    end
+    @test Lattice("G"; line=gline, knob_root=:md2a_gsb).knob_roots === (:md2a_gsb,)
+    @test occursin("outside the declared knob root(s) md2a_other", msg(() -> Lattice("G"; line=gline, knob_root=:md2a_other)))
+    # The NamedTuple shape, through the walker directly: one site per field
+    # holding a knob, labelled `param.field`; a knob-free field is no site; the
+    # shapes compose (a NamedTuple inside a tuple).
+    sites() = NamedTuple{(:site, :param, :expr),Tuple{String,String,Any}}[]
+    let out = sites()
+        Octopus._knob_value_sites!(out, "s", "p", (a=@knob_expr(md2a_gsb.k), b=1.0))
+        @test length(out) == 1 && out[1].site == "s" && out[1].param == "p.a" && out[1].expr == @knob_expr(md2a_gsb.k)
+    end
+    let out = sites()
+        Octopus._knob_value_sites!(out, "s", "p", (1.0, (q=(2.0, @knob_expr(md2a_gsb.k)),)))
+        @test map(x -> x.param, out) == ["p[2].q[2]"]
+    end
+    # The property over every registered kind's example, derived from the
+    # registry (ELEMENT_META_BY_KIND): planting a knob expression at the first
+    # numeric leaf of each container- or spec-shaped parameter (Tuple,
+    # NamedTuple, Array, nested ElementSpec, any nesting) makes `_param_has_knob`
+    # true AND yields a site labelled under that key, while the knob-free
+    # original yields none: the walker and the resolver agree on every shape
+    # the registry ships. A scalar is the one-step case and needs no planting;
+    # a value with no numeric leaf (a tuple of `nothing`s) is skipped.
+    plant(v) = nothing
+    plant(v::Bool) = nothing
+    plant(v::Number) = @knob_expr(md2a_gsb.k)
+    function plant(v::Tuple)
+        i = findfirst(x -> plant(x) !== nothing, v)
+        return i === nothing ? nothing : ntuple(j -> j == i ? plant(v[j]) : v[j], length(v))
+    end
+    function plant(v::NamedTuple)
+        t = plant(Tuple(v))
+        return t === nothing ? nothing : NamedTuple{keys(v)}(t)
+    end
+    function plant(v::AbstractArray)
+        i = findfirst(x -> plant(x) !== nothing, v)
+        i === nothing && return nothing
+        out = collect(Any, v)
+        out[i] = plant(v[i])
+        return out
+    end
+    function plant(v::ElementSpec)
+        ps = copy(Octopus.params(v))
+        for (key, x) in sort!(collect(ps); by=p -> string(p[1]))
+            px = plant(x)
+            px === nothing && continue
+            ps[key] = px
+            return ElementSpec{Octopus.kind(v)}(ps)
+        end
+        return nothing
+    end
+    planted = Symbol[]
+    failures = String[]
+    shapes = Set{Symbol}()
+    for (k, meta) in sort!(collect(Octopus.ELEMENT_META_BY_KIND); by=first)
+        ex = meta.example
+        ex isa ElementSpec || continue
+        for (key, v) in sort!(collect(Octopus.params(ex)); by=p -> string(p[1]))
+            v isa Union{Tuple,NamedTuple,AbstractArray,ElementSpec} || continue
+            pv = plant(v)
+            pv === nothing && continue
+            push!(planted, Symbol("$(k).$(key)"))
+            push!(shapes, v isa Tuple ? :Tuple : v isa NamedTuple ? :NamedTuple : v isa ElementSpec ? :ElementSpec : :Array)
+            with_knob = sites()
+            Octopus._knob_value_sites!(with_knob, "s", string(key), pv)
+            without = sites()
+            Octopus._knob_value_sites!(without, "s", string(key), v)
+            ok = Octopus._param_has_knob(pv) && !isempty(with_knob) &&
+                 all(startswith(x.param, string(key)) for x in with_knob) &&
+                 !Octopus._param_has_knob(v) && isempty(without)
+            ok || push!(failures, "$(k).$(key) :: $(typeof(v)) -> has_knob=$(Octopus._param_has_knob(pv)) sites=$(map(x -> x.param, with_knob)) knob-free sites=$(length(without))")
+        end
+    end
+    @test isempty(failures)
+    @test length(planted) >= 10 && :Tuple in shapes && :ElementSpec in shapes   # anti-vacuity: the sweep ran over both shapes of the finding
+    @test Symbol("gaussian_strong_beam.thin") in planted
+end
+
+# [MD2-E] Machine description stage 2, unit E: the shipped DBA example as a declarative
+# lattice module. Unit E's testset lands directly below this comment and nowhere else.
+
+@testset "Machine description: the shipped DBA lattice module builds an equal lattice when included twice" begin
+    # examples/twiss_dispersion_dba_ring.jl declares its ring in `module DBARing`
+    # (declarations only: a ReferenceParticle, the knob ring.qf_k1 under the
+    # lattice's root, an @elements block, the Lattice record), the precedent for
+    # a lattice module (design D8). Included twice into two fresh sandbox modules
+    # it builds two distinct but equal lattices; the script's two analyses run
+    # each time (about a second), printing to devnull. The knob registry is
+    # process-global, so the second include redeclares `ring.qf_k1 = 1.5` over
+    # the first: the same value, an accepted redefinition.
+    script = joinpath(pkgdir(Octopus), "examples", "twiss_dispersion_dba_ring.jl")
+    include_dba() = begin
+        m = Module(gensym(:DBA))
+        Core.eval(m, :(const Octopus = $Octopus))
+        redirect_stdout(devnull) do
+            Base.include(m, script)
+        end
+        m
+    end
+    m1 = include_dba()
+    m2 = include_dba()
+    # Bindings created by include are read back through eval: the testset body
+    # runs in the world age it started in (Julia 1.12).
+    l1 = Core.eval(m1, :(DBARing.lattice))
+    l2 = Core.eval(m2, :(DBARing.lattice))
+    @test l1 isa Lattice && l2 isa Lattice
+    @test l1 == l2
+    @test hash(l1) == hash(l2)
+    @test l1 !== l2
+    @test l1.line !== l2.line
+    @test l1.knob_roots == (:ring,)
+    @test l1.reference == ReferenceParticle(; charge = 1, mc2 = PMASS_EV, E0 = 3.0e9)
+    # The top-level `lattice` the script's two `analyze` calls read is the record.
+    @test Core.eval(m1, :lattice) === l1
+    # The focusing strength is the knob expression, not its number: kn[2] of the
+    # QF placement prints as the knob path and evaluates to the declared value.
+    qf = l1.line[5]
+    @test entry_path(qf) == "DBA_RING/QF"
+    k = getparam(getfield(qf, :spec), :kn)[2]
+    @test k isa AbstractKnobExpression && string(k) == "ring.qf_k1"
+    @test knob_value(k) == 1.5
+    # Anti-vacuity: the same declarations by hand are equal to the shipped
+    # lattice with QF's k1 as the knob expression and NOT equal with k1 = 1.6,
+    # so the equality above compares the parameters, trees included.
+    beta0, gamma0 = reference_beta_gamma(l1.reference)
+    QD = QuadrupoleSpec(; name = "QD", numeric_type = Float64, L = 0.25, kn = (0.0, -1.1), nst = 4, integrator_order = 4)
+    D = DriftSpec(; name = "D", numeric_type = Float64, L = 0.6)
+    BEND = SBendSpec(; name = "BEND", numeric_type = Float64, L = 1.0, h = 0.2, b0 = 0.2, nst = 4, integrator_order = 4)
+    RF = ThinRFCavitySpec(400.0e6; name = "RF", numeric_type = Float64, strength = 0.02, beta0, gamma0)
+    by_hand(qf) = Lattice("DBA_RING"; line = BeamLine("DBA_RING", QD, D, BEND, D, qf, D, BEND, D, QD, RF),
+                          reference = l1.reference, knob_root = :ring)
+    @test by_hand(QuadrupoleSpec(; name = "QF", numeric_type = Float64, L = 0.35, k1 = @knob_expr(ring.qf_k1),
+                                 nst = 4, integrator_order = 4)) == l1
+    @test by_hand(QuadrupoleSpec(; name = "QF", numeric_type = Float64, L = 0.35, k1 = 1.6,
+                                 nst = 4, integrator_order = 4)) != l1
 end
 
 
@@ -23392,11 +23687,11 @@ end
                             (:strength, 0.02), (:beta0, 0.95), (:gamma0, 3.2)]
     end
     # Rule 2: a line is BeamLine(name, children...; kws...) with no numeric_type;
-    # an explicit name goes first; a nested line child is rewritten nameless.
+    # an explicit name goes first; a nested line child gets the default name "line".
     @test single(:(@elements begin RING = line(QF, D, QD) end)) == :(RING = $BeamLine("RING", QF, D, QD))
     @test single(:(@elements begin A = line(QF; name = "ARC") end)) == :(A = $BeamLine("ARC", QF))
     @test single(:(@elements begin N = line(line(QF, D), QD; tags = (:a,)) end)) ==
-          :(N = $BeamLine("N", $BeamLine("", QF, D), QD; tags = (:a,)))
+          :(N = $BeamLine("N", $BeamLine("line", QF, D), QD; tags = (:a,)))
     # Rule 5: anything whose head is not a registered kind name is untouched.
     let src = quote
             X = helper(1, 2)
@@ -23435,6 +23730,44 @@ end
     @test expand(:(@element Float32 QF = quadrupole(L = 0.35))) ==
           :(QF = $QuadrupoleSpec(; name = "QF", numeric_type = Float32, L = 0.35))
     @test expand(:(@element quadrupole(L = 0.35))) == :($QuadrupoleSpec(; numeric_type = Float64, L = 0.35))
+    # Rule 5, the reserved positions (review finding F6): a kind call anywhere
+    # the block does not rewrite -- a keyword value, a function body, a
+    # `repeat` call, a tuple assignment, through `const` and the single form --
+    # is refused at expansion, by name, with both remedies, instead of failing
+    # at run time as `UndefVarError: marker` (or binding to a caller's variable).
+    for (src, kind, spelled) in ((:(D = drift(L = 0.1, meta = marker())), "marker", "MarkerSpec(...)"),
+                                 (:(cell(k) = line(quadrupole(k1 = k), D)), "line", "BeamLine(...)"),
+                                 (:(R = repeat(line(QF, D), 4)), "line", "BeamLine(...)"),
+                                 (:(A, B = drift(L = 1.0), drift(L = 2.0)), "drift", "DriftSpec(...)"),
+                                 (:(const D = drift(L = 0.1, meta = marker())), "marker", "MarkerSpec(...)"))
+        msg = refusal(:(@elements begin $src end))
+        @test occursin("@elements: `$kind(...)` sits at a position the block does not rewrite", msg)
+        @test occursin("Bind it at the top level first", msg) && occursin("constructor (`$spelled`)", msg)
+    end
+    @test occursin("`marker(...)`", refusal(:(@element D = drift(L = 0.1, meta = marker()))))
+    # The walk looks through the docstring wrapper.
+    @test occursin("`marker(...)`", refusal(:(@elements begin
+                "a doc"
+                D = drift(L = 0.1, meta = marker())
+            end)))
+    # A kind call inside a tuple or vector literal given as a positional child
+    # IS a rewritten position: the inner call becomes the constructor object,
+    # nameless, and the literal keeps its shape.
+    @test single(:(@elements begin L = line((quadrupole(L = 0.1), D)) end)) ==
+          :(L = $BeamLine("L", ($QuadrupoleSpec(; numeric_type = Float64, L = 0.1), D)))
+    @test single(:(@elements begin V = line([QF, drift(L = 0.6)]) end)) ==
+          :(V = $BeamLine("V", [QF, $DriftSpec(; numeric_type = Float64, L = 0.6)]))
+    # A kind name inside another macro's call is that macro's business: the
+    # macrocall is skipped by the tripwire and stays as written.
+    let call = single(:(@elements begin Q = quadrupole(L = 0.1, k1 = @knob_expr(marker(md2b_ring.k1))) end)).args[2]
+        @test call.args[1] === QuadrupoleSpec
+        @test kws(call)[end][1] === :k1 && kws(call)[end][2].head === :macrocall
+    end
+    let src = quote
+            @knob md2b_ring.k2 = marker(1)
+        end
+        @test expand(:(@elements $src)) == Base.remove_linenums!(deepcopy(src))
+    end
 end
 
 @testset "Machine description: the @elements block builds the hand-written lattice" begin
@@ -23520,7 +23853,7 @@ end
         push!(expanded, k)
         if k === :line
             @test call == Expr(:call, BeamLine, "X")
-            @test_skip k !== :line      # the line's build is the lattice testset above
+            @test_skip "line: built by the lattice testset above, not from example params"   # a visible skip, once
             continue
         end
         @test any(e -> e.head === :kw && e.args[1] === :numeric_type && e.args[2] === :Float64, call.args[2].args)
@@ -23570,6 +23903,35 @@ end
     @test Octopus._elements_kind_constructor(:md2b_fake) === nothing
     @test Octopus._elements_kind_constructor(:quadrupole, registry) === nothing
     @test Octopus._elements_rewrite_statement(:(X = md2b_fake(L = 0.1)), :Float64) == :(X = md2b_fake(L = 0.1))
+end
+
+@testset "Machine description: the @elements block builds tuple and vector children and names a nameless line" begin
+    # The stage-2 review's F6 and F7 at run time, in a sandbox module that only
+    # imports Octopus: a kind call inside a tuple or vector literal given as a
+    # child is rewritten and the line appends its elements (BeamLine's own
+    # tuple and vector rule), and a nameless nested line is named "line", so
+    # its entries' paths read `N/line/QF`, `N/line[2]/QF` and never the empty
+    # segment `N//QF` an empty name produced before the fix.
+    m = Module()
+    Core.eval(m, :(using Main.Octopus))
+    Core.eval(m, :(@elements Float32 begin
+        QF = quadrupole(L = 0.35, k1 = 1.5)
+        D = drift(L = 0.6)
+        TUP = line((quadrupole(L = 0.1), D))
+        VEC = line([QF, drift(L = 0.7)])
+        N = line(line(QF, D), line(QF, D))
+    end))
+    # Bindings created by eval are read back through eval (world age, Julia 1.12).
+    built(sym) = Core.eval(m, sym)
+    paths(sym) = [entry_path(e) for e in Octopus.line_entries(built(sym))]
+    @test paths(:TUP) == ["TUP/QUADRUPOLE", "TUP/D"]
+    @test paths(:VEC) == ["VEC/QF", "VEC/DRIFT"]
+    # The inner calls are the declared elements, in the block's numeric type.
+    let q = getfield(built(:TUP)[1], :spec), d = getfield(built(:VEC)[2], :spec)
+        @test Octopus.kind(q) == :quadrupole && getparam(q, :L) == 0.1f0 && Octopus.numeric_type(q) === Float32
+        @test Octopus.kind(d) == :drift && getparam(d, :L) == 0.7f0
+    end
+    @test paths(:N) == ["N/line/QF", "N/line/D", "N/line[2]/QF", "N/line[2]/D"]
 end
 
 if _lane_gate("Every example script runs against the current interface")
@@ -29515,6 +29877,17 @@ end
     @test occursin("O3/CRYO3 :: x_offset", filtered) && !occursin("kn[2]", filtered)
     # knob-free containers stay loud about it, and agree
     @test agree(BeamLine("PLAIN", DriftSpec(L=1.0))) && agree((DriftSpec(L=1.0),))
+    # the nested-kernel shape (machine description stage 2, D10): a knob inside
+    # the Gaussian strong beam's `thin` kernel, where `kbb=@knob_expr(...)` is
+    # stored, is seen by both walkers in every container shape the report
+    # accepts -- a tuple, a vector, a line and a nested line -- and the report
+    # names the knob
+    @knob md2c2_gsb.kbb = 1.0e-4
+    gsb = GaussianStrongBeamSpec(kbb=@knob_expr(md2c2_gsb.kbb), beta=(1.0, 1.0), sigma=(1e-3, 1e-3), ns=3, sigz=0.01)
+    @test Octopus._has_knob_parameters(gsb)
+    @test agree((gsb,)) && agree([gsb]) && agree(BeamLine("GSB", gsb)) &&
+          agree(BeamLine("OUTER4", BeamLine("GSB", gsb), DriftSpec(L=1.0)))
+    @test occursin("kbb = md2c2_gsb.kbb", report(BeamLine("GSB", gsb)))
 end
 
 @testset "find_entries by friendly type, the design note's mutation recipe, and the in-line hook refusal (fix batch 3, F-240)" begin
@@ -41620,6 +41993,37 @@ end
     @test string(getparam(s_L, :h)) == "0.3 / md2c_ring.L2"
     @test track(s_L) == track(SBendSpec(L=2.0, angle=0.3))
     @test_throws ArgumentError SBendSpec(L=0.0, angle=0.3)
+    # A knob length resolving to 0 is the division the numeric form refuses:
+    # h = b0 = Inf at compile, refused there by name (the numeric path never
+    # reaches the compile with it).
+    set_knob!("md2c_ring.L2", 0.0)
+    msg_L0 = sprint(showerror, try compile_runtime(s_L); nothing catch e; e end)
+    set_knob!("md2c_ring.L2", 2.0)
+    @test occursin("ElementSpec{:sbend}: h = Inf is not finite", msg_L0) && occursin("knob L at 0", msg_L0)
+    @test track(s_L) == track(SBendSpec(L=2.0, angle=0.3))                  # restored, compiles again
+    # A literal beside a knob expression becomes a Float64 tree literal only
+    # when Float64 holds it exactly: a BigFloat third, which the numeric twin
+    # keeps as a BigFloat h, is refused by name with the remedy; a Float64
+    # folds, and so does a rational, which the fold site floats first exactly
+    # as the numeric twin does.
+    @knob md2c2_node.a = 0.3
+    err_big = try
+        SBendSpec(L=big"1"/3, angle=@knob_expr(md2c2_node.a))
+        nothing
+    catch e
+        e
+    end
+    @test err_big isa ArgumentError
+    msg_big = sprint(showerror, err_big)
+    @test occursin("BigFloat as a literal", msg_big) && occursin("@knob_expr", msg_big) && occursin("wide value", msg_big)
+    @test string(getparam(SBendSpec(L=1//2, angle=@knob_expr(md2c2_node.a)), :h)) == "md2c2_node.a / 0.5"
+    @test_throws ArgumentError Octopus._knob_node(1//3)                        # the node rule itself, on a rational
+    @test track(SBendSpec(L=1.0, angle=@knob_expr(md2c2_node.a))) == track(SBendSpec(L=1.0, angle=0.3))
+    # A bare knob expression for the strength tuple is the 1-tuple a bare
+    # number already is.
+    @test getparam(ThinDipoleSpec(knl=@knob_expr(md2c2_node.a)), :knl) == (KnobRef(Symbol("md2c2_node.a")),)
+    @test getparam(ThinDipoleSpec(knl=0.3), :knl) == (0.3,)
+    @test track(ThinDipoleSpec(knl=@knob_expr(md2c2_node.a))) == track(ThinDipoleSpec(knl=0.3))
     # The rectangular bend: the half angle added to each face as a tree.
     r_expr = RBendSpec(L=1.0, angle=@knob_expr(md2c_ring.angle), e1=@knob_expr(md2c_ring.e1))
     @test string(getparam(r_expr, :e1)) == "md2c_ring.e1 + md2c_ring.angle / 2.0"
@@ -41718,6 +42122,61 @@ end
     end
     @test err_h isa ArgumentError
     @test occursin("harmon cannot be a knob expression", sprint(showerror, err_h)) && occursin("frequency", sprint(showerror, err_h))
+    # The compile repeats the construction path's value checks on the values
+    # it reads -- resolved knobs and the flexible form's literals alike -- by
+    # name: the frequency positive and finite, gamma0 >= 1, the pair one
+    # particle, and for the accelerating cavity an exit pair above the rest
+    # energy. (Stage 2 review of unit C, findings 3 and 4: a knob frequency of
+    # -1, a knob beta0 of 0.5 beside gamma0 = 293 and a knob strength of -5
+    # all compiled and tracked before.)
+    @knob md2c2_rf.f = 4.0e8
+    @knob md2c2_rf.b::Float64
+    @knob md2c2_rf.g::Float64
+    set_knob!("md2c2_rf.b", b0)                 # the @knob right-hand side is a knob expression, not a variable
+    set_knob!("md2c2_rf.g", g0)
+    @knob md2c2_rf.s = 1.0e-3
+    refusal(f) = sprint(showerror, try f(); nothing catch e; e end)
+    rf_k = ThinRFCavitySpec(@knob_expr(md2c2_rf.f); strength=1.0e-3, beta0=@knob_expr(md2c2_rf.b), gamma0=@knob_expr(md2c2_rf.g))
+    @test track(rf_k) == track(ThinRFCavitySpec(4.0e8; strength=1.0e-3, beta0=b0, gamma0=g0))
+    set_knob!("md2c2_rf.f", -1.0)
+    @test occursin("ThinRFCavitySpec: frequency must be positive and finite, got -1.0", refusal(() -> compile_runtime(rf_k)))
+    set_knob!("md2c2_rf.f", 4.0e8)
+    set_knob!("md2c2_rf.b", 0.5)
+    msg_pair = refusal(() -> compile_runtime(rf_k))
+    @test occursin("beta0 = 0.5 and gamma0 = $(g0)", msg_pair) && occursin("not the same reference particle", msg_pair)
+    set_knob!("md2c2_rf.b", b0)
+    set_knob!("md2c2_rf.g", -g0)            # satisfies the pair identity; no particle
+    @test occursin("gamma0 = $(-g0) is below 1", refusal(() -> compile_runtime(rf_k)))
+    set_knob!("md2c2_rf.g", g0)
+    @test track(rf_k) == track(ThinRFCavitySpec(4.0e8; strength=1.0e-3, beta0=b0, gamma0=g0))   # restored, compiles again
+    # the flexible form: literals never checked at construction, refused at compile
+    flex_rf(; kw...) = ElementSpec{:thin_rf_cavity}(; frequency=4.0e8, strength=1.0e-3, beta0=b0, gamma0=g0, kw...)
+    @test track(flex_rf()) == track(rf_k)
+    @test occursin("frequency must be positive and finite, got 0.0", refusal(() -> compile_runtime(flex_rf(frequency=0.0))))
+    @test occursin("beta0 = 0.99 and gamma0 = 100.0", refusal(() -> compile_runtime(flex_rf(beta0=0.99, gamma0=100.0))))
+    # the Float32 typed form stores the pair rounded to Float32, and the
+    # untyped form given Float32 inputs derives and stores a Float32 pair
+    # while compiling in Float64: the compile's allowance follows the stored
+    # pair's rounding, so both still compile
+    @test compile_runtime(ThinRFCavitySpec{Float32}(4.0e8; strength=1.0e-3, beta0=b0, gamma0=g0)) isa Octopus.ThinRFCavity{<:Any,Float32}
+    @test compile_runtime(ThinRFCavitySpec(4.008f8; voltage=1.2f7, e0=2.75f11, mc2=Float32(Octopus.PMASS_EV))) isa Octopus.ThinRFCavity{<:Any,Float64}
+    # the accelerating cavity: a knob strength that decelerates the reference
+    # to (-1: exit gamma near 0) or past (-5: exit gamma below -1) its rest
+    # energy is refused by name, at both values
+    acc_k = ThinAcceleratingCavitySpec(4.0e8; strength=@knob_expr(md2c2_rf.s), beta0=b0, gamma0=g0)
+    @test track(acc_k) == track(ThinAcceleratingCavitySpec(4.0e8; strength=1.0e-3, beta0=b0, gamma0=g0))
+    for s in (-1.0, -5.0)
+        set_knob!("md2c2_rf.s", s)
+        msg_acc = refusal(() -> compile_runtime(acc_k))
+        @test occursin("ThinAcceleratingCavitySpec: the design gain decelerates the reference below its rest energy", msg_acc) &&
+              occursin("strength = $(s)", msg_acc)
+    end
+    set_knob!("md2c2_rf.s", 1.0e-3)
+    @test track(acc_k) == track(ThinAcceleratingCavitySpec(4.0e8; strength=1.0e-3, beta0=b0, gamma0=g0))
+    @test occursin("decelerates the reference below its rest energy",
+                   refusal(() -> compile_runtime(ElementSpec{:thin_accelerating_cavity}(; frequency=4.0e8, strength=-5.0, beta0=b0, gamma0=g0))))
+    @test occursin("gamma0 = $(-g0) is below 1",
+                   refusal(() -> compile_runtime(ElementSpec{:thin_accelerating_cavity}(; frequency=4.0e8, strength=1.0e-3, beta0=b0, gamma0=-g0))))
 
     # The strong beam: kbb, a centroid component and sigz as trees; the knob
     # inside the nested thin kernel resolves with its parent and moves it.
@@ -41730,6 +42189,20 @@ end
     set_knob!("md2c_ring.kbb", 1.1e-3)
     @test track(gs_expr) != track(gs_num)
     set_knob!("md2c_ring.kbb", 1.0e-3)
+    # The task-level arm for the nested kernel: a task over a line holding the
+    # Gaussian strong beam tracks differently after `set_knob!` at its next
+    # `execute!`, without being rebuilt -- the epoch gate sees the knob inside
+    # the kernel. One particle, one turn, the same start each time.
+    gs_task = TrackingTask((DriftSpec(L=0.5), gs_expr, DriftSpec(L=0.5)))
+    run_gs() = (rep = Phase6DRep([2.0e-4], [0.0], [1.0e-4], [0.0], [0.0], [0.0]);
+                execute!(gs_task, rep; turns=1);
+                collect(Iterators.flatten(map(Array, Octopus.coordinate_arrays(rep)))))
+    gs_before = run_gs()
+    @test gs_before == run_gs()                               # a repeat at the same knob is identical
+    set_knob!("md2c_ring.kbb", 1.1e-3)
+    gs_moved = run_gs()
+    set_knob!("md2c_ring.kbb", 1.0e-3)
+    @test gs_moved != gs_before && run_gs() == gs_before      # the move reached the task, and reverts
     @test track(GaussianStrongBeamSpec(kbb=1.0e-3, beta=(1.0, 1.0), sigma=(1.0e-4, 1.0e-4), ns=3, sigz=1.0e-2, angle=(@knob_expr(md2c_ring.boost), 0.0, 0.0))) ==
           track(GaussianStrongBeamSpec(kbb=1.0e-3, beta=(1.0, 1.0), sigma=(1.0e-4, 1.0e-4), ns=3, sigz=1.0e-2, angle=(0.012, 0.0, 0.0)))
     # The covariance inputs are a derivation validated at construction: refused
@@ -41767,13 +42240,15 @@ end
         end
         @test err isa ArgumentError
         msg = sprint(showerror, err)
-        @test occursin("cannot hold a knob expression", msg) && occursin("flat keywords", msg) && occursin("67x", msg)
+        @test occursin("cannot hold a knob expression", msg) && occursin("flat keywords", msg)
+        @test occursin("stage 2 decision rule", msg) && occursin("46 in all", msg) && occursin("machine_description_stage2_2026_11_25.md", msg)
     end
     @test occursin("LinearOptics: beta ", sprint(showerror, try LinearOptics(; beta=(@knob_expr(md2c_ring.beta), 1.0, 1.0)) catch e; e end))
     @test occursin("LinearOptics: zeta ", sprint(showerror, try LinearOptics(; beta=(10.0, 1.0, 1.0), zeta=(@knob_expr(md2c_ring.zeta), 0.0, 0.0, 0.0)) catch e; e end))
     @test LinearOptics(; beta=(10.0, 1.0, 1.0)) isa LinearOptics{Float64}
 end
 
+if _lane_gate("Machine description: the effectiveness contract's expression arm")
 @testset "Machine description: the effectiveness contract's expression arm" begin
     @knob md2c_arm.angle = 0.3
     @knob md2c_arm.beta = 10.0
@@ -41793,19 +42268,25 @@ end
     end
     @test r.metrics[:expression_checked] == length(r.metrics[:expression_checked_names])
     @test "quadrupole.kn" in r.metrics[:expression_checked_names] && "sbend.angle" in r.metrics[:expression_checked_names]
-    @test isempty(r.metrics[:expression_failures]) && isempty(r.metrics[:expression_refused_unnamed])
-    @test all(p -> occursin("knob expression", last(p)), r.metrics[:expression_refused])
+    @test isempty(r.metrics[:expression_refused_unnamed])
     # The refusal classifier the arm applies, on the real refusals the
-    # constructors keep: each names the knob expression and a remedy; a message
-    # without them does not pass.
-    for (build, needle) in ((() -> RBendSpec(chord=2.0, angle=@knob_expr(md2c_arm.angle)), "chord"),
-                            (() -> GaussianStrongBeamSpec(kbb=1.0e-3, beta=(@knob_expr(md2c_arm.beta), 1.0), sigma=(1.0e-4, 1.0e-4), ns=3, sigz=1.0e-2), "beta"),
-                            (() -> LinearOptics(; beta=(@knob_expr(md2c_arm.beta), 1.0, 1.0)), "beta"))
+    # constructors keep: each names the parameter it refuses and a remedy, and
+    # is unnamed when asked about a parameter it does not mention. The REAL
+    # text of the generic eager-conversion error -- what a site never widened
+    # throws -- says "knob expression" and offers two remedies, and stays
+    # unnamed even for a key its remedy happens to spell (`param`); a remedy
+    # without the phrase is unnamed too.
+    for (build, key) in ((() -> RBendSpec(chord=2.0, angle=@knob_expr(md2c_arm.angle)), :angle),
+                         (() -> GaussianStrongBeamSpec(kbb=1.0e-3, beta=(@knob_expr(md2c_arm.beta), 1.0), sigma=(1.0e-4, 1.0e-4), ns=3, sigz=1.0e-2), :beta),
+                         (() -> LinearOptics(; beta=(@knob_expr(md2c_arm.beta), 1.0, 1.0)), :beta))
         msg = sprint(showerror, try build(); nothing catch e; e end)
-        @test occursin(needle, msg) && Octopus._expression_refusal_named(msg)
+        @test Octopus._expression_refusal_named(msg, key)
+        @test !Octopus._expression_refusal_named(msg, :md2c_arm_absent)
     end
-    @test !Octopus._expression_refusal_named("a knob expression cannot be converted to a number eagerly")
-    @test !Octopus._expression_refusal_named("give L instead")
+    generic = sprint(showerror, try Float64(KnobRef(Symbol("md2c_arm.angle"))); nothing catch e; e end)
+    @test occursin("knob expression", generic) && occursin("knob_value", generic) && occursin(" param=", generic)
+    @test !Octopus._expression_refusal_named(generic, :param)
+    @test !Octopus._expression_refusal_named("give L instead", :L)
     # Every kind with a friendly constructor is accounted for exactly once:
     # checked, refused only, or without a floating-point candidate.
     with_ctor = sort!([m.kind for m in (Octopus._element_meta_or_nothing(T) for T in Octopus.registered_element_specs())
@@ -41820,6 +42301,7 @@ end
     # The arm's knobs are forgotten, whatever the verdict.
     @test isempty(list_knobs("md2c_effect"))
 end
+end # _lane_gate("Machine description: the effectiveness contract's expression arm")
 
 @testset "Knob control" begin
     reset_knobs!()
@@ -41884,8 +42366,15 @@ end
         @knob t_knob.unset
         @test_throws ArgumentError knob_value("t_knob.unset")
         @test_throws ArgumentError knob_expression("rand() * t_knob.k1")
-        @test_throws ArgumentError CrabDispersionSpec{Float64}(
-            zeta1=@knob_expr(t_knob.k1))
+        # The eager conversion of an expression OBJECT keeps its directed
+        # error; the typed friendly constructor, which used to hit it, accepts
+        # the expression since design D10 (machine description stage 2): the
+        # stored parameter is the expression and `compile_runtime` resolves it.
+        @test_throws ArgumentError Float64(@knob_expr(t_knob.k1))
+        let cd = CrabDispersionSpec{Float64}(zeta1=@knob_expr(t_knob.k1))
+            @test getparam(cd, :zeta1) == KnobRef(Symbol("t_knob.k1"))
+            @test compile_runtime(cd) == compile_runtime(CrabDispersionSpec{Float64}(zeta1=knob_value("t_knob.k1")))
+        end
         @test_throws ArgumentError Octopus._knob_define!(
             Symbol("t_knob.k1.sub"), Meta.parse("1.0"))
         @test_throws ArgumentError Octopus._knob_define!(Symbol("t_knob"), nothing)

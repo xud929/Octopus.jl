@@ -650,7 +650,7 @@ this stage (design D10; `docs/knob_control.md`, section 2): a number is
 converted, an expression is kept, and the folds build expression nodes, so
 `k1 = @knob_expr(ring.qf_k1)` above stores the expression in `kn`; a
 derivation the tree cannot express still refuses by name with the
-flexible-form remedy [MEASURE: unit C refusals]. `ReferenceParticle` is
+flexible-form remedy (what still refuses: the RBend `chord` with an expression `angle`, the strong beams' optics and covariance keywords, the inert third components of the strong beam's `angle`, `curvature` and `mean`, the cavity's `harmon`, and every entry of a `LinearOptics` point, kept numeric on a measurement; the stage record lists each with its remedy). `ReferenceParticle` is
 carried on the lattice and not yet consumed: `Beam` and the cavities keep
 their `charge`, `mc2`, `E0`, `beta0`, `gamma0` keywords until the compile-path
 campaign of D12 (`reference_beta_gamma(ref)` derives the factors a script

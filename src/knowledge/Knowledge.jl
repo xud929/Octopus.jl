@@ -823,14 +823,13 @@ D10 (`docs/design/machine_description.md`): convert a number, keep an
 expression. A knob expression is stored as given and resolves at compile
 (`compile_runtime` calls `resolve_knobs` first); anything else goes through
 `T(x)`, the eager conversion the site always made, so nothing that constructs
-today changes meaning. The tuple method maps the rule over a tuple, so a
+today changes meaning. Tuple-valued sites apply the rule entry by entry
+themselves (`ntuple(i -> _as_number_or_expression(T, values[i]), n)`), so a
 `(number, expression, number)` strength or optics tuple keeps its numbers in
 `T` and its expressions as trees.
 """
 _as_number_or_expression(::Type{T}, x) where {T} =
     x isa AbstractKnobExpression ? x : T(x)
-_as_number_or_expression(::Type{T}, x::Tuple) where {T} =
-    map(v -> _as_number_or_expression(T, v), x)
 
 """
     _float_or_expression(x)

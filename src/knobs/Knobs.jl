@@ -117,13 +117,37 @@ const _KNOB_NAMED_CONSTANTS = Dict{Symbol,Float64}(
 
 The tree node of one operand of a fold site that accepts knob expressions
 (design D10, `docs/design/machine_description.md`): an expression is itself,
-a number becomes the literal `KnobConst(Float64(x))`. Only a number a
-`Float64` can hold is a literal; a dual or a BigFloat operand beside an
-expression throws the conversion's own error rather than losing precision in
-a tree that prints as a plain literal.
+a number becomes the literal `KnobConst(Float64(x))`. A tree literal is a
+`Float64`, so only a number `Float64` holds exactly becomes one (the rule is
+`isequal(Float64(x), x)`: every `Float64`, `Float32` and `Float16`, an
+integer below 2^53, a dyadic rational). Any other `Real` operand -- a
+`BigFloat` such as `big"1"/3`, a `Rational` such as `1//3`, a dual number,
+an `Irrational` -- is refused by name with the remedy (give the knob the
+wide value, or build the whole expression with `@knob_expr`) instead of
+being narrowed into a tree that prints as a plain literal while the numeric
+spelling keeps the wide type (stage 2 review of unit C, finding 7: until
+then `_knob_node` narrowed `big"1"/3` silently). A fold site that `float`s
+its operands first (`_float_or_expression`) hands a rational over as the
+`Float64` the numeric spelling would also store, so the refusal there is
+for the types `float` keeps wide: `BigFloat` and duals.
 """
 _knob_node(x::AbstractKnobExpression) = x
-_knob_node(x::Real) = KnobConst(Float64(x))
+function _knob_node(x::Real)
+    v = try
+        Float64(x)
+    catch
+        nothing
+    end
+    (v !== nothing && isequal(v, x)) || throw(ArgumentError(
+        "a knob expression tree cannot hold $(repr(x))::$(typeof(x)) as a literal: tree literals are " *
+        "Float64, which does not hold this number exactly" *
+        (v === nothing ? "" : " (it would become $(repr(v)))") *
+        ", so folding it beside a knob expression would narrow it silently while the numeric spelling " *
+        "keeps the type. Give the knob the wide value instead -- declare a knob holding it, " *
+        "@knob name::$(typeof(x)) = ..., and reference that knob in the expression -- or build the whole " *
+        "expression with @knob_expr, or give a plain number from knob_value(expression)"))
+    return KnobConst(v)
+end
 
 """
     _knob_arith(op::Symbol, args...)
@@ -1077,10 +1101,14 @@ Base.show(io::IO, n::KnobRef) = print(io, _knob_expr_string(n))
 Base.show(io::IO, n::KnobConst) = print(io, _knob_expr_string(n))
 Base.show(io::IO, n::KnobCall) = print(io, _knob_expr_string(n))
 
-# Friendly constructors convert parameters eagerly (`T(value)`), which would
-# either fail obscurely or force premature evaluation. Fail with directions.
-# Every Number, not just AbstractFloat: `Int(e)` deserves the same directions
-# (2026-08-05 audit, U14-7).
+# A site that converts a parameter eagerly (`T(value)`) -- the friendly
+# constructors did until design D10 widened their fold sites, and any site not
+# widened still does -- would either fail obscurely or force premature
+# evaluation. Fail with directions. Every Number, not just AbstractFloat:
+# `Int(e)` deserves the same directions (2026-08-05 audit, U14-7). The
+# effectiveness contract's expression arm classifies this message as a
+# refusal WITHOUT the name (`_expression_refusal_named`), so a site that
+# still throws it fails the arm.
 (::Type{T})(::AbstractKnobExpression) where {T<:Number} = throw(ArgumentError(
     "a knob expression cannot be converted to a number eagerly. Use the flexible " *
     "ElementSpec{kind}(; param=@knob_expr(...)) constructor so compile_runtime " *

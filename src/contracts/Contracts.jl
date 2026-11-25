@@ -3960,6 +3960,7 @@ const DEFAULT_INACTIVE_ELEMENT_PARAMS = Dict{Tuple{Symbol,Symbol},String}(
     # direction -- it keeps excusing forever, silently.
     (:thin_rf_cavity, :harmon) => "consumed at TASK BIND, not at the bare compile this probe uses: the harmonic number resolves to a frequency against the line's circumference in _bind_survey, and a bare-compiled harmon cavity deliberately refuses to track at all. Effectiveness is pinned instead by the harmon-vs-explicit-frequency ring identity testset",
     (:marker, :tracking_method) => "a marker is the identity under every method",
+    (:line, :numeric_type) => "the kept-whole composite's own type floor, read by the misalignment wrap (_wrap_numeric_type): with Float64 members the wrap promotes to Float64 whatever the line stores, so this probe's move to Float32 cannot reach the map; it acts only when every member is narrower (a Float32 girder), which the Lattice numeric-type testset pins (machine description stage 2)",
     (:line, :L) => "survey metadata, not tracking input: consumed by the arc-length walkers (s_positions, total_length, aperture_s and the misaligned-parent survey), not by the coordinate map this contract measures — declared by the 2026-08-05 campaign so nested own-state lines survey at their real length",
     # These are consumed, but not through the single deterministic
     # coordinate map this contract measures. The distinction matters: they are
@@ -4379,14 +4380,16 @@ function _effectiveness_probe(contract::ElementParameterEffectivenessContract, T
 end
 
 """
-    _expression_arm_layout(current, moved) -> (knob_value, moved_value) pairs or nothing
+    _expression_arm_layout(current, moved) -> (index, knob_value, moved_value) triples or a reason
 
 Where the expression arm places its knobs for one parameter: a floating-point
 scalar takes one knob; a tuple takes one knob per entry the move changes
 (every entry under the sweep's tuple rule, the two transverse ones under the
-strong beam's coupled `angle` move), the others staying numbers. `nothing`
-when the move changes nothing or the pair is not a floating-point scalar or a
-tuple of them.
+strong beam's coupled `angle` move), the others staying numbers. A Symbol
+names why there is no layout: `:move_changes_nothing` when the tuple move
+leaves every entry as it is, `:move_not_a_float_or_float_tuple` when the pair
+is not a floating-point scalar or a tuple of them; the arm records it as the
+parameter's inapplicability reason.
 """
 function _expression_arm_layout(current, moved)
     if current isa AbstractFloat && moved isa Real
@@ -4396,17 +4399,28 @@ function _expression_arm_layout(current, moved)
        all(v -> v isa AbstractFloat, current) && all(v -> v isa Real, moved)
         layout = [(i, Float64(current[i]), Float64(moved[i]))
                   for i in eachindex(current) if moved[i] != current[i]]
-        return isempty(layout) ? nothing : layout
+        return isempty(layout) ? :move_changes_nothing : layout
     end
-    return nothing
+    return :move_not_a_float_or_float_tuple
 end
 
-# A refusal is BY NAME when its message says "knob expression" and names a
-# remedy: the flexible form, `knob_value`, or another parameter to carry the knob.
-_expression_refusal_named(msg::AbstractString) =
-    occursin("knob expression", msg) &&
-    (occursin("ElementSpec{", msg) || occursin("knob_value", msg) || occursin("instead", msg) ||
-     occursin("flexible form", msg))
+# A refusal is BY NAME when its message says "knob expression", names the
+# parameter it refuses (the probe's key as a whole word: `beta`, `angle[3]`,
+# "when angle is a knob expression") and names a remedy: the flexible form,
+# `knob_value`, or another parameter to carry the knob. The generic
+# eager-conversion error of `(::Type{<:Number})(::AbstractKnobExpression)`
+# (Knobs.jl) says "knob expression" and offers two remedies but names no
+# parameter: it is what a site never widened throws, so it is UNNAMED here
+# whatever else it carries, and the arm fails on it (stage 2 review of unit C,
+# finding 1: before this rule a reverted site counted as refused by name).
+const _EXPRESSION_GENERIC_REFUSAL = "cannot be converted to a number eagerly"
+function _expression_refusal_named(msg::AbstractString, key::Symbol)
+    occursin("knob expression", msg) || return false
+    occursin(_EXPRESSION_GENERIC_REFUSAL, msg) && return false
+    occursin(Regex("(?<![A-Za-z0-9_])" * string(key) * "(?![A-Za-z0-9_])"), msg) || return false
+    return occursin("ElementSpec{", msg) || occursin("knob_value", msg) || occursin("instead", msg) ||
+           occursin("flexible form", msg)
+end
 
 """
     _element_expression_arm(contract, u) -> NamedTuple
@@ -4424,7 +4438,7 @@ rule (`_perturb_candidates_or_reason`; the coupled overrides of
 `_perturb_coupled_overrides` honoured, so the RF cavity's reference pair
 moves jointly) must change the recompiled runtime. A constructor that refuses
 the expression is recorded with its message, by name when the message says
-"knob expression" and names a remedy. A parameter the constructor accepted
+"knob expression", names the parameter and names a remedy. A parameter the constructor accepted
 and then dropped (the runtime unchanged after the move) is a FAILURE named by
 kind and parameter; so is a kind with a constructor whose every candidate was
 refused without the name and the remedy. Integers, flags, Symbols, rule
@@ -4504,7 +4518,7 @@ function _element_expression_arm(contract::ElementParameterEffectivenessContract
                     n_checked += 1
                 elseif outcome[1] === :refused
                     push!(refused, name => outcome[2])
-                    if _expression_refusal_named(outcome[2])
+                    if _expression_refusal_named(outcome[2], key)
                         n_named += 1
                     else
                         push!(unnamed, name)
@@ -4547,7 +4561,7 @@ function _expression_arm_case(T, ctor, probe, kind::Symbol, key::Symbol, moves, 
     layouts = Dict{Symbol,Vector{Tuple{Int,Float64,Float64}}}()
     for (k, moved) in moves[1]
         layout = _expression_arm_layout(probe[k], moved)
-        layout === nothing && return (:inapplicable, :move_not_a_float_or_float_tuple)
+        layout isa Symbol && return (:inapplicable, layout)
         layouts[k] = layout
     end
     kw = copy(probe)

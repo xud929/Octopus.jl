@@ -121,14 +121,22 @@ function example_catalog()
         ReferenceExample(
             "examples/twiss_dispersion_dba_ring.jl",
             "The coupled Twiss and canonical dispersion analysis of a DBA ring with " *
-            "a thin RF cavity, given as a BeamLine: the default run is :degraded by " *
+            "a thin RF cavity, declared in a module through @elements with the " *
+            "focusing strength on a knob under the root `ring`, a ReferenceParticle " *
+            "and a Lattice fed to analyze: the default run is :degraded by " *
             "the uncertified longitudinal selection, the certified second run is " *
             ":passed and prints tunes, dispersions, normal modes, matched beam " *
-            "sizes and the residual checks. The precedent for running an analysis " *
-            "and reading its result (every undetermined quantity by its reason), " *
-            "and for turning the result into the LinearOptics point every " *
-            "consumer accepts (linear_optics).",
-            Type[TwissDispersionAnalysis, BeamLine, ThinRFCavitySpec, SBendSpec, LinearOptics]),
+            "sizes and the residual checks. The precedent for a lattice module " *
+            "(declarations only: including it twice builds an equal lattice), for " *
+            "running an analysis and reading its result (every undetermined " *
+            "quantity by its reason), and for turning the result into the " *
+            "LinearOptics point every consumer accepts (linear_optics).",
+            # The objects the script NAMES (the suite's catalogue tripwire reads
+            # the script for each): the @elements block spells kinds, not types,
+            # so BeamLine, SBendSpec and ThinRFCavitySpec are named by the
+            # comments that map `line`, `sbend` and `thin_rf_cavity` onto them.
+            Type[TwissDispersionAnalysis, Lattice, ReferenceParticle, BeamLine,
+                 ThinRFCavitySpec, SBendSpec, LinearOptics]),
     ]
 end
 

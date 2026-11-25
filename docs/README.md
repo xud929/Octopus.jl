@@ -265,7 +265,10 @@ Procedures, one per task class, routed from the Task Routing table in
   knob expressions (D10), the DBA example declared through the block with
   its fingerprints against the pre-change baseline, the decisions taken in
   the stage and the owner's rulings on the design note's open questions, the
-  per-unit verification, the sweeps and the gate.
+  per-unit verification, the sweeps and the gate; the measuring harness behind its `LinearOptics` decision is
+  [`machine_description_stage2_2026_11_25_optics_trees.jl`](history/machine_description_stage2_2026_11_25_optics_trees.jl)
+  (the 36-entry matrix and the Edwards-Teng block as knob trees, their node
+  counts and the evaluation cost against the numeric build).
 - [`linear_optics_owner_items_2026_11_21.md`](history/linear_optics_owner_items_2026_11_21.md)
   — the second LinearOptics batch, closing the design note's owner items 1, 4
   and 5 (D11-D13): form 2 reaching `ChromaticityKickSpec` and `LumpedRadSpec`

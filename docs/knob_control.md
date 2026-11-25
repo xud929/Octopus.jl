@@ -152,8 +152,7 @@ Two consequences to know:
   expression nodes when an operand is an expression, so the stored parameters
   remain the folded, flattened ones a flexible-form spec would hold. A
   derivation the tree cannot express still refuses the expression by name
-  with the flexible-form remedy [MEASURE: unit C refusals: the sites that
-  still refuse]. The flexible `ElementSpec{kind}(; ...)` form stays as the
+  with the flexible-form remedy; what still refuses, each by name with its remedy: the RBend `chord` with an expression `angle` (the zero-angle guard has no tree); the strong beams' `beta`, `alpha`, `sigma`, the coupling coefficients and the covariance (derived and validated at construction; the remedy is the flexible `ElementSpec{:thin_strong_beam}` form with the knob in a covariance entry); the inert third components `angle[3]`, `curvature[3]` and `mean[6]`; the Gaussian strong beam's `sigz` and `sigma_delta` beside a dispersive `LinearOptics` point; the cavity's `harmon`; and every entry of a `LinearOptics` point (`beta`, `alpha`, `R`, `zeta`, `eta`, `mu`, `dmu`), kept numeric on a measurement: one knob in `beta[1]` turns four of the thirty-six entries of a `Linear6DSpec` matrix into six-node trees whose evaluation costs about 80 times the numeric build, and one knob in `R` makes the Edwards-Teng block a 46-node tree (the committed harness `history/machine_description_stage2_2026_11_25_optics_trees.jl`). The flexible `ElementSpec{kind}(; ...)` form stays as the
   deferred path, and as the path the TOML loader of stage 4 (D13, proposed)
   will take; it must supply every parameter its runtime constructor reads,
   exactly as each element's `construction_help` documents.
