@@ -19413,6 +19413,120 @@ end
 # charge, mc2, E0, with the beam option schema entry and the effectiveness test.
 # Unit 1's testsets land directly below this comment and nowhere else.
 
+@testset "Reference particle: Beam takes the reference in place of charge, mc2 and E0" begin
+    # Reference-particle batch, unit 1 (design docs/design/machine_description.md
+    # D12): `Beam(; reference = ReferenceParticle(...))` gives charge, mc2 and
+    # E0 at once. The three flat keywords stay accepted; beside `reference`
+    # they are refused by name before the draw, as the optics keywords are
+    # beside `optics`. One funnel (`_beam_params`) serves every constructor
+    # form, so the identity is pinned on each call site: gaussian, uniform,
+    # grid, through the backend tag and through the policy.
+    old_seed, old_method = global_rng_seed(), global_rng_method()
+    refusal(f) = (err = try; f(); nothing catch e; e end;
+                  (err, err === nothing ? "" : sprint(showerror, err)))
+    ref = ReferenceParticle(; charge=1, mc2=PMASS_EV, E0=275.0e9)
+    other = ReferenceParticle(; charge=1, mc2=PMASS_EV, E0=100.0e9)
+    rid = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
+    rid2 = Octopus._unheld_rng_id(rid + 1)
+    lower = (-1.0e-3, -1.0e-4, -1.0e-3, -1.0e-4, -1.0e-2, -1.0e-3)
+    upper = (1.0e-3, 1.0e-4, 1.0e-3, 1.0e-4, 1.0e-2, 1.0e-3)
+    try
+        set_global_rng!(seed=20261125, method=:philox)
+        # The same beam twice under one seed and one stream: the flat spelling
+        # (an Int charge, as scripts write it) and the reference. BeamParams is
+        # an isbits struct, so `===` is the bit-for-bit comparison of every
+        # field; the coordinate arrays are compared whole. r0 and npart stay
+        # flat on both sides (the classical radius is not derived here).
+        flat = Beam(256, CPUThreadsBackend; rng_id=rid, sigma=(1.0e-3, 1.0e-3, 1.0e-2),
+                    charge=1, mc2=PMASS_EV, E0=275.0e9, r0=1.535e-18, npart=1.0e11)
+        viaref = Beam(256, CPUThreadsBackend; rng_id=rid, sigma=(1.0e-3, 1.0e-3, 1.0e-2),
+                      reference=ref, r0=1.535e-18, npart=1.0e11)
+        @test viaref.params === flat.params
+        @test flat.params === BeamParams{Float64}(1.0, PMASS_EV, 275.0e9, 1.535e-18, 1.0e11)   # non-trivial
+        @test coordinate_arrays(viaref) == coordinate_arrays(flat)
+        # Anti-vacuity: a reference of another energy changes the parameters
+        # and nothing else (the reference never touches the draw).
+        viaother = Beam(256, CPUThreadsBackend; rng_id=rid, sigma=(1.0e-3, 1.0e-3, 1.0e-2),
+                        reference=other, r0=1.535e-18, npart=1.0e11)
+        @test viaother.params !== flat.params && viaother.params.E0 == 100.0e9
+        @test coordinate_arrays(viaother) == coordinate_arrays(flat)
+        # The typed form converts the reference's Float64 fields to the
+        # coordinate type exactly as it converts the flat values.
+        flat32 = Beam(64, CPUThreadsBackend, Float32; rng_id=rid, charge=1, mc2=PMASS_EV, E0=275.0e9)
+        ref32 = Beam(64, CPUThreadsBackend, Float32; rng_id=rid, reference=ref)
+        @test ref32.params isa BeamParams{Float32} && ref32.params === flat32.params
+        @test ref32.params.mc2 === Float32(PMASS_EV) && coordinate_arrays(ref32) == coordinate_arrays(flat32)
+        # The policy form forwards the keyword (one funnel).
+        @test Beam(64, CPUThreadsExecutionPolicy(threads=1); rng_id=rid, reference=ref).params ===
+              Beam(64, CPUThreadsBackend; rng_id=rid, charge=1, mc2=PMASS_EV, E0=275.0e9).params
+        # The two bounded call sites of `_beam_params`: the no-count grid form
+        # (npart defaults to the derived count) and the uniform box.
+        grid = Beam(CPUThreadsBackend; lower, upper, grid_size=(2, 2, 2, 2, 2, 2), reference=ref)
+        @test grid.params === BeamParams{Float64}(1.0, PMASS_EV, 275.0e9, 0.0, 64.0)
+        @test grid.params === Beam(CPUThreadsExecutionPolicy(threads=1); lower, upper,
+                                   grid_size=(2, 2, 2, 2, 2, 2), charge=1, mc2=PMASS_EV, E0=275.0e9).params
+        @test Beam(32, CPUThreadsBackend; distribution=:uniform, lower, upper, rng_id=rid2, reference=ref).params ===
+              Beam(32, CPUThreadsBackend; distribution=:uniform, lower, upper, rng_id=rid2,
+                   charge=1, mc2=PMASS_EV, E0=275.0e9).params
+        # Refusals, by name: each flat keyword beside `reference` (whatever its
+        # value, the matching one included), a wrong type, and the unknown-
+        # keyword message that must not list `reference` as unknown. The
+        # automatic-stream device of "A refused Beam has drawn nothing": the
+        # id the next automatic consumer receives is unchanged across them.
+        would_be = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1)
+        for kw in ((; charge=1), (; mc2=PMASS_EV), (; E0=1.0e9), (; charge=-1, E0=1.0e9))
+            err, msg = refusal(() -> Beam(16, CPUThreadsBackend; reference=ref, kw...))
+            @test err isa ArgumentError
+            @test all(k -> occursin(string(k), msg), keys(kw)) && occursin("reference", msg)
+        end
+        err, msg = refusal(() -> Beam(16, CPUThreadsBackend; reference=(1.0, PMASS_EV, 275.0e9)))
+        @test err isa ArgumentError && occursin("reference", msg) && occursin("ReferenceParticle", msg)
+        err, msg = refusal(() -> Beam(16, CPUThreadsBackend; reference=ref, bogus=1))
+        @test err isa ArgumentError && occursin("unknown Beam keyword(s): bogus.", msg)
+        err, msg = refusal(() -> Beam(CPUThreadsBackend; lower, upper, grid_size=(2, 2, 2, 2, 2, 2),
+                                      reference=ref, mc2=PMASS_EV))
+        @test err isa ArgumentError && occursin("mc2", msg) && occursin("reference", msg)
+        @test Octopus.next_rng_id!() == would_be        # the refusals took no automatic stream
+        rid3 = Octopus._unheld_rng_id(rid2 + 1)
+        @test_throws ArgumentError Beam(16, CPUThreadsExecutionPolicy(threads=1); rng_id=rid3, reference=ref, E0=1.0e9)
+        @test !Octopus._rng_id_held(rid3)               # and no explicit one
+        # The consumer boundary. A TrackingTask line holding a ring cavity
+        # declared from the same reference (`reference_beta_gamma(ref)`)
+        # compiles and tracks a beam built from `reference = ref`. The task's
+        # `_validate_reference_chain` compares the cavities' declared gamma0
+        # with one another and never reads the beam, so a beam of another
+        # energy is NOT refused there (binding the two is the D12 compile-path
+        # campaign, not this batch); the beam's charge, mc2 and E0 reach the
+        # physics through ONE site today, the strong-strong kick scale
+        # `_strong_strong_kbb1/2` (src/tasks/strongstrong/slicing.jl, run by
+        # `_preflight_solver_kbb` before the first turn), pinned instead: the
+        # reference-built beams give the flat beams' scale bit for bit, another
+        # energy moves it by the energy ratio, and no energy is refused by name.
+        b0, g0 = reference_beta_gamma(ref)
+        line = (DriftSpec(L=1.0), ThinRFCavitySpec(400.0e6; strength=0.01, beta0=b0, gamma0=g0), DriftSpec(L=1.0))
+        task = TrackingTask(line)
+        tracked = Beam(64, CPUThreadsExecutionPolicy(threads=1); rng_id=rid,
+                       sigma=(1.0e-3, 1.0e-3, 1.0e-2), reference=ref)
+        before = deepcopy(coordinate_arrays(tracked))
+        execute!(task, tracked; turns=2)
+        @test tracked.params.E0 == 275.0e9 && coordinate_arrays(tracked) != before   # it ran, on a reference-built beam
+        solver = GaussianPoissonSolver()
+        flat2 = Beam(256, CPUThreadsBackend; rng_id=rid2, charge=-1, mc2=EMASS_EV, E0=10.0e9,
+                     r0=2.818e-15, npart=1.0e11)
+        viaref2 = Beam(256, CPUThreadsBackend; rng_id=rid2, r0=2.818e-15, npart=1.0e11,
+                       reference=ReferenceParticle(; charge=-1, mc2=EMASS_EV, E0=10.0e9))
+        k1 = Octopus._strong_strong_kbb1(solver, viaref, viaref2)
+        k2 = Octopus._strong_strong_kbb2(solver, viaref, viaref2)
+        @test k1 === Octopus._strong_strong_kbb1(solver, flat, flat2) && k1 != 0.0
+        @test k2 === Octopus._strong_strong_kbb2(solver, flat, flat2) && k2 != 0.0
+        @test Octopus._strong_strong_kbb1(solver, viaother, viaref2) ≈ k1 * 2.75 rtol=1.0e-12   # 275 -> 100 GeV
+        err, msg = refusal(() -> Octopus._strong_strong_kbb1(solver, Beam(16, CPUThreadsBackend; rng_id=rid), viaref2))
+        @test err isa ArgumentError && occursin("E0", msg)
+    finally
+        set_global_rng!(seed=old_seed, method=old_method)
+    end
+end
+
 @testset "A CUDA beam is the CPU beam of the same seed and stream, bit for bit" begin
     # 2026-10-18 audit F-189/U27-5. The counter draw was already built on the
     # host for both backends, so the raw normals were identical, but the

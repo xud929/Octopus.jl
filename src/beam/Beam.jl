@@ -622,7 +622,7 @@ end
          coupling=zeros(4), R=nothing, C=nothing, mode=XY_MODEA,
          eta=zeros(4), zeta=zeros(4), optics=nothing, initial_offset=zeros(6),
          cutoff=5, rng=nothing, seed=nothing, rng_id=0,
-         charge=0, mc2=0, E0=0, r0=0, npart=N)
+         charge=0, mc2=0, E0=0, r0=0, npart=N, reference=nothing)
 
 Construct a beam with randomized six-dimensional coordinates on either the CPU
 threaded backend or CUDA backend. The default `distribution=:gaussian` follows
@@ -684,6 +684,21 @@ refuse `optics` as they refuse every other optics keyword. `cutoff` truncates th
 standard deviations before they are standardized (`Inf` disables it; it must be
 positive). The remaining keywords (`charge`, `mc2`, `E0`, `r0`, `npart`) build
 the beam's [`BeamParams`](@ref); `npart` defaults to `N`.
+
+`reference = ref`, a [`ReferenceParticle`](@ref) (design
+`docs/design/machine_description.md`, D12), gives `charge`, `mc2` and `E0` at
+once, so the beam's species and energy are the lattice's and cannot disagree
+with them; the three flat keywords stay accepted without it, and the beam built
+either way is the same bit for bit, `BeamParams` included (the reference's
+values are converted to the coordinate type exactly as the flat ones are). Any
+of `charge`, `mc2`, `E0` given beside `reference`, whatever its value, is
+refused by name before anything is drawn or activated (drop it, or drop
+`reference` and give the flat keywords). `r0` and `npart` stay separate
+keywords: the classical radius is not derived from the reference in this
+batch. Every form of the constructor takes `reference`, the bounded and grid
+forms included; it is a beam-parameter keyword, so it is documented here and
+not in [`beam_initialization_option_schema`](@ref), which enumerates the
+distribution and bounds options only.
 
 Every keyword is validated before anything is drawn, activated or claimed, so a
 refused construction leaves the stream registry and the policy as they were
@@ -781,7 +796,7 @@ end
 """
     Beam(policy_or_backend, FloatT=Float64; distribution=:grid,
          lower, upper, grid_size=nothing, grid_step=nothing,
-         charge=0, mc2=0, E0=0, r0=0, npart=prod(grid_size))
+         charge=0, mc2=0, E0=0, r0=0, npart=prod(grid_size), reference=nothing)
 
 Construct an endpoint-inclusive Cartesian grid in physical `(x, px, y, py, z,
 pz)` coordinates. Supply six bounds and exactly one six-component `grid_size`
@@ -800,8 +815,11 @@ Float32 and Float64 are supported on CPU and CUDA. Construction runs on the
 host and uploads once. A multi-process policy keeps the same contiguous shard
 as the count-taking constructor, with physical `npart` remaining global.
 Grid construction consumes no RNG stream. Non-default Gaussian optics,
-offsets, cutoff, and RNG options are refused. See [`Beam`](@ref)'s random
-constructor and [`beam_initialization_option_schema`](@ref).
+offsets, cutoff, and RNG options are refused. `reference`, a
+[`ReferenceParticle`](@ref), replaces `charge`, `mc2` and `E0` exactly as in
+the random form (the three beside it are refused by name). See
+[`Beam`](@ref)'s random constructor and
+[`beam_initialization_option_schema`](@ref).
 """
 function Beam(policy::AbstractExecutionPolicy, FloatT::Type{RT}=Float64;
               kwargs...) where {RT<:Real}
@@ -1205,16 +1223,40 @@ function _beam_coupling_coefficients(coupling, R, C, ::Type{T}) where {T}
 	return _tuple_typed(last(given[1]), 4, T; keyword=first(given[1]))
 end
 
-function _beam_params(::Type{T}, N::Int; kwargs...) where {T}
+function _beam_params(::Type{T}, N::Int; reference=nothing, kwargs...) where {T}
 	allowed = (:charge, :mc2, :E0, :r0, :npart)
 	unknown = setdiff(Tuple(keys(kwargs)), allowed)
 	isempty(unknown) || throw(ArgumentError(
 		"unknown Beam keyword(s): $(join(string.(unknown), ", ")). " *
-		"Beam-parameter keywords are $(join(string.(allowed), ", "))."))
+		"Beam-parameter keywords are $(join(string.(allowed), ", ")), " *
+		"or reference (a ReferenceParticle) in place of charge, mc2 and E0."))
+	# `reference` arrives as `nothing` when not given and is checked by hand,
+	# as `optics` is: a wrong type is refused by name with an ArgumentError
+	# rather than a TypeError at keyword binding. With a ReferenceParticle the
+	# three flat keywords it replaces must be absent, whatever their value
+	# (design docs/design/machine_description.md D12: one type wherever a
+	# reference is spelled, never two sources of one truth). `r0` and `npart`
+	# stay flat: the classical radius is not derived from the reference here.
+	# Every path calls this before the policy is activated and before the
+	# stream is taken, so a refusal here draws nothing.
+	if reference !== nothing
+		reference isa ReferenceParticle || throw(ArgumentError(
+			"Beam reference must be a ReferenceParticle; got $(typeof(reference))"))
+		clash = [string(k) for k in (:charge, :mc2, :E0) if haskey(kwargs, k)]
+		isempty(clash) || throw(ArgumentError(
+			"Beam takes charge, mc2 and E0 from the ReferenceParticle given as reference; " *
+			join(clash, ", ") * " cannot be given beside it (drop " *
+			(length(clash) == 1 ? "it" : "them") * ", or drop reference and give the flat keywords)"))
+		charge, mc2, E0 = reference.charge, reference.mc2, reference.E0
+	else
+		charge = get(kwargs, :charge, 0)
+		mc2 = get(kwargs, :mc2, 0)
+		E0 = get(kwargs, :E0, 0)
+	end
 	return BeamParams{T}(;
-		charge=T(get(kwargs, :charge, 0)),
-		mc2=T(get(kwargs, :mc2, 0)),
-		E0=T(get(kwargs, :E0, 0)),
+		charge=T(charge),
+		mc2=T(mc2),
+		E0=T(E0),
 		r0=T(get(kwargs, :r0, 0)),
 		npart=T(get(kwargs, :npart, N)),
 	)
