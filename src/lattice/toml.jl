@@ -47,12 +47,12 @@ numeric_type = "Float64"
 kind = "drift"
 L = 0.6
 
-[lattices.ESR.hooks.MOMENTS]              # in-line hooks: observers and actions with their schedules
+[lattices.ESR.hooks.SCHEDULEDOBSERVER]    # in-line hooks: observers and actions with their schedules, ids = the line's labels
 type = "ScheduledObserver"
-observer = { type = "MomentObserver", name = "electron", moments = ["x", "px", ...] }
+observer = { type = "MomentObserver", name = "electron", moments = ["m100000", "m010000", ...] }   # the moments by their canonical names
 schedule = { type = "EveryNSteps", start = 1, step = 10 }
 
-[lattices.ESR.markers.IP]                 # collision markers with the solver on them
+[lattices.ESR.markers.STRONGSTRONGCOLLISION]   # collision markers with the solver on them
 type = "StrongStrongCollision"
 label = "ip"
 poisson_solver = { type = "PICPoissonSolver", grid = [128, 128], slicing = { type = "LongitudinalSlicing", nslices = 15, ... }, ... }
@@ -61,8 +61,8 @@ poisson_solver = { type = "PICPoissonSolver", grid = [128, 128], slicing = { typ
 members = [
   { ref = "QF", path = "ESR/QUADRUPOLE[1]" },
   { ref = "D", path = "ESR/DRIFT[1]", tags = ["cryostat"], overrides = { L = 0.7 } },
-  { ref = "IP", path = "ESR/STRONGSTRONGCOLLISION[1]" },
-  { ref = "MOMENTS", path = "ESR/SCHEDULEDOBSERVER[1]" },
+  { ref = "STRONGSTRONGCOLLISION", path = "ESR/STRONGSTRONGCOLLISION[1]" },
+  { ref = "SCHEDULEDOBSERVER", path = "ESR/SCHEDULEDOBSERVER[1]" },
 ]
 numeric_type = "Float64"                  # the line's own parameters, when it has any beside name and entries
 ```
@@ -79,9 +79,14 @@ disagree:
   refused by name with the kind's declared keys; an unknown kind is refused
   listing the registered kinds. The table's id is the spec's `name`, made
   unique among the lattice's distinct specs with `#2`, `#3`, ... and quoted
-  when it is not a bare TOML key; distinct spec objects are distinct tables
-  and one object placed twice is one table referenced twice, so the identity
-  the family queries rely on (`e.spec === qf`) survives the round trip.
+  when it is not a bare TOML key; a hook's or a marker's id is the label the
+  line gives it (`SCHEDULEDOBSERVER`, `STRONGSTRONGCOLLISION`, made unique the
+  same way); distinct spec objects are distinct tables and one object placed
+  twice is one table referenced twice, so the identity the family queries rely
+  on (`e.spec === qf`) survives the round trip within a lattice. A marker one
+  object serves in two lattices is one table per lattice and reloads as two
+  equal, distinct markers, which the strong-strong task pairs by label and
+  whose solvers it compares by configuration.
 - **Values.** Numbers print as TOML numbers, integers as integers and floats
   as floats, so `nst = 4` and `L = 1.0` round-trip their types; a float of a
   narrower type (`Float32`) prints as its `Float64` value and is re-narrowed on
@@ -95,11 +100,18 @@ disagree:
   `{ symbol = "..." }` otherwise, and the reader coerces on the same
   evidence; a `String` is a string. A tuple prints as an array and is read
   back as a tuple when the key's `ParamMeta` default is a tuple, as a vector
-  when it is a vector, and as `{ tuple = [...] }` when the metadata gives no
-  hint; mixed `(number, expr)` tuples follow the same rule. `nothing` is the
+  when it is a vector, and as `{ tuple = [...] }` or `{ vector = [...] }` when
+  the metadata gives no hint or the value's class differs from the hint's; a
+  matrix is `{ matrix = [[row], [row]] }`; mixed `(number, expr)` tuples follow
+  the same rule. The kind's example value counts as class evidence beside the
+  `ParamMeta` default and alternatives, so a bare string where the kind stores
+  a number is refused by name even for a key whose default is `nothing`. `nothing` is the
   inline table `{ nothing = true }` (TOML has no null, and a stored `nothing`
   is not an absent key). A `Type` prints as its name (`numeric_type =
-  "Float64"`) and is read through the allowlist of numeric types. A
+  "Float64"`) where the metadata expects a type and as `{ type_name = "..." }`
+  elsewhere, and is read through the allowlist of numeric types (`Float64`,
+  `Float32`, `Float16`, `BigFloat`, `Int`); a `BigFloat` VALUE is refused at
+  write as lossy. A
   `tracking_method` singleton prints as `{ type = "Symplectic6DMap" }` and is
   read through the registry of methods; an `@enum` value as `{ enum =
   "XYCouplingMode", value = "..." }`; a nested `ElementSpec` (the strong
@@ -115,7 +127,13 @@ disagree:
   never the `resolved_*` entries), nested option objects (a
   `LongitudinalSlicing`, a schedule, a virtual drift, a launch configuration)
   recursively by theirs, each under `type = "<TypeName>"`, and are rebuilt by
-  the type's keyword constructor; a type with no schema is refused by name.
+  the type's keyword constructor in the LATTICE's numeric type (the tables
+  carry none of their own, so a solver or rule of another numeric type than
+  its lattice's is refused by name at write); a key the schema does not
+  declare is refused listing the schema's, a key the table omits takes the
+  constructor's default; a type with no schema is refused by name. A
+  `MomentObserver` prints its resolved moments by their canonical names
+  (`m100000`) and is rebuilt through its `moments` keyword.
   Turn rules (`WhiteNoise`, `PinkNoise`) print their fields; a `TurnTable`'s
   offsets go to the sidecar by reference, `{ type = "TurnTable", name =
   "...", length = n, sha256 = "<hex>" }`, and the reader verifies the digest
@@ -126,24 +144,33 @@ disagree:
   the lattice by id, with the placement's provenance path verbatim, and are
   rebuilt through the keyword form `BeamLine(; name, entries, ...)`, which
   keeps the paths as written; the line's own parameters (its `numeric_type`,
-  offsets) print beside `members`.
+  offsets) print beside `members`, and its `name` only when it differs from
+  the table's id.
 - **Knobs.** Every knob under every root of the machine (the lattices' roots
   and the shared ones), by dotted path as nested tables, sorted; independent
   knobs by value, dependent ones by expression, a declared type other than
-  `Float64` explicit, an unset knob marked. The reader declares the file's
+  `Float64` explicit, an unset knob marked (a knob whose last segment is one
+  of the marker words `expr`, `type`, `value`, `unset` cannot be written and
+  is refused by name). The reader declares the file's
   independent knobs first and the dependent ones in the dependency order it
   derives from the expressions; a reference to a knob the file does not
   define is refused by name; a path that already exists in the process with
   the SAME definition (type, and value or expression) is accepted as it is,
   one that exists with a different definition is refused by name rather than
-  rewired. Parsing an expression executes nothing: `Meta.parse` yields an
+  rewired. A reloaded root is a namespace in the registry and not a constant
+  bound in any module: `knob_value`, `set_knob!` and `@knob_expr` read and
+  write it, while the plain assignment spelling `root.path = v` needs one
+  `@knob` declaration under that root in the session. Parsing an expression
+  executes nothing: `Meta.parse` yields an
   AST and the knob builder accepts only its whitelisted calls, references and
   literals.
-- **The emitter is deterministic**: tables in the order above, keys sorted
-  within a table where the format does not fix them, elements in
-  first-placement order, inline tables on one line, so two snapshots of one
-  machine are byte-identical and two machines differ where their snapshots
-  differ. The sidecar `<path without extension>.tables.h5` is written only
+- **The emitter is deterministic** and Octopus's own (`_toml_emit`; the
+  standard library's printer renders an array of tables as an array of
+  tables, `[[members]]`, not as the one-line inline members the format
+  fixes): tables in the order above, keys sorted within a table where the
+  format does not fix them, elements in first-placement order, inline tables
+  on one line, so two snapshots of one machine are byte-identical and two
+  machines differ where their snapshots differ. The sidecar `<path without extension>.tables.h5` is written only
   when the machine holds a table and holds one dataset per table under its
   digest.
 - **Refused by name** at write: a value class the rules above do not cover;
