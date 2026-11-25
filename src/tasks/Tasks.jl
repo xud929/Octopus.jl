@@ -913,6 +913,14 @@ _element_tuple(elements::AbstractVector) = Tuple(elements)
 # placements the bare line gives, so `TrackingTask(lattice)` and
 # `TrackingTask(lattice.line)` compile one and the same runtime line.
 _element_tuple(lattice::Lattice) = _element_tuple(getfield(lattice, :line))
+# A machine of ONE lattice hands the task that lattice's line (design D5: a
+# bare lattice is a one-lattice machine implicitly, and the explicit
+# one-lattice machine is accepted wherever the lattice is); a machine of
+# several is refused by name in `_machine_only_lattice`, since a TrackingTask
+# tracks one line, with the remedy (`machine[:NAME]`, or
+# `StrongStrongTask(machine, :A, :B)` for a pair).
+_element_tuple(machine::Machine) =
+    _element_tuple(_machine_only_lattice(machine, "TrackingTask (one line; analyze and one_turn_matrix likewise)"))
 
 """
     _refuse_hooks_in_whole_line(line::ElementSpec{:line})

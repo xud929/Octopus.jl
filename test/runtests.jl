@@ -20888,6 +20888,17 @@ end
                                  nst = 4, integrator_order = 4)) != l1
 end
 
+# [MD3-A] Machine description stage 3, unit A: the `Machine` namespace (lattices by name, the
+# shared knob roots and the machine-level root tripwire, readers, structural equality, show),
+# the implicit one-lattice machine, and the machine accepted where a line is (`_element_tuple`,
+# the one-turn-matrix helpers, the two StrongStrongTask machine forms) with the compiled
+# runtime and the tracked coordinates of the tuple spelling. Unit A's testsets land directly
+# below this comment and nowhere else.
+
+# [MD3-B] Machine description stage 3, unit B: the shipped strong-strong example declared
+# through two lattices and a machine. Unit B's testsets land directly below this comment and
+# nowhere else.
+
 
 mutable struct _PhaseResetFailureObserver <: Octopus.AbstractBeamObserver
     failure_turn::Int

@@ -192,6 +192,10 @@ _source_kind(::AbstractElementSpec) = :element_spec
 # docs/history/machine_description_stage2_2026_11_25.md, section 3).
 _describe_map(lattice::Lattice) = _describe_map(getfield(lattice, :line))
 _source_kind(lattice::Lattice) = _source_kind(getfield(lattice, :line))
+# A one-lattice machine reads as its lattice (stage 3); several are refused by
+# name in `_machine_only_lattice`.
+_describe_map(machine::Machine) = _describe_map(_machine_only_lattice(machine, "one_turn_matrix"))
+_source_kind(machine::Machine) = _source_kind(_machine_only_lattice(machine, "one_turn_matrix"))
 
 # Anything compile_runtime accepts is linearized through its compiled map; a
 # tuple of compiled maps is folded in order exactly as the suite's witness
@@ -205,6 +209,7 @@ _linearizable(spec::AbstractElementSpec) = compile_runtime(spec)
 # and `one_turn_matrix(lattice)` compile the same runtime line the bare
 # `BeamLine` gives.
 _linearizable(lattice::Lattice) = _linearizable(getfield(lattice, :line))
+_linearizable(machine::Machine) = _linearizable(_machine_only_lattice(machine, "one_turn_matrix"))
 function _linearizable(maps::Tuple)
     isempty(maps) && throw(ArgumentError(
         "an empty tuple has no map to linearize; pass compiled runtime elements"))

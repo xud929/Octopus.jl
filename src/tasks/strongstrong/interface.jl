@@ -2659,6 +2659,27 @@ function StrongStrongTask(line1, line2;
     )
 end
 
+"""
+    StrongStrongTask(machine::Machine, lattice1, lattice2; kwargs...)
+    StrongStrongTask(machine::Machine; kwargs...)
+
+The machine forms (design D5, stage 3). The first pairs two of the machine's
+lattices by name (`Symbol` or `String`; beam 1 tracks `lattice1`; the same name
+twice is legal, two beams in one ring) and is `StrongStrongTask(machine[lattice1],
+machine[lattice2]; kwargs...)`, so the task holds exactly the placements the two
+bare lines give and compiles the runtime the tuple spelling compiles. The second
+takes a machine of exactly two lattices in declaration order and refuses any
+other count by name, with the pairing form as the remedy. Every keyword of the
+line form applies unchanged.
+"""
+function StrongStrongTask(machine::Machine, lattice1::Union{Symbol,AbstractString},
+                          lattice2::Union{Symbol,AbstractString}; kwargs...)
+    error("StrongStrongTask(machine, lattice1, lattice2): not implemented yet (stage 3 skeleton)")   # STUB (unit A)
+end
+function StrongStrongTask(machine::Machine; kwargs...)
+    error("StrongStrongTask(machine): not implemented yet (stage 3 skeleton)")   # STUB (unit A)
+end
+
 """Return complete-turn timings in seconds from the most recent task execution."""
 turn_timings(task::StrongStrongTask) = copy(task.turn_times)
 """Return structured CUDA PIC phase records from the most recent execution."""
