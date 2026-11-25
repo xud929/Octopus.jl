@@ -21317,6 +21317,330 @@ end
 # lines with members, knobs by path, references, lattices, the machine; the deterministic
 # emitter; the refusals). Unit A's testsets land directly below this comment and nowhere else.
 
+@testset "Machine description: the snapshot round-trips a lattice and its knobs and the emitter is deterministic" begin
+    # The DBA ring by hand (the stage-2 DBA testset's declarations) with one
+    # independent and one dependent knob under md4a_dba, a tag and a placement
+    # override on one placement, QD and a kept-whole cell (own state: an offset)
+    # each placed twice.
+    @knob md4a_dba.qf_k1 = 1.5
+    @knob md4a_dba.qd_k1 = -md4a_dba.qf_k1 * 0.8
+    ref = ReferenceParticle(; charge = 1, mc2 = PMASS_EV, E0 = 3.0e9)
+    beta0, gamma0 = reference_beta_gamma(ref)
+    QF = QuadrupoleSpec(; name = "QF", numeric_type = Float64, L = 0.35, k1 = @knob_expr(md4a_dba.qf_k1), nst = 4, integrator_order = 4)
+    QD = QuadrupoleSpec(; name = "QD", numeric_type = Float64, L = 0.25, k1 = @knob_expr(md4a_dba.qd_k1), nst = 4, integrator_order = 4)
+    D = DriftSpec(; name = "D", numeric_type = Float64, L = 0.6)
+    BEND = SBendSpec(; name = "BEND", numeric_type = Float64, L = 1.0, h = 0.2, b0 = 0.2, nst = 4, integrator_order = 4)
+    RF = ThinRFCavitySpec(400.0e6; name = "RF", numeric_type = Float64, strength = 0.02, beta0, gamma0)
+    build(qf_L_override) = begin
+        cell = BeamLine("CELL", D, BEND, D; x_offset = 1.0e-4)          # own state: kept whole
+        ring = BeamLine("DBA_RING", QD, cell, BeamLine("QFT", QF; tags = (:cryostat,)), cell, QD, RF)
+        ring[3].L = qf_L_override                                           # a placement override on QF
+        Machine(Lattice("DBA_RING"; line = ring, reference = ref, knob_root = :md4a_dba))
+    end
+    m = build(0.36)
+    entries = line_entries(m[:DBA_RING].line)
+    @test entry_path(entries[3]) == "DBA_RING/QFT/QF" && entry_tags(entries[3]) == Set([:cryostat])
+    @test getfield(entries[3], :overrides) == Dict(:L => 0.36)
+
+    # The text promises its shapes: the fixed order of the tables, the element by
+    # its stored (folded) parameters, the knob expression as { expr }, the knobs
+    # by path with the dependent one as its expression, members with path, tags
+    # and overrides, the kept-whole cell as its own line with its offset.
+    text = machine_toml(m)
+    for needle in ("format = 1\n\n[machine]\nname = \"DBA_RING\"\nknob_roots = []\nlattices = [\"DBA_RING\"]\n",
+                   "[knobs.md4a_dba]\nqd_k1 = { expr = \"(-md4a_dba.qf_k1) * 0.8\" }\nqf_k1 = 1.5\n",
+                   "[lattices.DBA_RING]\neltype = \"Float64\"\nknob_roots = [\"md4a_dba\"]\nreference = { charge = 1.0, mc2 = $(PMASS_EV), E0 = 3.0e9 }\nline = \"DBA_RING\"\n",
+                   "[lattices.DBA_RING.elements.QF]\nkind = \"quadrupole\"\nL = 0.35\nintegrator_order = 4\nkn = [0.0, { expr = \"md4a_dba.qf_k1\" }]\nname = \"QF\"\nnst = 4\nnumeric_type = \"Float64\"\n",
+                   "  { ref = \"QF\", path = \"DBA_RING/QFT/QF\", tags = [\"cryostat\"], overrides = { L = 0.36 } },\n",
+                   "  { ref = \"CELL\", path = \"DBA_RING/CELL\" },\n", "  { ref = \"CELL\", path = \"DBA_RING/CELL[2]\" },\n",
+                   "[lattices.DBA_RING.lines.CELL]\nmembers = [\n  { ref = \"D\", path = \"CELL/D\" },\n  { ref = \"BEND\", path = \"CELL/BEND\" },\n  { ref = \"D\", path = \"CELL/D[2]\" },\n]\nx_offset = 0.0001\n",
+                   "tracking_method = { type = \"Symplectic6DMap\" }\n", "phase_noise = { nothing = true }\n")
+        @test occursin(needle, text)
+    end
+    # Elements in first-placement order, each distinct object once.
+    at(header) = first(findfirst(header, text))
+    @test at("[lattices.DBA_RING.elements.QD]") < at("[lattices.DBA_RING.elements.D]") < at("[lattices.DBA_RING.elements.BEND]") <
+          at("[lattices.DBA_RING.elements.QF]") < at("[lattices.DBA_RING.elements.RF]") < at("[lattices.DBA_RING.lines.DBA_RING]") <
+          at("[lattices.DBA_RING.lines.CELL]")
+    @test count("kind = \"quadrupole\"", text) == 2 && count("kind = \"drift\"", text) == 1
+    @test !occursin("[lattices.DBA_RING.hooks]", text) && !occursin("[lattices.DBA_RING.markers]", text)
+
+    # Deterministic: two renderings and two writes are byte-identical; the text
+    # moves with the machine (anti-vacuity).
+    @test machine_toml(m) == text
+    @test machine_toml(build(0.37)) != text && occursin("overrides = { L = 0.37 }", machine_toml(build(0.37)))
+    dir = mktempdir()
+    path = joinpath(dir, "dba.toml")
+    @test write_machine(path, m) === path
+    @test read(path, String) == text
+    @test write_machine(joinpath(dir, "dba2.toml"), m[:DBA_RING]) == joinpath(dir, "dba2.toml")   # a Lattice: the implicit machine
+    @test read(joinpath(dir, "dba2.toml"), String) == text
+    @test !isfile(joinpath(dir, "dba.tables.h5"))                       # no bulk table, no sidecar
+
+    # Read back in the same process: the knobs exist with the same definitions
+    # (reported as existing, none declared), the machine and lattice are equal,
+    # the lines structurally equal, the shared objects are shared again, the
+    # paths verbatim, and the reloaded machine renders byte-identically.
+    m2, rc = read_machine(path; receipt = true)
+    @test rc.format == 1 && rc.declared == Symbol[] && rc.tables == String[] && rc.lattices == ["DBA_RING"]
+    @test rc.existing == [Symbol("md4a_dba.qd_k1"), Symbol("md4a_dba.qf_k1")]
+    @test m2 == m && m2[:DBA_RING] == m[:DBA_RING] && m2 !== m
+    @test Octopus._lattice_structurally_equal(m2[:DBA_RING].line, m[:DBA_RING].line)
+    @test m2 != build(0.37)
+    e2 = line_entries(m2[:DBA_RING].line)
+    @test [entry_path(e) for e in e2] == [entry_path(e) for e in entries]
+    @test [getfield(e, :path) for e in e2] == [getfield(e, :path) for e in entries]
+    @test getfield(e2[2], :spec) === getfield(e2[4], :spec) && getfield(e2[1], :spec) === getfield(e2[5], :spec)
+    @test getfield(e2[2], :spec) !== getfield(entries[2], :spec)
+    @test entry_tags(e2[3]) == Set([:cryostat]) && getfield(e2[3], :overrides) == Dict(:L => 0.36)
+    @test getparam(getfield(e2[3], :spec), :kn)[2] == @knob_expr(md4a_dba.qf_k1)
+    @test knob_value(getparam(getfield(e2[1], :spec), :kn)[2]) == knob_value("md4a_dba.qd_k1") == -1.5 * 0.8
+    @test getparam(getfield(e2[2], :spec), :x_offset) == 1.0e-4 && line_name(getfield(e2[2], :spec)) == "CELL"
+    @test machine_toml(m2) == text
+    @test read_machine(path) == m
+
+    # The fresh-declaration path: the same text under an undeclared root
+    # declares the independent knob and the dependent one (as its expression,
+    # not its number), with equal values; a second parse finds them existing.
+    text2 = replace(text, "md4a_dba" => "md4a_dba2")
+    @test !haskey(Octopus._KNOB_TABLE, Symbol("md4a_dba2.qf_k1"))
+    m3, rc3 = parse_machine(text2; receipt = true)
+    @test rc3.declared == [Symbol("md4a_dba2.qd_k1"), Symbol("md4a_dba2.qf_k1")] && rc3.existing == Symbol[]
+    @test knob_value("md4a_dba2.qf_k1") == knob_value("md4a_dba.qf_k1") == 1.5
+    @test knob_value("md4a_dba2.qd_k1") == knob_value("md4a_dba.qd_k1") == -1.5 * 0.8
+    @test knob_dependencies("md4a_dba2.qd_k1") == [Symbol("md4a_dba2.qf_k1")]
+    @test knob_dependencies("md4a_dba2.qf_k1") == Symbol[]
+    @test m3[:DBA_RING].knob_roots == (:md4a_dba2,) && string(getparam(getfield(line_entries(m3[:DBA_RING].line)[3], :spec), :kn)[2]) == "md4a_dba2.qf_k1"
+    @test machine_toml(m3) == text2
+    rc4 = parse_machine(text2; receipt = true)[2]
+    @test rc4.declared == Symbol[] && rc4.existing == [Symbol("md4a_dba2.qd_k1"), Symbol("md4a_dba2.qf_k1")]
+    # The dependent knob follows its input after the reload (a live knob, not a number).
+    set_knob!("md4a_dba2.qf_k1", 2.0)
+    @test knob_value("md4a_dba2.qd_k1") == -2.0 * 0.8 && knob_value("md4a_dba.qd_k1") == -1.5 * 0.8
+end
+
+@testset "Machine description: every registered element kind round-trips through the snapshot or is refused by name" begin
+    # Derived from the registry: each kind's `example`, placed alone in a lattice
+    # of its numeric type, written and parsed back. Three outcomes, each pinned:
+    # the round trip holds (== on the lattice, structural equality of the lines,
+    # a second rendering byte-identical); the kind's example holds a function
+    # and the writer refuses naming the parameter path (none today: the stated
+    # list is empty, and a kind that starts holding one fails here by name);
+    # the example holds an object no snapshot rule is registered for (the
+    # strong beams' virtual drift, unit B's registration) and the writer
+    # refuses naming the path -- a kind may leave this list as rules land, never
+    # join it. A kind without an example is listed, not silently passed.
+    holds(v, T) = v isa T || (v isa Octopus.ElementSpec && any(x -> holds(x, T), values(Octopus.params(v)))) ||
+                  (v isa Union{Tuple,AbstractArray} && any(x -> holds(x, T), v))
+    msg(f) = try; f(); nothing; catch err; sprint(showerror, err); end
+    refused_by_function = Symbol[]
+    deferred = Symbol[]
+    without_example = Symbol[]
+    round_tripped = Symbol[]
+    dir = mktempdir()
+    for k in sort(collect(keys(Octopus.ELEMENT_META_BY_KIND)); by = string)
+        k === :line && continue
+        ex = Octopus.ELEMENT_META_BY_KIND[k].example
+        ex === nothing && (push!(without_example, k); continue)
+        lat = Lattice("K"; line = BeamLine("K", ex), eltype = Octopus.numeric_type(ex))
+        m = Machine(lat)
+        err = msg(() -> machine_toml(m))
+        if holds(ex, Function)
+            push!(refused_by_function, k)
+            @test err !== nothing && occursin("function-valued", err) && occursin("lattices.K.elements.", err)
+        elseif err !== nothing && occursin("no snapshot rule is registered", err)
+            push!(deferred, k)
+            @test occursin("lattices.K.elements.", err)
+        else
+            @test err === nothing || error(err)                            # shown red with the message when refused
+            err === nothing || continue
+            text = machine_toml(m)
+            m2 = parse_machine(text)
+            @test m2[:K] == lat
+            @test Octopus._lattice_structurally_equal(m2[:K].line, lat.line)
+            @test Octopus.kind(getfield(line_entries(m2[:K].line)[1], :spec)) === k
+            @test machine_toml(m2) == text
+            p1, p2 = joinpath(dir, "$(k)_1.toml"), joinpath(dir, "$(k)_2.toml")
+            write_machine(p1, m); write_machine(p2, m)
+            @test read(p1, String) == read(p2, String) == text
+            @test read_machine(p1) == m
+            push!(round_tripped, k)
+        end
+    end
+    isempty(without_example) || println("kinds without an example, not round-tripped: ", join(without_example, ", "))
+    @test refused_by_function == Symbol[]
+    @test issubset(deferred, [:gaussian_strong_beam, :thin_strong_beam])
+    @test length(round_tripped) + length(deferred) + length(refused_by_function) + length(without_example) + 1 ==
+          length(Octopus.ELEMENT_META_BY_KIND)
+    @test length(round_tripped) >= 29
+    # Anti-vacuity: the comparison reads the parameters, so a changed example
+    # is not equal to the reloaded original.
+    let ex = Octopus.ELEMENT_META_BY_KIND[:drift].example
+        lat = Lattice("K"; line = BeamLine("K", ex))
+        m2 = parse_machine(machine_toml(Machine(lat)))
+        @test m2[:K] == lat
+        @test m2[:K] != Lattice("K"; line = BeamLine("K", DriftSpec(; L = getparam(ex, :L) + 0.1)))
+    end
+    # The function-valued classes refuse at write naming the parameter path: a
+    # TuneFunction (alone and inside a NamedTuple) and an aperture callback.
+    let ex = Octopus.ELEMENT_META_BY_KIND[:linear6d].example
+        tunes = Octopus.ElementSpec{:linear6d}(merge(copy(Octopus.params(ex)),
+                    Dict{Symbol,Any}(:name => "LM", :particle_tunes => TuneFunction((args...) -> 0.2; planes = (:nux,)))))
+        e = msg(() -> machine_toml(Machine(Lattice("K"; line = BeamLine("K", tunes)))))
+        @test e !== nothing && occursin("at lattices.K.elements.LM.particle_tunes", e) && occursin("function-valued", e) && occursin("TuneFunction", e)
+        nt = Octopus.ElementSpec{:linear6d}(merge(copy(Octopus.params(ex)),
+                    Dict{Symbol,Any}(:name => "LM", :particle_tunes => (nux = TuneFunction((args...) -> 0.2),))))
+        e2 = msg(() -> machine_toml(Machine(Lattice("K"; line = BeamLine("K", nt)))))
+        @test e2 !== nothing && occursin("at lattices.K.elements.LM.particle_tunes", e2) && occursin("function-valued", e2)
+    end
+    let ap = ApertureSpec(alive = (x, px, y, py, z, pz) -> abs(z) < 0.1, name = "Z")
+        e = msg(() -> machine_toml(Machine(Lattice("K"; line = BeamLine("K", ap)))))
+        @test e !== nothing && occursin("at lattices.K.elements.Z.alive", e) && occursin("function-valued", e)
+    end
+end
+
+@testset "Machine description: every knob operator round-trips through the snapshot" begin
+    # Derived from the whitelist `_KNOB_OPERATORS`: for every operator, an
+    # expression of its minimal arity and (where it takes two) of two arguments
+    # over the md4a_ops knobs, stored in a drift's L through the flexible form,
+    # written and parsed back; the rebuilt tree is == the original and
+    # evaluates to the same number. The named constants ride along as literals
+    # (pi folds to its value in the tree; NaN and Inf print as their names). A
+    # tripwire pins that every whitelisted operator appeared.
+    @knob md4a_ops.a = 0.3
+    @knob md4a_ops.b = 0.7
+    A = KnobRef(Symbol("md4a_ops.a"))
+    B = KnobRef(Symbol("md4a_ops.b"))
+    seen = Set{Symbol}()
+    round_trip(e) = begin
+        lat = Lattice("OPS"; line = BeamLine("OPS", DriftSpec(; name = "D", L = e)), knob_root = :md4a_ops)
+        text = machine_toml(Machine(lat))
+        m2 = parse_machine(text)
+        e2 = getparam(getfield(line_entries(m2[:OPS].line)[1], :spec), :L)
+        @test occursin("L = { expr = $(repr(string(e))) }", text)
+        @test e2 == e
+        @test isequal(knob_value(e2), knob_value(e))
+        @test machine_toml(m2) == text
+        e2
+    end
+    for (op, (_, arity)) in sort(collect(Octopus._KNOB_OPERATORS); by = p -> string(p[1]))
+        for n in unique((first(arity), min(2, last(arity))))
+            args = n == 1 ? Octopus.AbstractKnobExpression[A] : Octopus.AbstractKnobExpression[A, B]
+            e2 = round_trip(KnobCall(op, args))
+            @test e2 isa KnobCall && e2.op === op && length(e2.args) == n
+            push!(seen, op)
+        end
+    end
+    @test seen == Set(keys(Octopus._KNOB_OPERATORS))
+    # Nested same-precedence calls keep their parentheses, literals and the
+    # named constants survive, and a unary minus on a literal reads back.
+    nested = KnobCall(:*, Octopus.AbstractKnobExpression[KnobCall(:+, Octopus.AbstractKnobExpression[A, KnobConst(1.5)]),
+                                                         KnobCall(:-, Octopus.AbstractKnobExpression[B, KnobConst(-2.0)])])
+    @test string(round_trip(nested)) == "(md4a_ops.a + 1.5) * (md4a_ops.b - (-2.0))"
+    @test round_trip(@knob_expr(md4a_ops.a * pi + Inf)) == @knob_expr(md4a_ops.a * pi + Inf)
+    @test round_trip(KnobCall(:^, Octopus.AbstractKnobExpression[KnobCall(:^, Octopus.AbstractKnobExpression[A, B]), KnobConst(2.0)])) ==
+          KnobCall(:^, Octopus.AbstractKnobExpression[KnobCall(:^, Octopus.AbstractKnobExpression[A, B]), KnobConst(2.0)])
+    # Anti-vacuity: a different tree is not equal, and the text differs.
+    @test round_trip(KnobCall(:+, Octopus.AbstractKnobExpression[A, B])) != KnobCall(:+, Octopus.AbstractKnobExpression[B, A])
+    @test machine_toml(Machine(Lattice("OPS"; line = BeamLine("OPS", DriftSpec(; name = "D", L = KnobCall(:+, Octopus.AbstractKnobExpression[A, B]))), knob_root = :md4a_ops))) !=
+          machine_toml(Machine(Lattice("OPS"; line = BeamLine("OPS", DriftSpec(; name = "D", L = KnobCall(:+, Octopus.AbstractKnobExpression[B, A]))), knob_root = :md4a_ops)))
+end
+
+@testset "Machine description: the snapshot reader refuses by name" begin
+    # Each refusal of the format, caught and checked for what it must name: the
+    # table or key, the offending value and, where the format promises one, the
+    # list of what would have been accepted.
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    base = machine_toml(Machine(Lattice("K"; line = BeamLine("K", DriftSpec(; name = "D", L = 0.5)))))
+    @test occursin("[lattices.K.elements.D]\nkind = \"drift\"\nL = 0.5\nname = \"D\"\n", base)   # the text the variants edit
+    edit(from, to) = (@test occursin(from, base); replace(base, from => to))
+    # Not TOML; an unknown format; a missing [machine]; an unknown top-level key.
+    @test occursin("not valid TOML", msg(() -> parse_machine("format = \n")))
+    let m = msg(() -> parse_machine(edit("format = 1", "format = 2")))
+        @test occursin("unknown snapshot format 2", m) && occursin("format = 1", m)
+    end
+    @test occursin("no `format`", msg(() -> parse_machine(edit("format = 1\n", ""))))
+    @test occursin("no [machine] table", msg(() -> parse_machine(edit("[machine]\nname = \"K\"\nknob_roots = []\nlattices = [\"K\"]\n", ""))))
+    @test occursin("unknown top-level key \"extra\"", msg(() -> parse_machine(base * "\n[extra]\nx = 1\n")))
+    @test occursin("[machine].lattices names \"Q\" but there is no [lattices.Q] table", msg(() -> parse_machine(edit("lattices = [\"K\"]", "lattices = [\"K\", \"Q\"]"))))
+    @test occursin("the lattice table \"Q\" is not listed in [machine].lattices", msg(() -> parse_machine(base * "\n[lattices.Q]\neltype = \"Float64\"\nline = \"Q\"\n")))
+    # An unknown kind names the registry; an unknown key names the kind's keys.
+    let m = msg(() -> parse_machine(edit("kind = \"drift\"", "kind = \"driftx\"")))
+        @test occursin("at lattices.K.elements.D", m) && occursin("unknown element kind \"driftx\"", m)
+        for k in keys(Octopus.ELEMENT_META_BY_KIND)
+            k === :line || @test occursin(string(k), m)
+        end
+    end
+    let m = msg(() -> parse_machine(edit("L = 0.5\n", "L = 0.5\nLx = 0.5\n")))
+        @test occursin("at lattices.K.elements.D.Lx", m) && occursin("unknown key \"Lx\" for the kind \"drift\"", m)
+        @test occursin("L, b0, bend_fringe", m) && occursin("x_offset", m) && occursin("numeric_type", m)
+    end
+    # A bare string where a number belongs (L: the example's evidence; x_offset:
+    # the default's); an undefined knob reference, in an element and in [knobs].
+    let m = msg(() -> parse_machine(edit("L = 0.5\n", "L = \"0.5\"\n")))
+        @test occursin("at lattices.K.elements.D.L", m) && occursin("bare string \"0.5\" where a number belongs", m)
+    end
+    @test occursin("at lattices.K.elements.D.x_offset: a bare string", msg(() -> parse_machine(edit("L = 0.5\n", "L = 0.5\nx_offset = \"1e-3\"\n"))))
+    @test getparam(getfield(line_entries(parse_machine(edit("L = 0.5\n", "L = 0.5\nmisalign_convention = \"madx\"\n"))[:K].line)[1], :spec),
+                   :misalign_convention) === :madx                                                    # a Symbol key takes a bare string
+    let m = msg(() -> parse_machine(edit("L = 0.5\n", "L = { expr = \"md4a_undef.q * 2.0\" }\n")))
+        @test occursin("at lattices.K.elements.D.L", m) && occursin("unknown knob md4a_undef.q", m)
+    end
+    knobs(block) = replace(base, "[lattices.K]\n" => block * "\n[lattices.K]\n")
+    let m = msg(() -> parse_machine(knobs("[knobs.md4a_undef]\ny = { expr = \"md4a_undef.x * 2.0\" }\n")))
+        @test occursin("at knobs.md4a_undef.y", m) && occursin("references the knob md4a_undef.x, which the file does not define", m)
+    end
+    # A conflicting knob: the same path with a different value, expression or type.
+    first_text = knobs("[knobs.md4a_cf]\nx = 1.0\ny = { expr = \"md4a_cf.x * 2.0\" }\nz = { type = \"Int\", value = 3 }\nu = { type = \"Float32\", unset = true }\n")
+    rc = parse_machine(first_text; receipt = true)[2]
+    @test rc.declared == [Symbol("md4a_cf.u"), Symbol("md4a_cf.x"), Symbol("md4a_cf.y"), Symbol("md4a_cf.z")] && rc.existing == Symbol[]
+    @test knob_value("md4a_cf.y") == 2.0 && knob_value("md4a_cf.z") === 3 && list_knobs("md4a_cf") == rc.declared
+    @test parse_machine(first_text; receipt = true)[2].existing == rc.declared
+    for (from, to, what) in (("x = 1.0", "x = 1.5", "md4a_cf.x"), ("md4a_cf.x * 2.0", "md4a_cf.x * 3.0", "md4a_cf.y"),
+                             ("type = \"Int\", value = 3", "value = 3", "md4a_cf.z"), ("type = \"Float32\", unset = true", "type = \"Float64\", unset = true", "md4a_cf.u"),
+                             ("x = 1.0", "x = { expr = \"md4a_cf.z * 1.0\" }", "md4a_cf.x"))
+        m = msg(() -> parse_machine(replace(first_text, from => to)))
+        @test occursin("at knobs.$(what)", m) && occursin("already exists in this process with a different definition", m)
+        @test knob_value("md4a_cf.x") == 1.0                              # nothing was rewired
+    end
+    @test occursin("dependency cycle", msg(() -> parse_machine(knobs("[knobs.md4a_cy]\na = { expr = \"md4a_cy.b * 2.0\" }\nb = { expr = \"md4a_cy.a * 2.0\" }\n"))))
+    @test !haskey(Octopus._KNOB_TABLE, Symbol("md4a_cy.a"))              # refused before anything was installed
+    @test occursin("unknown type name \"Int32\"", msg(() -> parse_machine(knobs("[knobs.md4a_ty]\nn = { type = \"Int32\", value = 3 }\n"))))
+    # A member ref naming nothing; a { type = "..." } of a name nothing registered.
+    let m = msg(() -> parse_machine(edit("ref = \"D\"", "ref = \"Dx\"")))
+        @test occursin("at lattices.K.lines.K.members[1]", m) && occursin("ref \"Dx\" names no element, hook, marker or line", m) && occursin("its ids are D", m)
+    end
+    let m = msg(() -> parse_machine(edit("[lattices.K.lines.K]", "[lattices.K.hooks.H]\ntype = \"NoSuchObject\"\n\n[lattices.K.lines.K]")))
+        @test occursin("at lattices.K.hooks.H", m) && occursin("unknown object type \"NoSuchObject\"", m) && occursin("Symplectic6DMap", m)
+    end
+    @test occursin("unknown key \"x\" for the object type Symplectic6DMap", msg(() -> parse_machine(edit("L = 0.5\n", "L = 0.5\ntracking_method = { type = \"Symplectic6DMap\", x = 1 }\n"))))
+    @test occursin("unknown enum type \"Nope\"", msg(() -> parse_machine(edit("L = 0.5\n", "L = 0.5\nmisalign_convention = { enum = \"Nope\", value = \"a\" }\n"))))
+    @test occursin("the top-level line \"Q\" is not one of the lattice's lines", msg(() -> parse_machine(edit("line = \"K\"", "line = \"Q\""))))
+    # The bulk-table seam: no tables, an absent digest, an altered table; and
+    # read_machine without the sidecar the text references.
+    ctx0 = Octopus._TomlContext(; tables = nothing)
+    @test occursin("no tables were given", msg(() -> Octopus._toml_table(ctx0, "ab")))
+    tables = Dict{String,Any}()
+    ctx = Octopus._TomlContext(; tables)
+    digest = Octopus._toml_store_table!(ctx, [1.0, 2.0, 3.0])
+    @test digest == bytes2hex(Octopus.sha256(reinterpret(UInt8, [1.0, 2.0, 3.0]))) && tables[digest] == [1.0, 2.0, 3.0]
+    @test Octopus._toml_table(ctx, digest) == [1.0, 2.0, 3.0]
+    @test occursin("that the tables given do not hold", msg(() -> Octopus._toml_table(ctx, "0"^64)))
+    tables[digest][2] = 9.0
+    let m = msg(() -> Octopus._toml_table(ctx, digest))
+        @test occursin("hashes to", m) && occursin("altered", m) && occursin(digest, m)
+    end
+    let dir = mktempdir(), path = joinpath(dir, "t.toml")
+        write(path, edit("[lattices.K.lines.K]", "[lattices.K.hooks.H]\ntype = \"TurnTable\"\nsha256 = \"$(digest)\"\n\n[lattices.K.lines.K]"))
+        m = msg(() -> read_machine(path))
+        @test occursin("references 1 bulk table(s)", m) && occursin(digest, m) && occursin("t.tables.h5", m) && occursin("does not exist", m)
+    end
+    # At write: a function-valued parameter, by its path.
+    let m = msg(() -> machine_toml(Machine(Lattice("K"; line = BeamLine("K", ApertureSpec(alive = (x, px, y, py, z, pz) -> abs(z) < 0.1, name = "Z"))))))
+        @test occursin("at lattices.K.elements.Z.alive", m) && occursin("function-valued", m)
+    end
+end
+
 # [MD4-B] Machine description stage 4, unit B: the objects beside the elements (hooks, markers,
 # solvers, schedules, turn rules and the tables sidecar) through the codec, and the
 # registry-derived tripwire over every object type. Unit B's testsets land directly below this
