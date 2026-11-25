@@ -18322,6 +18322,10 @@ end
         voltage=-0.9999e9, e0=1.0e9, mc2=PMASS_EV)
 end
 
+# [REF-2] Reference particle batch, unit 2: the thin RF and accelerating cavities taking
+# `reference = ReferenceParticle` in place of beta0/gamma0 (and e0/mc2/charge on the voltage route).
+# Unit 2's testsets land directly below this comment and nowhere else.
+
 @testset "Cavity chain composition, single-pass refusal, harmon resolution" begin
     # Closures of the Scope B ledger (2026-08-14): the chain now validates
     # EVERY cavity kind against the local reference, an accelerating line
@@ -19404,6 +19408,10 @@ end
     b = Beam(8, CPUThreadsBackend; charge=-1.0, E0=10.0e9)
     @test b.params === BeamParams{Float64}(-1.0, 0.0, 10.0e9, 0.0, 8.0)
 end
+
+# [REF-1] Reference particle batch, unit 1: `Beam(; reference = ReferenceParticle)` in place of
+# charge, mc2, E0, with the beam option schema entry and the effectiveness test.
+# Unit 1's testsets land directly below this comment and nowhere else.
 
 @testset "A CUDA beam is the CPU beam of the same seed and stream, bit for bit" begin
     # 2026-10-18 audit F-189/U27-5. The counter draw was already built on the
