@@ -1427,15 +1427,20 @@ before either is read.
 Computed up front rather than growing the vector's type as it goes: `k1` and
 `kn` fold into one tuple, and a differentiable strength must survive whichever
 way it was written. `Float64[...]` here is what silently discarded a dual and
-made `QuadrupoleSpec(kn=(0.0, dual))` come back as a plain magnet.
+made `QuadrupoleSpec(kn=(0.0, dual))` come back as a plain magnet. A knob
+expression contributes nothing to the type (design D10): it is stored as a
+tree and resolves at compile, where `numeric_type(spec)` ignores it as well.
 """
 function _strength_eltype(named, d, nkey, skey)
     T = Float64
     for key in (nkey, skey), v in get(d, key, ())
+        v isa AbstractKnobExpression && continue
         T = promote_type(T, typeof(float(v)))
     end
     for (nsym, ssym, _) in named, sym in (nsym, ssym)
-        haskey(d, sym) && (T = promote_type(T, typeof(float(d[sym]))))
+        haskey(d, sym) || continue
+        d[sym] isa AbstractKnobExpression && continue
+        T = promote_type(T, typeof(float(d[sym])))
     end
     return T
 end
@@ -1483,14 +1488,21 @@ function _fold_named_strengths(named, kwargs; nkey::Symbol=:kn, skey::Symbol=:ks
     end
     d = Dict{Symbol,Any}(kwargs)
     T = _strength_eltype(named, d, nkey, skey)
-    kn = T[T(float(v)) for v in get(d, nkey, ())]
-    ks = T[T(float(v)) for v in get(d, skey, ())]
+    # A number is converted to `T` as it always was; a knob expression is kept
+    # as its tree (design D10), so the folded tuple may be mixed,
+    # `(0.0, KnobCall)`, exactly what the flexible form stores and
+    # `resolve_knobs` evaluates at compile.
+    kn = Any[_fold_strength_value(T, v) for v in get(d, nkey, ())]
+    ks = Any[_fold_strength_value(T, v) for v in get(d, skey, ())]
     for (nsym, ssym, order) in named,
         (sym, vec, which) in ((nsym, kn, String(nkey)), (ssym, ks, String(skey)))
 
         haskey(d, sym) || continue
         i = order + 1
-        if i <= length(vec) && vec[i] != 0
+        # A slot holding an expression counts as set: its value is unknown
+        # here and may well be nonzero, and two spellings of one strength are
+        # contradictory whichever way they are written.
+        if i <= length(vec) && (vec[i] isa AbstractKnobExpression || vec[i] != 0)
             throw(ArgumentError(
                 "$(sym) and a nonzero $(which)[$(i)] both set the same strength; " *
                 "give one or the other"))
@@ -1498,13 +1510,25 @@ function _fold_named_strengths(named, kwargs; nkey::Symbol=:kn, skey::Symbol=:ks
         while length(vec) < i
             push!(vec, zero(T))
         end
-        vec[i] = T(float(d[sym]))
+        vec[i] = _fold_strength_value(T, d[sym])
         delete!(d, sym)
     end
     isempty(kn) || (d[nkey] = Tuple(kn))
     isempty(ks) || (d[skey] = Tuple(ks))
     return d
 end
+
+"""
+    _fold_strength_value(T, v)
+
+One folded strength: a number as `T(float(v))`, the conversion the fold always
+made, a knob expression as its tree (design D10, "convert a number, keep an
+expression"). `Tuple(Any[...])` of the folded vector then narrows to the
+concrete element types, `Tuple{Float64,Float64}` when every entry is a number,
+so a numeric fold stores exactly what it stored before.
+"""
+_fold_strength_value(::Type{T}, v::AbstractKnobExpression) where {T} = v
+_fold_strength_value(::Type{T}, v) where {T} = T(float(v))
 
 # Friendly constructors follow the house pattern: an abstract type carrying a
 # keyword constructor, so metadata queries such as `parameter_schema` dispatch
@@ -1632,15 +1656,28 @@ function _rbend_params(kwargs)
             "give either `L` (the arc length) or `chord` (MAD-X RBARC \
              semantics, folded to L = chord * (angle/2) / sin(angle/2)), \
              not both"))
+        # The chord fold chord * (angle/2) / sin(angle/2) has a removable
+        # singularity at angle = 0, where the numeric fold returns the chord.
+        # A knob expression in `angle` cannot be tested for zero here and the
+        # tree cannot carry the guard (measured 2026-11-24: the plain tree
+        # resolves to a NaN length at a zero knob angle and the compile does
+        # not refuse it), so that spelling is refused by name with the remedy
+        # (design D10). A knob expression in `chord` beside a numeric angle is
+        # a plain product and folds to the tree `chord * half / sin(half)`.
+        d[:angle] isa AbstractKnobExpression && throw(ArgumentError(
+            "RBendSpec: chord cannot be folded to the arc length when angle is a knob expression " *
+            "(the fold chord * (angle/2) / sin(angle/2) has a removable singularity at angle = 0 that an " *
+            "expression tree cannot guard); give L, the arc length, instead -- as a number or a knob " *
+            "expression -- or compute L from knob_value(expression)"))
         half = float(d[:angle]) / 2
-        chord = float(pop!(d, :chord))
-        d[:L] = iszero(half) ? chord : chord * half / sin(half)
+        chord = _float_or_expression(pop!(d, :chord))
+        d[:L] = iszero(half) ? chord : _knob_arith(:/, _knob_arith(:*, chord, half), sin(half))
     end
     haskey(d, :L) || throw(ArgumentError(
         "RBendSpec needs `L` (arc length) or `chord` (MAD-X RBARC semantics)"))
-    half = float(d[:angle]) / 2
-    d[:e1] = float(get(d, :e1, 0.0)) + half
-    d[:e2] = float(get(d, :e2, 0.0)) + half
+    half = _knob_arith(:/, _float_or_expression(d[:angle]), 2)
+    d[:e1] = _knob_arith(:+, _float_or_expression(get(d, :e1, 0.0)), half)
+    d[:e2] = _knob_arith(:+, _float_or_expression(get(d, :e2, 0.0)), half)
     return d
 end
 
@@ -1663,9 +1700,11 @@ function _sbend_params(kwargs)
         (haskey(d, :h) || haskey(d, :b0)) && throw(ArgumentError(
             "angle and h/b0 both set the bend geometry; give one or the other"))
         haskey(d, :L) || throw(ArgumentError("angle needs L, to give h = b0 = angle / L"))
-        L = float(d[:L])
-        L == 0 && throw(ArgumentError("angle needs a nonzero L"))
-        d[:b0] = d[:h] = float(d[:angle]) / L
+        L = _float_or_expression(d[:L])
+        # A zero length is refused when it can be seen; a knob expression for
+        # `L` is a division node that resolves at compile (design D10).
+        L isa AbstractKnobExpression || (L == 0 && throw(ArgumentError("angle needs a nonzero L")))
+        d[:b0] = d[:h] = _knob_arith(:/, _float_or_expression(d[:angle]), L)
         delete!(d, :angle)
     end
     return d

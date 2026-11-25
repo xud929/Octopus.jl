@@ -182,7 +182,11 @@ function (::Type{Linear6DSpec{T}})(; matrix=nothing,
         given = [k for (k, v) in pairs(optics) if v !== nothing]
         isempty(given) || throw(_linear6d_both_forms(given))
         typed_matrix = _matrix66_tuple(matrix, T)
-        _validate_linear6d_symplectic(typed_matrix; source="Linear6DSpec matrix")
+        # A matrix holding a knob expression is validated at compile, on the
+        # resolved entries (`Linear6D(spec, ...)`, source "Linear6D runtime
+        # matrix"); the eager check runs on a numeric matrix (design D10).
+        _param_has_knob(typed_matrix) ||
+            _validate_linear6d_symplectic(typed_matrix; source="Linear6DSpec matrix")
         params[:matrix] = typed_matrix
     else
         beta1 === nothing && throw(ArgumentError("Linear6DSpec requires either matrix or beta1"))
@@ -216,8 +220,10 @@ function (::Type{Linear6DSpec{T}})(; matrix=nothing,
         params[:R2] = _linear6d_tuple(R2, 4, T)
         params[:form1] = form1
         params[:form2] = form2
-        _check_linear6d_block(params[:R1], :R1)
-        _check_linear6d_block(params[:R2], :R2)
+        # The block check of a knob-holding R runs at compile on the resolved
+        # tuple (the matrix build re-checks both blocks; design D10).
+        _param_has_knob(params[:R1]) || _check_linear6d_block(params[:R1], :R1)
+        _param_has_knob(params[:R2]) || _check_linear6d_block(params[:R2], :R2)
     end
     resolved_rng_id = _particle_tune_rng_id(sources, rng_id; claim=true)
     if sources !== nothing
@@ -311,16 +317,18 @@ function _matrix66_tuple(matrix, ::Type{T}) where {T}
         return ntuple(k -> begin
             i = (k - 1) ÷ 6 + 1
             j = (k - 1) % 6 + 1
-            T(matrix[i, j])
+            _as_number_or_expression(T, matrix[i, j])
         end, 36)
     end
     length(matrix) == 36 || throw(ArgumentError("matrix must be a 6x6 matrix or a length-36 row-major collection"))
-    return ntuple(i -> T(matrix[i]), 36)
+    return ntuple(i -> _as_number_or_expression(T, matrix[i]), 36)
 end
 
+# Both coercions convert a number to `T` and keep a knob expression (design
+# D10); the compile, which calls them again on the resolved spec, sees numbers.
 function _linear6d_tuple(values, n::Int, ::Type{T}) where {T}
     length(values) == n || throw(ArgumentError("expected $n values, got $(length(values))"))
-    return ntuple(i -> T(values[i]), n)
+    return ntuple(i -> _as_number_or_expression(T, values[i]), n)
 end
 
 _identity66(::Type{T}) where {T} =

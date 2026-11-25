@@ -81,9 +81,12 @@ function (::Type{ChromaticityKickSpec{T}})(;
     )
 end
 
+# The three tuple coercions convert a number to `T` and keep a knob expression
+# as given (`_as_number_or_expression`, design D10); at compile they see the
+# resolved numbers, so the runtime kick is built as before.
 function _transverse_optics_tuple(values, ::Type{T}, name::Symbol) where {T}
     length(values) in (2, 3) || throw(ArgumentError("$name must contain 2 or 3 values, got $(length(values))"))
-    return ntuple(i -> T(values[i]), length(values))
+    return ntuple(i -> _as_number_or_expression(T, values[i]), length(values))
 end
 
 # `T<:Number` rather than `T<:AbstractFloat`: a dual number is `<:Real` and a
@@ -203,12 +206,12 @@ end
 
 function _pair_tuple(values, ::Type{T}) where {T}
     length(values) == 2 || throw(ArgumentError("expected 2 values, got $(length(values))"))
-    return (T(values[1]), T(values[2]))
+    return (_as_number_or_expression(T, values[1]), _as_number_or_expression(T, values[2]))
 end
 
 function _quad_tuple(values, ::Type{T}) where {T}
     length(values) == 4 || throw(ArgumentError("expected 4 values, got $(length(values))"))
-    return ntuple(i -> T(values[i]), 4)
+    return ntuple(i -> _as_number_or_expression(T, values[i]), 4)
 end
 
 @inline function _inverse(elem::CrabDispersion, x0, px0, y0, py0, z0, pz0)

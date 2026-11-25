@@ -41054,6 +41054,282 @@ end
 # expressions (design D10), the fold sites and the expression arm of the effectiveness contract.
 # Unit C's testsets land directly below this comment and nowhere else.
 
+@testset "Machine description: the friendly constructors accept knob expressions (D10)" begin
+    @knob md2c_ring.k1 = 1.5
+    @knob md2c_ring.angle = 0.3
+    @knob md2c_ring.e1 = 0.05
+    @knob md2c_ring.L2 = 2.0
+    @knob md2c_ring.zeta = 0.01
+    @knob md2c_ring.xi = 1.2
+    @knob md2c_ring.turns = 1000.0
+    @knob md2c_ring.v = 1.0e-3
+    @knob md2c_ring.f = 4.0e8
+    @knob md2c_ring.e0 = 275.0e9
+    @knob md2c_ring.boost = 0.012
+    @knob md2c_ring.kbb = 1.0e-3
+    @knob md2c_ring.ks = 0.35
+    @knob md2c_ring.beta = 10.0
+    @knob md2c_ring.sz = 1.0e-2
+    @knob md2c_ring.s = 1.0e-3
+    u = (2.3e-3, 4.1e-4, -1.7e-3, -3.2e-4, 1.5e-3, 9.0e-4)
+    track(spec) = collect(compile_runtime(spec)(u...))
+    k1_ref = KnobRef(Symbol("md2c_ring.k1"))
+
+    # The quadrupole: the named strength folds into the kn tuple as a tree
+    # beside the number, compiles bitwise equal to the numeric magnet while the
+    # knob holds its value, and follows the knob.
+    q_expr = QuadrupoleSpec(L=0.35, k1=@knob_expr(md2c_ring.k1))
+    q_num = QuadrupoleSpec(L=0.35, k1=1.5)
+    @test getparam(q_expr, :kn) == (0.0, k1_ref)
+    @test getparam(q_expr, :kn) isa Tuple{Float64,KnobRef}
+    @test track(q_expr) == track(q_num)
+    @test compile_runtime(q_expr) == compile_runtime(q_num)
+    @test track(q_num) != track(QuadrupoleSpec(L=0.35, k1=1.6))     # the strength reaches the map
+    set_knob!("md2c_ring.k1", 1.6)
+    @test track(q_expr) == track(QuadrupoleSpec(L=0.35, k1=1.6))
+    set_knob!("md2c_ring.k1", 1.5)
+    # The typed form: the number lands in Float32, the tree stays a tree, the
+    # stored type is honoured by the compile.
+    q32_expr = QuadrupoleSpec{Float32}(L=0.35, k1=@knob_expr(md2c_ring.k1))
+    @test getparam(q32_expr, :kn) == (0.0f0, k1_ref)
+    @test getparam(q32_expr, :kn) isa Tuple{Float32,KnobRef}
+    @test getparam(q32_expr, :numeric_type) === Float32
+    @test track(q32_expr) == track(QuadrupoleSpec{Float32}(L=0.35, k1=1.5))
+    @test track(q32_expr) != track(q_num)                            # Float32 rounding is visible
+    @test compile_runtime(q32_expr) isa Octopus.LatticeMagnet{<:Any,Float32}
+    # The kn spelling with a tree inside, and the general multipole's named order.
+    @test getparam(QuadrupoleSpec(L=0.35, kn=(0.0, @knob_expr(md2c_ring.k1))), :kn) == (0.0, k1_ref)
+    @test getparam(MultipoleSpec(L=0.1, k3=@knob_expr(md2c_ring.ks)), :kn) == (0.0, 0.0, 0.0, KnobRef(Symbol("md2c_ring.ks")))
+    @test track(MultipoleSpec(L=0.1, k3=@knob_expr(md2c_ring.ks))) == track(MultipoleSpec(L=0.1, k3=0.35))
+    # The two spellings of one strength stay contradictory with a tree on either side.
+    for (kw, msg) in ((Dict(:k1 => 1.0, :kn => (0.0, @knob_expr(md2c_ring.k1))), "k1 and a nonzero kn[2]"),
+                      (Dict(:k1 => @knob_expr(md2c_ring.k1), :kn => (0.0, 1.0)), "k1 and a nonzero kn[2]"))
+        err = try
+            QuadrupoleSpec(; L=0.35, kw...)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError && occursin(msg, sprint(showerror, err))
+    end
+
+    # The sector bend: h = b0 = angle / L as one division tree, the angle
+    # keyword consumed, the compile equal to the numeric bend.
+    s_expr = SBendSpec(L=1.0, angle=@knob_expr(md2c_ring.angle))
+    @test string(getparam(s_expr, :h)) == "md2c_ring.angle / 1.0"
+    @test getparam(s_expr, :b0) == getparam(s_expr, :h) && !haskey(Octopus.params(s_expr), :angle)
+    @test track(s_expr) == track(SBendSpec(L=1.0, angle=0.3))
+    @test track(SBendSpec(L=1.0, angle=0.3)) != track(SBendSpec(L=1.0, angle=0.31))
+    @test track(SBendSpec{Float32}(L=1.0, angle=@knob_expr(md2c_ring.angle))) == track(SBendSpec{Float32}(L=1.0, angle=0.3))
+    set_knob!("md2c_ring.angle", 0.31)
+    @test track(s_expr) == track(SBendSpec(L=1.0, angle=0.31))
+    set_knob!("md2c_ring.angle", 0.3)
+    # A knob length divides as well; the numeric zero length is still refused.
+    s_L = SBendSpec(L=@knob_expr(md2c_ring.L2), angle=0.3)
+    @test string(getparam(s_L, :h)) == "0.3 / md2c_ring.L2"
+    @test track(s_L) == track(SBendSpec(L=2.0, angle=0.3))
+    @test_throws ArgumentError SBendSpec(L=0.0, angle=0.3)
+    # The rectangular bend: the half angle added to each face as a tree.
+    r_expr = RBendSpec(L=1.0, angle=@knob_expr(md2c_ring.angle), e1=@knob_expr(md2c_ring.e1))
+    @test string(getparam(r_expr, :e1)) == "md2c_ring.e1 + md2c_ring.angle / 2.0"
+    @test string(getparam(r_expr, :e2)) == "0.0 + md2c_ring.angle / 2.0"
+    @test track(r_expr) == track(RBendSpec(L=1.0, angle=0.3, e1=0.05))
+    @test track(RBendSpec(L=1.0, angle=0.3, e1=0.05)) != track(RBendSpec(L=1.0, angle=0.3, e1=0.06))
+    # The MAD-X chord: a knob chord folds to the arc through the numeric half
+    # angle; a knob angle under the chord is refused by name, with the remedy.
+    r_chord = RBendSpec(chord=@knob_expr(md2c_ring.L2), angle=0.3)
+    @test string(getparam(r_chord, :L)) == "(md2c_ring.L2 * 0.15) / $(repr(sin(0.15)))"
+    @test track(r_chord) == track(RBendSpec(chord=2.0, angle=0.3))
+    err_chord = try
+        RBendSpec(chord=2.0, angle=@knob_expr(md2c_ring.angle))
+        nothing
+    catch e
+        e
+    end
+    @test err_chord isa ArgumentError
+    msg_chord = sprint(showerror, err_chord)
+    @test occursin("chord", msg_chord) && occursin("knob expression", msg_chord) && occursin("give L", msg_chord)
+
+    # One representative per converted file. Each pair compiles bitwise equal
+    # while the knob holds the number, and the knob reaches the map.
+    # The linear maps (crab_dispersion stands for the three): the typed-by-hand
+    # coefficient is stored as the tree, in the untyped and the Float32 form.
+    cd_expr = CrabDispersionSpec(zeta1=@knob_expr(md2c_ring.zeta))
+    @test getparam(cd_expr, :zeta1) == KnobRef(Symbol("md2c_ring.zeta"))
+    @test track(cd_expr) == track(CrabDispersionSpec(zeta1=0.01))
+    @test track(CrabDispersionSpec{Float32}(zeta1=@knob_expr(md2c_ring.zeta))) == track(CrabDispersionSpec{Float32}(zeta1=0.01))
+    set_knob!("md2c_ring.zeta", 0.02)
+    @test track(cd_expr) == track(CrabDispersionSpec(zeta1=0.02)) && track(cd_expr) != track(CrabDispersionSpec(zeta1=0.01))
+    set_knob!("md2c_ring.zeta", 0.01)
+    @test track(MomentumDispersionSpec(eta1=@knob_expr(md2c_ring.zeta))) == track(MomentumDispersionSpec(eta1=0.01))
+    @test track(XYCouplingSpec(r1=@knob_expr(md2c_ring.zeta))) == track(XYCouplingSpec(r1=0.01))
+    # The chromaticity kick: a tree inside the xi pair and inside the beta tuple.
+    ck_expr = ChromaticityKickSpec(xi=(@knob_expr(md2c_ring.xi), 1.0), beta=(10.0, 10.0))
+    @test getparam(ck_expr, :xi) == (KnobRef(Symbol("md2c_ring.xi")), 1.0)
+    @test track(ck_expr) == track(ChromaticityKickSpec(xi=(1.2, 1.0), beta=(10.0, 10.0)))
+    @test track(ChromaticityKickSpec(xi=(1.2, 1.0), beta=(@knob_expr(md2c_ring.beta), 10.0))) ==
+          track(ChromaticityKickSpec(xi=(1.2, 1.0), beta=(10.0, 10.0)))
+    @test track(ChromaticityKickSpec(xi=(1.2, 1.0), beta=(10.0, 10.0))) != track(ChromaticityKickSpec(xi=(1.3, 1.0), beta=(10.0, 10.0)))
+    # The radiation element: a damping time as a tree (the deterministic
+    # damping-only map, so the two fresh RNG streams play no part).
+    lr_expr = LumpedRadSpec(damping_turns=(@knob_expr(md2c_ring.turns), 1000.0, 1000.0), is_excitation=false)
+    @test getparam(lr_expr, :damping_turns) == (KnobRef(Symbol("md2c_ring.turns")), 1000.0, 1000.0)
+    @test track(lr_expr) == track(LumpedRadSpec(damping_turns=(1000.0, 1000.0, 1000.0), is_excitation=false))
+    # The crab cavity: a harmonic strength and the frequency as trees; the
+    # frequency's finite-and-nonzero check moves to the compile.
+    cc_num = ThinCrabCavitySpec(frequency=4.0e8, N=1, strengthX=(1.0e-3,))
+    @test track(ThinCrabCavitySpec(frequency=4.0e8, N=1, strengthX=(@knob_expr(md2c_ring.v),))) == track(cc_num)
+    @test track(ThinCrabCavitySpec(frequency=@knob_expr(md2c_ring.f), N=1, strengthX=(1.0e-3,))) == track(cc_num)
+    @test track(ThinCrabCavitySpec{1,Float32}(@knob_expr(md2c_ring.f); strengthX=(@knob_expr(md2c_ring.v),))) ==
+          track(ThinCrabCavitySpec{1,Float32}(4.0e8; strengthX=(1.0e-3,)))
+    set_knob!("md2c_ring.f", 0.0)
+    err_f = try
+        track(ThinCrabCavitySpec(frequency=@knob_expr(md2c_ring.f), N=1, strengthX=(1.0e-3,)))
+        nothing
+    catch e
+        e
+    end
+    set_knob!("md2c_ring.f", 4.0e8)
+    @test err_f isa ArgumentError && occursin("frequency must be finite and nonzero", sprint(showerror, err_f))
+    # The Lorentz boosts: the positional and the keyword angle.
+    @test track(LorentzBoostSpec(@knob_expr(md2c_ring.boost))) == track(LorentzBoostSpec(0.012))
+    @test track(LorentzBoostSpec(angle=@knob_expr(md2c_ring.boost))) == track(LorentzBoostSpec(0.012))
+    @test track(LorentzBoostSpec{Float32}(@knob_expr(md2c_ring.boost))) == track(LorentzBoostSpec{Float32}(0.012))
+    @test track(RevLorentzBoostSpec(@knob_expr(md2c_ring.boost))) == track(RevLorentzBoostSpec(0.012))
+    @test track(LorentzBoostSpec(0.012)) != track(LorentzBoostSpec(0.013))
+    # The solenoid: its own strength beside the folded multipole content.
+    so_expr = SolenoidSpec(L=2.0, ks=@knob_expr(md2c_ring.ks))
+    @test getparam(so_expr, :ks) == KnobRef(Symbol("md2c_ring.ks"))
+    @test track(so_expr) == track(SolenoidSpec(L=2.0, ks=0.35))
+    @test track(SolenoidSpec(L=2.0, ks=0.35)) != track(SolenoidSpec(L=2.0, ks=0.36))
+    # The cavities: the strength directly, and the voltage derivation as the
+    # trees of reference_beta_gamma and rf_strength when e0 is a knob.
+    b0, g0 = Octopus.reference_beta_gamma(275.0e9, Octopus.PMASS_EV)
+    rf_expr = ThinRFCavitySpec(4.0e8; strength=@knob_expr(md2c_ring.v), beta0=b0, gamma0=g0)
+    @test getparam(rf_expr, :strength) == KnobRef(Symbol("md2c_ring.v"))
+    @test track(rf_expr) == track(ThinRFCavitySpec(4.0e8; strength=1.0e-3, beta0=b0, gamma0=g0))
+    @test track(ThinRFCavitySpec{Float32}(4.0e8; strength=@knob_expr(md2c_ring.v), beta0=b0, gamma0=g0)) ==
+          track(ThinRFCavitySpec{Float32}(4.0e8; strength=1.0e-3, beta0=b0, gamma0=g0))
+    rf_volt = ThinRFCavitySpec(4.0e8; voltage=12.0e6, e0=@knob_expr(md2c_ring.e0), mc2=Octopus.PMASS_EV)
+    g_str = "md2c_ring.e0 / $(repr(Octopus.PMASS_EV))"
+    @test string(getparam(rf_volt, :gamma0)) == g_str
+    @test string(getparam(rf_volt, :beta0)) == "sqrt(($g_str - 1.0) * ($g_str + 1.0)) / ($g_str)"
+    @test string(getparam(rf_volt, :strength)) == "1.2e7 / ((sqrt(($g_str - 1.0) * ($g_str + 1.0)) / ($g_str)) * md2c_ring.e0)"
+    @test track(rf_volt) == track(ThinRFCavitySpec(4.0e8; voltage=12.0e6, e0=275.0e9, mc2=Octopus.PMASS_EV))
+    @test track(rf_expr) != track(ThinRFCavitySpec(4.0e8; strength=1.1e-3, beta0=b0, gamma0=g0))
+    @test track(ThinAcceleratingCavitySpec(4.0e8; strength=@knob_expr(md2c_ring.v), beta0=b0, gamma0=g0)) ==
+          track(ThinAcceleratingCavitySpec(4.0e8; strength=1.0e-3, beta0=b0, gamma0=g0))
+    err_h = try
+        ThinRFCavitySpec(; harmon=@knob_expr(md2c_ring.v), strength=1.0e-3, beta0=b0, gamma0=g0)
+        nothing
+    catch e
+        e
+    end
+    @test err_h isa ArgumentError
+    @test occursin("harmon cannot be a knob expression", sprint(showerror, err_h)) && occursin("frequency", sprint(showerror, err_h))
+
+    # The strong beam: kbb, a centroid component and sigz as trees; the knob
+    # inside the nested thin kernel resolves with its parent and moves it.
+    gs_num = GaussianStrongBeamSpec(kbb=1.0e-3, beta=(1.0, 1.0), sigma=(1.0e-4, 1.0e-4), ns=3, sigz=1.0e-2, center=(1.0e-3, 0.0, 0.0))
+    gs_expr = GaussianStrongBeamSpec(kbb=@knob_expr(md2c_ring.kbb), beta=(1.0, 1.0), sigma=(1.0e-4, 1.0e-4), ns=3,
+                                     sigz=@knob_expr(md2c_ring.sz), center=(@knob_expr(md2c_ring.s), 0.0, 0.0))
+    @test getparam(getparam(gs_expr, :thin), :kbb) == KnobRef(Symbol("md2c_ring.kbb"))
+    @test Octopus._has_knob_parameters(gs_expr)
+    @test track(gs_expr) == track(gs_num)
+    set_knob!("md2c_ring.kbb", 1.1e-3)
+    @test track(gs_expr) != track(gs_num)
+    set_knob!("md2c_ring.kbb", 1.0e-3)
+    @test track(GaussianStrongBeamSpec(kbb=1.0e-3, beta=(1.0, 1.0), sigma=(1.0e-4, 1.0e-4), ns=3, sigz=1.0e-2, angle=(@knob_expr(md2c_ring.boost), 0.0, 0.0))) ==
+          track(GaussianStrongBeamSpec(kbb=1.0e-3, beta=(1.0, 1.0), sigma=(1.0e-4, 1.0e-4), ns=3, sigz=1.0e-2, angle=(0.012, 0.0, 0.0)))
+    # The covariance inputs are a derivation validated at construction: refused
+    # by name, with the remedy; so is the inert longitudinal component.
+    for (kw, needle) in ((Dict(:beta => (@knob_expr(md2c_ring.beta), 1.0)), "beta cannot be a knob expression"),
+                         (Dict(:sigma => (@knob_expr(md2c_ring.s), 1.0e-4)), "sigma cannot be a knob expression"),
+                         (Dict(:angle => (0.0, 0.0, @knob_expr(md2c_ring.boost))), "angle[3] cannot be a knob expression"))
+        base = Dict{Symbol,Any}(:kbb => 1.0e-3, :beta => (1.0, 1.0), :sigma => (1.0e-4, 1.0e-4), :ns => 3, :sigz => 1.0e-2)
+        err = try
+            GaussianStrongBeamSpec(; merge(base, kw)...)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        msg = sprint(showerror, err)
+        @test occursin(needle, msg)
+        @test occursin("ElementSpec{:thin_strong_beam}", msg) || occursin("transverse component", msg)
+    end
+    # A thin kind: the integrated strength tuple with a tree inside.
+    tq_expr = ThinQuadrupoleSpec(knl=(0.0, @knob_expr(md2c_ring.ks)))
+    @test getparam(tq_expr, :knl) == (0.0, KnobRef(Symbol("md2c_ring.ks")))
+    @test track(tq_expr) == track(ThinQuadrupoleSpec(knl=(0.0, 0.35)))
+    @test track(ThinQuadrupoleSpec(knl=(0.0, 0.35))) != track(ThinQuadrupoleSpec(knl=(0.0, 0.36)))
+    # The optics point keeps refusing expressions, now by name and with the
+    # measured numbers behind the decision (the untyped and the typed form).
+    for build in (() -> LinearOptics(; beta=(@knob_expr(md2c_ring.beta), 1.0, 1.0)),
+                  () -> LinearOptics{Float64}(; beta=(@knob_expr(md2c_ring.beta), 1.0, 1.0)),
+                  () -> LinearOptics(; beta=(10.0, 1.0, 1.0), zeta=(@knob_expr(md2c_ring.zeta), 0.0, 0.0, 0.0)))
+        err = try
+            build()
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        msg = sprint(showerror, err)
+        @test occursin("cannot hold a knob expression", msg) && occursin("flat keywords", msg) && occursin("67x", msg)
+    end
+    @test occursin("LinearOptics: beta ", sprint(showerror, try LinearOptics(; beta=(@knob_expr(md2c_ring.beta), 1.0, 1.0)) catch e; e end))
+    @test occursin("LinearOptics: zeta ", sprint(showerror, try LinearOptics(; beta=(10.0, 1.0, 1.0), zeta=(@knob_expr(md2c_ring.zeta), 0.0, 0.0, 0.0)) catch e; e end))
+    @test LinearOptics(; beta=(10.0, 1.0, 1.0)) isa LinearOptics{Float64}
+end
+
+@testset "Machine description: the effectiveness contract's expression arm" begin
+    @knob md2c_arm.angle = 0.3
+    @knob md2c_arm.beta = 10.0
+    r = validate(ElementParameterEffectivenessContract())
+    @test r.passed
+    for key in (:expression_checked, :expression_checked_names, :expression_refused, :expression_refused_unnamed,
+                :expression_inapplicable, :expression_failures, :expression_kinds_checked,
+                :expression_kinds_refused_only, :expression_kinds_without_candidates,
+                :expression_kinds_without_constructor)
+        @test haskey(r.metrics, key)
+    end
+    # The ratchet: today's count, measured 2026-11-24 on the probes the numeric
+    # sweep uses (347 floating-point scalars and tuples across 30 kinds). Raise
+    # it when a probe or a kind grows; never lower it.
+    @testset let expression_checked_floor = 347
+        @test r.metrics[:expression_checked] >= expression_checked_floor
+    end
+    @test r.metrics[:expression_checked] == length(r.metrics[:expression_checked_names])
+    @test "quadrupole.kn" in r.metrics[:expression_checked_names] && "sbend.angle" in r.metrics[:expression_checked_names]
+    @test isempty(r.metrics[:expression_failures]) && isempty(r.metrics[:expression_refused_unnamed])
+    @test all(p -> occursin("knob expression", last(p)), r.metrics[:expression_refused])
+    # The refusal classifier the arm applies, on the real refusals the
+    # constructors keep: each names the knob expression and a remedy; a message
+    # without them does not pass.
+    for (build, needle) in ((() -> RBendSpec(chord=2.0, angle=@knob_expr(md2c_arm.angle)), "chord"),
+                            (() -> GaussianStrongBeamSpec(kbb=1.0e-3, beta=(@knob_expr(md2c_arm.beta), 1.0), sigma=(1.0e-4, 1.0e-4), ns=3, sigz=1.0e-2), "beta"),
+                            (() -> LinearOptics(; beta=(@knob_expr(md2c_arm.beta), 1.0, 1.0)), "beta"))
+        msg = sprint(showerror, try build(); nothing catch e; e end)
+        @test occursin(needle, msg) && Octopus._expression_refusal_named(msg)
+    end
+    @test !Octopus._expression_refusal_named("a knob expression cannot be converted to a number eagerly")
+    @test !Octopus._expression_refusal_named("give L instead")
+    # Every kind with a friendly constructor is accounted for exactly once:
+    # checked, refused only, or without a floating-point candidate.
+    with_ctor = sort!([m.kind for m in (Octopus._element_meta_or_nothing(T) for T in Octopus.registered_element_specs())
+                       if m !== nothing && m.friendly_constructor !== nothing])
+    accounted = vcat(r.metrics[:expression_kinds_checked], r.metrics[:expression_kinds_refused_only],
+                     r.metrics[:expression_kinds_without_candidates])
+    @test sort(accounted) == with_ctor && allunique(accounted)
+    @test isempty(r.metrics[:expression_kinds_without_constructor])
+    @test :quadrupole in r.metrics[:expression_kinds_checked] && :gaussian_strong_beam in r.metrics[:expression_kinds_checked]
+    @test all(p -> last(p) isa Symbol, r.metrics[:expression_inapplicable])
+    @test occursin("expression arm: $(r.metrics[:expression_checked]) parameters", r.message)
+    # The arm's knobs are forgotten, whatever the verdict.
+    @test isempty(list_knobs("md2c_effect"))
+end
+
 @testset "Knob control" begin
     reset_knobs!()
     try

@@ -432,9 +432,12 @@ end
                                       false, true)
 end
 
+# A number converts to `T`, a knob expression is kept (`_as_number_or_expression`,
+# design D10): the constructor stores the tuple, the compile sees the resolved
+# numbers through the same coercion.
 function _fixed_tuple(values, n::Int, ::Type{T}) where {T}
     length(values) == n || throw(ArgumentError("expected $n values, got $(length(values))"))
-    return ntuple(i -> T(values[i]), n)
+    return ntuple(i -> _as_number_or_expression(T, values[i]), n)
 end
 
 function _radiation_excitation(scale::NTuple{3,T}, beta::NTuple{3,T},

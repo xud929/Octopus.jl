@@ -27,10 +27,42 @@ export EdwardsTengTwiss, CanonicalDispersion, LinearOptics, advance_phase, slope
 #     the order `Linear6DSpec` and `Beam` apply.
 # ---------------------------------------------------------------------------
 
+"""
+    _optics_expression_refusal(name) -> ArgumentError
+
+The by-name refusal of a knob expression in a `LinearOptics` component (design
+D10, `docs/design/machine_description.md`, the measurement stage 2 deferred to
+itself). A point is flattened into its consumers at construction -- the
+Edwards-Teng block, the phase advance, a linear map's matrix -- and the trees
+that flattening would build were measured on 2026-11-24 (`_knob_arith`, one
+process, 1000 repetitions): one knob in `beta[1]` makes 4 of the 36 matrix
+entries of `Linear6DSpec(o1, o2)` trees of 6 nodes each (24 nodes in all; the
+other 32 entries stay numbers) and evaluating the 36 through `knob_value`
+takes 4.8 us against 0.07 us for the numeric build, 67x; one knob in `R` makes
+the Edwards-Teng block four trees of 12 to 13 nodes, 50 in all. The design's
+bounds were a mean of 8 nodes per tree and 10x the numeric build; the second
+is exceeded sixfold and the block exceeds the first, so the point stays
+numeric and the expression is refused here by name, with the remedy: the
+consumers' flat keywords accept knob expressions.
+"""
+_optics_expression_refusal(name::Symbol) = ArgumentError(
+    "LinearOptics: $(name) cannot hold a knob expression. A point is flattened into its consumers at " *
+    "construction (the Edwards-Teng block, the phase advance, a linear map's matrix), and the trees that " *
+    "flattening would build were measured on 2026-11-24 (design D10, stage 2): one knob in beta[1] gives 4 " *
+    "matrix entries of 6 nodes evaluating 67x slower than the numeric build, one knob in R an Edwards-Teng " *
+    "block of 50 nodes, past the 8-node and 10x bounds the design set, so the point stays numeric. Give the " *
+    "consumer its flat keywords, which accept knob expressions -- ChromaticityKickSpec(; beta=..., alpha=...), " *
+    "LumpedRadSpec(; beta=...), Linear6DSpec(; beta1=..., dmu=...) -- or rebuild the point from " *
+    "knob_value(expression)")
+
 # Tuple coercion shared by the three constructors: a fixed length, one numeric
 # type, every entry finite (`isfinite` on the real part for complex or dual
-# inputs, which the element specs accept for differentiation).
+# inputs, which the element specs accept for differentiation). A knob
+# expression, bare or inside the tuple, is refused by name first
+# (`_optics_expression_refusal`).
 function _optics_tuple(value, n::Int, ::Type{T}, name::Symbol) where {T<:Number}
+    (value isa AbstractKnobExpression || ((value isa Tuple || value isa AbstractVector) && _param_has_knob(value))) &&
+        throw(_optics_expression_refusal(name))
     (value isa Tuple || value isa AbstractVector) || throw(ArgumentError(
         "$(name) must be a length-$(n) tuple or vector; got $(repr(value))"))
     length(value) == n || throw(ArgumentError(
@@ -42,9 +74,18 @@ end
 
 # The untyped forms promote their inputs over a Float64 floor and never narrow,
 # the one numeric-type rule of the element specs (docs/guides/elements.md).
+# A knob expression takes no part in the promotion (it is refused by name in
+# `_optics_tuple`, which the typed constructor reaches next); without this the
+# promotion over a tuple holding one produced `Any` and a bare `TypeError`.
 _optics_eltype(values...) = promote_type(Float64, map(v -> v === nothing ? Float64 : _optics_value_eltype(v), values)...)
 _optics_value_eltype(v::Number) = typeof(v)
-_optics_value_eltype(v) = isempty(v) ? Float64 : promote_type(map(typeof, collect(v))...)
+# The expression test sits in the body, not in a signature: this file is
+# included before `src/knobs/Knobs.jl` defines `AbstractKnobExpression`.
+function _optics_value_eltype(v)
+    v isa AbstractKnobExpression && return Float64
+    numeric = [x for x in v if !(x isa AbstractKnobExpression)]
+    return isempty(numeric) ? Float64 : promote_type(map(typeof, numeric)...)
+end
 
 """
     EdwardsTengTwiss{T=Float64}(; beta, alpha=(0, 0, 0), R=(0, 0, 0, 0), form=1)
