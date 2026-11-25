@@ -23081,6 +23081,229 @@ end
 # its expansion fixtures and the registry-derived kind tripwire.
 # Unit B's testsets land directly below this comment and nowhere else.
 
+@testset "Machine description: @elements expands kind calls onto the friendly constructors" begin
+    # The block macro is a syntactic map from kind names onto the friendly
+    # constructors (design D9). Each fixture is checked on the Expr the macro
+    # returns, expanded one level (inner macros such as @knob stay as written)
+    # with line numbers stripped, so this tests the rewriting itself and not
+    # what the constructors then do with the values.
+    expand(ex) = Base.remove_linenums!(macroexpand(@__MODULE__, ex; recursive=false))
+    single(ex) = only(expand(ex).args)
+    kws(call) = [(e.args[1], e.args[2]) for e in call.args[2].args]   # the `;` block, in order
+    refusal(ex) = try
+        macroexpand(@__MODULE__, ex; recursive=false)
+        "no refusal"
+    catch err
+        sprint(showerror, err isa LoadError ? err.error : err)
+    end
+
+    # Rules 1 and 3: the binding is the default name, the header the numeric
+    # type; the constructor is spliced as the object, not as a name to import.
+    let st = single(:(@elements Float32 begin QF = quadrupole(L = 0.35, k1 = 1.5) end))
+        @test st.head === :(=) && st.args[1] === :QF
+        call = st.args[2]
+        @test call.args[1] === QuadrupoleSpec
+        @test kws(call) == [(:name, "QF"), (:numeric_type, :Float32), (:L, 0.35), (:k1, 1.5)]
+        @test length(call.args) == 2                        # no positional argument
+    end
+    # An explicit name wins (an imported name is not a Julia identifier); so
+    # does an explicit numeric_type on one call.
+    let call = single(:(@elements Float32 begin MQ = quadrupole(L = 0.1, name = "MQXA.1L5") end)).args[2]
+        @test kws(call) == [(:numeric_type, :Float32), (:L, 0.1), (:name, "MQXA.1L5")]
+    end
+    let call = single(:(@elements Float32 begin Q = quadrupole(L = 0.1, numeric_type = Float64) end)).args[2]
+        @test kws(call) == [(:name, "Q"), (:L, 0.1), (:numeric_type, :Float64)]
+    end
+    # No header: Float64. A positional argument (the cavity's frequency) stays in place.
+    let call = single(:(@elements begin
+                RF = thin_rf_cavity(400.0e6; strength = 0.02, beta0 = 0.95, gamma0 = 3.2)
+            end)).args[2]
+        @test call.args[1] === ThinRFCavitySpec
+        @test call.args[3] == 400.0e6 && length(call.args) == 3
+        @test kws(call) == [(:name, "RF"), (:numeric_type, :Float64),
+                            (:strength, 0.02), (:beta0, 0.95), (:gamma0, 3.2)]
+    end
+    # Rule 2: a line is BeamLine(name, children...; kws...) with no numeric_type;
+    # an explicit name goes first; a nested line child is rewritten nameless.
+    @test single(:(@elements begin RING = line(QF, D, QD) end)) == :(RING = $BeamLine("RING", QF, D, QD))
+    @test single(:(@elements begin A = line(QF; name = "ARC") end)) == :(A = $BeamLine("ARC", QF))
+    @test single(:(@elements begin N = line(line(QF, D), QD; tags = (:a,)) end)) ==
+          :(N = $BeamLine("N", $BeamLine("", QF, D), QD; tags = (:a,)))
+    # Rule 5: anything whose head is not a registered kind name is untouched.
+    let src = quote
+            X = helper(1, 2)
+            C = ThinCrabCavitySpec{1}(400.0e6; strengthX = (0.1,))
+            P = LinearOptics(; beta = (1.0, 1.0, 1.0))
+            @knob md2b_ring.k1 = 1.5
+            beta0, gamma0 = reference_beta_gamma(3.0e9, PMASS_EV)
+        end
+        expected = Base.remove_linenums!(deepcopy(src))
+        @test length(expected.args) == 5
+        @test expand(:(@elements $src)) == expected
+    end
+    # Statement forms: a bare call gets no name; `const` and a docstring are kept.
+    @test single(:(@elements begin quadrupole(L = 0.1) end)) ==
+          :($QuadrupoleSpec(; numeric_type = Float64, L = 0.1))
+    @test single(:(@elements begin const CQ = quadrupole(L = 0.1) end)) ==
+          :(const CQ = $QuadrupoleSpec(; name = "CQ", numeric_type = Float64, L = 0.1))
+    let st = single(:(@elements begin
+                "a doc"
+                DQ = quadrupole(L = 0.1)
+            end))
+        @test st.head === :macrocall && st.args[1] == GlobalRef(Core, Symbol("@doc")) && st.args[3] == "a doc"
+        @test st.args[4] == :(DQ = $QuadrupoleSpec(; name = "DQ", numeric_type = Float64, L = 0.1))
+    end
+    # Shapes: an empty block is allowed; everything else is refused by name.
+    @test expand(:(@elements begin end)) == Expr(:block)
+    @test occursin("one or two arguments", refusal(:(@elements 1 2 3)))
+    let msg = refusal(:(@elements x))
+        @test occursin("begin ... end", msg) && occursin("`x`", msg)
+    end
+    let msg = refusal(:(@elements 1 begin end))
+        @test occursin("type expression", msg) && occursin("`1`", msg)
+    end
+    @test occursin("@elements", refusal(:(@element begin end)))
+    # The single form, with and without the header.
+    @test expand(:(@element Float32 QF = quadrupole(L = 0.35))) ==
+          :(QF = $QuadrupoleSpec(; name = "QF", numeric_type = Float32, L = 0.35))
+    @test expand(:(@element quadrupole(L = 0.35))) == :($QuadrupoleSpec(; numeric_type = Float64, L = 0.35))
+end
+
+@testset "Machine description: the @elements block builds the hand-written lattice" begin
+    # The DBA ring of examples/twiss_dispersion_dba_ring.jl, built by hand with
+    # the explicit `name =` and `numeric_type = Float64` the macro emits, and
+    # through an @elements block evaluated in a sandbox module that only
+    # imports Octopus (the expansion must not depend on the caller's imports;
+    # the block's first statement is a tuple assignment that passes through
+    # untouched). Element for element the specs are equal, the lines place the
+    # same entries, and two turns track bitwise alike.
+    beta0, gamma0 = reference_beta_gamma(3.0e9, PMASS_EV)
+    QD = QuadrupoleSpec(; name = "QD", numeric_type = Float64, L = 0.25, kn = (0.0, -1.1), nst = 4, integrator_order = 4)
+    QF = QuadrupoleSpec(; name = "QF", numeric_type = Float64, L = 0.35, kn = (0.0, 1.5), nst = 4, integrator_order = 4)
+    D = DriftSpec(; name = "D", numeric_type = Float64, L = 0.6)
+    BEND = SBendSpec(; name = "BEND", numeric_type = Float64, L = 1.0, h = 0.2, b0 = 0.2, nst = 4, integrator_order = 4)
+    RF = ThinRFCavitySpec(400.0e6; name = "RF", numeric_type = Float64, strength = 0.02, beta0, gamma0)
+    hand = BeamLine("RING", QD, D, BEND, D, QF, D, BEND, D, QD, RF)
+
+    m = Module()
+    Core.eval(m, :(using Main.Octopus))
+    Core.eval(m, :(@elements begin
+        beta0, gamma0 = reference_beta_gamma(3.0e9, PMASS_EV)
+        QD = quadrupole(L = 0.25, kn = (0.0, -1.1), nst = 4, integrator_order = 4)
+        QF = quadrupole(L = 0.35, kn = (0.0, 1.5), nst = 4, integrator_order = 4)
+        D = drift(L = 0.6)
+        BEND = sbend(L = 1.0, h = 0.2, b0 = 0.2, nst = 4, integrator_order = 4)
+        RF = thin_rf_cavity(400.0e6; strength = 0.02, beta0 = beta0, gamma0 = gamma0)
+        RING = line(QD, D, BEND, D, QF, D, BEND, D, QD, RF)
+    end))
+    # Bindings created by eval are read back through eval: the testset body runs
+    # in the world age it started in, where they do not exist yet (Julia 1.12).
+    built(sym) = Core.eval(m, sym)
+    for (a, sym) in ((QD, :QD), (QF, :QF), (D, :D), (BEND, :BEND), (RF, :RF))
+        b = built(sym)
+        @test Octopus.kind(a) == Octopus.kind(b)
+        @test getfield(a, :params) == getfield(b, :params)
+    end
+    # Anti-vacuity: the params carry the physics, so a changed strength is seen.
+    @test getfield(QuadrupoleSpec(; name = "QF", numeric_type = Float64, L = 0.35, kn = (0.0, 1.6),
+                                  nst = 4, integrator_order = 4), :params) != getfield(built(:QF), :params)
+
+    ring = built(:RING)
+    @test Octopus.kind(ring) == :line && length(ring) == 10
+    @test [entry_path(e) for e in Octopus.line_entries(ring)] ==
+          [entry_path(e) for e in Octopus.line_entries(hand)]
+    @test entry_path(ring[9]) == "RING/QD[2]" && entry_path(ring[10]) == "RING/RF"
+    for i in 1:10
+        @test getfield(getfield(ring[i], :spec), :params) == getfield(getfield(hand[i], :spec), :params)
+    end
+
+    mk() = Phase6DRep([1.0e-3, 2.0e-3], [0.0, 1.0e-4], [0.5e-3, -1.0e-3],
+                      [0.0, -1.0e-4], [0.0, 0.0], [1.0e-3, 0.0])
+    let a = mk(), b = mk(), c = mk()
+        execute!(TrackingTask(hand), a; turns=2)
+        execute!(TrackingTask(ring), b; turns=2)
+        @test collect(a[1]) == collect(b[1]) && collect(a[2]) == collect(b[2])
+        @test collect(a[1]) != collect(c[1])              # the particles moved
+    end
+end
+
+@testset "Machine description: every registered kind expands through @elements, derived from the registry" begin
+    # Derived from ELEMENT_META_BY_KIND, so a kind added later is covered without
+    # anyone hand-copying the list (AGENTS.md: derive, add a tripwire). Two arms
+    # per kind: the rewriting (the statement rewriter puts the kind's own
+    # friendly constructor in the call, with numeric_type for every kind but
+    # :line) and the build (the rewritten statement, with the kind's registry
+    # example parameters spliced in as literal objects, is evaluated in a
+    # sandbox module and yields the kind, the numeric type and the name).
+    literal(v) = v isa Union{Symbol,Expr} ? QuoteNode(v) : v
+    m = Module()
+    Core.eval(m, :(using Main.Octopus))
+    expanded = Symbol[]
+    built = Symbol[]
+    without_ctor = Symbol[]
+    for (k, meta) in sort!(collect(Octopus.ELEMENT_META_BY_KIND); by = first)
+        if meta.friendly_constructor === nothing
+            push!(without_ctor, k)
+            continue
+        end
+        st = Octopus._elements_rewrite_statement(:(X = $k()), :Float64)
+        call = st.args[2]
+        @test st.head === :(=) && call.head === :call && call.args[1] === meta.friendly_constructor
+        push!(expanded, k)
+        if k === :line
+            @test call == Expr(:call, BeamLine, "X")
+            @test_skip k !== :line      # the line's build is the lattice testset above
+            continue
+        end
+        @test any(e -> e.head === :kw && e.args[1] === :numeric_type && e.args[2] === :Float64, call.args[2].args)
+        kw = [Expr(:kw, key, literal(v)) for (key, v) in Octopus.params(meta.example)
+              if key ∉ (:numeric_type, :name, :entries)]
+        stmt = Octopus._elements_rewrite_statement(Expr(:(=), :X, Expr(:call, k, Expr(:parameters, kw...))), :Float64)
+        X = try
+            Core.eval(m, stmt)               # the assignment's value is the element
+        catch err
+            @test "kind $k builds through @elements" == sprint(showerror, err)
+            nothing
+        end
+        X === nothing && continue
+        @test Octopus.kind(X) == k
+        @test Octopus.numeric_type(X) == Float64
+        @test Octopus.getparam(X, :name) == "X"
+        push!(built, k)
+    end
+    @test length(without_ctor) == count(mm -> mm.friendly_constructor === nothing, values(Octopus.ELEMENT_META_BY_KIND))
+    @test :line in expanded && length(built) >= 30
+end
+
+@testset "Machine description: @elements refuses a kind without a friendly constructor by name" begin
+    # Rule 4 through the injectable registry argument: a fake ElementMeta with no
+    # friendly constructor, never registered (the suite compares the registry
+    # snapshot), seen by the kind lookup and by the statement rewriter.
+    fake = Octopus.ElementMeta(; kind = :md2b_fake, spec_type = ElementSpec{:md2b_fake})
+    registry = Dict{Symbol,Octopus.ElementMeta}(:md2b_fake => fake)
+    @test fake.friendly_constructor === nothing
+    msg = try
+        Octopus._elements_kind_constructor(:md2b_fake, registry)
+        "no refusal"
+    catch err
+        sprint(showerror, err)
+    end
+    @test occursin("`md2b_fake`", msg) && occursin("ElementSpec{:md2b_fake}(; ...)", msg)
+    # The same refusal reaches a block statement through the rewriter.
+    msg2 = try
+        Octopus._elements_rewrite_statement(:(X = md2b_fake(L = 0.1)), :Float64; registry)
+        "no refusal"
+    catch err
+        sprint(showerror, err)
+    end
+    @test occursin("`md2b_fake`", msg2) && occursin("friendly constructor", msg2)
+    # Registration alone decides: the fake kind is unknown to the real registry
+    # and a real kind to the fake one, and an unknown head passes through.
+    @test Octopus._elements_kind_constructor(:md2b_fake) === nothing
+    @test Octopus._elements_kind_constructor(:quadrupole, registry) === nothing
+    @test Octopus._elements_rewrite_statement(:(X = md2b_fake(L = 0.1)), :Float64) == :(X = md2b_fake(L = 0.1))
+end
+
 if _lane_gate("Every example script runs against the current interface")
 @testset "Every example script runs against the current interface" begin
     # Examples are the precedents agents and users imitate (AGENTS.md), and
