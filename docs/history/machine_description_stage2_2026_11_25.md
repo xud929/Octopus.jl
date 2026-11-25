@@ -280,9 +280,28 @@ record are the commits that follow them on `main`, written from the gate log.
   "Element parameter effectiveness" 80, "Thin elements, markers and RBEND"
   114, "Lattice magnets" 83, the catalogue tripwire 54 and the Stage 5
   analysis tripwire 64.
-- The fast lane, then the full gate at CI settings with CUDA active, on the
-  merged tree: [MEASURE: gate: lane, testsets, assertions, skips, wall
-  clock, the commit that carried it].
+- The fast lane on the fix-round tree (16af558 plus the sweep's manifold
+  move; 2026-11-24 23:59:15 to 2026-11-25 00:37:12 EST, 38 minutes): exit 0,
+  462 testsets, 158,606 assertions passed, 0 failed, 0 errored, 4 broken
+  (three pre-existing and the labelled `:line` skip), 18 heavyweight
+  sections skipped by name, the new arm testset among them; a first
+  attempt on 16af558 was red at the derivative sweep (section 4) and its
+  log is kept as `fast_lane_RED1_16af558_sweep_pair.log`.
+- The full gate at CI settings with CUDA active, native arm, on 27d2b57
+  (this tree with the gate placeholder still in this paragraph; 2026-11-25
+  00:40:22 to 02:18:58 EST, 1 h 38 min 36 s, under a pseudo-terminal with
+  core dumps enabled): exit 0, `Testing Octopus tests passed`, 481
+  testsets, 162,114 assertions passed, 0 failed, 0 errored, 3 pre-existing
+  broken, no lane skip; "Every example script runs against the current
+  interface" 21 of 21 in 12 min 09 s (the converted DBA script among
+  them), "CUDA-requiring validation scripts run in the gate's CUDA arm"
+  218 of 218 in 8 min 19 s, "Physics contracts" 28 of 28, "Element
+  parameter effectiveness" 80 of 80, the expression arm 30 of 30. The
+  only change after that gate is this paragraph, a markdown-only
+  increment whose gate is the fast lane on the final tree (AGENTS.md
+  matrix); its numbers are in the commit message of the record, as a
+  record cannot carry the lane that covers its own last line. Logs:
+  `result/gates/md2/full_gate_native.log`, `fast_lane.log`.
 
 ## 4 Findings of the fix round: closed, and carried
 
