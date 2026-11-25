@@ -225,7 +225,13 @@ Procedures, one per task class, routed from the Task Routing table in
   and the U1-1 reproduction
   [`history/audit_linear_optics_2026_11_21_U1_1_repro.jl`](history/audit_linear_optics_2026_11_21_U1_1_repro.jl).
 - [`machine_description.md`](design/machine_description.md) — the machine
-  description designed 2026-11-24 and not yet implemented: Julia stays the
+  description designed 2026-11-24; its stage 2 (`Lattice`, `ReferenceParticle`,
+  the `@elements` block, the friendly constructors accepting knob expressions,
+  `TrackingTask` and `analyze` taking a lattice, the DBA example converted) is
+  implemented and recorded in
+  [`history/machine_description_stage2_2026_11_25.md`](history/machine_description_stage2_2026_11_25.md),
+  stages 3 to 5 (`Machine`, the TOML form, `with_overrides`) are not started.
+  The note: Julia stays the
   input language (no lattice language, no operator algebra); `Lattice` as a
   record around a top-level `BeamLine` with the entrance reference particle,
   a knob root and a numeric type, and no closure flag; `Machine` as the
@@ -248,6 +254,18 @@ Procedures, one per task class, routed from the Task Routing table in
   result into the point with `linear_optics`): what changed per script, the
   fingerprint identity against the flat versions on CPU and CUDA, the gate,
   and the push and CI run of the LinearOptics batch it follows.
+- [`machine_description_stage2_2026_11_25.md`](history/machine_description_stage2_2026_11_25.md)
+  — the machine description's stage 2: the `Lattice` record (a top-level
+  `BeamLine` with its entrance `ReferenceParticle`, knob roots and numeric
+  type; the knob-root and numeric-type tripwires at construction; structural
+  equality), `ReferenceParticle` with its refusals and relativistic
+  accessors, the `@elements`/`@element` block over the friendly constructors
+  through the `numeric_type` keyword, `TrackingTask` and `analyze` accepting
+  a lattice through one method each, the friendly constructors accepting
+  knob expressions (D10), the DBA example declared through the block with
+  its fingerprints against the pre-change baseline, the decisions taken in
+  the stage and the owner's rulings on the design note's open questions, the
+  per-unit verification, the sweeps and the gate.
 - [`linear_optics_owner_items_2026_11_21.md`](history/linear_optics_owner_items_2026_11_21.md)
   — the second LinearOptics batch, closing the design note's owner items 1, 4
   and 5 (D11-D13): form 2 reaching `ChromaticityKickSpec` and `LumpedRadSpec`

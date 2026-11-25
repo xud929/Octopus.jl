@@ -597,6 +597,67 @@ coordinates of each kind agree bitwise between the CPU and CUDA kernels and
 which agree to a stated number of ulps (`_cross_backend_rounding`, checked by
 measurement in the suite and by `validation/tracking_backend_consistency.jl`).
 
+## Describe A Lattice
+
+The machine description (design note `docs/design/machine_description.md`,
+stage 2; record `docs/history/machine_description_stage2_2026_11_25.md`)
+puts a top-level `BeamLine` into a `Lattice` record with the context the
+line does not carry: the entrance `ReferenceParticle`, the knob root the
+line's expressions must live under, and the numeric type every element
+shares. The `@elements` block (`@element` for one declaration) declares
+elements by registered kind name over the friendly constructors, the
+binding name as each element's `name`, the header type as each element's
+`numeric_type` (`Float64` when omitted), and `line(...)` as `BeamLine`; the
+shipped DBA example declares its ring this way in a module. Use Julia help:
+
+```julia
+?Lattice
+?ReferenceParticle
+?@elements
+?@element
+```
+
+```julia
+@knob ring.qf_k1 = 1.5                       # `ring`: the knob root of the shipped modules
+
+@elements begin                              # `@elements Float32 begin ... end` types the block
+    QF   = quadrupole(L = 0.35, k1 = @knob_expr(ring.qf_k1))
+    QD   = quadrupole(L = 0.25, k1 = -1.1)
+    D    = drift(L = 0.6)
+    B    = sbend(L = 1.0, angle = 0.2)
+    RF   = thin_rf_cavity(500e6; voltage = 2e6, e0 = 3.0e9, mc2 = PMASS_EV)
+    RING = line(QF, D, B, D, QD, D, B, D, QF, RF)
+end
+
+lattice = Lattice("DBA_RING"; line = RING,
+                  reference = ReferenceParticle(; charge = 1, mc2 = PMASS_EV, E0 = 3.0e9),
+                  knob_root = :ring)
+task   = TrackingTask(lattice)                        # the placements the bare line gives
+result = analyze(TwissDispersionAnalysis(), lattice)  # one_turn_matrix(lattice) likewise
+```
+
+Two tripwires run when the lattice is built, so a convention becomes a
+check. Every knob the line's expressions depend on, transitively and through
+placement overrides, must sit under a declared root: a dependency outside
+the roots, or any dependency when no root is declared, is refused by name
+with the element's provenance path, the parameter, the knob path and the
+remedy. Every element must carry the lattice's numeric type: a stored
+`numeric_type` must equal `eltype`, and an untyped element passes when the
+promotion of its stored numeric parameters over `eltype` is `eltype`, so a
+kind with no numeric value passes and a wider literal is refused with the
+typed-form remedy. The friendly constructors accept knob expressions since
+this stage (design D10; `docs/knob_control.md`, section 2): a number is
+converted, an expression is kept, and the folds build expression nodes, so
+`k1 = @knob_expr(ring.qf_k1)` above stores the expression in `kn`; a
+derivation the tree cannot express still refuses by name with the
+flexible-form remedy [MEASURE: unit C refusals]. `ReferenceParticle` is
+carried on the lattice and not yet consumed: `Beam` and the cavities keep
+their `charge`, `mc2`, `E0`, `beta0`, `gamma0` keywords until the compile-path
+campaign of D12 (`reference_beta_gamma(ref)` derives the factors a script
+spells by hand today). `Lattice` forwards `line_entries`, `s_positions`,
+`find_entries` and `knob_report` to its line, and `eltype(lattice)` is its
+numeric type. `StrongStrongTask` and `Machine` are stage 3.
+
 ## Fixed Particle Tunes
 
 `Linear6DSpec` accepts `particle_tunes` in its optics form. For example,

@@ -139,12 +139,24 @@ value* through the namespace and binds a constant snapshot; only
 
 Two consequences to know:
 
-- The **flexible form is required**. The friendly constructors
-  (`CrabDispersionSpec(...)`, `LorentzBoostSpec(...)`, …) convert parameters
-  eagerly (`T(value)`), which cannot defer; handing them a knob expression
-  raises a directed error. The flexible form must supply every parameter its
-  runtime constructor reads, exactly as each element's `construction_help`
-  documents.
+- The **friendly constructors accept knob expressions** since the
+  machine-description stage 2 (design D10 in
+  [`design/machine_description.md`](design/machine_description.md); record
+  [`history/machine_description_stage2_2026_11_25.md`](history/machine_description_stage2_2026_11_25.md)).
+  Before it they converted every parameter eagerly (`T(value)`) and refused
+  an expression with a directed error. The rule is "convert a number, keep an
+  expression": the typed-form conversion and the typed-by-hand constructors
+  convert a number to the element's numeric type and store an expression as
+  the tree it is, and the folds (`k1`/`k1s` into `kn`/`ks` through
+  `_fold_named_strengths`, the bend's `angle / L`) build whitelisted
+  expression nodes when an operand is an expression, so the stored parameters
+  remain the folded, flattened ones a flexible-form spec would hold. A
+  derivation the tree cannot express still refuses the expression by name
+  with the flexible-form remedy [MEASURE: unit C refusals: the sites that
+  still refuse]. The flexible `ElementSpec{kind}(; ...)` form stays as the
+  deferred path, and as the path the TOML loader of stage 4 (D13, proposed)
+  will take; it must supply every parameter its runtime constructor reads,
+  exactly as each element's `construction_help` documents.
 - **Task recompilation is epoch-based.** `TrackingTask` and `StrongStrongTask`
   cache compiled runtime lines; lines containing knob parameters record the
   epoch and recompile when it has moved. A knob assignment therefore reaches

@@ -1,11 +1,17 @@
 # The machine description: `Lattice`, `Machine`, the element block and the TOML snapshot
 
 > **Status: designed 2026-11-24 in owner discussion; the owner authorised this
-> note and the staging of section 3 the same day ("Ok. Do it now."). Nothing
-> of it is implemented: every type, macro and function named below is
-> proposed, and the note says so where a reader could mistake one for an
-> existing entry point. The campaign record that retires these markers will
-> be named here when stage 2 lands.** Parent notes:
+> note and the staging of section 3 the same day ("Ok. Do it now."). Stage 2
+> landed [MEASURE: date], record
+> [`../history/machine_description_stage2_2026_11_25.md`](../history/machine_description_stage2_2026_11_25.md):
+> implemented are D3 (`Lattice`), D7 (the knob-root tripwire), D9
+> (`@elements`, `@element`), D10 (the friendly constructors accepting knob
+> expressions; [MEASURE: unit C scope]), D12 as acceptance only
+> (`ReferenceParticle` exists and is carried on the lattice; the consumers
+> keep their keywords), D15 for `TrackingTask` and `analyze`, and D16
+> (`src/lattice/`). `Machine` (D5), the TOML form (D13, D14) and
+> `with_overrides` (D11) remain proposed, and the "(proposed)" markers below
+> read as the state when the note was written.** Parent notes:
 > [`../theory/beam_line_composition.md`](../theory/beam_line_composition.md)
 > (the line layer this builds on: placements, provenance, selectors, its
 > decisions 1 to 7), [`../knob_control.md`](../knob_control.md) (knobs as
@@ -197,7 +203,13 @@ left out is in section 2's last decision.
   `@testset` and `@kwdef`. Rejected: a macro that reads a module-level
   constant for the type (action at a distance; the header is visible beside
   the elements), with the constant acceptable later as the header's default
-  only because D3's `eltype` check makes it safe.
+  only because D3's `eltype` check makes it safe. Implemented in stage 2
+  with one change to rule (iii): the block applies the type through the
+  `numeric_type = T` keyword every kind's friendly constructor routes to its
+  typed form, not as a `{T}` parameter, because `ThinCrabCavitySpec{N}`
+  carries the cavity count in its first parameter and a numeric `{T}` cannot
+  be applied to it uniformly; an explicit `numeric_type =` on one call wins,
+  as an explicit `name =` does.
 
 - **D10 The friendly constructors accept knob expressions** (owner,
   2026-11-24; consistency with D9, since the block maps kind calls onto the
@@ -246,7 +258,8 @@ left out is in section 2's last decision.
   lattice built afterwards in the process, so it is the interactive lever,
   not one a script of record uses. Access itself is Julia's: `ESRLattice.TCCB`
   reaches the binding, and a `const` binding cannot be rebound, nor can
-  another module's globals be assigned.
+  another module's globals be assigned. The verb: `with_overrides` (owner,
+  2026-11-24; stage 5), not `override`.
 
 - **D12 `ReferenceParticle`, one type wherever a reference is spelled.**
   Species and momentum (charge, mass, energy or `p0c`; proposed), accepted by
@@ -472,6 +485,16 @@ are the receipt, and a stage that moves one has a defect, not a feature.
 - Whether `Lattice`'s `eltype` check exempts kinds that store no numeric
   type (markers, apertures), or requires them untyped.
 - Whether the expression acceptance of D10 is stage 2's batch or its own.
+
+Decided 2026-11-24 (owner), the questions kept above as asked: the first
+example converted is the DBA ring (`examples/twiss_dispersion_dba_ring.jl`);
+the derived-lattice verb is `with_overrides`; the knob root of the shipped
+lattice modules is `ring`; the `eltype` check accepts an element built by an
+untyped friendly constructor when the promotion of its stored numeric
+parameters over `eltype` is `eltype` itself, so a kind storing no numeric
+value passes and a wider literal is refused with the typed-form remedy, while
+a stored `numeric_type` must equal `eltype`; the expression acceptance of D10
+is stage 2's batch.
 
 ## 6. Precedents read for this design
 
