@@ -204,7 +204,10 @@ trailing or doubled dots; a segment that is not a Julia identifier
 (`Base.isidentifier`; `1abc`); a root that is one of the knob
 expression language's reserved constant names (`pi`, `π`, `ℯ`, `NaN`, `Inf`,
 the keys of `_KNOB_NAMED_CONSTANTS`), which `@knob` itself refuses to declare;
-a non-name value. Every message begins `who * ":"`: `Lattice` keeps the default,
+a non-name value; in a tuple or vector, a root declared twice, and a root that
+sits under another declared root (`(:ring, "ring.arc")`: every knob under
+`ring.arc` is under `ring` already, so only `ring` is declared). Every message
+begins `who * ":"`: `Lattice` keeps the default,
 `Machine` passes its own name since its shared roots take the same spellings
 (stage 3).
 """
@@ -239,6 +242,21 @@ function _lattice_knob_roots(knob_root, who::AbstractString="Lattice")
                 "$(who): every entry of `knob_root` must be a Symbol or a String naming a " *
                 "knob namespace; got $(repr(r)) of type $(typeof(r)) in $(repr(knob_root))"))
             push!(roots, only(_lattice_knob_roots(r, who)))
+        end
+        # A root under another declared root is declared twice: every knob
+        # under ring.arc is under ring already, so the pair names one namespace
+        # two ways (stage 3; the machine-level tripwire refuses the same nesting
+        # across lattices and shared roots).
+        for i in eachindex(roots), j in i+1:lastindex(roots)
+            a, b = roots[i], roots[j]
+            a === b && throw(ArgumentError(
+                "$(who): `knob_root` declares $(a) twice ($(repr(knob_root))); declare it once"))
+            outer, inner = _knob_under_prefix(string(b), string(a)) ? (a, b) :
+                           _knob_under_prefix(string(a), string(b)) ? (b, a) : (nothing, nothing)
+            outer === nothing || throw(ArgumentError(
+                "$(who): `knob_root` $(inner) sits under $(outer), which is declared too " *
+                "($(repr(knob_root))); declare only $(outer): a knob under $(inner) is under " *
+                "$(outer) already"))
         end
         return Tuple(roots)
     end

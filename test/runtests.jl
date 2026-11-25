@@ -20488,6 +20488,11 @@ end
     @test occursin("malformed", msg(() -> Lattice("T"; line=ring, knob_root=".a")))
     @test occursin("malformed", msg(() -> Lattice("T"; line=ring, knob_root="a.")))
     @test occursin("got nothing", msg(() -> Lattice("T"; line=ring, knob_root=(:a, nothing))))
+    # A root under another declared root names one namespace twice (stage 3): refused
+    # naming both roots and the remedy, before the dependency check runs.
+    let m = msg(() -> Lattice("T"; line=ring, knob_root=(:ring, "ring.arc")))
+        @test startswith(m, "ArgumentError: Lattice: `knob_root` ring.arc sits under ring") && occursin("declare only ring", m)
+    end
     @test occursin("`knob_root` must be", msg(() -> Lattice("T"; line=ring, knob_root=3)))
     @test occursin("empty tuple", msg(() -> Lattice("T"; line=ring, knob_root=())))
     # The guard is the constructor: the ring without its knob reaches ACCEPTED with no root.
@@ -21025,11 +21030,8 @@ end
         @test occursin("md3a_ring (declared by lattice \"A\")", m) &&
               occursin("md3a_ring.arc (declared by the machine's shared knob roots)", m)
     end
-    # ... and two roots of ONE lattice.
-    let lab = Lattice("AB"; line=plain("AB"), knob_root=(:md3a_ring, "md3a_ring.arc"))
-        @test occursin("md3a_ring (declared by lattice \"AB\") and md3a_ring.arc (declared by lattice \"AB\") overlap",
-                       msg(() -> Machine("md3a_M"; lattices=(lab,))))
-    end
+    # (Two nesting roots of ONE lattice never reach the machine: `Lattice`
+    # refuses them itself, the stage 2 Lattice testset's arm.)
     # The dot rule: md3a_ringx is not under md3a_ring, so that pair is accepted.
     let lx = Lattice("X"; line=plain("X"), knob_root=:md3a_ringx)
         @test Machine("md3a_M"; lattices=(la, lx)).lattices === (la, lx)
@@ -21179,6 +21181,14 @@ end
     coords(b) = [collect(getproperty(b.rep, f)) for f in (:x, :px, :y, :py, :z, :pz)]
     b1t, b2t = beams()
     b1m, b2m = beams()
+    # The configuration report of the machine-built task equals the
+    # tuple-built one's field by field (policy, output, diagnostics, solvers,
+    # each line's binding); anti-vacuity: other diagnostics report differently.
+    let rt = configuration_report(tt, b1t, b2t), rm = configuration_report(tm, b1m, b2m)
+        @test same(rt, rm)
+        @test !same(rt, configuration_report(StrongStrongTask(machine; diagnostics=StrongStrongDiagnostics(record_turn_times=true)),
+                                             b1m, b2m))
+    end
     # The compiled runtime blocks of both routes, bound for the beams about to
     # be tracked as execute! binds them: identical block types, equal field by
     # field; anti-vacuity: beam 1's blocks differ from beam 2's.
@@ -21218,6 +21228,16 @@ end
     end
     let t = StrongStrongTask(machine, "B1", :B1)
         @test all(spec(e) === s for (e, s) in zip(t.line1, tuple1)) && all(spec(e) === s for (e, s) in zip(t.line2, tuple1))
+    end
+    # The constructor's duplicate-stream check walks the lattices' LineEntry
+    # lines as it walks the tuples: one LumpedRadSpec object placed in both
+    # lattices warns by rng_id through the machine form as through the tuple form.
+    let rad = LumpedRadSpec(; damping_turns=(1.0, 1.0, 1.0), beta=(1.0, 1.0, 1.0), alpha=(0.0, 0.0, 0.0),
+                            sigma=(1.0e-4, 1.0e-5, 1.0e-2), rng_id=4113),
+        mrad = Machine("md3a_RAD"; lattices=(Lattice("R1"; line=BeamLine("R1", ip, l6a, rad)),
+                                              Lattice("R2"; line=BeamLine("R2", ip, l6b, rad))))
+        @test_logs (:warn, r"radiation placements share an rng_id") StrongStrongTask(mrad)
+        @test_logs (:warn, r"radiation placements share an rng_id") StrongStrongTask((ip, l6a, rad), (ip, l6b, rad))
     end
 end
 
