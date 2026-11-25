@@ -39,8 +39,9 @@ STRUCTURE (the weak-strong example's pattern, one block added):
 1. Define one `input` named tuple: weak beam, optics, crab cavity, CRAB NOISE,
    strong beam, radiation, output. Everything but `crab_noise` reproduces the
    weak-strong example's case, numbers unchanged.
-2. Build the weak beam's `LinearOptics` points (the IP and the crab cavities)
-   and the weak `Beam` from the IP point.
+2. Build the weak beam's `LinearOptics` points (the IP and the crab cavities),
+   its species and energy as one `ReferenceParticle`, and the weak `Beam`
+   from the IP point and the reference.
 3. Build the element specs in tracking order; the two crab cavities carry
    `phase_noise` and `strength_noise` rules built from `crab_noise`.
 4. Build `TrackingTask(line)`, `execute!` it inside an execution audit, and
@@ -418,6 +419,12 @@ wb = input.weak_beam
 beta_z = wb.sigz / wb.sigd
 emit = (wb.sigx^2 / wb.beta_x, wb.sigy^2 / wb.beta_y, wb.sigz * wb.sigd)
 weak_r0 = RE * ME0 / wb.mass
+# The weak beam's species and energy as one ReferenceParticle
+# (docs/design/machine_description.md, D12): the Beam takes it in place of
+# the flat charge, mc2, E0 keywords, so the three cannot disagree. The
+# classical radius r0 stays a keyword of its own (not derived from the
+# reference in this batch).
+wb_ref = ReferenceParticle(; charge = wb.charge, mc2 = wb.mass, E0 = wb.energy)
 
 # The weak beam's linear optics, spelled once as LinearOptics points
 # (docs/design/linear_optics.md): the IP, with the beam's alpha, canonical
@@ -436,9 +443,7 @@ beam = Beam(n_macro, policy, Float64;
     emit = emit,
     cutoff = wb.cutoff,
     rng_id = 1,
-    charge = wb.charge,
-    mc2 = wb.mass,
-    E0 = wb.energy,
+    reference = wb_ref,
     r0 = weak_r0,
     npart = wb.n_particle,
     initial_offset = wb.initial_offset,

@@ -16,8 +16,9 @@ The pattern this example follows:
 1. Define one `input` named tuple: weak beam, optics, crab cavity, strong beam,
    radiation, output.
 2. Build the weak beam's linear optics as two `LinearOptics` points (the IP and
-   the crab cavities) and the weak `Beam` from the IP point (including any
-   initial offset).
+   the crab cavities), its species and energy as one `ReferenceParticle`, and
+   the weak `Beam` from the IP point and the reference (including any initial
+   offset).
 3. Build element specs in tracking order and place observers where they matter.
 4. Build `TrackingTask(line)` and `execute!` it.
 
@@ -230,6 +231,12 @@ wb = input.weak_beam
 beta_z = wb.sigz / wb.sigd
 emit = (wb.sigx^2 / wb.beta_x, wb.sigy^2 / wb.beta_y, wb.sigz * wb.sigd)
 weak_r0 = RE * ME0 / wb.mass
+# The weak beam's species and energy as one ReferenceParticle
+# (docs/design/machine_description.md, D12): the Beam takes it in place of
+# the flat charge, mc2, E0 keywords, so the three cannot disagree. The
+# classical radius r0 stays a keyword of its own (not derived from the
+# reference in this batch).
+wb_ref = ReferenceParticle(; charge = wb.charge, mc2 = wb.mass, E0 = wb.energy)
 
 # The weak beam's linear optics, spelled once as LinearOptics points
 # (docs/design/linear_optics.md): the IP, with the beam's alpha, canonical
@@ -248,9 +255,7 @@ beam = Beam(n_macro, policy, Float64;
     emit = emit,
     cutoff = wb.cutoff,
     rng_id = 1,
-    charge = wb.charge,
-    mc2 = wb.mass,
-    E0 = wb.energy,
+    reference = wb_ref,
     r0 = weak_r0,
     npart = wb.n_particle,
     initial_offset = wb.initial_offset,

@@ -17,8 +17,9 @@ The pattern this example follows:
 
 1. Define one `input` named tuple: beams, optics, crab cavities, slicing, solver.
 2. Build an execution policy (CPU threads or CUDA) from `config`.
-3. Build each beam's `LinearOptics` points (the IP and its crab cavities) and
-   both live `Beam`s from them.
+3. Build each beam's `LinearOptics` points (the IP and its crab cavities), its
+   species and energy as one `ReferenceParticle`, and both live `Beam`s from
+   them.
 4. Build a Poisson solver. PIC is used here; the soft-Gaussian, spectral, and
    Gaussian-subtracted-PIC alternatives are shown commented below and share the
    same interface (see `?AbstractPoissonSolver`).
@@ -247,6 +248,13 @@ set_global_rng!(seed = input.seed, method = :philox)
 
 ele = input.electron
 pro = input.proton
+# Each beam's species and energy as one ReferenceParticle
+# (docs/design/machine_description.md, D12): the Beam takes it in place of
+# the flat charge, mc2, E0 keywords, so the three cannot disagree. The
+# classical radius r0 stays a keyword of its own (not derived from the
+# reference in this batch).
+ele_ref = ReferenceParticle(; charge = ele.charge, mc2 = ele.mass, E0 = ele.energy)
+pro_ref = ReferenceParticle(; charge = pro.charge, mc2 = pro.mass, E0 = pro.energy)
 
 # Each beam's linear optics as LinearOptics points (docs/design/linear_optics.md):
 # the IP and the crab cavities, alpha from the input, no dispersion or coupling.
@@ -258,12 +266,12 @@ pro_ip = LinearOptics(; beta = pro.beta, alpha = pro.alpha)
 pro_crab = LinearOptics(; beta = pro.crab_beta, alpha = pro.alpha)
 beam_ele = Beam(config.n_macro_ele, policy, Float64;
     optics = ele_ip, sigma = ele.sigma, cutoff = ele.cutoff,
-    rng_id = 1, charge = ele.charge, mc2 = ele.mass, E0 = ele.energy,
+    rng_id = 1, reference = ele_ref,
     r0 = RE * ME0 / ele.mass, npart = ele.n_particle,
 )
 beam_pro = Beam(config.n_macro_pro, policy, Float64;
     optics = pro_ip, sigma = pro.sigma, cutoff = pro.cutoff,
-    rng_id = 2, charge = pro.charge, mc2 = pro.mass, E0 = pro.energy,
+    rng_id = 2, reference = pro_ref,
     r0 = RE * ME0 / pro.mass, npart = pro.n_particle,
 )
 

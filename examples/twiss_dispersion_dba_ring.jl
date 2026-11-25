@@ -37,8 +37,8 @@ dispersive cell, so the crab dispersion zeta is already nonzero; set
 
 Structure: the ring is the module `DBARing`, declarations only, so that
 including it twice builds an equal `Lattice`: the precedent for a lattice
-module. It declares the `ReferenceParticle` (a 3 GeV proton; the cavity's
-beta0, gamma0 are derived from it instead of by hand), one knob `ring.qf_k1`
+module. It declares the `ReferenceParticle` (a 3 GeV proton, which the cavity
+takes as its `reference` in place of by-hand beta0, gamma0), one knob `ring.qf_k1`
 under the lattice's knob root `ring` (the focusing quadrupole's k1, which the
 friendly constructor takes as a knob expression), the elements through
 `@elements` by kind name (`quadrupole`, `drift`, `sbend`, `thin_rf_cavity`,
@@ -63,7 +63,7 @@ using .Octopus
 using LinearAlgebra
 
 config = (
-    energy_ev = 3.0e9,                     # proton reference energy for the cavity's beta0, gamma0
+    energy_ev = 3.0e9,                     # proton reference energy: the ReferenceParticle the cavity and the Lattice take
     rf_frequency = 400.0e6,                # Hz
     rf_strength = 0.02,                    # the thin cavity's strength (see ?ThinRFCavitySpec); keep it nonzero and of this sign: at 0.0 the ring is coasting (no synchrotron mode), at -0.02 the longitudinal cluster is unstable, and run 2 has nothing to certify either way
     crab_strength = 0.0,                   # 0.0: no crab cavity; 0.05 adds ThinCrabCavitySpec{1} with strengthX = (-k,)
@@ -77,7 +77,8 @@ config = (
 # are the friendly constructors' (`sbend` builds an `SBendSpec`,
 # `thin_rf_cavity` a `ThinRFCavitySpec`); `line(...)` is the `BeamLine` the
 # lattice carries; the focusing strength sits on a knob under the lattice's
-# knob root `ring`; the reference particle replaces the by-hand beta0, gamma0.
+# knob root `ring`; the cavity takes the reference particle in place of the
+# by-hand beta0, gamma0 (nothing derives the pair here).
 # `analyze` compiles the lattice's line itself.
 
 module DBARing
@@ -86,7 +87,6 @@ const config = parentmodule(@__MODULE__).config
 const NST = 4          # integrator slices per thick element
 const ORDER = 4        # symplectic integrator order
 const reference = ReferenceParticle(; charge = 1, mc2 = PMASS_EV, E0 = config.energy_ev)
-beta0, gamma0 = reference_beta_gamma(reference)        # what the script derived by hand before
 @knob ring.qf_k1 = 1.5                                    # the focusing strength on a knob under the lattice's root
 # The kernel's sign convention: strengthX = (-k,) gives the theory's +k crab kick.
 const CRAB = config.crab_strength != 0 ? (ThinCrabCavitySpec{1}(config.rf_frequency; strengthX = (-config.crab_strength,)),) : ()
@@ -95,7 +95,7 @@ const CRAB = config.crab_strength != 0 ? (ThinCrabCavitySpec{1}(config.rf_freque
     QF = quadrupole(L = 0.35, k1 = @knob_expr(ring.qf_k1), nst = NST, integrator_order = ORDER)   # D10: the friendly constructor takes the expression
     D  = drift(L = 0.6)
     BEND = sbend(L = 1.0, h = 0.2, b0 = 0.2, nst = NST, integrator_order = ORDER)
-    RF = thin_rf_cavity(config.rf_frequency; strength = config.rf_strength, beta0 = beta0, gamma0 = gamma0)
+    RF = thin_rf_cavity(config.rf_frequency; strength = config.rf_strength, reference = reference)
     DBA_RING = line(QD, D, BEND, D, QF, D, BEND, D, QD, RF, CRAB)    # a tuple child appends its elements; () appends nothing
 end
 const lattice = Lattice("DBA_RING"; line = DBA_RING, reference = reference, knob_root = :ring)

@@ -73,11 +73,12 @@ function example_catalog()
             "examples/strong_strong_tracking.jl",
             "Crab-crossing electron-proton collision with two live beams through a " *
             "Poisson solver. The production-shaped precedent for a strong-strong " *
-            "simulation: how to build the two beams, the collision element, the " *
+            "simulation: how to build the two beams (each from its species and " *
+            "energy as one ReferenceParticle), the collision element, the " *
             "solver and its slicing, and what to observe. Its configurable " *
             "development harness is test/examples/strong_strong_tracking.jl.",
             Type[StrongStrongTask, StrongStrongCollision, PICPoissonSolver,
-                     LongitudinalSlicing, Beam, LinearOptics]),
+                     LongitudinalSlicing, Beam, LinearOptics, ReferenceParticle]),
         ReferenceExample(
             "examples/weak_strong_tracking.jl",
             "A live weak proton beam colliding with a fixed soft-Gaussian strong " *
@@ -85,8 +86,10 @@ function example_catalog()
             "and the smaller of the two tracking examples to read first; its " *
             "linear optics are two LinearOptics points (the IP and the crab " *
             "cavities) that the beam, the transfer maps, the chromaticity kick " *
-            "and the radiation element flatten alike.",
-            Type[TrackingTask, GaussianStrongBeamSpec, ThinCrabCavitySpec, Beam, LinearOptics]),
+            "and the radiation element flatten alike, and its weak beam takes " *
+            "its species and energy as one ReferenceParticle.",
+            Type[TrackingTask, GaussianStrongBeamSpec, ThinCrabCavitySpec, Beam, LinearOptics,
+                 ReferenceParticle]),
         ReferenceExample(
             "examples/crab_cavity_noise.jl",
             "The weak-strong crab-crossing case with turn-by-turn RF phase and " *
@@ -94,7 +97,8 @@ function example_catalog()
             "tabulated record or a spectral rule (SpectralNoise: a target " *
             "spectrum over a chosen band, fixed or Rayleigh amplitudes, resolved " *
             "into a table when the line compiles) through one switch, each cavity on independent " *
-            "streams. The precedent for declaring turn modulation and reading " *
+            "streams; the weak beam takes its species and energy as one " *
+            "ReferenceParticle. The precedent for declaring turn modulation and reading " *
             "back its execution receipt, its artifact provenance and -- with the " *
             "artifact's record_turn_modulation option on, as its default run has " *
             "it -- the per-turn offsets every active slot produced, whose realised " *
@@ -107,7 +111,7 @@ function example_catalog()
             "test/examples/crab_cavity_noise.jl; the numerical study is " *
             "validation/crab_cavity_noise_response.jl.",
             Type[TrackingTask, ThinCrabCavitySpec, WhiteNoise, PinkNoise, SpectralNoise,
-                 TurnTable, TurnModulated, RunArtifact, LinearOptics]),
+                 TurnTable, TurnModulated, RunArtifact, LinearOptics, ReferenceParticle]),
         ReferenceExample(
             "examples/knob_control.jl",
             "One knob driving many element parameters, in two production-shaped " *
@@ -123,7 +127,8 @@ function example_catalog()
             "The coupled Twiss and canonical dispersion analysis of a DBA ring with " *
             "a thin RF cavity, declared in a module through @elements with the " *
             "focusing strength on a knob under the root `ring`, a ReferenceParticle " *
-            "and a Lattice fed to analyze: the default run is :degraded by " *
+            "the cavity takes as its reference and a Lattice fed to analyze: " *
+            "the default run is :degraded by " *
             "the uncertified longitudinal selection, the certified second run is " *
             ":passed and prints tunes, dispersions, normal modes, matched beam " *
             "sizes and the residual checks. The precedent for a lattice module " *
