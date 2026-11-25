@@ -86,10 +86,10 @@ struct Machine
 end
 
 function Machine(name::AbstractString; lattices, knob_root=nothing)
-    # STUB (unit A): normalise `lattices` through `_machine_lattices`, the roots
-    # through `_lattice_knob_roots(knob_root, "Machine")`, run
-    # `_machine_check_knob_roots`, then build the record.
-    error("Machine: not implemented yet (stage 3 skeleton)")
+    stored = _machine_lattices(String(name), lattices)
+    roots = _lattice_knob_roots(knob_root, "Machine")
+    _machine_check_knob_roots(String(name), stored, roots)
+    return Machine(String(name), stored, roots)
 end
 
 # The implicit one-lattice machine made explicit (D5).
@@ -105,8 +105,42 @@ elements: wrap it in `Lattice(name; line = ...)` first); two lattices of one
 name (the names are the machine's keys); any other value.
 """
 function _machine_lattices(name::String, lattices)
-    error("_machine_lattices: not implemented yet (stage 3 skeleton)")   # STUB (unit A)
+    who = "Machine($(repr(name)))"
+    lattices isa Lattice && return (lattices,)
+    if lattices isa Union{Tuple,AbstractVector}
+        isempty(lattices) && throw(ArgumentError(
+            "$(who): `lattices` is an empty $(lattices isa Tuple ? "tuple" : "vector"); a " *
+            "machine holds at least one Lattice (lattices = (lattice,), or a single Lattice)"))
+        for (i, l) in enumerate(lattices)
+            l isa Lattice || throw(ArgumentError(
+                "$(who): entry $(i) of `lattices` is not a Lattice; got " *
+                _machine_describe_entry(l) * ". Wrap each line in a lattice first: " *
+                "Lattice(name; line = BeamLine(name, element1, element2, ...))"))
+        end
+        names = String[getfield(l, :name) for l in lattices]
+        for (i, n) in enumerate(names)
+            j = findfirst(==(n), names)
+            j == i || throw(ArgumentError(
+                "$(who): two lattices named $(repr(n)) (entries $(j) and $(i) of `lattices`); " *
+                "the lattice names are the machine's keys and must be unique. Give each " *
+                "lattice a name of its own: Lattice(\"$(n)_2\"; line = ...)"))
+        end
+        return Tuple(Lattice[l for l in lattices])
+    end
+    throw(ArgumentError(
+        "$(who): `lattices` must be a Lattice or a tuple or vector of them (lattices = " *
+        "(esr, hsr)); got $(_machine_describe_entry(lattices))"))
 end
+
+# What a non-Lattice `lattices` entry is, for the refusal: a bare line by its
+# name, a bare element spec by its kind, a tuple or vector by its length, any
+# other value by its type.
+_machine_describe_entry(x) =
+    x isa ElementSpec{:line} ? "a bare BeamLine $(repr(line_name(x)))" :
+    x isa ElementSpec ? "a bare ElementSpec{$(repr(kind(x)))}" :
+    x isa Tuple ? "a Tuple of $(length(x)) element(s)" :
+    x isa AbstractVector ? "a Vector of $(length(x)) element(s)" :
+    "a value of type $(typeof(x))"
 
 """
     _machine_check_knob_roots(name::String, lattices, roots) -> nothing
@@ -121,7 +155,44 @@ name with both roots and where each is declared.
 """
 function _machine_check_knob_roots(name::String, lattices::Tuple{Vararg{Lattice}},
                                    roots::Tuple{Vararg{Symbol}})
-    error("_machine_check_knob_roots: not implemented yet (stage 3 skeleton)")   # STUB (unit A)
+    who = "Machine($(repr(name)))"
+    # Where each root is declared: the lattices by name, the machine as "the
+    # machine's shared roots"; declaration order kept for the messages.
+    declared = Pair{Symbol,Vector{String}}[]
+    declare!(root, by) = begin
+        i = findfirst(d -> first(d) === root, declared)
+        i === nothing ? push!(declared, root => [by]) : push!(last(declared[i]), by)
+        nothing
+    end
+    for l in lattices, r in getfield(l, :knob_roots)
+        declare!(r, "lattice $(repr(getfield(l, :name)))")
+    end
+    for r in roots
+        declare!(r, "the machine's shared knob roots")
+    end
+    # A root two or more lattices declare reads ONE set of knobs (the registry
+    # is process-global): the sharing must be declared on the machine.
+    for (root, by) in declared
+        lattice_users = unique(filter(startswith("lattice "), by))
+        length(lattice_users) >= 2 && !(root in roots) && throw(ArgumentError(
+            "$(who): knob root $(root) is declared by $(length(lattice_users)) lattices " *
+            "($(join(lattice_users, ", "))), so they read ONE set of knobs, but the machine " *
+            "does not declare it shared. Declare the sharing when it is intended: " *
+            "Machine($(repr(name)); lattices = ..., knob_root = :$(root)); otherwise give " *
+            "each lattice a root of its own (knob_root = :<lattice>_$(root))"))
+    end
+    # No two distinct roots of the machine may nest as dotted prefixes.
+    for i in eachindex(declared), j in i+1:lastindex(declared)
+        a, by_a = declared[i]
+        b, by_b = declared[j]
+        _knob_root_overlaps(a, b) && throw(ArgumentError(
+            "$(who): knob roots $(a) (declared by $(join(by_a, ", "))) and $(b) (declared by " *
+            "$(join(by_b, ", "))) overlap: one is a dotted prefix of the other, so every knob " *
+            "under the longer sits under both. Use roots that do not nest (one root per " *
+            "lattice, such as $(a)_1 and $(a)_2), or declare ONE root for both lattices and " *
+            "share it on the machine (knob_root = :$(a))"))
+    end
+    return nothing
 end
 
 """
@@ -133,7 +204,9 @@ roots do not overlap (they are one root); `ring` and `ringx` do not either, the
 rule `_knob_under_prefix` applies.
 """
 function _knob_root_overlaps(a::Symbol, b::Symbol)
-    error("_knob_root_overlaps: not implemented yet (stage 3 skeleton)")   # STUB (unit A)
+    a === b && return false
+    sa, sb = string(a), string(b)
+    return _knob_under_prefix(sa, sb) || _knob_under_prefix(sb, sa)
 end
 
 """
@@ -146,16 +219,65 @@ asking, and the remedy (`machine[:NAME]` for one lattice, `StrongStrongTask(
 machine, :A, :B)` for a pair).
 """
 function _machine_only_lattice(machine::Machine, consumer::AbstractString)
-    error("_machine_only_lattice: not implemented yet (stage 3 skeleton)")   # STUB (unit A)
+    lattices = getfield(machine, :lattices)
+    length(lattices) == 1 && return lattices[1]
+    names = join(map(l -> repr(getfield(l, :name)), lattices), ", ")
+    throw(ArgumentError(
+        "Machine($(repr(getfield(machine, :name)))): $(consumer) takes one line, but the " *
+        "machine holds $(length(lattices)) lattices ($(names)). Name the lattice meant: " *
+        "machine[:$(getfield(lattices[1], :name))] (one lattice), or pair two of them with " *
+        "StrongStrongTask(machine, :$(getfield(lattices[1], :name)), " *
+        ":$(getfield(lattices[2], :name)))"))
 end
 
-# STUBS (unit A): the readers.
-#   Base.getindex(machine::Machine, name::Union{Symbol,AbstractString}) -> Lattice (unknown refused listing keys)
-#   Base.haskey(machine::Machine, name::Union{Symbol,AbstractString}) -> Bool
-#   Base.keys(machine::Machine) -> Tuple of String, declaration order
-#   Base.length(machine::Machine), Base.iterate(machine::Machine, state...) over the lattices,
-#   Base.eltype(::Type{Machine}) = Lattice
-# STUBS (unit A): Base.:(==), Base.hash (consistent with ==; lattices hashed through `hash(::Lattice)`),
-#   Base.show(io, machine) one line:
-#   Machine("EIC": 2 lattices ESR (13 placements), HSR (12 placements), shared knob roots (ip,))
-#   / Machine("ESR": 1 lattice ESR (13 placements), no shared knob roots)
+# The readers: the lattice names are the keys, in declaration order.
+function Base.getindex(machine::Machine, name::Union{Symbol,AbstractString})
+    key = String(name)
+    for l in getfield(machine, :lattices)
+        getfield(l, :name) == key && return l
+    end
+    throw(ArgumentError(
+        "Machine($(repr(getfield(machine, :name)))): no lattice named $(repr(key)); the " *
+        "machine holds $(join(map(repr, keys(machine)), ", ")) (keys(machine)). Index it " *
+        "by one of those names: machine[:$(getfield(first(getfield(machine, :lattices)), :name))]"))
+end
+Base.haskey(machine::Machine, name::Union{Symbol,AbstractString}) =
+    any(l -> getfield(l, :name) == String(name), getfield(machine, :lattices))
+Base.keys(machine::Machine) = map(l -> getfield(l, :name), getfield(machine, :lattices))
+Base.length(machine::Machine) = length(getfield(machine, :lattices))
+Base.iterate(machine::Machine, state...) = iterate(getfield(machine, :lattices), state...)
+Base.eltype(::Type{Machine}) = Lattice
+# Two machines are equal when their names and shared roots agree and their
+# lattices agree pairwise in order, by `Lattice`'s structural equality (the
+# lattice count included: `==` on tuples of unequal length is false).
+Base.:(==)(a::Machine, b::Machine) =
+    getfield(a, :name) == getfield(b, :name) &&
+    getfield(a, :knob_roots) == getfield(b, :knob_roots) &&
+    getfield(a, :lattices) == getfield(b, :lattices)
+# Consistent with `==`: the name, the shared roots, then every lattice through
+# `hash(::Lattice)`, which equal lattices share.
+function Base.hash(a::Machine, h::UInt)
+    h = hash(getfield(a, :name), h)
+    h = hash(getfield(a, :knob_roots), h)
+    for l in getfield(a, :lattices)
+        h = hash(l, h)
+    end
+    return h
+end
+
+function Base.show(io::IO, machine::Machine)
+    # One line: Machine("EIC": 2 lattices ESR (13 placements), HSR (12 placements), shared knob roots (ip,))
+    lattices = getfield(machine, :lattices)
+    roots = getfield(machine, :knob_roots)
+    n = length(lattices)
+    print(io, "Machine(", repr(getfield(machine, :name)), ": ", n, " lattice", n == 1 ? " " : "s ")
+    print(io, join(map(lattices) do l
+        m = length(line_entries(getfield(l, :line)))
+        string(getfield(l, :name), " (", m, " placement", m == 1 ? "" : "s", ")")
+    end, ", "))
+    if isempty(roots)
+        print(io, ", no shared knob roots)")
+    else
+        print(io, ", shared knob roots (", join(string.(roots), ", "), length(roots) == 1 ? ",))" : "))")
+    end
+end

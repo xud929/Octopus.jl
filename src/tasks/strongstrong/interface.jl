@@ -2511,6 +2511,18 @@ Use `validate(StrongStrongGaussianBackendConsistencyContract())` to check the
 soft-Gaussian solver across CPU and CUDA. Use
 `validate(StrongStrongPICBackendConsistencyContract())` to check PIC
 coordinates, luminosity, and persistent cache history.
+
+# The machine description
+
+Two [`Lattice`](@ref)s are accepted in place of the two lines
+(`StrongStrongTask(lattice1, lattice2; ...)`): each enters through the one site
+a line enters by (`_element_tuple`, design D15), so the task holds exactly the
+placements the two bare lines give. A [`Machine`](@ref) enters in two forms:
+`StrongStrongTask(machine, :ESR, :HSR; ...)` pairs two of its lattices by name
+(beam 1 with the first; the same name twice is two beams in one ring), and
+`StrongStrongTask(machine; ...)` takes a machine of exactly two lattices in
+declaration order, refusing any other count by name. Every keyword above
+applies unchanged to every form.
 """
 struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: AbstractTask
     line1::L1
@@ -2674,10 +2686,18 @@ line form applies unchanged.
 """
 function StrongStrongTask(machine::Machine, lattice1::Union{Symbol,AbstractString},
                           lattice2::Union{Symbol,AbstractString}; kwargs...)
-    error("StrongStrongTask(machine, lattice1, lattice2): not implemented yet (stage 3 skeleton)")   # STUB (unit A)
+    return StrongStrongTask(machine[lattice1], machine[lattice2]; kwargs...)
 end
 function StrongStrongTask(machine::Machine; kwargs...)
-    error("StrongStrongTask(machine): not implemented yet (stage 3 skeleton)")   # STUB (unit A)
+    names = keys(machine)
+    length(names) == 2 || throw(ArgumentError(
+        "StrongStrongTask(machine): Machine($(repr(getfield(machine, :name)))) holds " *
+        "$(length(names)) lattice$(length(names) == 1 ? "" : "s") " *
+        "($(join(map(repr, names), ", "))), and the bare machine form pairs exactly two in " *
+        "declaration order (beam 1 with the first). Name the pair: StrongStrongTask(machine, " *
+        ":$(names[1]), :$(length(names) == 1 ? names[1] : names[2]); ...) (the same name " *
+        "twice is legal: two beams in one ring)"))
+    return StrongStrongTask(machine[names[1]], machine[names[2]]; kwargs...)
 end
 
 """Return complete-turn timings in seconds from the most recent task execution."""
@@ -3851,7 +3871,24 @@ function _append_strong_strong_line!(entries, cuts, collisions, collision::Stron
     return nothing
 end
 
-function _append_strong_strong_line!(entries, cuts, collisions, element, hook_counter)
+# A collision marker placed in a line (`BeamLine("B1", arc, ip)`, so a
+# `LineEntry` whose spec is the marker: the `BeamLine`, `Lattice` and `Machine`
+# spellings of a strong-strong line) cuts the line exactly as the bare marker
+# does. Found by the stage 3 compiled-runtime pin (machine-description stage 3,
+# unit A): the entry fell to the element method below, was compiled as a
+# physics entry and was called as a map at the first turn; the stage 2 pin
+# compared the task's entries only and never compiled them.
+function _append_strong_strong_line!(entries, cuts, collisions, entry::LineEntry, hook_counter)
+    spec = getfield(entry, :spec)
+    spec isa StrongStrongCollision &&
+        return _append_strong_strong_line!(entries, cuts, collisions, spec, hook_counter)
+    return _append_strong_strong_element!(entries, entry, hook_counter)
+end
+
+_append_strong_strong_line!(entries, cuts, collisions, element, hook_counter) =
+    _append_strong_strong_element!(entries, element, hook_counter)
+
+function _append_strong_strong_element!(entries, element, hook_counter)
     before = length(entries)
     _append_runtime_line!(entries, element, hook_counter)
     length(entries) >= before || error("internal strong-strong line construction error")

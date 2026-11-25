@@ -20895,6 +20895,332 @@ end
 # runtime and the tracked coordinates of the tuple spelling. Unit A's testsets land directly
 # below this comment and nowhere else.
 
+@testset "Machine description: a Machine holds lattices by name and the implicit one-lattice machine equals the explicit one" begin
+    # Knob-free lines, so a declared root is accepted on its name alone (the
+    # stage 2 Lattice testset); two placements in B1, three in B2.
+    mk1(L) = Lattice("B1"; line=BeamLine("B1", DriftSpec(L=L), QuadrupoleSpec(L=0.3, k1=1.0)), knob_root=:md3a_b1)
+    mk2()  = Lattice("B2"; line=BeamLine("B2", DriftSpec(L=0.25), QuadrupoleSpec(L=0.3, k1=-1.0), DriftSpec(L=0.25)))
+    l1, l2 = mk1(0.5), mk2()
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+
+    # Construction from a tuple, a vector and a single Lattice; the readers.
+    mt = Machine("md3a_EIC"; lattices=(l1, l2))
+    mv = Machine("md3a_EIC"; lattices=[l1, l2])
+    ms = Machine("md3a_ONE"; lattices=l1)
+    @test mt.name == "md3a_EIC" && mt.lattices === (l1, l2) && mt.knob_roots === ()
+    @test mv.lattices === (l1, l2) && ms.lattices === (l1,)
+    @test keys(mt) == ("B1", "B2") && keys(ms) == ("B1",)
+    @test mt[:B1] === l1 && mt["B2"] === l2
+    @test haskey(mt, :B2) && haskey(mt, "B1") && !haskey(mt, :B3) && !haskey(ms, "B2")
+    @test length(mt) == 2 && length(ms) == 1
+    @test collect(mt) == [l1, l2] && all(x === y for (x, y) in zip(mt, (l1, l2)))
+    @test eltype(Machine) === Lattice && eltype(mt) === Lattice
+
+    # The implicit one-lattice machine equals the explicit one, and equal
+    # machines hash equal: two lattices built independently (not ===) and
+    # structurally equal make equal machines.
+    @test Machine(l1) == Machine("B1"; lattices=(l1,))
+    @test Machine(l1).lattices === (l1,)
+    let l1b = mk1(0.5)
+        @test l1b !== l1 && l1b == l1
+        @test Machine("md3a_EIC"; lattices=(l1b, mk2())) == mt
+        @test hash(Machine("md3a_EIC"; lattices=(l1b, mk2()))) == hash(mt)
+    end
+    # Anti-vacuity: a changed element parameter, a changed name, a changed
+    # shared root and a reordering each break the equality.
+    @test Machine("md3a_EIC"; lattices=(mk1(0.51), l2)) != mt
+    @test Machine("md3a_EIC2"; lattices=(l1, l2)) != mt
+    @test Machine("md3a_EIC"; lattices=(l1, l2), knob_root=:md3a_shared) != mt
+    @test Machine("md3a_EIC"; lattices=(l2, l1)) != mt
+
+    # `show` is one line naming the machine, each lattice with its placement
+    # count, and the shared roots (none, one, two).
+    @test sprint(show, Machine("md3a_EIC"; lattices=(l1, l2), knob_root=:md3a_shared)) ==
+          "Machine(\"md3a_EIC\": 2 lattices B1 (2 placements), B2 (3 placements), shared knob roots (md3a_shared,))"
+    @test sprint(show, ms) == "Machine(\"md3a_ONE\": 1 lattice B1 (2 placements), no shared knob roots)"
+    @test sprint(show, Machine("md3a_EIC"; lattices=(l1, l2), knob_root=(:md3a_s1, "md3a_s2"))) ==
+          "Machine(\"md3a_EIC\": 2 lattices B1 (2 placements), B2 (3 placements), shared knob roots (md3a_s1, md3a_s2))"
+
+    # Refusals, each by name, with the remedy.
+    let m = msg(() -> Machine("T"; lattices=()))
+        @test startswith(m, "ArgumentError: Machine(\"T\"):") && occursin("empty tuple", m) && occursin("at least one Lattice", m)
+    end
+    @test occursin("empty vector", msg(() -> Machine("T"; lattices=Lattice[])))
+    let m = msg(() -> Machine("T"; lattices=(l1, l2.line)))
+        @test startswith(m, "ArgumentError: Machine(\"T\"):") && occursin("entry 2", m) && occursin("bare BeamLine \"B2\"", m) &&
+              occursin("Lattice(", m)
+    end
+    let m = msg(() -> Machine("T"; lattices=(DriftSpec(L=0.5), QuadrupoleSpec(L=0.3, k1=1.0))))
+        @test occursin("entry 1", m) && occursin("bare ElementSpec{:drift}", m) && occursin("Lattice(", m)
+    end
+    let m = msg(() -> Machine("T"; lattices=((DriftSpec(L=0.5), QuadrupoleSpec(L=0.3, k1=1.0)),)))
+        @test occursin("Tuple of 2 element(s)", m) && occursin("Lattice(", m)
+    end
+    let m = msg(() -> Machine("T"; lattices=l2.line))
+        @test occursin("`lattices` must be a Lattice", m) && occursin("bare BeamLine \"B2\"", m)
+    end
+    @test occursin("a value of type Int64", msg(() -> Machine("T"; lattices=3)))
+    let m = msg(() -> Machine("T"; lattices=(l1, l2, mk1(0.7))))
+        @test startswith(m, "ArgumentError: Machine(\"T\"):") && occursin("two lattices named \"B1\"", m) &&
+              occursin("entries 1 and 3", m) && occursin("must be unique", m)
+    end
+    let m = msg(() -> mt[:B3])
+        @test startswith(m, "ArgumentError: Machine(\"md3a_EIC\"):") && occursin("no lattice named \"B3\"", m) &&
+              occursin("\"B1\", \"B2\"", m) && occursin("machine[:B1]", m)
+    end
+    @test occursin("no lattice named \"b1\"", msg(() -> mt["b1"]))   # keys are case-sensitive strings
+    # The root spellings are `Lattice`'s, refused by name under the machine's own label.
+    let m = msg(() -> Machine("T"; lattices=(l1,), knob_root="a..b"))
+        @test startswith(m, "ArgumentError: Machine:") && occursin("malformed", m)
+    end
+    @test startswith(msg(() -> Machine("T"; lattices=(l1,), knob_root=:pi)), "ArgumentError: Machine: `knob_root` \"pi\" is a reserved name")
+    @test startswith(msg(() -> Machine("T"; lattices=(l1,), knob_root=(:a, 2))), "ArgumentError: Machine: every entry of `knob_root`")
+    @test startswith(msg(() -> Machine("T"; lattices=(l1,), knob_root=())), "ArgumentError: Machine: `knob_root` is an empty tuple")
+    # The guard is the constructor: the same spellings reach ACCEPTED on a Lattice.
+    @test Lattice("T"; line=l1.line, knob_root="md3a_b1").knob_roots === (:md3a_b1,)
+end
+
+@testset "Machine description: the machine-level knob-root tripwire refuses an undeclared shared root and overlapping roots" begin
+    # Declared at the testset's top level through the macro forms
+    # (knob_control.md, F-184); the registry is process-global, hence the tag.
+    @knob md3a_ip.angle = 0.0125
+    @knob md3a_ring.k1 = 1.5
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    quad(expr) = ElementSpec{:quadrupole}(; L=0.35, kn=(0.0, expr))
+    # Two lattices both reading a knob under md3a_ip: each passes the
+    # Lattice-level check on its own ...
+    lip1 = Lattice("B1"; line=BeamLine("L1", quad(@knob_expr(md3a_ip.angle)), DriftSpec(L=0.5)), knob_root=:md3a_ip)
+    lip2 = Lattice("B2"; line=BeamLine("L2", DriftSpec(L=0.25), quad(@knob_expr(md3a_ip.angle))), knob_root=:md3a_ip)
+    @test lip1.knob_roots === (:md3a_ip,) && lip2.knob_roots === (:md3a_ip,)
+    # ... and the machine refuses the pair until the sharing is declared, by
+    # the root, the lattices and both remedies.
+    let m = msg(() -> Machine("md3a_M"; lattices=(lip1, lip2)))
+        @test startswith(m, "ArgumentError: Machine(\"md3a_M\"):") && occursin("knob root md3a_ip is declared by 2 lattices", m) &&
+              occursin("(lattice \"B1\", lattice \"B2\")", m) && occursin("knob_root = :md3a_ip", m) &&
+              occursin("root of its own", m)
+    end
+    let m = Machine("md3a_M"; lattices=(lip1, lip2), knob_root=:md3a_ip)
+        @test m.knob_roots === (:md3a_ip,) && m.lattices === (lip1, lip2)
+    end
+    @test Machine("md3a_M"; lattices=(lip1, lip2), knob_root=("md3a_ip", :md3a_other)).knob_roots === (:md3a_ip, :md3a_other)
+    # Three lattices, one pair sharing: the pair is named, the third is not.
+    lring = Lattice("B3"; line=BeamLine("L3", quad(@knob_expr(md3a_ring.k1))), knob_root=:md3a_ring)
+    let m = msg(() -> Machine("md3a_M"; lattices=(lip1, lring, lip2)))
+        @test occursin("declared by 2 lattices (lattice \"B1\", lattice \"B2\")", m) && !occursin("\"B3\"", m)
+    end
+    # Overlapping roots, md3a_ring beside md3a_ring.arc: two lattices, either
+    # order, ...
+    plain(name) = BeamLine(name, DriftSpec(L=0.5))
+    la = Lattice("A"; line=plain("A"), knob_root=:md3a_ring)
+    lb = Lattice("B"; line=plain("B"), knob_root="md3a_ring.arc")
+    let m = msg(() -> Machine("md3a_M"; lattices=(la, lb)))
+        @test startswith(m, "ArgumentError: Machine(\"md3a_M\"):") &&
+              occursin("knob roots md3a_ring (declared by lattice \"A\") and md3a_ring.arc (declared by lattice \"B\") overlap", m) &&
+              occursin("dotted prefix", m) && occursin("do not nest", m)
+    end
+    @test occursin("md3a_ring.arc (declared by lattice \"B\") and md3a_ring (declared by lattice \"A\") overlap",
+                   msg(() -> Machine("md3a_M"; lattices=(lb, la))))
+    # ... a lattice root beside a shared root, ...
+    let m = msg(() -> Machine("md3a_M"; lattices=(la,), knob_root="md3a_ring.arc"))
+        @test occursin("md3a_ring (declared by lattice \"A\")", m) &&
+              occursin("md3a_ring.arc (declared by the machine's shared knob roots)", m)
+    end
+    # ... and two roots of ONE lattice.
+    let lab = Lattice("AB"; line=plain("AB"), knob_root=(:md3a_ring, "md3a_ring.arc"))
+        @test occursin("md3a_ring (declared by lattice \"AB\") and md3a_ring.arc (declared by lattice \"AB\") overlap",
+                       msg(() -> Machine("md3a_M"; lattices=(lab,))))
+    end
+    # The dot rule: md3a_ringx is not under md3a_ring, so that pair is accepted.
+    let lx = Lattice("X"; line=plain("X"), knob_root=:md3a_ringx)
+        @test Machine("md3a_M"; lattices=(la, lx)).lattices === (la, lx)
+    end
+    # Accepted: a shared root only one lattice declares, one no lattice
+    # declares, and two lattices of distinct non-nesting roots with nothing shared.
+    let lnone = Lattice("N"; line=plain("N"))
+        @test Machine("md3a_M"; lattices=(la, lnone), knob_root=:md3a_ring).knob_roots === (:md3a_ring,)
+        @test Machine("md3a_M"; lattices=(lnone,), knob_root=:md3a_unused).knob_roots === (:md3a_unused,)
+        @test Machine("md3a_M"; lattices=(la, lip1)).knob_roots === ()
+    end
+end
+
+@testset "Machine description: a one-lattice machine is accepted where a line is and a machine of several is refused by name" begin
+    # The knob-free DBA ring of the stage 2 Lattice testset, closed by a thin
+    # RF cavity, as a bare spec tuple and as a one-lattice machine.
+    beta0, gamma0 = reference_beta_gamma(3.0e9, PMASS_EV)
+    qd   = QuadrupoleSpec(L=0.25, kn=(0.0, -1.1), nst=4, integrator_order=4)
+    qf   = QuadrupoleSpec(L=0.35, kn=(0.0, 1.5), nst=4, integrator_order=4)
+    d    = DriftSpec(L=0.6)
+    bend = SBendSpec(L=1.0, h=0.2, b0=0.2, nst=4, integrator_order=4)
+    rf   = ThinRFCavitySpec(400.0e6; strength=0.02, beta0=beta0, gamma0=gamma0)
+    specs = (qd, d, bend, d, qf, d, bend, d, qd, rf)
+    proton = ReferenceParticle(charge=1.0, mc2=PMASS_EV, E0=3.0e9)
+    lattice = Lattice("md3a_DBA"; line=BeamLine("DBA", specs...), reference=proton)
+    machine = Machine(lattice)
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+
+    # The task sees exactly the placements the lattice's line gives (D15, one site).
+    @test all(x === y for (x, y) in zip(Octopus._element_tuple(machine), Octopus._element_tuple(lattice))) &&
+          length(Octopus._element_tuple(machine)) == 10
+    # Identically built beams (the global seed reset before each build, one
+    # explicit stream id) track bitwise alike through the machine and through
+    # the bare tuple; anti-vacuity: a fresh build of the same beam differs
+    # from the tracked one.
+    mkb() = begin
+        set_global_rng!(seed=20261125, method=:philox)
+        Beam(64, CPUThreadsBackend, Float64; beta=(1.0, 1.0, 1.0), alpha=(0.0, 0.0, 0.0),
+             sigma=(1.0e-4, 1.0e-4, 1.0e-3), rng_id=4101, reference=proton)
+    end
+    coords(b) = [collect(getproperty(b.rep, f)) for f in (:x, :px, :y, :py, :z, :pz)]
+    let bm = mkb(), bt = mkb()
+        @test coords(bm) == coords(bt)
+        execute!(TrackingTask(machine), bm; turns=3)
+        execute!(TrackingTask(specs), bt; turns=3)
+        @test coords(bm) == coords(bt)
+        @test coords(bm) != coords(mkb())
+    end
+    # The analysis route: one and the same one-turn matrix and provenance, the
+    # same Twiss verdict and matrix.
+    let om = one_turn_matrix(machine), ol = one_turn_matrix(lattice)
+        @test om.matrix == ol.matrix && size(om.matrix) == (6, 6) && om.matrix != one(om.matrix)
+        @test om.provenance.source_kind === ol.provenance.source_kind === :element_spec &&
+              om.provenance.source == ol.provenance.source
+    end
+    let rm = analyze(TwissDispersionAnalysis(strict=false), machine),
+        rl = analyze(TwissDispersionAnalysis(strict=false), lattice)
+        @test rm.status == rl.status && rm.matrix == rl.matrix
+    end
+
+    # A machine of two lattices handed where one line is wanted: refused by
+    # name in all three consumers, with the machine, its count and names, the
+    # consumer, and the remedies.
+    two = Machine("md3a_TWO"; lattices=(lattice, Lattice("md3a_DBA2"; line=BeamLine("DBA2", specs...), reference=proton)))
+    let m = msg(() -> TrackingTask(two))
+        @test startswith(m, "ArgumentError: Machine(\"md3a_TWO\"):") && occursin("TrackingTask", m) &&
+              occursin("holds 2 lattices (\"md3a_DBA\", \"md3a_DBA2\")", m) &&
+              occursin("machine[:md3a_DBA]", m) && occursin("StrongStrongTask(machine, :md3a_DBA, :md3a_DBA2)", m)
+    end
+    let m = msg(() -> one_turn_matrix(two))
+        @test startswith(m, "ArgumentError: Machine(\"md3a_TWO\"):") && occursin("one_turn_matrix takes one line", m) && occursin("machine[:", m)
+    end
+    let m = msg(() -> analyze(TwissDispersionAnalysis(strict=false), two))
+        @test startswith(m, "ArgumentError: Machine(\"md3a_TWO\"):") && occursin("machine[:", m)
+    end
+    # The remedy works: the named lattice goes through.
+    @test one_turn_matrix(two[:md3a_DBA2]).matrix == one_turn_matrix(lattice).matrix
+end
+
+@testset "Machine description: StrongStrongTask takes a machine and compiles the runtime the tuple spelling compiles" begin
+    # Two short lines sharing one soft-Gaussian collision marker, a Linear6D
+    # map each (the run-artifact testset's pair), as bare tuples and as the
+    # lattices of one machine.
+    ip = StrongStrongCollision(:ip; poisson_solver=GaussianPoissonSolver())
+    L6s(b, t) = Linear6DSpec{Float64}(; beta1=b, beta2=b, alpha1=(0.0, 0.0, 0.0),
+                                      alpha2=(0.0, 0.0, 0.0), dmu=2pi .* t)
+    l6a = L6s((0.55, 0.056, 12.7), (0.08, 0.14, -0.069))
+    l6b = L6s((0.8, 0.072, 90.9), (0.228, 0.210, -0.01))
+    tuple1, tuple2 = (ip, l6a), (ip, l6b)
+    lat1 = Lattice("B1"; line=BeamLine("B1", ip, l6a))
+    lat2 = Lattice("B2"; line=BeamLine("B2", ip, l6b))
+    machine = Machine("md3a_EIC"; lattices=(lat1, lat2))
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    spec(entry) = getfield(entry, :spec)
+
+    tt = StrongStrongTask(tuple1, tuple2)
+    tm = StrongStrongTask(machine, :B1, :B2)
+    tb = StrongStrongTask(machine)
+    # The machine task's entries carry the very spec objects of the tuples;
+    # the bare machine form holds the same entries; anti-vacuity: the two
+    # lines hold two different maps.
+    @test length(tm.line1) == 2 && length(tm.line2) == 2
+    @test all(spec(e) === s for (e, s) in zip(tm.line1, tuple1)) && all(spec(e) === s for (e, s) in zip(tm.line2, tuple2))
+    @test all(x === y for (x, y) in zip(tb.line1, tm.line1)) && all(x === y for (x, y) in zip(tb.line2, tm.line2))
+    @test spec(tm.line1[2]) !== spec(tm.line2[2])
+
+    # Field-by-field equality of two compiled runtime trees: numbers by
+    # isequal, containers elementwise, structs and closures field by field
+    # (two compiles make two closure instances of one type), locks, tasks and
+    # weak references by type alone; a tree deeper than 64 levels is an error,
+    # never a pass.
+    function same(a, b, depth=0)
+        depth > 64 && error("md3a: the runtime comparison went deeper than 64 levels")
+        typeof(a) === typeof(b) || return false
+        a isa Number && return isequal(a, b)
+        a isa Union{Symbol,AbstractString,Nothing,Type,Module} && return a == b
+        (a isa Base.AbstractLock || a isa Task || a isa WeakRef) && return true
+        # The blocks container is a vector by interface; its three derived
+        # fields (physics, observers, binding) are compared as well.
+        a isa Octopus.StrongStrongBlocks &&
+            return all(same(getfield(a, f), getfield(b, f), depth + 1) for f in 1:fieldcount(typeof(a)))
+        if a isa AbstractDict
+            length(a) == length(b) || return false
+            return all(haskey(b, k) && same(v, b[k], depth + 1) for (k, v) in a)
+        elseif a isa AbstractArray
+            size(a) == size(b) || return false
+            return all(same(x, y, depth + 1) for (x, y) in zip(a, b))
+        elseif a isa Union{Tuple,NamedTuple}
+            length(a) == length(b) || return false
+            return all(same(x, y, depth + 1) for (x, y) in zip(a, b))
+        elseif a isa Base.RefValue
+            isassigned(a) == isassigned(b) || return false
+            return !isassigned(a) || same(a[], b[], depth + 1)
+        end
+        isprimitivetype(typeof(a)) && return a === b
+        return all(same(getfield(a, f), getfield(b, f), depth + 1) for f in 1:fieldcount(typeof(a)))
+    end
+    # Identically built beams: the global seed reset before each build, one
+    # explicit stream id per beam.
+    mkb(rng_id, charge, mc2, E0, beta) = begin
+        set_global_rng!(seed=20261125, method=:philox)
+        Beam(200, CPUThreadsExecutionPolicy(), Float64; beta=beta, alpha=(0.0, 0.0, 0.0),
+             sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
+             charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+    end
+    beams() = (mkb(4111, -1.0, EMASS_EV, 10.0e9, (0.55, 0.056, 12.7)), mkb(4112, 1.0, PMASS_EV, 275.0e9, (0.8, 0.072, 90.9)))
+    coords(b) = [collect(getproperty(b.rep, f)) for f in (:x, :px, :y, :py, :z, :pz)]
+    b1t, b2t = beams()
+    b1m, b2m = beams()
+    # The compiled runtime blocks of both routes, bound for the beams about to
+    # be tracked as execute! binds them: identical block types, equal field by
+    # field; anti-vacuity: beam 1's blocks differ from beam 2's.
+    let kt1 = Octopus._strong_strong_runtime_blocks(tt, 1, b1t.rep), km1 = Octopus._strong_strong_runtime_blocks(tm, 1, b1m.rep),
+        kt2 = Octopus._strong_strong_runtime_blocks(tt, 2, b2t.rep), km2 = Octopus._strong_strong_runtime_blocks(tm, 2, b2m.rep)
+        @test length(kt1) == length(km1) == 2 && all(typeof(x) === typeof(y) for (x, y) in zip(kt1, km1))
+        @test all(typeof(x) === typeof(y) for (x, y) in zip(kt2, km2))
+        @test same(kt1, km1) && same(kt2, km2)
+        @test !same(kt1, kt2)
+    end
+    # Three turns through both routes: bitwise the same final coordinates for
+    # both beams, and not the initial ones.
+    execute!(tt, b1t, b2t; turns=3)
+    execute!(tm, b1m, b2m; turns=3)
+    @test coords(b1t) == coords(b1m) && coords(b2t) == coords(b2m)
+    let (b1b, b2b) = beams()
+        execute!(tb, b1b, b2b; turns=3)
+        @test coords(b1b) == coords(b1t) && coords(b2b) == coords(b2t)
+    end
+    let (b10, b20) = beams()
+        @test coords(b1t) != coords(b10) && coords(b2t) != coords(b20)
+    end
+
+    # Refusals by name: the bare machine form on one and on three lattices, an
+    # unknown name; the same name twice is two beams in one ring.
+    let m = msg(() -> StrongStrongTask(Machine(lat1)))
+        @test startswith(m, "ArgumentError: StrongStrongTask(machine):") && occursin("Machine(\"B1\") holds 1 lattice (\"B1\")", m) &&
+              occursin("StrongStrongTask(machine, :B1, :B1;", m)
+    end
+    let lat3 = Lattice("B3"; line=BeamLine("B3", ip, l6a)),
+        m = msg(() -> StrongStrongTask(Machine("md3a_3"; lattices=(lat1, lat2, lat3))))
+        @test occursin("Machine(\"md3a_3\") holds 3 lattices (\"B1\", \"B2\", \"B3\")", m) &&
+              occursin("StrongStrongTask(machine, :B1, :B2;", m)
+    end
+    let m = msg(() -> StrongStrongTask(machine, :B1, :B9))
+        @test startswith(m, "ArgumentError: Machine(\"md3a_EIC\"):") && occursin("no lattice named \"B9\"", m) && occursin("\"B1\", \"B2\"", m)
+    end
+    let t = StrongStrongTask(machine, "B1", :B1)
+        @test all(spec(e) === s for (e, s) in zip(t.line1, tuple1)) && all(spec(e) === s for (e, s) in zip(t.line2, tuple1))
+    end
+end
+
 # [MD3-B] Machine description stage 3, unit B: the shipped strong-strong example declared
 # through two lattices and a machine. Unit B's testsets land directly below this comment and
 # nowhere else.

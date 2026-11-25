@@ -196,7 +196,7 @@ function Lattice(name::AbstractString; line, reference::Union{Nothing,ReferenceP
 end
 
 """
-    _lattice_knob_roots(knob_root) -> Tuple{Vararg{Symbol}}
+    _lattice_knob_roots(knob_root, who::AbstractString="Lattice") -> Tuple{Vararg{Symbol}}
 
 `nothing` gives `()`; a `Symbol` or `String` gives one root; a tuple or vector
 of them gives several. Refused by name: an empty string; a name with leading,
@@ -204,44 +204,46 @@ trailing or doubled dots; a segment that is not a Julia identifier
 (`Base.isidentifier`; `1abc`); a root that is one of the knob
 expression language's reserved constant names (`pi`, `π`, `ℯ`, `NaN`, `Inf`,
 the keys of `_KNOB_NAMED_CONSTANTS`), which `@knob` itself refuses to declare;
-a non-name value.
+a non-name value. Every message begins `who * ":"`: `Lattice` keeps the default,
+`Machine` passes its own name since its shared roots take the same spellings
+(stage 3).
 """
-function _lattice_knob_roots(knob_root)
+function _lattice_knob_roots(knob_root, who::AbstractString="Lattice")
     knob_root === nothing && return ()
     if knob_root isa Union{Symbol,AbstractString}
         s = String(knob_root)
         isempty(s) && throw(ArgumentError(
-            "Lattice: `knob_root` is empty; name the knob namespace the line's expressions " *
+            "$(who): `knob_root` is empty; name the knob namespace the line's expressions " *
             "live under (knob_root=:ring, or a tuple such as knob_root=(:ring, :ip)), or " *
             "leave it `nothing` for a line that reads no knob"))
         (startswith(s, ".") || endswith(s, ".") || occursin("..", s)) && throw(ArgumentError(
-            "Lattice: `knob_root` $(repr(s)) is malformed: a knob namespace is a dotted name " *
+            "$(who): `knob_root` $(repr(s)) is malformed: a knob namespace is a dotted name " *
             "with no leading, trailing or doubled dots (ring, HSR.arc)"))
         all(seg -> Base.isidentifier(seg), split(s, '.')) || throw(ArgumentError(
-            "Lattice: `knob_root` $(repr(s)) is not a knob name: a knob namespace is a dotted " *
+            "$(who): `knob_root` $(repr(s)) is not a knob name: a knob namespace is a dotted " *
             "name whose every segment is a Julia identifier (ring, HSR.arc), as " *
             "`@knob` declares it"))
         haskey(_KNOB_NAMED_CONSTANTS, Symbol(s)) && throw(ArgumentError(
-            "Lattice: `knob_root` $(repr(s)) is a reserved name: knob expressions read " *
+            "$(who): `knob_root` $(repr(s)) is a reserved name: knob expressions read " *
             "$(s) as the literal constant $(_KNOB_NAMED_CONSTANTS[Symbol(s)]), so `@knob` " *
             "refuses to declare a knob under it; pick a namespaced root such as consts"))
         return (Symbol(s),)
     end
     if knob_root isa Union{Tuple,AbstractVector}
         isempty(knob_root) && throw(ArgumentError(
-            "Lattice: `knob_root` is an empty $(knob_root isa Tuple ? "tuple" : "vector"); " *
+            "$(who): `knob_root` is an empty $(knob_root isa Tuple ? "tuple" : "vector"); " *
             "name at least one knob namespace, or pass `nothing` for a line that reads no knob"))
         roots = Symbol[]
         for r in knob_root
             r isa Union{Symbol,AbstractString} || throw(ArgumentError(
-                "Lattice: every entry of `knob_root` must be a Symbol or a String naming a " *
+                "$(who): every entry of `knob_root` must be a Symbol or a String naming a " *
                 "knob namespace; got $(repr(r)) of type $(typeof(r)) in $(repr(knob_root))"))
-            push!(roots, only(_lattice_knob_roots(r)))
+            push!(roots, only(_lattice_knob_roots(r, who)))
         end
         return Tuple(roots)
     end
     throw(ArgumentError(
-        "Lattice: `knob_root` must be `nothing`, a Symbol, a String, or a tuple or vector " *
+        "$(who): `knob_root` must be `nothing`, a Symbol, a String, or a tuple or vector " *
         "of those (knob_root=:ring, knob_root=(:ring, :ip)); got $(repr(knob_root)) of type " *
         "$(typeof(knob_root))"))
 end
