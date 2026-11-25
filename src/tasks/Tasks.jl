@@ -127,6 +127,19 @@ struct TrackingTask <: AbstractTask
     # Admission and explicit state clears share one atomic owner, including
     # the interval before either feature's per-window state is prepared.
     execution_guard::Threads.Atomic{Int}
+    # The machine the task was given, by spelling (the machine description,
+    # design D14; stage 4, 2026-11-25): `Machine(lattice)` for
+    # `TrackingTask(lattice)`, the machine itself for `TrackingTask(machine)`,
+    # and `nothing` for a tuple, a vector or a bare `BeamLine`, which carry no
+    # lattice context to snapshot. Read by `prepare_run_artifact!` alone: when
+    # a machine is present its TOML snapshot (`machine_toml`) is embedded in
+    # the run artifact's `/execution` ledger row and its bulk tables under
+    # `/machine_tables`, so `read(out, :machine)` and `read_machine(out)` give
+    # the description back; a task built from tuples records an empty text
+    # and those readers refuse by name with the lattice spelling as the remedy.
+    # The tracking itself never reads it (`_element_tuple` fixed the
+    # placements), so the field changes no result and no kernel.
+    machine::Union{Nothing,Machine}
 end
 
 """Routes `luminosity_tracking` accepts."""
@@ -289,7 +302,8 @@ function TrackingTask(elements;
                         Ref{Int64}(0), Ref{Any}(nothing), Dict{Any,Any}(),
                         loss_report, Ref{Any}(nothing), art, Ref{Any}(WeakRef(nothing)),
                         record_turn_times, Float64[], luminosity_tracking, reported_sharing,
-                        Ref{Any}(nothing), Ref{Any}(nothing), Threads.Atomic{Int}(0))
+                        Ref{Any}(nothing), Ref{Any}(nothing), Threads.Atomic{Int}(0),
+                        _task_machine(elements))
 end
 
 """
@@ -921,6 +935,21 @@ _element_tuple(lattice::Lattice) = _element_tuple(getfield(lattice, :line))
 # `StrongStrongTask(machine, :A, :B)` for a pair).
 _element_tuple(machine::Machine) =
     _element_tuple(_machine_only_lattice(machine, "TrackingTask (one line; analyze and one_turn_matrix likewise)"))
+
+"""
+    _task_machine(elements) -> Union{Nothing,Machine}
+
+The machine a `TrackingTask`'s `machine` field records, by the spelling of its
+input (design D14): a `Lattice` is the implicit one-lattice machine
+`Machine(lattice)`, a `Machine` is itself (the one-lattice machine
+`_element_tuple` accepted), and a tuple, a vector or a bare line is `nothing`,
+since none carries a lattice's context (name, reference, knob roots, numeric
+type) for the snapshot to hold. Called after `_element_tuple`, whose refusals
+(a machine of several lattices) come first.
+"""
+_task_machine(::Any) = nothing
+_task_machine(lattice::Lattice) = Machine(lattice)
+_task_machine(machine::Machine) = machine
 
 """
     _refuse_hooks_in_whole_line(line::ElementSpec{:line})
@@ -1643,7 +1672,8 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
                               turn_modulation=turn_modulation,
                               turn_modulation_columns=_turn_modulation_columns!(Any[], runtime_elems),
                               aperture_names=record === nothing ? String[] : aperture_names(record),
-                              task_kind=string(nameof(typeof(task))))
+                              task_kind=string(nameof(typeof(task))),
+                              machine=task.machine)
     end
     _bind_phase_space_reset_window!(reset_state, task, first_turn, turns)
     Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => art,

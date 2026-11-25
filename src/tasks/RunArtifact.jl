@@ -843,9 +843,74 @@ end
 # method names itself here). Before these two columns a file recorded the
 # global seed nowhere: after a `set_global_rng!` between two windows its only
 # mention of a seed was a spectral table's canonical name.
+#
+# The machine columns (the machine description, design D14; stage 4,
+# 2026-11-25): `machine_toml` is the TOML snapshot text of the machine the
+# task was built from (`machine_toml(machine, tables)`, byte for byte what
+# `write_machine` writes, so the description that produced a run is in the
+# run's file), and `machine_sha256` the SHA-256 hex digest of that text, the
+# cheap identity for comparing two runs' descriptions without parsing them.
+# Both are the empty string when the task recorded no machine: it was built
+# from tuples, a vector or a bare line, or its machine could not be
+# snapshotted (a function-valued parameter; the prepare warned by name).
+# The snapshot's bulk tables (a `TurnTable`'s offsets) go under
+# `/machine_tables/<sha256>`, one Float64 dataset per distinct table, shared
+# by every row that references them. Readers: `read(out, :machine)` (the
+# text of one row), `read_machine(out)` (the machine rebuilt with its tables),
+# `read(out, :execution).machine_sha256`.
 # ---------------------------------------------------------------------------
 const _RA_LEDGER_COLUMNS = (("start_turn", Int64), ("turns", Int64), ("current_turn", Int64),
-                            ("elapsed", Float64), ("rng_seed", UInt64), ("rng_method", String))
+                            ("elapsed", Float64), ("rng_seed", UInt64), ("rng_method", String),
+                            ("machine_toml", String), ("machine_sha256", String))
+
+"""
+    _ra_machine_snapshot(machine, path) -> (text, digest, tables)
+
+The ledger row's machine columns and the bulk tables beside them (design D14):
+`machine_toml(machine, tables)`, the SHA-256 hex digest of that text, and the
+tables dictionary the codec filled (digest => offsets); three empty values
+(`""`, `""`, an empty dictionary) for `nothing`. A codec refusal (an
+`ArgumentError`: a function-valued parameter the snapshot cannot hold, refused
+by name at `write_machine` time) warns once, naming the artifact and carrying
+the codec's message, and yields the empty values: the run is not stopped for
+its by-product, and `read(out, :machine)` later refuses by name. Any other
+error propagates.
+"""
+function _ra_machine_snapshot(machine::Union{Nothing,Machine}, path::AbstractString)
+    tables = Dict{String,Any}()
+    machine === nothing && return ("", "", tables)
+    text = try
+        machine_toml(machine, tables)
+    catch err
+        err isa ArgumentError || rethrow()
+        @warn "RunArtifact at $(path): the machine $(repr(getfield(machine, :name))) could not " *
+              "be snapshotted, so this execute!'s ledger row records an empty machine_toml " *
+              "(read(out, :machine) will refuse by name): $(sprint(showerror, err))"
+        empty!(tables)
+        return ("", "", tables)
+    end
+    return (text, bytes2hex(SHA.sha256(text)), tables)
+end
+
+"""
+    _ra_write_machine_tables!(file, tables)
+
+Write the snapshot's bulk tables under `/machine_tables/<sha256>` as Float64
+datasets, creating the group at the first table and skipping a digest already
+present (content-addressed: equal tables are one dataset however many rows
+reference them). Nothing is written, not even the group, when `tables` is
+empty, so a file of tuple-built or table-free runs has no such group.
+"""
+function _ra_write_machine_tables!(file, tables::AbstractDict)
+    isempty(tables) && return nothing
+    g = haskey(file, "machine_tables") ? file["machine_tables"] :
+        HDF5.create_group(file, "machine_tables")
+    for digest in sort!(collect(String.(keys(tables))))
+        haskey(g, digest) && continue
+        g[digest] = Vector{Float64}(tables[digest])
+    end
+    return nothing
+end
 
 # ---------------------------------------------------------------------------
 # Cross-process exclusion: the sidecar lock (2026-10-16 neighbour audit, S5-2).
@@ -1047,8 +1112,9 @@ an HDF5 file is refused by name BEFORE the open (`HDF5.ishdf5`; before the
 message surfaced first, S5-7). The table's checks, in order: the file is a
 run artifact (`/luminosity`); its luminosity groups are exactly `labels`; it
 carries the `/execution` ledger with every column of `_RA_LEDGER_COLUMNS`
-(a continued file lacking any predates the seed columns and is refused by
-name rather than padded); no `/turn_modulation` slot is PARTIAL (a cursor
+(a continued file lacking any predates the seed columns of 2026-10-16 or the
+machine columns of 2026-11-25 and is refused by name rather than padded); no
+`/turn_modulation` slot is PARTIAL (a cursor
 behind its element count, the artefact of a writer that stopped mid-prepare;
 never rolled back); its `/losses` group, when present and `aperture_names`
 is given, names exactly this task's apertures (`aperture_names` is the
@@ -1058,13 +1124,29 @@ ledger row would take is free, with the recorder's column walk agreeing with
 the provenance. The in-process path registry is written AFTER the last of
 these refusals, so a refused writer is never registered as a live one (unit
 A's open point, 2026-10-16); the lock keeps its place before the registry.
+
+`machine` is the task's `machine` field (the machine description, design
+D14; 2026-11-25): a `Machine` when the task was built from a `Lattice` or a
+`Machine`, `nothing` otherwise. With a machine, the ledger row's
+`machine_toml` column takes its snapshot text, `machine_toml(machine,
+tables)`, and `machine_sha256` the text's SHA-256 hex digest, and every bulk
+table the snapshot references is written under `/machine_tables/<sha256>`
+(a digest already present is left as it is: the tables are content-addressed
+and shared by every row). Without one, both columns take the empty string.
+A machine the codec refuses to snapshot (a function-valued parameter, refused
+by name at `write_machine` time) is not a reason to stop the run: the prepare
+warns once with the codec's message and records the empty columns, so the
+run proceeds and `read(out, :machine)` later refuses by name. The text is
+rendered on rank 0 before the lock and the open, so a codec error touches
+nothing.
 """
 function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
                                first_turn::Int, planned_turns::Int;
                                turn_modulation::AbstractVector=Any[],
                                turn_modulation_columns::AbstractVector=Any[],
                                aperture_names::Union{Nothing,AbstractVector{<:AbstractString},NamedTuple}=nothing,
-                               task_kind::AbstractString="prepare_run_artifact!")
+                               task_kind::AbstractString="prepare_run_artifact!",
+                               machine::Union{Nothing,Machine}=nothing)
     art.file === nothing || error("RunArtifact at $(art.path) is already open; " *
                                   "one artifact serves one execute! at a time")
     # A recorder outlives nothing: whatever the previous execute! left is gone
@@ -1082,6 +1164,10 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
                            _ra_output_receipt(art, task_kind, turn_modulation))
         return nothing
     end
+    # The machine snapshot (D14), rendered before the lock and the open so a
+    # codec refusal touches nothing on disk: the text, its digest and the bulk
+    # tables it references; three empty values without a machine.
+    machine_text, machine_digest, machine_tables = _ra_machine_snapshot(machine, art.path)
     if _ra_in_memory(art)
         # Memory storage (2026-11-03): the retained image continued, the saved
         # file loaded, or a fresh image -- and no lock, nothing on disk to
@@ -1153,7 +1239,8 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
         # begins, which is what every stochastic consumer of the window keys
         # its draws on.
         row = (Int64(first_turn), Int64(planned_turns), Int64(first_turn) - 1, 0.0,
-               UInt64(global_rng_seed()), string(global_rng_method()))
+               UInt64(global_rng_seed()), string(global_rng_method()),
+               machine_text, machine_digest)
         length(row) == length(_RA_LEDGER_COLUMNS) || error(
             "the /execution ledger row has $(length(row)) values for " *
             "$(length(_RA_LEDGER_COLUMNS)) columns")
@@ -1163,6 +1250,10 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
             d[n + 1] = convert(T, val)
         end
         art.execution_slot = n + 1
+        # The snapshot's bulk tables, content-addressed under
+        # `/machine_tables/<sha256>`: written once per distinct table, so a
+        # continued file whose rows reference one table holds it once.
+        _ra_write_machine_tables!(file, machine_tables)
         # Keyed by the ledger row just appended, so written after it: the
         # provenance groups and, with the switch on, each element's `series`
         # dataset inside the same per-element loop, so the slot group's cursor
@@ -1407,10 +1498,14 @@ end
 
 """
 Every column this writer appends is in the ledger. A file lacking any of them
-predates the `rng_seed` and `rng_method` columns (2026-10-16, S5-4) and is
-refused BY NAME, as found and unchanged, rather than padded: a padded seed
-column would claim a provenance the earlier rows never recorded. (This
-supersedes the step-1 `current_turn` padding, whose files lack these too.)
+predates the `rng_seed` and `rng_method` columns (2026-10-16, S5-4) or the
+`machine_toml` and `machine_sha256` columns (2026-11-25, D14) and is refused
+BY NAME, as found and unchanged, rather than padded: a padded seed column
+would claim a provenance the earlier rows never recorded, and a padded empty
+machine column would claim "built from tuples" of rows that recorded nothing
+either way. (This supersedes the step-1 `current_turn` padding, whose files
+lack these too.) The message names the generation(s) the absent columns
+belong to.
 """
 function _ra_check_ledger_columns(file, ctx)
     ex = file["execution"]
@@ -1418,12 +1513,17 @@ function _ra_check_ledger_columns(file, ctx)
     for (name, _) in _RA_LEDGER_COLUMNS
         haskey(ex, name) || push!(absent, name)
     end
-    isempty(absent) || throw(ArgumentError(
+    isempty(absent) && return nothing
+    generations = String[]
+    any(in(("rng_seed", "rng_method")), absent) &&
+        push!(generations, "the ledger's rng_seed and rng_method columns (2026-10-16)")
+    any(in(("machine_toml", "machine_sha256")), absent) &&
+        push!(generations, "the ledger's machine_toml and machine_sha256 columns (2026-11-25)")
+    isempty(generations) && push!(generations, "the ledger's $(join(absent, ", ")) column(s)")
+    throw(ArgumentError(
         "RunArtifact(append=true): the /execution ledger at $(ctx.path) has no " *
-        "$(join(absent, ", ")) column(s): the file predates the ledger's rng_seed and " *
-        "rng_method columns (2026-10-16) and this writer does not continue it; use a " *
-        "new path or append=false"))
-    return nothing
+        "$(join(absent, ", ")) column(s): the file predates $(join(generations, " and ")) " *
+        "and this writer does not continue it; use a new path or append=false"))
 end
 
 """The table's method of `_ra_check_partial_slots`: no provenance slot is partial."""
@@ -2537,6 +2637,9 @@ _ra_contents(out::TaskOutput) = _ra_open(_ra_contents, out)
 function _ra_contents(f::HDF5.File)
     out = Dict{String,Vector{String}}()
     for kind in keys(f)
+        # The machine snapshot's bulk tables are not a product kind: they are
+        # read with the ledger's text by `read_machine` (D14).
+        String(kind) == "machine_tables" && continue
         obj = f[kind]
         # Named-group kinds list their probe/channel names; single
         # products (losses, execution) are present with no names.
@@ -2997,14 +3100,89 @@ turn_modulation_provenance(art::RunArtifact) =
     _ra_open(_ra_turn_modulation_or_empty, TaskOutput(art))
 
 """
+    _ra_machine_text(ex, slot, path) -> String
+
+The `machine_toml` text of one `/execution` ledger row (design D14): the last
+row, or row `slot`. Refused by name: a ledger without the column (the file was
+written before the machine snapshot was embedded, 2026-11-25), an empty
+ledger, a `slot` outside `1:rows`, and an empty text (the task was built from
+tuples, a vector or a bare line, or its machine could not be snapshotted and
+the prepare warned; the remedy is the `Lattice` or `Machine` spelling).
+"""
+function _ra_machine_text(ex, slot::Union{Nothing,Integer}, path::AbstractString)
+    haskey(ex, "machine_toml") || throw(ArgumentError(
+        "$(path) carries no machine_toml column in its /execution ledger: the file was " *
+        "written before the machine snapshot was embedded (2026-11-25), so no machine " *
+        "description can be read from it"))
+    texts = read(ex["machine_toml"])
+    n = length(texts)
+    n == 0 && throw(ArgumentError(
+        "$(path) has no execute! row in its /execution ledger, so there is no machine " *
+        "snapshot to read"))
+    row = slot === nothing ? n : Int(slot)
+    1 <= row <= n || throw(ArgumentError(
+        "$(path): slot $(row) is not a row of the /execution ledger, which has $(n) " *
+        "row$(n == 1 ? "" : "s") (1:$(n))"))
+    text = String(texts[row])
+    isempty(text) && throw(ArgumentError(
+        "$(path): execute! row $(row) recorded no machine snapshot (its machine_toml is " *
+        "empty): the task was built from tuples, a vector or a bare line, which carry no " *
+        "lattice context, or its machine could not be snapshotted (the prepare warned by " *
+        "name). Spell the line as a Lattice (TrackingTask(lattice; artifact = ...)) or a " *
+        "Machine (StrongStrongTask(machine, :A, :B; artifact = ...)) and the snapshot is " *
+        "embedded with the run"))
+    return text
+end
+
+"""
+    _ra_machine_tables(file) -> Union{Nothing,Dict{String,Vector{Float64}}}
+
+The bulk tables under `/machine_tables`, digest => offsets, or `nothing` when
+the file has no such group (no row referenced a table): the value
+`parse_machine` takes for `tables`.
+"""
+function _ra_machine_tables(file)
+    haskey(file, "machine_tables") || return nothing
+    g = file["machine_tables"]
+    return Dict{String,Vector{Float64}}(String(k) => Vector{Float64}(read(g[k])) for k in keys(g))
+end
+
+"""
+    read_machine(out::TaskOutput; slot=nothing, receipt=false) -> Machine
+    read_machine(out::TaskOutput; slot=nothing, receipt=true) -> (machine, receipt)
+
+The machine the run was built from, rebuilt from the snapshot embedded in the
+run artifact (the machine description, design D14): the `machine_toml` text
+of the last `execute!`'s ledger row (or of row `slot`), parsed by
+[`parse_machine`](@ref) with the bulk tables stored under `/machine_tables`,
+under the rules and refusals of [`read_machine`](@ref) on a file (the knobs
+the text declares are installed in the process, a path already present with
+the same definition is kept, a conflicting one refused by name). Refused by
+name, as `read(out, :machine)` is: a row whose text is empty (the task was
+built from tuples, a vector or a bare line; spell it as a `Lattice` or a
+`Machine`), a `slot` outside the ledger, a file written before the column
+existed. Reading a file another process is writing follows the readers' lock
+rule (`TaskOutput`).
+"""
+function read_machine(out::TaskOutput; slot::Union{Nothing,Integer}=nothing, receipt::Bool=false)
+    text, tables = _ra_open(out) do f
+        (_ra_machine_text(_ra_require_group(f, out, :execution), slot, out.path),
+         _ra_machine_tables(f))
+    end
+    return parse_machine(text; tables=tables, receipt=receipt)
+end
+
+"""
     read(out::TaskOutput, kind::Symbol; name=nothing, column=nothing, turn=nothing,
-         orders=nothing, extra=(), exclude=())
+         orders=nothing, extra=(), exclude=(), slot=nothing)
 
 One product of the artifact. `kind` is one of `:luminosity`, `:moments`,
 `:snapshot`, `:bpm`, `:reset_trials`, `:reset_losses`, `:losses`, `:execution`,
 `:turn_modulation` -- or `:all`
 for every product present, nested by kind (named kinds as
-`Dict{String,NamedTuple}`; reads the WHOLE file, snapshots included).
+`Dict{String,NamedTuple}`; reads the WHOLE file, snapshots included) -- or
+`:machine`, a view of the ledger rather than a product: the embedded machine
+snapshot's text (below).
 
 For the named kinds, no `name` returns every group as a
 `Dict{String,NamedTuple}`; `name` selects one group, returned as a
@@ -3054,7 +3232,19 @@ ledger -- one entry per `execute!`: `start_turn`, `turns`,
 probe rows, turn-modulation series) and at finalize, and `rng_seed`/
 `rng_method`, the global stochastic seed and the counter-RNG method's name in
 force when that `execute!` began (`nothing` for a file written before
-2026-10-16). `:turn_modulation` returns the turn-by-turn modulation provenance, one
+2026-10-16), and `machine_toml`/`machine_sha256`, the embedded machine
+snapshot's TOML text and its SHA-256 hex digest (the machine description,
+design D14: `""` in a row whose task recorded no machine, `nothing` for a
+file written before 2026-11-25). `:machine` returns that text alone for one
+row -- the last `execute!`'s, or the row `slot` (the ledger's row index, the
+slot the turn-modulation provenance is keyed by) -- as `machine_toml(machine)`
+rendered it, byte for byte what `write_machine` writes; `read_machine(out)`
+parses it with the bulk tables under `/machine_tables` into the `Machine`.
+Refused by name: a row whose text is empty (the task was built from tuples, a
+vector or a bare line, or its machine could not be snapshotted and the prepare
+warned; the remedy is the `Lattice` or `Machine` spelling), a `slot` outside
+the ledger's rows, a file written before the column existed, and `slot` with
+any other kind. `:turn_modulation` returns the turn-by-turn modulation provenance, one
 entry per `execute!` that had a modulated element, the vector
 [`turn_modulation_provenance`](@ref) documents (empty when no recorded
 `execute!` had one or the file predates the group), each slot entry with its
@@ -3065,10 +3255,13 @@ entry per `execute!` that had a modulated element, the vector
 function Base.read(out::TaskOutput, kind::Symbol;
                    name::Union{Nothing,AbstractString}=nothing,
                    column=nothing, turn::Union{Nothing,Integer}=nothing,
-                   orders=nothing, extra=(), exclude=())
-    kind === :all || kind in _RA_KINDS || throw(ArgumentError(
+                   orders=nothing, extra=(), exclude=(),
+                   slot::Union{Nothing,Integer}=nothing)
+    kind === :all || kind === :machine || kind in _RA_KINDS || throw(ArgumentError(
         "unknown artifact product $(repr(kind)); one of " *
-        join(string.(_RA_KINDS), ", ") * ", all"))
+        join(string.(_RA_KINDS), ", ") * ", machine, all"))
+    slot === nothing || kind === :machine || throw(ArgumentError(
+        "slot selects the ledger row of the :machine snapshot; it does not apply to $(kind)"))
     selection = orders !== nothing || !isempty(extra) || !isempty(exclude)
     if selection
         kind === :moments || throw(ArgumentError(
@@ -3078,7 +3271,7 @@ function Base.read(out::TaskOutput, kind::Symbol;
         column === nothing || throw(ArgumentError(
             "pass either column or an orders/extra/exclude selection, not both"))
     end
-    if kind in (:all, :losses, :execution, :turn_modulation)
+    if kind in (:all, :losses, :execution, :turn_modulation, :machine)
         (name === nothing && column === nothing && turn === nothing) ||
             throw(ArgumentError("$(kind) is not a named group: name/column/turn do not apply"))
     end
@@ -3099,6 +3292,9 @@ function Base.read(out::TaskOutput, kind::Symbol;
         # documented empty answer instead: no execute! recorded modulation.
         kind === :losses && return _ra_losses(_ra_require_group(f, out, kind))
         kind === :execution && return _ra_execution(_ra_require_group(f, out, kind))
+        # The machine snapshot is a column of the ledger (D14), so its group
+        # is /execution; the row is the last one unless `slot` picks another.
+        kind === :machine && return _ra_machine_text(_ra_require_group(f, out, :execution), slot, out.path)
         kind === :turn_modulation && return _ra_turn_modulation_or_empty(f)
         g = _ra_require_group(f, out, kind)
         one_group = kind === :luminosity ? _ra_lum_series : _ra_probe_columns
@@ -3140,6 +3336,8 @@ attribute reads; no data): each named kind maps to `Dict(name =>
 tail beyond the cursor shows as the difference; 2026-10-19), `s` the probe's
 arc position where stamped --
 and the single products carry their own `(columns, rows, ...)`;
+`machine_tables`, present when a row's machine snapshot referenced a bulk
+table (D14), maps each table's SHA-256 digest to its length;
 `turn_modulation` is its provenance vector whole (attributes, the nominals
 included), with each slot's `series` standing as the recorded ROW COUNT in
 place of the column that `read(out, :turn_modulation)` returns (`nothing`
@@ -3159,6 +3357,9 @@ function Base.read(out::TaskOutput)
                           rows=isempty(cols) ? 0 : length(obj[first(cols)]))
             elseif k == "losses"
                 toc[k] = _ra_losses_toc(obj)
+            elseif k == "machine_tables"
+                # The snapshot's bulk tables, content-addressed: digest => length.
+                toc[k] = Dict{String,Int}(String(name) => length(obj[name]) for name in keys(obj))
             elseif k == "turn_modulation"
                 # The provenance IS the metadata; a recorded series is read as
                 # its row count here, not as data.

@@ -21956,6 +21956,233 @@ end
 # the shipped strong-strong example writing its machine. Unit C's testsets land directly below
 # this comment and nowhere else.
 
+@testset "Machine description: the run artifact embeds the machine snapshot and reads it back" begin
+    # Design D14 (stage 4, 2026-11-25): a task built from a Lattice or a
+    # Machine embeds `machine_toml(machine)` in its execute! ledger row, the
+    # text's SHA-256 beside it and the bulk tables under /machine_tables; the
+    # readers give the description back; a tuple-built task records "" and the
+    # readers refuse by name with the lattice spelling as the remedy.
+    dir = mktempdir()
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    @knob md4c_art.kf = 1.5
+    beta0, gamma0 = reference_beta_gamma(3.0e9, PMASS_EV)
+    qd   = QuadrupoleSpec(L=0.25, kn=(0.0, -1.1), nst=4, integrator_order=4)
+    qf   = ElementSpec{:quadrupole}(; L=0.35, kn=(0.0, @knob_expr(md4c_art.kf)), nst=4, integrator_order=4)
+    d    = DriftSpec(L=0.6)
+    proton = ReferenceParticle(charge=1.0, mc2=PMASS_EV, E0=3.0e9)
+    lattice = Lattice("md4c_ART"; line=BeamLine("ART", qd, d, qf, d), reference=proton, knob_root=:md4c_art)
+    rep() = Phase6DRep([1.0e-4, -2.0e-4], [0.0, 1.0e-5], [1.0e-4, 0.0], [0.0, 0.0], [0.0, 1.0e-3], [0.0, 0.0])
+    want = machine_toml(Machine(lattice))
+    # Anti-vacuity: the text is this lattice's (its knob, its table), and it is not another lattice's.
+    @test occursin("md4c_art.kf", want) && occursin("md4c_ART", want)
+    @test want != machine_toml(Machine(Lattice("md4c_ART2"; line=BeamLine("ART", qd, d, qf, d), reference=proton, knob_root=:md4c_art)))
+
+    # (a) One execute! of two turns on CPU: the two columns in the table and
+    # the file, the text byte for byte the writer's and the file's, the digest,
+    # the machine rebuilt equal; a second execute! appends a row with the same text.
+    @test ("machine_toml", String) in Octopus._RA_LEDGER_COLUMNS && ("machine_sha256", String) in Octopus._RA_LEDGER_COLUMNS
+    p = joinpath(dir, "lattice.h5")
+    task = TrackingTask(lattice; artifact=RunArtifact(p; append=true))
+    @test task.machine == Machine(lattice)
+    execute!(task, rep(); turns=2)
+    ex = read(TaskOutput(p), :execution)
+    @test ex.machine_toml == [want] && ex.machine_sha256 == [bytes2hex(Octopus.SHA.sha256(want))]
+    @test length(want) > 200 && length(ex.machine_sha256[1]) == 64
+    @test read(TaskOutput(p), :machine) == want
+    @test read(TaskOutput(p), :machine) == read(write_machine(joinpath(dir, "lattice.machine.toml"), lattice), String)
+    @test read_machine(TaskOutput(p)) == Machine(lattice)
+    let (m, receipt) = read_machine(TaskOutput(p); receipt=true)
+        @test m == Machine(lattice) && collect(string.(receipt.lattices)) == ["md4c_ART"] &&
+              any(string(k) == "md4c_art.kf" for k in receipt.existing)   # the knob was declared above, same definition
+    end
+    Octopus.HDF5.h5open(p, "r") do f
+        @test haskey(f["execution"], "machine_toml") && haskey(f["execution"], "machine_sha256")
+        @test !haskey(f, "machine_tables")          # no bulk table in this lattice: no group
+    end
+    execute!(task, rep(); turns=2)
+    ex2 = read(TaskOutput(p), :execution)
+    @test ex2.machine_toml == [want, want] && ex2.start_turn == [0, 2]
+    @test read(TaskOutput(p), :machine; slot=1) == read(TaskOutput(p), :machine; slot=2) == want
+    @test read(TaskOutput(p), :all).execution.machine_toml == [want, want]
+    @test "machine_toml" in read(TaskOutput(p))["execution"].columns && !haskey(read(TaskOutput(p)), "machine_tables")
+    let m = msg(() -> read(TaskOutput(p), :machine; slot=3))
+        @test occursin("slot 3 is not a row", m) && occursin("(1:2)", m) && occursin(p, m)
+    end
+    let m = msg(() -> read(TaskOutput(p), :execution; slot=1))
+        @test occursin("slot selects the ledger row of the :machine snapshot", m) && occursin("execution", m)
+    end
+    let m = msg(() -> read(TaskOutput(p), :machine; name="x"))
+        @test occursin("machine is not a named group", m)
+    end
+
+    # (b) A tuple-built task's row holds "" in both columns and the readers
+    # refuse by name with the remedy.
+    pt = joinpath(dir, "tuple.h5")
+    execute!(TrackingTask((qd, d, qf, d); artifact=pt), rep(); turns=1)
+    let ext = read(TaskOutput(pt), :execution)
+        @test ext.machine_toml == [""] && ext.machine_sha256 == [""]
+    end
+    for f in (() -> read(TaskOutput(pt), :machine), () -> read_machine(TaskOutput(pt)))
+        m = msg(f)
+        @test occursin("row 1 recorded no machine snapshot", m) && occursin("built from tuples", m) &&
+              occursin("TrackingTask(lattice; artifact", m) && occursin(pt, m)
+    end
+
+    # (c) An old-format artifact, the ledger of the 2026-10-16 layout without
+    # the two columns (built through the writer's own helpers): the columns
+    # read `nothing` without an error, the machine readers refuse by name
+    # naming the date, and continuing it is refused by name naming the machine
+    # columns' generation only.
+    pold = joinpath(dir, "old.h5")
+    old_rows = Dict("start_turn" => Int64[0], "turns" => Int64[1], "current_turn" => Int64[0],
+                    "elapsed" => [0.0], "rng_seed" => UInt64[1], "rng_method" => ["philox"])
+    Octopus.HDF5.h5open(pold, "w") do f
+        Octopus.HDF5.attributes(f)["octopus_run_artifact"] = Int64(1)
+        Octopus.HDF5.create_group(f, "luminosity")
+        exg = Octopus.HDF5.create_group(f, "execution")
+        for (name, T) in Octopus._RA_LEDGER_COLUMNS
+            name in ("machine_toml", "machine_sha256") && continue
+            Octopus._ra_append_rows!(Octopus._ra_extendable!(exg, name, T), old_rows[name])
+        end
+    end
+    let exo = read(TaskOutput(pold), :execution)
+        @test exo.machine_toml === nothing && exo.machine_sha256 === nothing && exo.start_turn == [0] && exo.rng_method == ["philox"]
+    end
+    let m = msg(() -> read(TaskOutput(pold), :machine))
+        @test occursin("no machine_toml column", m) && occursin("2026-11-25", m) && occursin(pold, m)
+    end
+    let m = msg(() -> execute!(TrackingTask((qd, d); artifact=RunArtifact(pold; append=true)), rep(); turns=1))
+        @test occursin("machine_toml, machine_sha256 column(s)", m) && occursin("predates", m) &&
+              occursin("2026-11-25", m) && !occursin("2026-10-16", m) && occursin("append=false", m)
+    end
+    @test read(TaskOutput(pold), :execution).start_turn == [0]      # left as found
+
+    # (d) StrongStrongTask(machine, :A, :B; artifact) of one turn embeds the
+    # two-lattice machine and reads it back equal.
+    ip = StrongStrongCollision(:ip; poisson_solver=GaussianPoissonSolver())
+    L6s(b, t) = Linear6DSpec{Float64}(; beta1=b, beta2=b, alpha1=(0.0, 0.0, 0.0),
+                                      alpha2=(0.0, 0.0, 0.0), dmu=2pi .* t)
+    lat1 = Lattice("md4c_B1"; line=BeamLine("B1", ip, L6s((0.55, 0.056, 12.7), (0.08, 0.14, -0.069))))
+    lat2 = Lattice("md4c_B2"; line=BeamLine("B2", ip, L6s((0.8, 0.072, 90.9), (0.228, 0.210, -0.01))))
+    machine = Machine("md4c_EIC"; lattices=(lat1, lat2))
+    mkb(rng_id, charge, mc2, E0, beta) = begin
+        set_global_rng!(seed=20261125, method=:philox)
+        Beam(100, CPUThreadsExecutionPolicy(), Float64; beta=beta, alpha=(0.0, 0.0, 0.0),
+             sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
+             charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+    end
+    ps = joinpath(dir, "ss.h5")
+    execute!(StrongStrongTask(machine, :md4c_B1, :md4c_B2; artifact=ps),
+             mkb(4121, -1.0, EMASS_EV, 10.0e9, (0.55, 0.056, 12.7)),
+             mkb(4122, 1.0, PMASS_EV, 275.0e9, (0.8, 0.072, 90.9)); turns=1)
+    @test read(TaskOutput(ps), :machine) == machine_toml(machine) != want
+    let m = read_machine(TaskOutput(ps))
+        @test m == machine && keys(m) == ("md4c_B1", "md4c_B2") && m != Machine(lat1)
+    end
+
+    # (e) A TurnTable-modulated element: its table under /machine_tables by
+    # digest, once however many rows reference it, listed by the table of
+    # contents; the reload's table equals the original.
+    offsets = collect(0.001:0.001:0.012)
+    table = TurnTable(offsets; name="md4c_amp")
+    rf = ThinRFCavitySpec(400.0e6; strength=0.02, beta0=beta0, gamma0=gamma0, phase_noise=table)
+    lat_t = Lattice("md4c_TAB"; line=BeamLine("TAB", qd, d, rf), reference=proton)
+    ptab = joinpath(dir, "table.h5")
+    task_t = TrackingTask(lat_t; artifact=RunArtifact(ptab; append=true))
+    execute!(task_t, rep(); turns=2)
+    execute!(task_t, rep(); turns=2)
+    text_t = read(TaskOutput(ptab), :machine)
+    digest_t = Octopus.HDF5.h5open(ptab, "r") do f
+        @test haskey(f, "machine_tables") && length(keys(f["machine_tables"])) == 1
+        dg = only(String.(keys(f["machine_tables"])))
+        @test read(f["machine_tables"][dg]) == offsets && occursin(dg, text_t) && !occursin(dg, want)
+        dg
+    end
+    @test read(TaskOutput(ptab))["machine_tables"] == Dict(digest_t => 12)
+    @test length(read(TaskOutput(ptab), :execution).machine_toml) == 2
+    @test !haskey(read(TaskOutput(ptab), :all), :machine_tables)   # the tables are not a product kind
+    let m = read_machine(TaskOutput(ptab)),
+        spec = getfield(line_entries(m[:md4c_TAB].line)[3], :spec),
+        rules = param(spec, :phase_noise),
+        rule = rules isa Tuple ? only(rules) : rules
+        @test rule isa TurnTable && rule.offsets == offsets && rule.digest == table.digest && rule.name == "md4c_amp"
+        @test m == Machine(lat_t)
+    end
+
+    # (f) A machine the codec refuses to snapshot (a predicate schedule holds a
+    # function) does not stop the run: the prepare warns by name, the row
+    # records "" and the reader refuses by name.
+    pw = joinpath(dir, "warned.h5")
+    lat_w = Lattice("md4c_WARN"; line=BeamLine("WARN", qd, d,
+                    ScheduledObserver(MomentObserver(; name="md4c_m"), PredicateSchedule(ctx -> true))), reference=proton)
+    @test_logs (:warn, r"md4c_WARN.*could not be snapshotted.*PredicateSchedule") match_mode=:any execute!(TrackingTask(lat_w; artifact=pw), rep(); turns=1)
+    @test read(TaskOutput(pw), :execution).machine_toml == [""] && read(TaskOutput(pw), :moments; name="md4c_m").turn == [0.0]
+    @test occursin("could not be snapshotted", msg(() -> read(TaskOutput(pw), :machine)))
+
+    set_global_rng!(seed=0x5eed, method=:philox)
+end
+
+@testset "Machine description: the task records the machine it was given, by spelling" begin
+    # The `machine` field of both tasks (design D14): the machine by the
+    # spelling of the input, never derived from the placements.
+    qf = QuadrupoleSpec(L=0.35, kn=(0.0, 1.5), nst=4, integrator_order=4)
+    d  = DriftSpec(L=0.6)
+    line = BeamLine("md4c_R", qf, d)
+    lat  = Lattice("md4c_SP1"; line=line)
+    # TrackingTask: tuples, vectors and bare lines carry no lattice context;
+    # a lattice is its implicit machine; a machine is the given object.
+    @test TrackingTask((qf, d)).machine === nothing
+    @test TrackingTask([qf, d]).machine === nothing
+    @test TrackingTask(line).machine === nothing
+    @test TrackingTask(lat).machine == Machine(lat)
+    @test TrackingTask(lat).machine != Machine(Lattice("md4c_SP1x"; line=line))   # anti-vacuity: the name is in it
+    let m = Machine("md4c_SP1M"; lattices=(lat,))
+        @test TrackingTask(m).machine === m                                     # the given object, its own name kept
+    end
+    # StrongStrongTask: the derived two-lattice machine, the one-lattice
+    # machine for one object twice, the given machine for the machine forms,
+    # nothing where no machine can hold the pair.
+    ip = StrongStrongCollision(:ip; poisson_solver=GaussianPoissonSolver())
+    l6 = Linear6DSpec{Float64}(; beta1=(0.55, 0.056, 12.7), beta2=(0.55, 0.056, 12.7),
+                               alpha1=(0.0, 0.0, 0.0), alpha2=(0.0, 0.0, 0.0),
+                               dmu=2pi .* (0.08, 0.14, -0.069))
+    la = Lattice("md4c_A"; line=BeamLine("A", ip, l6))
+    lb = Lattice("md4c_B"; line=BeamLine("B", ip, l6))
+    @test StrongStrongTask((ip, l6), (ip, l6)).machine === nothing
+    @test StrongStrongTask([ip, l6], (ip, l6)).machine === nothing
+    @test StrongStrongTask(la, (ip, l6)).machine === nothing
+    @test StrongStrongTask(la, la).machine == Machine(la)
+    let m = StrongStrongTask(la, lb).machine
+        @test m == Machine("md4c_A+md4c_B"; lattices=(la, lb))
+        @test keys(m) == ("md4c_A", "md4c_B") && m[:md4c_A] === la && m.knob_roots === ()
+        @test m != Machine("md4c_B+md4c_A"; lattices=(lb, la))                  # anti-vacuity: order and name
+    end
+    @test StrongStrongTask(la, Lattice("md4c_A"; line=BeamLine("A2", ip, l6))).machine === nothing
+    let mach = Machine("md4c_SPEIC"; lattices=(la, lb))
+        @test StrongStrongTask(mach, :md4c_A, :md4c_B).machine === mach
+        @test StrongStrongTask(mach, "md4c_B", "md4c_A").machine === mach
+        @test StrongStrongTask(mach).machine === mach
+    end
+    # Roots: the roots both lattices declare become the derived machine's
+    # shared roots (the D7 tripwire accepts the pair the lattices already read
+    # together); roots that overlap as dotted prefixes make no machine.
+    @knob md4c_sp_p.k = 1.0
+    @knob md4c_sp_q.k = 2.0
+    @knob md4c_sp_r.k = 3.0
+    @knob md4c_sp_r.arc.k = 4.0
+    let r1 = Lattice("md4c_R1"; line=BeamLine("R1", ip, l6), knob_root=(:md4c_sp_p, :md4c_sp_q)),
+        r2 = Lattice("md4c_R2"; line=BeamLine("R2", ip, l6), knob_root=:md4c_sp_q),
+        m = StrongStrongTask(r1, r2).machine
+        @test m.knob_roots === (:md4c_sp_q,) &&
+              m == Machine("md4c_R1+md4c_R2"; lattices=(r1, r2), knob_root=:md4c_sp_q)
+    end
+    let o1 = Lattice("md4c_O1"; line=BeamLine("O1", ip, l6), knob_root=:md4c_sp_r),
+        o2 = Lattice("md4c_O2"; line=BeamLine("O2", ip, l6), knob_root=Symbol("md4c_sp_r.arc"))
+        @test StrongStrongTask(o1, o2).machine === nothing
+        @test_throws ArgumentError Machine("md4c_O"; lattices=(o1, o2))         # no machine can hold them
+    end
+end
+
 mutable struct _PhaseResetFailureObserver <: Octopus.AbstractBeamObserver
     failure_turn::Int
     fail_finalize::Bool
@@ -29456,6 +29683,8 @@ end
         cols = [n for (n, _) in Octopus._RA_LEDGER_COLUMNS]
         @test ("rng_seed", UInt64) in Octopus._RA_LEDGER_COLUMNS
         @test ("rng_method", String) in Octopus._RA_LEDGER_COLUMNS
+        @test ("machine_toml", String) in Octopus._RA_LEDGER_COLUMNS      # D14, 2026-11-25
+        @test ("machine_sha256", String) in Octopus._RA_LEDGER_COLUMNS
         Octopus.HDF5.h5open(p_seed, "r") do f
             @test sort(String.(collect(keys(f["execution"])))) == sort(cols)
         end
@@ -29496,9 +29725,25 @@ end
             Octopus._ra_extendable!(f["execution"], "rng_seed", UInt64)
             Octopus._ra_extendable!(f["execution"], "rng_method", String)
         end
+        # With the seed columns added the file is the 2026-10-16 layout, which
+        # lacks the machine columns of 2026-11-25 (D14): refused by name naming
+        # that generation alone; with those two added as well it continues.
+        err_mid = try
+            execute!(TrackingTask(drift; artifact=RunArtifact(p_old; append=true)), rep; turns=1)
+            "did not throw"
+        catch e
+            sprint(showerror, e)
+        end
+        @test occursin("machine_toml", err_mid) && occursin("machine_sha256", err_mid) &&
+              occursin("2026-11-25", err_mid) && !occursin("2026-10-16", err_mid)
+        Octopus.HDF5.h5open(p_old, "r+") do f
+            Octopus._ra_extendable!(f["execution"], "machine_toml", String)
+            Octopus._ra_extendable!(f["execution"], "machine_sha256", String)
+        end
         set_global_rng!(seed=23, method=:philox)
         quiet(() -> execute!(TrackingTask(drift; artifact=RunArtifact(p_old; append=true)), rep; turns=1))
         @test read(TaskOutput(p_old), :execution).rng_seed == UInt64[23]
+        @test read(TaskOutput(p_old), :execution).machine_toml == [""]
         set_global_rng!(seed=0x5eed, method=:philox)
     end
 end

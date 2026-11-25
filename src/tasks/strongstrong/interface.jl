@@ -2556,6 +2556,20 @@ struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: Abstrac
     # the resolved-line equal-digest check so one cause warns once
     # (`ReportedSharing`, src/tasks/Tasks.jl; 2026-10-16, fix group F).
     reported_sharing::ReportedSharing
+    # The machine the task was given, by spelling (the machine description,
+    # design D14; stage 4, 2026-11-25), read by `prepare_run_artifact!` alone,
+    # which embeds its TOML snapshot in the run artifact (`read(out,
+    # :machine)`, `read_machine(out)`). The two machine forms store the
+    # machine they were handed; `StrongStrongTask(lattice1, lattice2)` stores
+    # the two-lattice machine `Machine("<name1>+<name2>"; lattices = (l1, l2))`
+    # with the roots both lattices declare as its shared ones, `Machine(l1)`
+    # when one lattice object is both lines (two beams in one ring), and
+    # `nothing`, with no warning, when no machine can hold the pair (two
+    # distinct lattices of one name, since the names are a machine's keys;
+    # roots that overlap as dotted prefixes); two tuples, vectors or bare
+    # lines are `nothing` too. The tracking never reads it: the field changes
+    # no result and no kernel.
+    machine::Union{Nothing,Machine}
 end
 
 function configuration_report(task::StrongStrongTask, beam1::Beam, beam2::Beam)
@@ -2603,7 +2617,19 @@ required_contracts(::StrongStrongTask) =
              StrongStrongPICBackendConsistencyContract,
              StrongStrongPICMultiProcessConsistencyContract]
 
-function StrongStrongTask(line1, line2;
+StrongStrongTask(line1, line2; kwargs...) =
+    _strong_strong_task(line1, line2, _strong_strong_machine(line1, line2); kwargs...)
+
+"""
+    _strong_strong_task(line1, line2, machine; kwargs...) -> StrongStrongTask
+
+The line form's body, with the `machine` field's value decided by the caller
+(design D14): the public line form derives it from the two lines
+(`_strong_strong_machine`), the two machine forms pass the machine they were
+handed. Every keyword, refusal and warning of `StrongStrongTask(line1, line2;
+kwargs...)` lives here.
+"""
+function _strong_strong_task(line1, line2, machine::Union{Nothing,Machine};
                           policy::Union{Nothing,AbstractExecutionPolicy}=nothing,
                           seed=nothing,
                           default_poisson_solver::AbstractPoissonSolver=GaussianPoissonSolver(),
@@ -2668,7 +2694,36 @@ function StrongStrongTask(line1, line2;
         (Ref{Any}(nothing), Ref{Any}(nothing)),
         (Ref{Any}(WeakRef(nothing)), Ref{Any}(WeakRef(nothing))),
         reported_sharing,
+        machine,
     )
+end
+
+"""
+    _strong_strong_machine(line1, line2) -> Union{Nothing,Machine}
+
+The machine a `StrongStrongTask` built from two lines records (design D14).
+Two `Lattice`s: one object given twice is its implicit one-lattice machine
+(`Machine(l1)`, two beams in one ring); two lattices of different names are
+the two-lattice machine `Machine("<name1>+<name2>"; lattices = (l1, l2))`
+whose shared roots are the roots both declare (so the machine-level tripwire
+of D7 accepts what the two lattices already read together); and `nothing`,
+with no warning, when no machine can hold the pair: two distinct lattices of
+one name (the names are a machine's keys) or roots that overlap as dotted
+prefixes (`_knob_root_overlaps`). Anything else (tuples, vectors, bare lines,
+a lattice beside a tuple) is `nothing`: there is no lattice context to
+snapshot. Never refuses: the line form accepted every such pair before the
+field existed and still does.
+"""
+_strong_strong_machine(line1, line2) = nothing
+function _strong_strong_machine(l1::Lattice, l2::Lattice)
+    l1 === l2 && return Machine(l1)
+    name1, name2 = getfield(l1, :name), getfield(l2, :name)
+    name1 == name2 && return nothing
+    roots1, roots2 = getfield(l1, :knob_roots), getfield(l2, :knob_roots)
+    any(_knob_root_overlaps(a, b) for a in roots1 for b in roots2) && return nothing
+    shared = Tuple(r for r in roots1 if r in roots2)
+    return Machine(name1 * "+" * name2; lattices=(l1, l2),
+                   knob_root=isempty(shared) ? nothing : shared)
 end
 
 """
@@ -2686,7 +2741,7 @@ line form applies unchanged.
 """
 function StrongStrongTask(machine::Machine, lattice1::Union{Symbol,AbstractString},
                           lattice2::Union{Symbol,AbstractString}; kwargs...)
-    return StrongStrongTask(machine[lattice1], machine[lattice2]; kwargs...)
+    return _strong_strong_task(machine[lattice1], machine[lattice2], machine; kwargs...)
 end
 function StrongStrongTask(machine::Machine; kwargs...)
     names = keys(machine)
@@ -2697,7 +2752,7 @@ function StrongStrongTask(machine::Machine; kwargs...)
         "declaration order (beam 1 with the first). Name the pair: StrongStrongTask(machine, " *
         ":$(names[1]), :$(length(names) == 1 ? names[1] : names[2]); ...) (the same name " *
         "twice is legal: two beams in one ring)"))
-    return StrongStrongTask(machine[names[1]], machine[names[2]]; kwargs...)
+    return _strong_strong_task(machine[names[1]], machine[names[2]], machine; kwargs...)
 end
 
 """Return complete-turn timings in seconds from the most recent task execution."""
@@ -3130,7 +3185,8 @@ function _execute_strong_strong_task!(
         prepare_run_artifact!(task.artifact, labels, Int(first_turn), Int(turns);
                               turn_modulation=prov, turn_modulation_columns=columns,
                               aperture_names=(beam_1=beam_apertures[1], beam_2=beam_apertures[2]),
-                              task_kind=string(nameof(typeof(task))))
+                              task_kind=string(nameof(typeof(task))),
+                              machine=task.machine)
     end
     # Absolute window, matching Tasks.jl: `should_run` sees `first_turn + offset`.
     # A refusal here (a duplicate probe name, a continued group's column

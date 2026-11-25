@@ -27,18 +27,25 @@ The pattern this example follows:
 5. Declare each ring as a `BeamLine` holding the same `StrongStrongCollision`
    marker, give each its `Lattice` with its entrance `ReferenceParticle`, and
    gather the two lattices in one `Machine` (the machine description,
-   docs/design/machine_description.md).
+   docs/design/machine_description.md); write the machine's TOML snapshot
+   beside the artifact.
 6. Build a `StrongStrongTask` from the machine's two lattices by name and
    `execute!` it.
 
-Output is ONE run artifact under `result/<seed>/` (docs/design/run_artifact.md):
+Output is ONE run artifact under `result/<seed>/` (docs/design/run_artifact.md),
+with the machine's snapshot beside it:
 
 - `<case_name>.h5` : `/luminosity/ip` (turn and per-collision luminosity),
-  `/moments/electron` and `/moments/proton`, and the `/execution` ledger.
+  `/moments/electron` and `/moments/proton`, and the `/execution` ledger,
+  whose row embeds the machine's snapshot text (`read(out, :machine)`,
+  `read_machine(out)`).
   Read with one handle: `out = TaskOutput(path)`, then
   `read(out, :luminosity; name = "ip")`, `read(out, :moments;
   name = "electron")` (or `MomentOutput(path; name = "electron")` for
   Moment-aware selection), `read(out, :execution)`.
+- `<case_name>.machine.toml` : the machine description as data
+  (`write_machine`; design D13), the same text the artifact embeds;
+  `read_machine(path)` rebuilds the machine from it.
 =#
 
 if !isdefined(Main, :Octopus)
@@ -396,6 +403,15 @@ esr = Lattice("ESR"; line = line_ele, reference = ele_ref)
 hsr = Lattice("HSR"; line = line_pro, reference = pro_ref)
 machine = Machine("EIC"; lattices = (esr, hsr))
 println("Machine: ", machine)
+# The machine's snapshot beside the artifact (docs/design/machine_description.md,
+# D13): the description above as data, which `read_machine(snapshot_path)`
+# rebuilds; the run artifact embeds the same text (D14, `read(out, :machine)`).
+# Written once: under `:multiprocess` every rank holds the same machine and
+# rank 0 writes it, as the library does for the artifact.
+snapshot_path = joinpath(outdir, input.case_name * ".machine.toml")
+if !(policy isa MultiProcessExecutionPolicy) || Main.MPI.Comm_rank(Main.MPI.COMM_WORLD) == 0
+    write_machine(snapshot_path, machine)
+end
 
 # ---------------------------------------------------------------------------
 # Build and run.
@@ -425,6 +441,7 @@ println("turns = ", config.turns)
 println("poisson_solver = ", nameof(typeof(solver)))
 println("artifact = ", artifact_path)
 println("  /luminosity/ip, /moments/electron, /moments/proton, /execution")
+println("machine snapshot = ", snapshot_path)
 # `beam_statistics` is a purely local reduction -- no collective, no shard
 # argument -- so under `:multiprocess` it describes THIS RANK'S SHARD, not the
 # beam. Labelled accordingly, because a reader comparing a divided run's rms

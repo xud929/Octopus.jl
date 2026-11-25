@@ -79,7 +79,9 @@ function example_catalog()
             "solver and its slicing, what to observe, and how to declare each " *
             "ring as a BeamLine with its Lattice (name, entrance reference) and " *
             "gather both in a Machine the task pairs by name " *
-            "(StrongStrongTask(machine, :ESR, :HSR)). Its configurable " *
+            "(StrongStrongTask(machine, :ESR, :HSR)), and how the machine's " *
+            "TOML snapshot is written beside the run artifact (write_machine; " *
+            "the artifact embeds the same text, read(out, :machine)). Its configurable " *
             "development harness is test/examples/strong_strong_tracking.jl.",
             Type[StrongStrongTask, StrongStrongCollision, PICPoissonSolver,
                      LongitudinalSlicing, Beam, LinearOptics, ReferenceParticle,
