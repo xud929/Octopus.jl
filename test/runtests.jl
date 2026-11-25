@@ -21646,6 +21646,312 @@ end
 # registry-derived tripwire over every object type. Unit B's testsets land directly below this
 # comment and nowhere else.
 
+@testset "Machine description: every hook, marker, solver, schedule and rule type round-trips through the snapshot or is refused by name" begin
+    O = Octopus
+    same(a, b) = O._lattice_structurally_equal(a, b)
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    # The tripwire, DERIVED: every concrete type under the five roots the
+    # registry knows, plus every Octopus type the four solver schemas'
+    # option types reference (abstract ones by their concrete subtypes) and
+    # the one element type `backend_configurations` accepts (the PIC
+    # constructor's own check), is registered in _TOML_OBJECT_TYPES or on the
+    # refusal list, never both and never neither.
+    roots = (O.AbstractBeamObserver, O.AbstractSchedule, O.AbstractBeamAction, O.AbstractPoissonSolver)
+    types = Any[]
+    for root in roots
+        append!(types, O._concrete_octopus_subtypes(root))
+    end
+    append!(types, O.subtypes(O.AbstractTurnRule))
+    for S in O._concrete_octopus_subtypes(O.AbstractPoissonSolver), (_, meta) in pairs(solver_option_schema(S)),
+        M in Base.uniontypes(meta.option_type)
+        (M isa DataType || M isa UnionAll) || continue
+        if isabstracttype(M) && parentmodule(M) === O
+            append!(types, O._concrete_octopus_subtypes(M))
+        elseif M isa DataType && isstructtype(M) && parentmodule(M) === O
+            push!(types, M)
+        end
+    end
+    push!(types, CUDAPICLaunchConfig)
+    roster = unique!([string(nameof(T)) for T in types])
+    registered = Set(keys(O._TOML_OBJECT_TYPES))
+    refused = Set(string(nameof(T)) for T in O._toml_refused_object_types())
+    @test length(roster) >= 24 && "PICPoissonSolver" in roster && "WhiteNoise" in roster && "UnsafeVirtualDrift" in roster
+    @test isempty(intersect(registered, refused))
+    @test isempty([n for n in roster if !(n in registered) && !(n in refused)])
+    @test refused == Set(["PredicateSchedule", "BeamSwapAction", "SpectralNoise"])
+    @test issubset(refused, roster)
+
+    # One instance per registered type with NON-default options, encoded in a
+    # context and decoded through the dispatch: equal by the structural walk
+    # Machine's == uses, and by the reports where they compare.
+    ctx = O._TomlContext()
+    rt(x) = O._toml_decode_object(O._toml_encode_object(x, ctx), ctx)
+    rng_a, rng_b, rng_c = 0x4d444201, 0x4d444202, 0x4d444203
+    sl = LongitudinalSlicing(; nslices=3, method=:specified, positions=[-0.4, 0.6], center_position=:midpoint, resolution=50)
+    launch = CUDAPICLaunchConfig(; kick_threads=128, luminosity_threads=64)
+    pic = PICPoissonSolver(; grid=(32, 48), slicing=sl, slicing1=LongitudinalSlicing(nslices=2),
+                           luminosity_schedule=EveryNSteps(step=10), backend_configurations=(launch,),
+                           luminosity_grid=(16, 16), min_transverse_extent=(1e-6, 2e-6), deposit_method=:TSC)
+    gauss = GaussianPoissonSolver(; virtual_drift=ChromaticDrift(), luminosity_schedule=AtTurns([1, 2]),
+                                  include_sigma_xy=true, kbb1=0.5, slicing=sl, batch_mode=:sequential)
+    spectral = SpectralPoissonSolver(; grid=(16, 24), domain_factor=8.0, method=:grid_free, slicing2=sl)
+    gpic = GaussianPICPoissonSolver(; grid=(16, 16), margin_sigma=4.0, deposit_method=:TSC, coupling_tol=0.5, slicing=sl)
+    table = TurnTable([0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7]; name="md4b_table")
+    instances = Any[
+        AlwaysSchedule(), EveryNSteps(start=3, stop=20, step=5), AtTurns(Set([1, 4, 9])),
+        MomentObserver(; name="md4b_moments", orders=(1,), extra=(Moment(; z=2), Moment(; x=1, px=1))),
+        CoordinateSnapshotObserver(; name="md4b_snapshot", npart=50),
+        BPMObserver("md4b_bpm"; x_offset=1e-3, tilt=0.01, x_noise=1e-6, rng_id=rng_a, artifact=true),
+        sl, launch,
+        HirataParaxialDrift(), ChromaticDrift(), ExactHamiltonianDrift(),
+        UnsafeVirtualDrift(:chromatic_frozen_energy), O._ChromaticFrozenEnergyDrift(), O._ParaxialFrozenLongitudinalDrift(),
+        pic, gauss, spectral, gpic,
+        WhiteNoise(1e-3; rng_id=rng_b), PinkNoise(2e-3; rng_id=rng_c, octaves=8), table,
+        StrongStrongCollision(:md4b_ip; poisson_solver=pic), StrongStrongCollision(:md4b_bare),
+        ScheduledObserver(MomentObserver(; name="md4b_hooked"), EveryNSteps(step=3)),
+    ]
+    covered = Set(string(nameof(typeof(x))) for x in instances)
+    # Every registered type of the roster has an instance, and so do the two
+    # wrappers and the marker, which sit under none of the roots (the
+    # registry also holds the core codec's types, tracking methods and enums,
+    # which are unit A's). ScheduledAction has none: no action Octopus
+    # defines can be snapshotted, so the wrapper is exercised below through
+    # its refusal alone.
+    @test isempty(setdiff(intersect(registered, Set(roster)), covered))
+    @test issubset(Set(["ScheduledObserver", "ScheduledAction", "StrongStrongCollision"]), registered)
+    @test "ScheduledObserver" in covered && "StrongStrongCollision" in covered
+    for x in instances
+        tbl = O._toml_encode_object(x, ctx)
+        @test tbl["type"] == string(nameof(typeof(x)))
+        y = rt(x)
+        @test typeof(y) === typeof(x) && same(y, x)
+    end
+    @test same(configuration_report(rt(instances[2])), configuration_report(instances[2]))
+    @test same(configuration_report(rt(instances[4])), configuration_report(instances[4]))
+    @test rt(instances[4]).moments == instances[4].moments && length(instances[4].moments) == 8
+    # The constructor route the reader uses: `moments` given alone is
+    # canonicalised (sorted, unique); combined with a selection keyword it is
+    # refused by name.
+    @test MomentObserver(; name="md4b_route", moments=("m000020", "m100000", "m100000")).moments == (Moment(; x=1), Moment(; z=2))
+    @test occursin("give it alone", msg(() -> MomentObserver(; name="md4b_route", moments=("m100000",), orders=1)))
+    @test solver_configuration(rt(pic)) == solver_configuration(pic)
+    @test solver_configuration(rt(spectral)) == solver_configuration(spectral)
+    @test solver_configuration(rt(gpic)) == solver_configuration(gpic)
+    @test rt(pic).requested_slicing1 == LongitudinalSlicing(nslices=2) && rt(pic).requested_slicing2 === nothing
+    @test rt(gauss).virtual_drift === ChromaticDrift() && rt(gauss).luminosity_schedule.turns == Set([1, 2])
+    @test rt(instances[6]).rng_id == rng_a && rt(instances[6]).artifact
+    # Anti-vacuity: the walk tells options apart, and the reports do too.
+    @test !same(rt(EveryNSteps(step=5)), EveryNSteps(step=6))
+    @test !same(rt(pic), PICPoissonSolver(; grid=(32, 48), slicing=sl))
+    @test !same(rt(sl), LongitudinalSlicing(; nslices=3, method=:specified, positions=[-0.4, 0.5]))
+    @test !same(configuration_report(rt(instances[4])), configuration_report(MomentObserver(; name="md4b_moments")))
+
+    # The table: its offsets went to the context's tables under the digest
+    # the text carries, the reload is the original (offsets, FNV digest,
+    # name), a stated length the table does not have is refused by name, and
+    # a context without tables refuses naming the digest.
+    ttbl = O._toml_encode_object(table, ctx)
+    @test ttbl["length"] == 7 && ttbl["name"] == "md4b_table" && haskey(ctx.tables, ttbl["sha256"])
+    @test ctx.tables[ttbl["sha256"]] == table.offsets
+    let back = O._toml_decode_object(ttbl, ctx)
+        @test back.offsets == table.offsets && back.digest == table.digest && back.name == "md4b_table" && back.resolved_seed === nothing
+    end
+    let bad = copy(ttbl)
+        bad["length"] = 8
+        @test occursin("states 8 turns", msg(() -> O._toml_decode_object(bad, ctx)))
+    end
+    @test occursin(ttbl["sha256"], msg(() -> O._toml_decode_object(ttbl, O._TomlContext(Float64, nothing, String[]))))
+    # A Float32 lattice types its rules: a Float32 white noise round-trips in
+    # a Float32 context and a Float64 one is refused there by name.
+    let ctx32 = O._TomlContext(numeric_type=Float32), w32 = WhiteNoise(1f-3; rng_id=rng_b)
+        back = O._toml_decode_object(O._toml_encode_object(w32, ctx32), ctx32)
+        @test back isa WhiteNoise{Float32} && back.sigma === 1f-3 && back.rng_id == rng_b
+        @test occursin("Float64", msg(() -> O._toml_encode_object(WhiteNoise(1e-3; rng_id=rng_b), ctx32)))
+    end
+    # Refused by name: the three function holders (the action inside its
+    # wrapper too), an unknown key with the schema's keys listed, a value of
+    # the wrong class, and an option the constructor refuses.
+    @test occursin("PredicateSchedule", msg(() -> O._toml_encode_object(PredicateSchedule(c -> true), ctx)))
+    @test occursin("SpectralNoise", msg(() -> O._toml_encode_object(
+        SpectralNoise(1.0e-5, (1.0e-3, 1.0e-1), :pink; rng_id=rng_c, turns=2^16), ctx)))
+    @test occursin("BeamSwapAction", msg(() -> O._toml_encode_object(BeamSwapAction(() -> nothing), ctx)))
+    @test occursin("BeamSwapAction", msg(() -> O._toml_encode_object(
+        ScheduledAction(BeamSwapAction(() -> nothing), AlwaysSchedule()), ctx)))
+    let bad = O._toml_encode_object(EveryNSteps(step=2), ctx)
+        bad["foo"] = 1
+        @test occursin("start, stop, step", msg(() -> O._toml_decode_object(bad, ctx)))
+    end
+    @test occursin("Int64", msg(() -> O._toml_decode_object(Dict{String,Any}("type" => "EveryNSteps", "step" => 2.5), ctx)))
+    @test occursin("step must be positive", msg(() -> O._toml_decode_object(Dict{String,Any}("type" => "EveryNSteps", "step" => 0), ctx)))
+    @test occursin("not a AbstractBeamObserver", msg(() -> O._toml_decode_object(
+        Dict{String,Any}("type" => "ScheduledObserver", "observer" => Dict{String,Any}("type" => "AlwaysSchedule"),
+                         "schedule" => Dict{String,Any}("type" => "AlwaysSchedule")), ctx)))
+    @test occursin("Float32", msg(() -> O._toml_encode_object(PICPoissonSolver{Float32}(), ctx)))
+end
+
+@testset "Machine description: the strong-strong example's machine round-trips and the reloaded task compiles the tuple spelling's runtime" begin
+    O = Octopus
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    # The two rings of examples/strong_strong_tracking.jl at small size: the
+    # example's shapes (Linear6D transports from LinearOptics points, the
+    # three-harmonic crab cavities, the Lorentz boost pair, one shared PIC
+    # collision marker with normal-quantile slicing, in-line moment probes,
+    # the electron ring's chromaticity kick and radiation), a 32x32 grid and
+    # three slices; the electron ring's first crab cavity carries a seven-turn
+    # phase table, the bulk data the sidecar holds.
+    half_angle = 12.5e-3
+    crab_kick(beta_cc, beta_star) = tan(half_angle) / sqrt(beta_cc * beta_star)
+    ele = (charge=-1.0, mass=EMASS_EV, energy=10.0e9, n_particle=1.7203e11, cutoff=5.0,
+           sigma=(106.0e-6, 9.5e-6, 0.7e-2), beta=(0.55, 0.056, 0.7e-2 / 5.5e-4), alpha=(0.0, 0.0, 0.0),
+           crab_beta=(150.0, 30.0, 0.7e-2 / 5.5e-4), tune=(0.08, 0.14, -0.069), chromaticity=(1.0, 1.0),
+           crab_frequency=394.0e6, radiation_damping_turns=(4000.0, 4000.0, 2000.0))
+    pro = (charge=1.0, mass=PMASS_EV, energy=275.0e9, n_particle=0.6881e11, cutoff=5.0,
+           sigma=(95.0e-6, 8.5e-6, 6.0e-2), beta=(0.8, 0.072, 6.0e-2 / 6.6e-4), alpha=(0.0, 0.0, 0.0),
+           crab_beta=(1300.0, 30.0, 6.0e-2 / 6.6e-4), tune=(0.228, 0.210, -0.01), chromaticity=(2.0, 2.0),
+           crab_frequency=197.0e6)
+    ele_ref = ReferenceParticle(; charge=ele.charge, mc2=ele.mass, E0=ele.energy)
+    pro_ref = ReferenceParticle(; charge=pro.charge, mc2=pro.mass, E0=pro.energy)
+    ele_ip = LinearOptics(; beta=ele.beta, alpha=ele.alpha)
+    ele_crab = LinearOptics(; beta=ele.crab_beta, alpha=ele.alpha)
+    pro_ip = LinearOptics(; beta=pro.beta, alpha=pro.alpha)
+    pro_crab = LinearOptics(; beta=pro.crab_beta, alpha=pro.alpha)
+    slicing = LongitudinalSlicing(; method=:normal_quantile, nslices=3, center_position=:centroid)
+    solver = PICPoissonSolver(; slicing=slicing, grid=(32, 32), deposit_method=:CIC, green_type=:integrated,
+                              green_cache=:slice_pair, slice_pair_green_min_ratio=0.50,
+                              slice_pair_green_growth=0.25, longitudinal_kick=true)
+    ip = StrongStrongCollision(:ip; poisson_solver=solver)
+    lb = LorentzBoostSpec(half_angle)
+    rlb = RevLorentzBoostSpec(half_angle)
+    e_tccb2ip = Linear6DSpec{Float64}(ele_crab, ele_ip; dmu=(pi / 2.0, 0.0, 0.0))
+    e_tccb2ip_inv = Linear6DSpec{Float64}(matrix=inv(Matrix(Linear6D(e_tccb2ip))))
+    e_ip2tcca = Linear6DSpec{Float64}(ele_ip, ele_crab; dmu=(pi / 2.0, 0.0, 0.0))
+    e_ip2tcca_inv = Linear6DSpec{Float64}(matrix=inv(Matrix(Linear6D(e_ip2tcca))))
+    e_kick = (crab_kick(ele.crab_beta[1], ele.beta[1]), 0.0, 0.0)
+    table = TurnTable([1.0e-4, -2.0e-4, 3.0e-4, -4.0e-4, 5.0e-4, -6.0e-4, 7.0e-4]; name="md4b_crab_phase")
+    e_tccb = ThinCrabCavitySpec{3}(ele.crab_frequency; strengthX=e_kick, strengthY=(0.0, 0.0, 0.0),
+                                   phase=(0.0, 0.0, 0.0), phase_noise=(table, nothing, nothing))
+    e_tcca = ThinCrabCavitySpec{3}(ele.crab_frequency; strengthX=e_kick, strengthY=(0.0, 0.0, 0.0), phase=(0.0, 0.0, 0.0))
+    e_one_turn = Linear6DSpec{Float64}(ele_ip, ele_ip; dmu=2pi .* ele.tune)
+    e_chrom = ChromaticityKickSpec{Float64}(; xi=ele.chromaticity, optics=ele_ip)
+    e_rad = LumpedRadSpec{Float64}(; damping_turns=ele.radiation_damping_turns, optics=ele_ip, sigma=ele.sigma,
+                                   is_damping=true, is_excitation=true, rng_id=0x4d444210)
+    p_tccb2ip = Linear6DSpec{Float64}(pro_crab, pro_ip; dmu=(pi / 2.0, 0.0, 0.0))
+    p_tccb2ip_inv = Linear6DSpec{Float64}(matrix=inv(Matrix(Linear6D(p_tccb2ip))))
+    p_ip2tcca = Linear6DSpec{Float64}(pro_ip, pro_crab; dmu=(pi / 2.0, 0.0, 0.0))
+    p_ip2tcca_inv = Linear6DSpec{Float64}(matrix=inv(Matrix(Linear6D(p_ip2tcca))))
+    p_kick = (crab_kick(pro.crab_beta[1], pro.beta[1]) * 4.0 / 3.0, -crab_kick(pro.crab_beta[1], pro.beta[1]) / 3.0, 0.0)
+    p_tccb = ThinCrabCavitySpec{3}(pro.crab_frequency; strengthX=p_kick, strengthY=(0.0, 0.0, 0.0), phase=(0.0, 0.0, 0.0))
+    p_tcca = ThinCrabCavitySpec{3}(pro.crab_frequency; strengthX=p_kick, strengthY=(0.0, 0.0, 0.0), phase=(0.0, 0.0, 0.0))
+    p_one_turn = Linear6DSpec{Float64}(pro_ip, pro_ip; dmu=2pi .* pro.tune)
+    p_chrom = ChromaticityKickSpec{Float64}(; xi=pro.chromaticity, optics=pro_ip)
+    sched = EveryNSteps(; start=0, step=1)
+    e_obs = ScheduledObserver(MomentObserver(; name="electron"), sched)
+    p_obs = ScheduledObserver(MomentObserver(; name="proton"), sched)
+    line_e = BeamLine("ESR", e_tccb2ip_inv, e_tccb, e_tccb2ip, lb, ip, rlb, e_ip2tcca, e_tcca, e_ip2tcca_inv,
+                      e_one_turn, e_chrom, e_rad, e_obs)
+    line_p = BeamLine("HSR", p_tccb2ip_inv, p_tccb, p_tccb2ip, lb, ip, rlb, p_ip2tcca, p_tcca, p_ip2tcca_inv,
+                      p_one_turn, p_chrom, p_obs)
+    esr = Lattice("ESR"; line=line_e, reference=ele_ref)
+    hsr = Lattice("HSR"; line=line_p, reference=pro_ref)
+    machine = Machine("md4b_EIC"; lattices=(esr, hsr))
+
+    # Written and read back: the text is the deterministic machine_toml, the
+    # sidecar exists beside it and holds the table under the digest the text
+    # references, the reloaded machine is equal and distinct; anti-vacuity: a
+    # machine whose proton ring lacks its probe is not equal.
+    dir = mktempdir()
+    path = joinpath(dir, "md4b_eic.toml")
+    @test write_machine(path, machine) == path
+    text = read(path, String)
+    @test text == machine_toml(machine)
+    sidecar = splitext(path)[1] * ".tables.h5"
+    @test isfile(sidecar)
+    digest = match(r"sha256 = \"([0-9a-f]{64})\"", text)
+    @test digest !== nothing && occursin("\"TurnTable\"", text)
+    let tables = Dict{String,Any}()
+        machine_toml(machine, tables)
+        @test digest !== nothing && haskey(tables, digest[1]) && tables[digest[1]] == table.offsets
+    end
+    reloaded = read_machine(path)
+    @test reloaded == machine && reloaded !== machine
+    @test reloaded != Machine("md4b_EIC"; lattices=(esr, Lattice("HSR"; line=BeamLine("HSR", p_tccb2ip_inv, p_tccb, p_tccb2ip, lb, ip, rlb,
+                                                                           p_ip2tcca, p_tcca, p_ip2tcca_inv, p_one_turn, p_chrom), reference=pro_ref)))
+    let entries = O.line_entries(reloaded[:ESR])
+        crab = getfield(entries[2], :spec)
+        rl_table = O.getparam(crab, :phase_noise)[1]
+        @test rl_table isa TurnTable{Float64} && rl_table.offsets == table.offsets && rl_table.digest == table.digest &&
+              rl_table.name == "md4b_crab_phase" && rl_table !== table
+        hook = getfield(entries[end], :spec)
+        @test hook isa ScheduledObserver && hook.observer.name == "electron" && hook.observer.moments == e_obs.observer.moments &&
+              hook.schedule == sched
+        marker = getfield(entries[5], :spec)
+        @test marker isa StrongStrongCollision && marker.label === :ip && solver_configuration(marker.poisson_solver) == solver_configuration(solver)
+        # The marker the two rings share is written once per lattice, so the
+        # reload holds two equal markers, distinct objects; the task pairs
+        # them by label and compares their solvers by configuration.
+        other = getfield(O.line_entries(reloaded[:HSR])[5], :spec)
+        @test other !== marker && other.label === marker.label &&
+              solver_configuration(other.poisson_solver) == solver_configuration(marker.poisson_solver)
+    end
+
+    # The task from the reloaded machine against the task from the original:
+    # the compiled runtime blocks of both beams are of identical types and
+    # equal field by field (the stage-3 comparison helper), two turns from
+    # identically seeded beams land bitwise on the same coordinates, which
+    # are not the initial ones. Both tasks carry an in-memory artifact, the
+    # sink the in-line moment probes bind to.
+    function same(a, b, depth=0)
+        depth > 64 && error("md3a: the runtime comparison went deeper than 64 levels")
+        typeof(a) === typeof(b) || return false
+        a isa Number && return isequal(a, b)
+        a isa Union{Symbol,AbstractString,Nothing,Type,Module} && return a == b
+        (a isa Base.AbstractLock || a isa Task || a isa WeakRef) && return true
+        # The blocks container is a vector by interface; its three derived
+        # fields (physics, observers, binding) are compared as well.
+        a isa Octopus.StrongStrongBlocks &&
+            return all(same(getfield(a, f), getfield(b, f), depth + 1) for f in 1:fieldcount(typeof(a)))
+        if a isa AbstractDict
+            length(a) == length(b) || return false
+            return all(haskey(b, k) && same(v, b[k], depth + 1) for (k, v) in a)
+        elseif a isa AbstractArray
+            size(a) == size(b) || return false
+            return all(same(x, y, depth + 1) for (x, y) in zip(a, b))
+        elseif a isa Union{Tuple,NamedTuple}
+            length(a) == length(b) || return false
+            return all(same(x, y, depth + 1) for (x, y) in zip(a, b))
+        elseif a isa Base.RefValue
+            isassigned(a) == isassigned(b) || return false
+            return !isassigned(a) || same(a[], b[], depth + 1)
+        end
+        isprimitivetype(typeof(a)) && return a === b
+        return all(same(getfield(a, f), getfield(b, f), depth + 1) for f in 1:fieldcount(typeof(a)))
+    end
+    mkb(rng_id, p, optics, ref) = begin
+        set_global_rng!(seed=20261125, method=:philox)
+        Beam(200, CPUThreadsExecutionPolicy(), Float64; optics=optics, sigma=p.sigma, cutoff=p.cutoff, rng_id=rng_id,
+             reference=ref, r0=RE * ME0 / p.mass, npart=p.n_particle)
+    end
+    beams() = (mkb(0x4d444221, ele, ele_ip, ele_ref), mkb(0x4d444222, pro, pro_ip, pro_ref))
+    coords(b) = [collect(getproperty(b.rep, f)) for f in (:x, :px, :y, :py, :z, :pz)]
+    mktask(m) = StrongStrongTask(m, :ESR, :HSR; policy=CPUThreadsExecutionPolicy(), artifact=RunArtifact(; storage=:memory))
+    task_o, task_r = mktask(machine), mktask(reloaded)
+    b1o, b2o = beams()
+    b1r, b2r = beams()
+    @test coords(b1o) == coords(b1r) && coords(b2o) == coords(b2r)
+    let ko1 = O._strong_strong_runtime_blocks(task_o, 1, b1o.rep), kr1 = O._strong_strong_runtime_blocks(task_r, 1, b1r.rep),
+        ko2 = O._strong_strong_runtime_blocks(task_o, 2, b2o.rep), kr2 = O._strong_strong_runtime_blocks(task_r, 2, b2r.rep)
+        @test 1 <= length(ko1) == length(kr1) <= 13 && all(typeof(x) === typeof(y) for (x, y) in zip(ko1, kr1))
+        @test length(ko2) == length(kr2) && all(typeof(x) === typeof(y) for (x, y) in zip(ko2, kr2))
+        @test same(ko1, kr1) && same(ko2, kr2)
+        @test !same(ko1, ko2)
+    end
+    initial1, initial2 = coords(b1o), coords(b2o)
+    execute!(task_o, b1o, b2o; turns=2)
+    execute!(task_r, b1r, b2r; turns=2)
+    @test coords(b1o) == coords(b1r) && coords(b2o) == coords(b2r)
+    @test coords(b1o) != initial1 && coords(b2o) != initial2
+end
+
 # [MD4-C] Machine description stage 4, unit C: the run artifact embedding the snapshot (D14) and
 # the shipped strong-strong example writing its machine. Unit C's testsets land directly below
 # this comment and nowhere else.

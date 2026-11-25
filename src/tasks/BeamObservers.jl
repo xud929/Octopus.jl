@@ -752,6 +752,7 @@ end
 
 """
     MomentObserver(; name, orders=1:2, extra=(), exclude=())
+    MomentObserver(; name, moments)
 
 Record selected beam moments into the owning task's [`RunArtifact`](@ref) as
 the group `/moments/<name>` -- column 1 the absolute turn, then the selected
@@ -781,6 +782,14 @@ accepts integers, ranges, vectors, tuples, and nested combinations such as
 `1:2`, `(1, 2)`, `(1:2, 3)`, or `()`. First-order moments are means; moments
 of order 2 or higher are central moments.
 
+The second form takes the RESOLVED selection itself, `moments`, a tuple or
+vector of `Moment`s or moment names (the `moments` entry of
+`configuration_report` and of the machine snapshot, `write_machine`), given
+alone: it replaces `orders`, `extra` and `exclude`, and combining it with a
+non-default one of them is refused. The selection is canonicalised (sorted,
+unique, order-0 dropped) exactly as the first form's, so an observer rebuilt
+from another's `moments` has the same tuple.
+
 Buffering is the ARTIFACT'S: `RunArtifact(path; capacity=...)` is the one
 knob deciding how many rows the row-shaped producers batch per append (the
 per-observer `capacity` retired 2026-08-18; snapshots write a block per fire
@@ -798,16 +807,25 @@ mx = read(out, Moment(; x = 1))
 with per-execution timing in `read(TaskOutput("run.h5"), :execution)`.
 """
 function MomentObserver(; name::AbstractString, orders=1:2, extra=(), exclude=(),
-                        capacity=nothing)
+                        moments=nothing, capacity=nothing)
     capacity === nothing || throw(ArgumentError(
         "the per-observer capacity was retired (2026-08-18): buffering " *
         "belongs to the sink, so pass artifact=RunArtifact(path; " *
         "capacity=...) on the task instead"))
     isempty(String(name)) && throw(ArgumentError("the artifact-view MomentObserver needs a nonempty name"))
-    moments = _selected_moments(orders=orders, extra=extra, exclude=exclude)
-    cols = _moment_column_names(moments)
+    # `moments` is the resolved selection itself (the machine snapshot and
+    # `configuration_report` carry it); it is canonicalised by the same
+    # selection routine, so a hand-written list lands sorted and unique.
+    if moments !== nothing
+        (orders == 1:2 && extra == () && exclude == ()) || throw(ArgumentError(
+            "MomentObserver: `moments` is the resolved selection itself; give it alone, " *
+            "without orders, extra or exclude (which it replaces)"))
+    end
+    selected = moments === nothing ? _selected_moments(orders=orders, extra=extra, exclude=exclude) :
+                                     _selected_moments(orders=(), extra=moments)
+    cols = _moment_column_names(selected)
     # The row buffer is sized from the artifact's capacity at prepare.
-    return MomentObserver(moments, cols, 0, Matrix{Float64}(undef, 0, length(cols)),
+    return MomentObserver(selected, cols, 0, Matrix{Float64}(undef, 0, length(cols)),
                           0, 0, false, nothing, String(name), nothing, nothing)
 end
 
