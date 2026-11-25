@@ -19410,7 +19410,8 @@ end
 end
 
 # [REF-1] Reference particle batch, unit 1: `Beam(; reference = ReferenceParticle)` in place of
-# charge, mc2, E0, with the beam option schema entry and the effectiveness test.
+# charge, mc2, E0, documented on the constructor beside the three keywords it replaces (the option
+# schema enumerates the receipt-bearing distribution options only), with the consumer-boundary test.
 # Unit 1's testsets land directly below this comment and nowhere else.
 
 @testset "Reference particle: Beam takes the reference in place of charge, mc2 and E0" begin
