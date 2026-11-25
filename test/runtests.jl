@@ -18326,6 +18326,93 @@ end
 # `reference = ReferenceParticle` in place of beta0/gamma0 (and e0/mc2/charge on the voltage route).
 # Unit 2's testsets land directly below this comment and nowhere else.
 
+@testset "Reference particle: the cavities take the reference in place of beta0 and gamma0" begin
+    # Design D12 (docs/design/machine_description.md): `reference = ReferenceParticle(...)`
+    # stands in for the flat reference keywords of both cavity kinds, on both routes.
+    # The stored parameters are the flat call's bit for bit (the same
+    # reference_beta_gamma derives the pair) and the reference itself is not stored,
+    # so the compiled runtime is the flat call's too.
+    ref = ReferenceParticle(; charge = 1, mc2 = PMASS_EV, E0 = 275e9)
+    b, g = reference_beta_gamma(ref)
+    @test 0.99 < b < 1 && g > 290                # a 275 GeV proton, not a trivial pair
+    stored(spec) = getfield(spec, :params)
+    twins = (
+        (ThinRFCavitySpec(400e6; strength = 0.01, reference = ref),
+         ThinRFCavitySpec(400e6; strength = 0.01, beta0 = b, gamma0 = g)),
+        (ThinRFCavitySpec(400e6; voltage = 2e6, reference = ref),
+         ThinRFCavitySpec(400e6; voltage = 2e6, e0 = 275e9, mc2 = PMASS_EV, charge = 1)),
+        (ThinAcceleratingCavitySpec(400e6; strength = 0.01, reference = ref),
+         ThinAcceleratingCavitySpec(400e6; strength = 0.01, beta0 = b, gamma0 = g)),
+        (ThinAcceleratingCavitySpec(400e6; voltage = 2e6, reference = ref),
+         ThinAcceleratingCavitySpec(400e6; voltage = 2e6, e0 = 275e9, mc2 = PMASS_EV, charge = 1)),
+        (ThinRFCavitySpec{Float32}(400e6; strength = 0.01, reference = ref),
+         ThinRFCavitySpec{Float32}(400e6; strength = 0.01, beta0 = b, gamma0 = g)),
+        (ThinRFCavitySpec{Float32}(400e6; voltage = 2e6, reference = ref),
+         ThinRFCavitySpec{Float32}(400e6; voltage = 2e6, e0 = 275e9, mc2 = PMASS_EV)),
+        (ThinAcceleratingCavitySpec{Float32}(400e6; strength = 0.01, reference = ref),
+         ThinAcceleratingCavitySpec{Float32}(400e6; strength = 0.01, beta0 = b, gamma0 = g)),
+        (ThinAcceleratingCavitySpec{Float32}(400e6; voltage = 2e6, reference = ref),
+         ThinAcceleratingCavitySpec{Float32}(400e6; voltage = 2e6, e0 = 275e9, mc2 = PMASS_EV)),
+        # the harmon keyword form builds through the same derivation
+        (ThinRFCavitySpec(; harmon = 7560, strength = 0.01, reference = ref),
+         ThinRFCavitySpec(; harmon = 7560, strength = 0.01, beta0 = b, gamma0 = g)),
+    )
+    for (with_ref, flat) in twins
+        @test stored(with_ref) == stored(flat)
+        @test !haskey(stored(with_ref), :reference)
+    end
+    for (with_ref, flat) in twins[1:8]           # the harmon pair has no bare runtime
+        @test compile_runtime(with_ref) == compile_runtime(flat)
+    end
+    # Both routes store the reference's own pair, exactly; the typed form stores it as T.
+    @test Octopus.param(twins[1][1], :beta0) == b && Octopus.param(twins[2][1], :gamma0) == g
+    @test Octopus.param(twins[4][1], :beta0) == b && Octopus.param(twins[5][1], :beta0) isa Float32
+    # Anti-vacuity: another reference stores another pair and compiles another cavity.
+    other = ReferenceParticle(; charge = 1, mc2 = PMASS_EV, E0 = 270e9)
+    @test stored(ThinRFCavitySpec(400e6; strength = 0.01, reference = other)) != stored(twins[1][2])
+    @test compile_runtime(ThinAcceleratingCavitySpec(400e6; voltage = 2e6, reference = other)) !=
+          compile_runtime(twins[4][2])
+    # The charge is the reference's on the voltage route: an electron flips the strength.
+    eref = ReferenceParticle(; charge = -1, mc2 = EMASS_EV, E0 = 10e9)
+    s_e = Octopus.param(ThinRFCavitySpec(400e6; voltage = 2e6, reference = eref), :strength)
+    @test s_e < 0 && s_e == Octopus.param(
+        ThinRFCavitySpec(400e6; voltage = 2e6, e0 = 10e9, mc2 = EMASS_EV, charge = -1), :strength)
+
+    # Refusals by name: every flat reference keyword beside `reference`, on both
+    # kinds and whatever its value (the consistent one included), on the voltage
+    # route and on the strength route; and a `reference` that is no ReferenceParticle.
+    refusal(f) = try
+        f()
+        nothing
+    catch err
+        sprint(showerror, err)
+    end
+    for K in (ThinRFCavitySpec, ThinAcceleratingCavitySpec)
+        for (kw, val) in ((:beta0, b), (:gamma0, g), (:e0, 275e9), (:mc2, PMASS_EV), (:charge, 1))
+            msg = refusal(() -> K(400e6; voltage = 2e6, reference = ref, kw => val))
+            @test msg !== nothing && occursin("`$kw`", msg) && occursin("`reference`", msg)
+        end
+        msg_s = refusal(() -> K(400e6; strength = 0.01, reference = ref, e0 = 275e9))
+        @test msg_s !== nothing && occursin("`e0`", msg_s) && occursin("`reference`", msg_s)
+        msg_r = refusal(() -> K(400e6; strength = 0.01, reference = 1.0))
+        @test msg_r !== nothing && occursin("`reference`", msg_r) && occursin("ReferenceParticle", msg_r)
+    end
+
+    # A flat call without `charge` stores what it stored before the `charge = nothing`
+    # signature: the voltage-route strength at charge 1, exactly; a given charge
+    # still scales it; and nothing construction-only is stored.
+    flat = ThinRFCavitySpec(400e6; voltage = 2e6, e0 = 275e9, mc2 = PMASS_EV)
+    s1 = 1 * 2e6 / (b * 275e9)
+    @test Octopus.param(flat, :strength) == s1 == Octopus.param(twins[2][1], :strength)
+    @test Octopus.param(ThinAcceleratingCavitySpec(400e6; voltage = 2e6, e0 = 275e9, mc2 = PMASS_EV),
+                        :strength) == s1
+    @test Octopus.param(ThinRFCavitySpec(400e6; voltage = 2e6, e0 = 275e9, mc2 = PMASS_EV, charge = 2),
+                        :strength) == 2 * s1
+    for spec in (twins[2][1], twins[4][1], flat)
+        @test !any(k -> haskey(stored(spec), k), (:reference, :charge, :voltage, :e0, :mc2))
+    end
+end
+
 @testset "Cavity chain composition, single-pass refusal, harmon resolution" begin
     # Closures of the Scope B ledger (2026-08-14): the chain now validates
     # EVERY cavity kind against the local reference, an accelerating line
