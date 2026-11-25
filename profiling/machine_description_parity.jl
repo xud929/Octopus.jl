@@ -55,7 +55,7 @@ synchronised before and after on CUDA. One markdown table per case: route,
 median s/turn, min s/turn, median allocated bytes/turn, the SHA-256 of the
 final coordinates of each beam after the last run. Then one verdict line:
 
-    PARITY case=<ss|ws> backend=<cpu|cuda> routes=<names> runs=<r> digests_equal=<bool> max_abs_coordinate_diff=<x> control_equal=<bool> control_floor=<y> verdict=<PASS|FAIL|REPORT>
+    PARITY case=<ss|ws> backend=<cpu|cuda|mpi> ranks=<n> routes=<names> runs=<r> digests_equal=<bool> max_abs_coordinate_diff=<x> control_equal=<bool> control_floor=<y> verdict=<PASS|FAIL|REPORT>
 
 `digests_equal` is over every run of every described route against the tuple
 route, not only the last; `max_abs_coordinate_diff` is the largest
@@ -73,6 +73,7 @@ running):
 
     julia --project=. --threads=16 profiling/machine_description_parity.jl
     OCTOPUS_USE_GPU=1 julia --project=. profiling/machine_description_parity.jl
+    OCTOPUS_USE_MPI=1 OCTOPUS_CPU_THREADS=4 OCTOPUS_RANKS=2 mpiexec -n 2 julia --project=<env> profiling/machine_description_parity.jl
 
 Every OCTOPUS_* name this script reads, defaults shown (the list is checked
 against the read sites at load; the `let` block after the switch grammar):
@@ -83,32 +84,45 @@ against the read sites at load; the `let` block after the switch grammar):
     OCTOPUS_PARITY_REPEATS=5        timed runs per route
     OCTOPUS_USE_GPU=0               1: one CUDA device, an error if none is functional
     OCTOPUS_CUDA_DEVICE=<unset>     CUDA device index; read with OCTOPUS_USE_GPU=1 only, refused otherwise
-    OCTOPUS_CPU_THREADS=auto        the CPU policy's worker count; refused with OCTOPUS_USE_GPU=1
-    OCTOPUS_USE_MPI=0               1 is refused by name: this driver has no multi-process arm (below)
-    OCTOPUS_RANKS=<unset>           refused on presence: the multi-process arm's variable
+    OCTOPUS_CPU_THREADS=auto        the CPU policy's worker count (per rank under MPI); refused with OCTOPUS_USE_GPU=1
+    OCTOPUS_USE_MPI=0               1: MPI ranks x CPU threads under a launcher, Octopus loaded as a PACKAGE (below)
+    OCTOPUS_RANKS=auto              read with OCTOPUS_USE_MPI=1 only (refused otherwise): an integer asserts the
+                                    launcher's rank count through the policy, `auto` accepts whatever it started
 
-No multi-process arm. A divided run needs the package-mode load, the launcher
-and the rank-0 printing of test/examples/strong_strong_tracking.jl, and it
-could not be validated when this driver was written (one Julia process at a
-time on the shared machine), so OCTOPUS_USE_MPI=1 refuses by name rather than
-running an untested arm or, worse, a single-process run on every rank.
+The multi-process arm (OCTOPUS_USE_MPI=1) follows test/examples/
+strong_strong_tracking.jl: the switch is read BEFORE Octopus loads because it
+decides HOW Octopus loads. `MultiProcessExecutionPolicy` reaches a real
+communicator only through the `OctopusMPIExt` package extension, which
+attaches only to a PACKAGE, so the arm does `using Octopus, MPI` and refuses
+by name an `include`d Main.Octopus or an unloaded extension (without it every
+rank would be its own communicator of one and `mpiexec -n P` would run P whole
+measurements). `<env>` is an environment holding Octopus, MPI and MPICH_jll as
+packages (the suite's test environment is one; `julia -e 'using Pkg;
+Pkg.activate("env"); Pkg.develop(path="."); Pkg.add(["MPI", "MPICH_jll"])'`
+makes another). Under the arm every rank builds its shard of the beams from
+the same seed, every route is the same object on every rank, each rank times
+its own `execute!` (a barrier precedes every timed run so the ranks start
+together) and digests its local shard; the table, printed by rank 0, carries
+the per-rank medians and minima reduced to the MAX over ranks and, per beam,
+the SHA-256 of the ranks' shard digests in rank order; the verdict's four
+quantities are reduced over all ranks (equality by MIN, differences by MAX),
+so every rank reaches the same verdict and the same exit status. The rank
+comes from MPI.Comm_rank, not from Octopus's `_mp_is_root()`, which reads a
+serial passthrough outside an active policy scope. OCTOPUS_USE_GPU=1 with
+OCTOPUS_USE_MPI=1 is refused: the policy composes the CPU policy and there is
+no CUDA-plus-MPI mode to select.
 
 The gate's CUDA arm runs the deterministic case at a reduced size (the testset
 "CUDA-requiring validation scripts run in the gate's CUDA arm" in
 test/runtests.jl reads the line below; validation/README.md); its timings at
 that size are a run receipt, not a performance record:
 
-GATE-CUDA-ARM: env OCTOPUS_USE_GPU=1 OCTOPUS_PARITY_CASE=ws OCTOPUS_PARITY_N_MACRO=2000 OCTOPUS_PARITY_TURNS=2 OCTOPUS_PARITY_REPEATS=1 ; verdict "PARITY case=ws backend=cuda routes=tuple,control,lattice,machine runs=1 digests_equal=true"
+GATE-CUDA-ARM: env OCTOPUS_USE_GPU=1 OCTOPUS_PARITY_CASE=ws OCTOPUS_PARITY_N_MACRO=2000 OCTOPUS_PARITY_TURNS=2 OCTOPUS_PARITY_REPEATS=1 ; verdict "PARITY case=ws backend=cuda ranks=1 routes=tuple,control,lattice,machine runs=1 digests_equal=true"
 =#
 
-if !isdefined(Main, :Octopus)
-    include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
-end
-using .Octopus
-using SHA, Printf
-
 # One grammar for every switch (the harnesses' rule since 2026-10-18): a value
-# outside it is an error naming the variable, never a silent default.
+# outside it is an error naming the variable, never a silent default. Defined
+# above the Octopus load because OCTOPUS_USE_MPI decides how Octopus loads.
 function env_bool(key::AbstractString, default::Bool)
     raw = get(ENV, key, default ? "1" : "0")
     lowered = lowercase(strip(raw))
@@ -120,6 +134,30 @@ function env_int(key::AbstractString, default::Int)
     value = parse(Int, get(ENV, key, string(default)))
     value > 0 || error("$(key) must be positive; got $(value)")
     return value
+end
+
+const USE_MPI = env_bool("OCTOPUS_USE_MPI", false)
+if USE_MPI
+    # The harness's rule (header): the extension attaches only to a package,
+    # and an `include`d Main.Octopus cannot become one.
+    if isdefined(Main, :Octopus) && Base.PkgId(Main.Octopus).uuid === nothing
+        error("OCTOPUS_USE_MPI=1 needs Octopus loaded as a PACKAGE, because the OctopusMPIExt " *
+              "extension attaches only to a package -- but Main.Octopus is already an `include`d " *
+              "module (its PkgId carries no UUID). Run this driver under the launcher with " *
+              "--project=<env holding Octopus, MPI and MPICH_jll> and no earlier include of src/Octopus.jl.")
+    end
+    using Octopus
+    using MPI
+    MPI.Initialized() || MPI.Init(threadlevel = :funneled)
+elseif !isdefined(Main, :Octopus)
+    include(joinpath(@__DIR__, "..", "src", "Octopus.jl"))
+end
+using .Octopus
+using SHA, Printf
+if USE_MPI && Base.get_extension(Main.Octopus, :OctopusMPIExt) === nothing
+    error("OCTOPUS_USE_MPI=1, but OctopusMPIExt did not load: every rank would then be its own " *
+          "communicator of one and run the WHOLE measurement. Run against an environment where " *
+          "Octopus and MPI both resolve as packages.")
 end
 
 # The header's OCTOPUS_* list against what this file reads, so the two cannot
@@ -137,19 +175,6 @@ let text = read(@__FILE__, String)
         string(sort!(collect(setdiff(read_names, named)))))
 end
 
-# No multi-process arm (header): refused by name, on the switch and on its
-# variable, so a launcher-driven run cannot become P single-process runs.
-env_bool("OCTOPUS_USE_MPI", false) && error(
-    "OCTOPUS_USE_MPI=1: profiling/machine_description_parity.jl has no multi-process arm. " *
-    "A divided run needs the package-mode load, the launcher and the rank-0 printing of " *
-    "test/examples/strong_strong_tracking.jl, which this driver does not implement; it " *
-    "refuses rather than run one whole measurement per rank. Use the CPU-threads arm " *
-    "(the default) or OCTOPUS_USE_GPU=1.")
-haskey(ENV, "OCTOPUS_RANKS") && error(
-    "OCTOPUS_RANKS=$(repr(ENV["OCTOPUS_RANKS"])) is the multi-process arm's variable, and " *
-    "profiling/machine_description_parity.jl has no multi-process arm (OCTOPUS_USE_MPI=1 is " *
-    "refused too): the value would go unread. Unset it.")
-
 const CASE = Symbol(lowercase(strip(get(ENV, "OCTOPUS_PARITY_CASE", "ss"))))
 CASE in (:ss, :ws) || error("OCTOPUS_PARITY_CASE=$(repr(String(CASE))) is not one of ss, ws")
 const N_MACRO = env_int("OCTOPUS_PARITY_N_MACRO", 20_000)
@@ -159,6 +184,13 @@ const USE_GPU = env_bool("OCTOPUS_USE_GPU", false)
 # A variable set where the chosen policy cannot read it is a configuration
 # nothing read (the examples' rule, comprehensive audit 2026-10-18 F-204):
 # refused by name instead of dropped.
+USE_GPU && USE_MPI && error(
+    "OCTOPUS_USE_GPU=1 and OCTOPUS_USE_MPI=1 together: MultiProcessExecutionPolicy composes " *
+    "CPUThreadsExecutionPolicy and runs on CPU storage, so there is no CUDA-plus-MPI mode to select. Choose one.")
+USE_MPI || !haskey(ENV, "OCTOPUS_RANKS") || error(
+    "OCTOPUS_RANKS=$(repr(ENV["OCTOPUS_RANKS"])) without OCTOPUS_USE_MPI=1: the rank count is read only " *
+    "by the multi-process arm, so it would go unread -- and under a launcher a single-process run on " *
+    "every rank is P whole measurements. Set OCTOPUS_USE_MPI=1 for a divided run.")
 USE_GPU || !haskey(ENV, "OCTOPUS_CUDA_DEVICE") || error(
     "OCTOPUS_CUDA_DEVICE=$(repr(ENV["OCTOPUS_CUDA_DEVICE"])) without OCTOPUS_USE_GPU=1: the CPU " *
     "policy reads no device index, so the value would be silently dropped. Set OCTOPUS_USE_GPU=1 or unset it.")
@@ -175,12 +207,45 @@ if USE_GPU
     reclaim_device() = CUDA.reclaim()
 else
     threads_text = lowercase(strip(get(ENV, "OCTOPUS_CPU_THREADS", "auto")))
-    policy = CPUThreadsExecutionPolicy(threads = threads_text == "auto" ? :auto : parse(Int, threads_text))
+    cpu_threads = threads_text == "auto" ? :auto : parse(Int, threads_text)
+    if USE_MPI
+        # OCTOPUS_RANKS goes straight through as the policy's `ranks`: the policy
+        # rejects a communicator whose size differs from an explicit request.
+        ranks_text = lowercase(strip(get(ENV, "OCTOPUS_RANKS", "auto")))
+        policy = MultiProcessExecutionPolicy(threads = cpu_threads,
+                                             ranks = ranks_text == "auto" ? :auto : parse(Int, ranks_text))
+    else
+        policy = CPUThreadsExecutionPolicy(threads = cpu_threads)
+    end
     sync_device() = nothing
     reclaim_device() = nothing
 end
-const BACKEND = USE_GPU ? "cuda" : "cpu"
+const BACKEND = USE_GPU ? "cuda" : USE_MPI ? "mpi" : "cpu"
 const SEED = 123456789
+
+# The collective seams of the arm, serial passthroughs without it. The rank is
+# MPI's own (header), the reductions are over MPI.COMM_WORLD.
+if USE_MPI
+    const MPI_RANK = MPI.Comm_rank(MPI.COMM_WORLD)
+    const MPI_NRANKS = MPI.Comm_size(MPI.COMM_WORLD)
+    barrier() = MPI.Barrier(MPI.COMM_WORLD)
+    reduce_max(x::Float64) = MPI.Allreduce(x, MPI.MAX, MPI.COMM_WORLD)
+    reduce_all(flag::Bool) = MPI.Allreduce(flag ? 1 : 0, MPI.MIN, MPI.COMM_WORLD) == 1
+    # Every rank's 64-byte hex digest to rank 0, in rank order.
+    function gather_digests(d::String)
+        buf = MPI.Gather(Vector{UInt8}(codeunits(d)), MPI.COMM_WORLD; root = 0)
+        MPI_RANK == 0 || return String[]
+        return [String(buf[(64 * k + 1):(64 * k + 64)]) for k in 0:(MPI_NRANKS - 1)]
+    end
+else
+    const MPI_RANK = 0
+    const MPI_NRANKS = 1
+    barrier() = nothing
+    reduce_max(x::Float64) = x
+    reduce_all(flag::Bool) = flag
+    gather_digests(d::String) = [d]
+end
+const ROOT = MPI_RANK == 0
 
 # ---------------------------------------------------------------------------
 # The strong-strong case: examples/strong_strong_tracking.jl's physics as
@@ -356,6 +421,7 @@ max_abs_diff(a, b) = maximum(maximum(abs(x - y) for (x, y) in zip(va, vb)) for (
 median_value(values) = (s = sort(values); n = length(s); isodd(n) ? s[(n + 1) ÷ 2] : (s[n ÷ 2] + s[n ÷ 2 + 1]) / 2)
 
 function timed_execute!(task, beams)
+    barrier()            # under MPI the ranks start a timed run together; a no-op otherwise
     sync_device()
     t0 = time_ns()
     bytes = @allocated execute!(task, beams...; turns = TURNS)
@@ -366,14 +432,16 @@ end
 routes = CASE === :ss ? ss_routes() : ws_routes()
 make_beams = CASE === :ss ? ss_beams : ws_beams
 route_names = join((r.name for r in routes), ",")
-println("machine description parity: case=", CASE, " backend=", BACKEND, " policy=", nameof(typeof(policy)),
-        " n_macro=", N_MACRO, " turns=", TURNS, " repeats=", REPEATS, " julia_threads=", Threads.nthreads(),
-        " routes=", route_names)
-# The initial beams are identical by construction (one seed): said once, checked.
+ROOT && println("machine description parity: case=", CASE, " backend=", BACKEND, " policy=", nameof(typeof(policy)),
+                " n_macro=", N_MACRO, " turns=", TURNS, " repeats=", REPEATS, " julia_threads=", Threads.nthreads(),
+                " mpi_ranks=", MPI_NRANKS, " routes=", route_names)
+# The initial beams are identical by construction (one seed): said once, checked
+# (on every rank for its own shard under MPI).
 initial_digests = [digest.(host_coordinates.(make_beams())) for _ in 1:2]
 initial_digests[1] == initial_digests[2] || error("the beams rebuilt from the seed differ between two builds: ",
                                                  initial_digests)
-println("initial coordinates (per beam, every run of every route): ", join(initial_digests[1], " "))
+ROOT && println("initial coordinates (per beam, every run of every route", USE_MPI ? "; rank 0's shard" : "",
+                "): ", join(initial_digests[1], " "))
 
 for route in routes, _ in 1:2    # warm-up (header): two executions of TURNS turns per route, through the
     beams = make_beams()           # measurement wrapper, so that neither a first nor a repeated execution's
@@ -397,15 +465,28 @@ for run in 1:REPEATS, route in routes      # interleaved: route 1, route 2, ...,
 end
 
 nbeams = length(first(values(digests))[1])
-println()
-println("| route | median s/turn | min s/turn | median allocated bytes/turn |",
-        join((" SHA-256 beam $(k) (last run) |" for k in 1:nbeams)))
-println("|---|---|---|---|", join(("---|" for _ in 1:nbeams)))
+# The table: per rank the median over runs (and the minimum), reduced to the
+# MAX over ranks under MPI; per beam the last run's digest, under MPI the
+# SHA-256 of the ranks' shard digests in rank order. Every rank takes part in
+# the reductions and the gathers; rank 0 prints.
+over = USE_MPI ? "max over $(MPI_NRANKS) ranks of " : ""
+shard = USE_MPI ? " (SHA-256 of the ranks' shard digests)" : ""
+ROOT && println()
+ROOT && println("| route | ", over, "median s/turn | ", over, "min s/turn | ", over, "median allocated bytes/turn |",
+                join((" SHA-256 beam $(k) (last run)$(shard) |" for k in 1:nbeams)))
+ROOT && println("|---|---|---|---|", join(("---|" for _ in 1:nbeams)))
 for route in routes
     name = route.name
-    @printf("| %s | %.6f | %.6f | %.0f |", name, median_value(seconds[name]), minimum(seconds[name]),
-            median_value(allocated[name]))
-    println(join((" $(d) |" for d in last(digests[name]))))
+    med = reduce_max(median_value(seconds[name]))
+    low = reduce_max(minimum(seconds[name]))
+    bytes_med = reduce_max(median_value(allocated[name]))
+    shown = String[]
+    for d in last(digests[name])
+        ranks_digests = gather_digests(d)
+        push!(shown, USE_MPI ? (ROOT ? bytes2hex(sha256(join(ranks_digests))) : "") : d)
+    end
+    ROOT && @printf("| %s | %.6f | %.6f | %.0f |", name, med, low, bytes_med)
+    ROOT && println(join((" $(d) |" for d in shown)))
 end
 
 # The verdict (header): every described route against the tuple route over
@@ -415,15 +496,19 @@ described = [r.name for r in routes if r.name != reference && r.name != "control
 equal_to_reference(name) = all(digests[name][j] == digests[reference][j] for j in 1:REPEATS)
 diff_to_reference(name) = maximum(max_abs_diff(finals[name][j][k], finals[reference][j][k])
                                   for j in 1:REPEATS for k in 1:nbeams)
-digests_equal = all(equal_to_reference, described)
-max_diff = maximum(diff_to_reference, described)
-control_equal = equal_to_reference("control")
-control_floor = diff_to_reference("control")
+# Under MPI the four quantities are reduced over all ranks (equality by MIN,
+# differences by MAX), so every rank reaches the same verdict and exit status.
+digests_equal = reduce_all(all(equal_to_reference, described))
+max_diff = reduce_max(maximum(diff_to_reference, described))
+control_equal = reduce_all(equal_to_reference("control"))
+control_floor = reduce_max(diff_to_reference("control"))
 verdict = digests_equal ? "PASS" : (control_equal ? "FAIL" : "REPORT")
-println()
-println("PARITY case=", CASE, " backend=", BACKEND, " routes=", route_names, " runs=", REPEATS,
-        " digests_equal=", digests_equal, " max_abs_coordinate_diff=", max_diff,
-        " control_equal=", control_equal, " control_floor=", control_floor, " verdict=", verdict)
-verdict == "FAIL" && (println("the described route(s) ", join(described, ","), " differ from the tuple route while ",
-                              "the control does not: a difference where the control shows none is not noise");
-                      exit(1))
+ROOT && println()
+ROOT && println("PARITY case=", CASE, " backend=", BACKEND, " ranks=", MPI_NRANKS, " routes=", route_names,
+                " runs=", REPEATS, " digests_equal=", digests_equal, " max_abs_coordinate_diff=", max_diff,
+                " control_equal=", control_equal, " control_floor=", control_floor, " verdict=", verdict)
+if verdict == "FAIL"
+    ROOT && println("the described route(s) ", join(described, ","), " differ from the tuple route while ",
+                    "the control does not: a difference where the control shows none is not noise")
+    exit(1)
+end
