@@ -18361,17 +18361,17 @@ end
         @test stored(with_ref) == stored(flat)
         @test !haskey(stored(with_ref), :reference)
     end
-    for (with_ref, flat) in twins[1:8]           # the harmon pair has no bare runtime
-        @test compile_runtime(with_ref) == compile_runtime(flat)
-    end
+    # The consumer boundary, pinned once (the other pairs follow from the stored
+    # parameters being equal): the voltage-route RF cavity compiles the same.
+    @test compile_runtime(twins[2][1]) == compile_runtime(twins[2][2])
     # Both routes store the reference's own pair, exactly; the typed form stores it as T.
     @test Octopus.param(twins[1][1], :beta0) == b && Octopus.param(twins[2][1], :gamma0) == g
     @test Octopus.param(twins[4][1], :beta0) == b && Octopus.param(twins[5][1], :beta0) isa Float32
     # Anti-vacuity: another reference stores another pair and compiles another cavity.
     other = ReferenceParticle(; charge = 1, mc2 = PMASS_EV, E0 = 270e9)
     @test stored(ThinRFCavitySpec(400e6; strength = 0.01, reference = other)) != stored(twins[1][2])
-    @test compile_runtime(ThinAcceleratingCavitySpec(400e6; voltage = 2e6, reference = other)) !=
-          compile_runtime(twins[4][2])
+    @test compile_runtime(ThinRFCavitySpec(400e6; voltage = 2e6, reference = other)) !=
+          compile_runtime(twins[2][2])
     # The charge is the reference's on the voltage route: an electron flips the strength.
     eref = ReferenceParticle(; charge = -1, mc2 = EMASS_EV, E0 = 10e9)
     s_e = Octopus.param(ThinRFCavitySpec(400e6; voltage = 2e6, reference = eref), :strength)
@@ -18381,21 +18381,20 @@ end
     # Refusals by name: every flat reference keyword beside `reference`, on both
     # kinds and whatever its value (the consistent one included), on the voltage
     # route and on the strength route; and a `reference` that is no ReferenceParticle.
-    refusal(f) = try
-        f()
-        nothing
-    catch err
-        sprint(showerror, err)
-    end
+    refusal(f) = (err = try; f(); nothing catch e; e end;
+                  (err, err === nothing ? "" : sprint(showerror, err)))
     for K in (ThinRFCavitySpec, ThinAcceleratingCavitySpec)
         for (kw, val) in ((:beta0, b), (:gamma0, g), (:e0, 275e9), (:mc2, PMASS_EV), (:charge, 1))
-            msg = refusal(() -> K(400e6; voltage = 2e6, reference = ref, kw => val))
-            @test msg !== nothing && occursin("`$kw`", msg) && occursin("`reference`", msg)
+            err, msg = refusal(() -> K(400e6; voltage = 2e6, reference = ref, kw => val))
+            @test err isa ArgumentError && occursin("`$kw`", msg) && occursin("`reference`", msg)
         end
-        msg_s = refusal(() -> K(400e6; strength = 0.01, reference = ref, e0 = 275e9))
-        @test msg_s !== nothing && occursin("`e0`", msg_s) && occursin("`reference`", msg_s)
-        msg_r = refusal(() -> K(400e6; strength = 0.01, reference = 1.0))
-        @test msg_r !== nothing && occursin("`reference`", msg_r) && occursin("ReferenceParticle", msg_r)
+        err_s, msg_s = refusal(() -> K(400e6; strength = 0.01, reference = ref, e0 = 275e9))
+        @test err_s isa ArgumentError && occursin("`e0`", msg_s) && occursin("`reference`", msg_s)
+        # presence, not value: an explicit `nothing` beside the reference is given too
+        err_n, msg_n = refusal(() -> K(400e6; voltage = 2e6, reference = ref, charge = nothing))
+        @test err_n isa ArgumentError && occursin("`charge`", msg_n) && occursin("`reference`", msg_n)
+        err_r, msg_r = refusal(() -> K(400e6; strength = 0.01, reference = 1.0))
+        @test err_r isa ArgumentError && occursin("`reference`", msg_r) && occursin("ReferenceParticle", msg_r)
     end
 
     # A flat call without `charge` stores what it stored before the `charge = nothing`
@@ -18410,6 +18409,30 @@ end
                         :strength) == 2 * s1
     for spec in (twins[2][1], twins[4][1], flat)
         @test !any(k -> haskey(stored(spec), k), (:reference, :charge, :voltage, :e0, :mc2))
+    end
+
+    # The voltage route's keywords without `voltage` are refused by name rather
+    # than ignored (until 2026-11-25 a strength-route call carrying `e0` built
+    # with the `e0` unread): each of the three on both kinds, the message naming
+    # the keyword, `voltage` and the `reference` spelling, and all three given at
+    # once all named. The flat strength route without them is the `twins` above.
+    for K in (ThinRFCavitySpec, ThinAcceleratingCavitySpec)
+        for (kw, val) in ((:e0, 275e9), (:mc2, PMASS_EV), (:charge, 1))
+            err_v, msg_v = refusal(() -> K(400e6; strength = 0.01, beta0 = b, gamma0 = g, kw => val))
+            @test err_v isa ArgumentError && occursin("`$kw` given without `voltage`", msg_v) &&
+                  occursin("reference = ReferenceParticle", msg_v)
+        end
+        err_3, msg_3 = refusal(() -> K(400e6; strength = 0.01, beta0 = b, gamma0 = g,
+                                        e0 = 275e9, mc2 = PMASS_EV, charge = 1))
+        @test err_3 isa ArgumentError && occursin("`e0`, `mc2`, `charge` given without `voltage`", msg_3)
+        # Presence, not value, on the flat routes: an explicit `nothing` is a given
+        # value and no number, refused by name as an ArgumentError (`charge = nothing`
+        # on the voltage route was a MethodError before the `charge` default moved
+        # to a sentinel, and silently charge 1 in between).
+        err_c, msg_c = refusal(() -> K(400e6; voltage = 2e6, e0 = 275e9, mc2 = PMASS_EV, charge = nothing))
+        @test err_c isa ArgumentError && occursin("`charge` must be a number", msg_c) && occursin("nothing", msg_c)
+        err_b, msg_b = refusal(() -> K(400e6; strength = 0.01, beta0 = nothing, gamma0 = g))
+        @test err_b isa ArgumentError && occursin("`beta0` must be a number", msg_b)
     end
 end
 
