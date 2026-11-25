@@ -23,15 +23,16 @@ boost's type followed `typeof(float(angle))` alone, the crab cavity's old rule,
 so a `Float32` angle made a `Float32` boost silently); `LorentzBoostSpec{Float32}`
 is the Float32 boost, the typed form every kind has (one precision rule, owner
 decision 2026-10-16). A beam whose element type differs from the boost's is
-refused by name when a task compiles the line.
+refused by name when a task compiles the line. `angle` may be a knob expression
+(design D10): it is stored as given and resolves at compile.
 """
-function LorentzBoostSpec(angle::Number; numeric_type=nothing, tracking_method=NonSymplectic6DMap(), kwargs...)
+function LorentzBoostSpec(angle::Union{Number,AbstractKnobExpression}; numeric_type=nothing, tracking_method=NonSymplectic6DMap(), kwargs...)
     numeric_type === nothing ||
         return LorentzBoostSpec{numeric_type}(angle; tracking_method=tracking_method, kwargs...)
-    return ElementSpec{:lorentz_boost}(_spec_params(; angle=float(angle), tracking_method=tracking_method, kwargs...))
+    return ElementSpec{:lorentz_boost}(_spec_params(; angle=_float_or_expression(angle), tracking_method=tracking_method, kwargs...))
 end
-(::Type{LorentzBoostSpec{T}})(angle::Number; tracking_method=NonSymplectic6DMap(), kwargs...) where {T} =
-    ElementSpec{:lorentz_boost}(_typed_spec_params(T; angle=float(angle), tracking_method=tracking_method, kwargs...))
+(::Type{LorentzBoostSpec{T}})(angle::Union{Number,AbstractKnobExpression}; tracking_method=NonSymplectic6DMap(), kwargs...) where {T} =
+    ElementSpec{:lorentz_boost}(_typed_spec_params(T; angle=_float_or_expression(angle), tracking_method=tracking_method, kwargs...))
 
 # Keyword form: reflection builds every kind by keyword alone, and a spec
 # rebuilt from `parameter_schema` must round trip — this kind's probe
@@ -50,13 +51,13 @@ are stored as descriptive spec metadata. Numeric type as for `LorentzBoostSpec`:
 the untyped form compiles in `numeric_type(spec)` (a `Float64` floor),
 `RevLorentzBoostSpec{Float32}` is the Float32 boost.
 """
-function RevLorentzBoostSpec(angle::Number; numeric_type=nothing, tracking_method=NonSymplectic6DMap(), kwargs...)
+function RevLorentzBoostSpec(angle::Union{Number,AbstractKnobExpression}; numeric_type=nothing, tracking_method=NonSymplectic6DMap(), kwargs...)
     numeric_type === nothing ||
         return RevLorentzBoostSpec{numeric_type}(angle; tracking_method=tracking_method, kwargs...)
-    return ElementSpec{:rev_lorentz_boost}(_spec_params(; angle=float(angle), tracking_method=tracking_method, kwargs...))
+    return ElementSpec{:rev_lorentz_boost}(_spec_params(; angle=_float_or_expression(angle), tracking_method=tracking_method, kwargs...))
 end
-(::Type{RevLorentzBoostSpec{T}})(angle::Number; tracking_method=NonSymplectic6DMap(), kwargs...) where {T} =
-    ElementSpec{:rev_lorentz_boost}(_typed_spec_params(T; angle=float(angle), tracking_method=tracking_method, kwargs...))
+(::Type{RevLorentzBoostSpec{T}})(angle::Union{Number,AbstractKnobExpression}; tracking_method=NonSymplectic6DMap(), kwargs...) where {T} =
+    ElementSpec{:rev_lorentz_boost}(_typed_spec_params(T; angle=_float_or_expression(angle), tracking_method=tracking_method, kwargs...))
 
 # Keyword form — same round-trip rule as LorentzBoostSpec above.
 RevLorentzBoostSpec(; angle, kwargs...) = RevLorentzBoostSpec(angle; kwargs...)

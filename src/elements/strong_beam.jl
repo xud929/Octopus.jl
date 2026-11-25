@@ -246,6 +246,34 @@ end
 # the user's alone. Same keywords, same stored spec, bit for bit.
 _thin_strong_beam_spec(; numeric_type=nothing, kwargs...) =
     _floor_form(_thin_strong_beam_spec(something(numeric_type, Float64); kwargs...), numeric_type)
+"""
+    _refuse_strong_beam_expression(who, given::NamedTuple)
+
+Design D10's refusal by name for the strong beams: `beta`, `alpha`, `sigma`,
+`coupling` and `covariance` are not conversions but the inputs of a
+derivation made at construction -- the transverse covariance, built and
+validated here (positive sizes, a positive position block) -- which a knob
+expression resolving only at compile cannot pass. Each is refused by name
+with the remedy; `kbb`, `klum`, `center`, the transverse `angle` and
+`curvature`, `sigz` and the slice tables are plain conversions and accept
+expressions.
+"""
+function _refuse_strong_beam_expression(who::AbstractString, given::NamedTuple)
+    for (name, value) in pairs(given)
+        _param_has_knob(value) || continue
+        throw(ArgumentError(
+            "$(who): $(name) cannot be a knob expression; the strong beam's transverse covariance is derived " *
+            "from beta, alpha, sigma and coupling at construction and validated there (positive sizes, a " *
+            "positive position block), which a knob expression that resolves only at compile cannot pass. " *
+            "Give the covariance computed from knob_value(expression), or put the knob in an entry of the " *
+            "stored covariance through the flexible form ElementSpec{:thin_strong_beam}(; covariance=..., " *
+            "kbb=..., klum=..., center=..., angle=..., curvature=..., virtual_drift=HirataParaxialDrift()), " *
+            "every kernel parameter spelled out" *
+            (who == "GaussianStrongBeamSpec" ? ", passed as thin=" : "")))
+    end
+    return nothing
+end
+
 function _thin_strong_beam_spec(::Type{T}; kbb,
                                         klum=one(T),
                                         beta=nothing,
@@ -286,6 +314,7 @@ function _thin_strong_beam_spec(::Type{T}; kbb,
     # refused by name like the inert longitudinal components (F-124). Zero, the
     # declared default, stays accepted so the metadata validator's default arm
     # (`alpha = (0, 0)` beside the example's covariance) holds.
+    _refuse_strong_beam_expression("ThinStrongBeamSpec", (; beta, alpha, sigma, coupling, covariance))
     if covariance !== nothing && alpha !== nothing && !all(iszero, _strong_tuple(alpha, 2, T))
         throw(ArgumentError("alpha = $(alpha) is not read beside an explicit covariance (the covariance carries the " *
                             "beam's correlation); give alpha = (0, 0) or omit it, or give beta/alpha/sigma instead of the covariance"))
@@ -297,8 +326,8 @@ function _thin_strong_beam_spec(::Type{T}; kbb,
     curvature3 = _strong_inert_longitudinal(_strong_tuple(curvature, 3, T), "curvature", 3)
     return ElementSpec{:thin_strong_beam}(_stamp_numeric_type!(
         _spec_params(;
-            kbb=T(kbb),
-            klum=T(klum),
+            kbb=_as_number_or_expression(T, kbb),
+            klum=_as_number_or_expression(T, klum),
             covariance=covariance4,
             center=_strong_tuple(center, 3, T),
             angle=angle3,
@@ -573,6 +602,7 @@ function (::Type{GaussianStrongBeamSpec{T}})(; thin=nothing,
     # reads (F-124). The stored forms stay the user's (the Dict, the 6-tuple);
     # the compile runs the same checks on a flexible-form spec.
     _validated_hvoffset(hvoffset)
+    _refuse_strong_beam_expression("GaussianStrongBeamSpec", (; beta, alpha, sigma, coupling, covariance))
     hvoffset === nothing || _strong_beam_deprecated(:hvoffset)
     any(v -> v !== nothing, (slice_hoffset, slice_voffset, slice_pxoffset, slice_pyoffset)) &&
         _strong_beam_deprecated(:slice_offsets)
@@ -661,6 +691,14 @@ function (::Type{GaussianStrongBeamSpec{T}})(; thin=nothing,
             sigz === nothing && throw(ArgumentError(
                 "GaussianStrongBeamSpec: a LinearOptics point carrying dispersion builds the 6 x 6 covariance from " *
                 "sigz and sigma_delta; give sigz"))
+            for (name, value) in (("sigz", sigz), ("sigma_delta", sigma_delta))
+                value isa AbstractKnobExpression && throw(ArgumentError(
+                    "GaussianStrongBeamSpec: $(name) cannot be a knob expression beside a LinearOptics point " *
+                    "carrying dispersion; the 6 x 6 covariance is derived from sigz and sigma_delta at " *
+                    "construction (gaussian_strong_beam_covariance) and validated there. Give the 6 x 6 " *
+                    "covariance computed from knob_value(expression), or a dispersion-free point, where sigz " *
+                    "is stored as given and may be an expression"))
+            end
             (sigma_delta isa Real && isfinite(sigma_delta) && sigma_delta > 0) || throw(ArgumentError(
                 "GaussianStrongBeamSpec sigma_delta must be a positive finite Real; got $(repr(sigma_delta))"))
             free = LinearOptics{T}(EdwardsTengTwiss{T}(; beta=optics.twiss.beta, alpha=optics.twiss.alpha,
@@ -683,12 +721,15 @@ function (::Type{GaussianStrongBeamSpec{T}})(; thin=nothing,
     end
     mean === nothing || _strong_beam_deprecated(:mean)       # after the refusals: a refused call does not warn
     cov6v = cov6 === nothing ? nothing : _validated_covariance(cov6, 6, T)
-    cov6v === nothing || sigz === nothing || _check_sigz_against_covariance(T(sigz), cov6v)
+    # A sigz given as a knob expression is checked against the covariance at
+    # compile, by `_stored_sigz` on the resolved value (design D10).
+    cov6v === nothing || sigz === nothing || sigz isa AbstractKnobExpression ||
+        _check_sigz_against_covariance(T(sigz), cov6v)
     return ElementSpec{:gaussian_strong_beam}(_stamp_numeric_type!(
         _spec_params(;
             thin=thin_spec,
             ns=Int(ns),
-            sigz=sigz === nothing ? nothing : T(sigz),
+            sigz=sigz === nothing ? nothing : _as_number_or_expression(T, sigz),
             slice_method=slice_method,
             slice_width=slice_width,
             slice_center=slice_center === nothing ? nothing : _strong_tuple(slice_center, Int(ns), T),
@@ -2165,6 +2206,12 @@ too (there is nothing for it to differentiate).
 """
 function _strong_inert_longitudinal(values, name::AbstractString, index::Int)
     v = values[index]
+    # An expression cannot be tested for zero here and would be accepted and
+    # ignored at compile; refused by name (design D10).
+    v isa AbstractKnobExpression && throw(ArgumentError(
+        "$(name)[$(index)] cannot be a knob expression: the component is not read by the weak-strong kick " *
+        "and must be 0 (it is carried for the tuple's shape only); put the knob on a transverse component " *
+        "of $(name) instead"))
     iszero(v) || throw(ArgumentError(
         "$(name)[$(index)] = $(v) is not read by the weak-strong kick: the rigid Gaussian " *
         "strong beam's field does not depend on its own longitudinal momentum offset" *
@@ -2360,9 +2407,11 @@ function _strong_tuple(values)
     return ntuple(i -> T(values[i]), length(values))
 end
 
+# A number converts to `T`, a knob expression is kept (design D10); the
+# compile, which coerces the resolved spec again, sees numbers.
 function _strong_tuple(values, n::Int, ::Type{T}) where {T}
     length(values) == n || throw(ArgumentError("expected $n values, got $(length(values))"))
-    return ntuple(i -> T(values[i]), n)
+    return ntuple(i -> _as_number_or_expression(T, values[i]), n)
 end
 
 @element_spec begin

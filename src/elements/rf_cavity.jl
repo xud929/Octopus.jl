@@ -336,6 +336,18 @@ ThinRFCavitySpec(400.8e6; voltage = 12e6, e0 = 275e9, mc2 = PMASS_EV)
 Importing from another code? The phase conversions are in
 `docs/theory/rf_cavity_and_reference_energy.md` §4. MAD-X's `LAG` and Bmad's
 `phi0` differ by half a turn from each other before any unit change.
+
+Knob expressions (design D10, `docs/design/machine_description.md`):
+`frequency`, `strength`, `phase`, `L`, `beta0`, `gamma0`, `voltage`, `e0` and
+`mc2` accept a knob expression. A number is converted as before; an expression
+is stored, and the `voltage` derivation builds `beta0`, `gamma0` and
+`strength` as expression trees (`_reference_pair_fold`, `_rf_strength_fold`),
+so the stored pair stays consistent by construction. The eager checks --
+a positive frequency, the reference-pair consistency -- run on numbers only;
+the compile constructor does NOT repeat them on the resolved values (measured
+2026-11-24: a knob frequency of -1 and a knob `beta0` inconsistent with
+`gamma0` both compile and track), so a knob driving one of these must be kept
+in range by its owner. `harmon` is refused as an expression, by name.
 """
 function ThinRFCavitySpec(frequency; numeric_type=nothing, kwargs...)
     numeric_type === nothing || return ThinRFCavitySpec{numeric_type}(frequency; kwargs...)
@@ -347,6 +359,50 @@ end
 # compiles in `T`.
 (::Type{ThinRFCavitySpec{T}})(frequency; kwargs...) where {T} =
     ElementSpec{:thin_rf_cavity}(_typed_spec_params(T; _rf_cavity_params(frequency; kwargs...)...))
+
+"""
+    _cavity_eltype(values...)
+
+The element type of a cavity's stored parameters: `float` of the promotion of
+the numeric values, the rule the folds always applied, with knob expressions
+left out (they resolve at compile; design D10). `Float64` when every value is
+an expression.
+"""
+function _cavity_eltype(values...)
+    numeric = Tuple(v for v in values if !(v isa AbstractKnobExpression))
+    isempty(numeric) && return Float64
+    return float(promote_type(map(typeof, numeric)...))
+end
+
+"""
+    _reference_pair_fold(e0, mc2) -> (beta0, gamma0)
+
+`reference_beta_gamma(e0, mc2)` for numbers; with a knob expression in either,
+the same derivation as whitelisted expression trees, `gamma0 = e0 / mc2` and
+`beta0 = sqrt((gamma0 - 1) * (gamma0 + 1)) / gamma0`, so the stored pair is
+consistent by construction and resolves at compile (design D10). The
+`gamma >= 1` refusal of `reference_beta` runs on numbers only.
+"""
+function _reference_pair_fold(e0, mc2)
+    (e0 isa AbstractKnobExpression || mc2 isa AbstractKnobExpression) ||
+        return reference_beta_gamma(e0, mc2)
+    g = _knob_arith(:/, e0, mc2)
+    beta = _knob_arith(:/, _knob_arith(:sqrt, _knob_arith(:*, _knob_arith(:-, g, 1),
+                                                           _knob_arith(:+, g, 1))), g)
+    return beta, g
+end
+
+"""
+    _rf_strength_fold(voltage, e0, charge, beta0)
+
+`rf_strength(; voltage, e0, charge, beta0)` for numbers; the same
+`charge * voltage / (beta0 * e0)` as an expression tree when any operand is a
+knob expression (design D10).
+"""
+_rf_strength_fold(voltage, e0, charge, beta0) =
+    any(v -> v isa AbstractKnobExpression, (voltage, e0, charge, beta0)) ?
+        _knob_arith(:/, _knob_arith(:*, charge, voltage), _knob_arith(:*, beta0, e0)) :
+        rf_strength(; voltage=voltage, e0=e0, charge=charge, beta0=beta0)
 
 # The stored parameters of both forms: the strength derivation, the
 # reference-pair refusal and the rule coercion, shared so the two forms cannot
@@ -367,8 +423,8 @@ function _rf_cavity_params(frequency;
             "give either `voltage` (with e0, mc2 — beta0 and gamma0 are derived " *
             "from them) or `strength` with explicit `beta0`/`gamma0`, not a mix; " *
             "explicit values here were previously overwritten silently"))
-        beta0, gamma0 = reference_beta_gamma(e0, mc2)
-        strength = rf_strength(; voltage=voltage, e0=e0, charge=charge, beta0=beta0)
+        beta0, gamma0 = _reference_pair_fold(e0, mc2)
+        strength = _rf_strength_fold(voltage, e0, charge, beta0)
     end
     strength === nothing && throw(ArgumentError(
         "ThinRFCavitySpec needs either `voltage` with `e0` and `mc2`, or `strength` \
@@ -376,7 +432,10 @@ function _rf_cavity_params(frequency;
     (beta0 === nothing || gamma0 === nothing) && throw(ArgumentError(
         "ThinRFCavitySpec needs `beta0` and `gamma0`; derive them with \
          reference_beta_gamma(e0, mc2)"))
-    frequency > 0 || throw(ArgumentError("frequency must be positive, got $frequency"))
+    # The eager checks run on numbers; a knob expression resolves at compile
+    # (design D10; the docstring names what the compile re-checks).
+    frequency isa AbstractKnobExpression ||
+        frequency > 0 || throw(ArgumentError("frequency must be positive, got $frequency"))
     # beta0 and gamma0 are two views of ONE reference energy. Supplied
     # separately they can disagree, and this element is the only place in the
     # repository where a caller hands over both by hand -- the `voltage` branch
@@ -384,15 +443,17 @@ function _rf_cavity_params(frequency;
     # pair used to be accepted and produced a quietly non-symplectic map; this
     # spec's own contract fixture carried `beta0=0.99, gamma0=100.0`, which is
     # no particle at all (2026-08-05_b audit, U14-4).
-    _check_reference_pair(beta0, gamma0; source="ThinRFCavitySpec")
-    T = float(promote_type(typeof(strength), typeof(frequency), typeof(phase),
-                           typeof(L), typeof(beta0), typeof(gamma0)))
+    (beta0 isa AbstractKnobExpression || gamma0 isa AbstractKnobExpression) ||
+        _check_reference_pair(beta0, gamma0; source="ThinRFCavitySpec")
+    T = _cavity_eltype(strength, frequency, phase, L, beta0, gamma0)
     # The two rule parameters are stored coerced, as the crab cavity stores
     # its tuples: `nothing` when inactive, so `params(spec)` lists them and a
     # keyword rebuild round-trips; the harmon keyword form builds through this
     # method and inherits them.
-    return (; frequency=T(frequency), strength=T(strength), phase=T(phase), L=T(L),
-              beta0=T(beta0), gamma0=T(gamma0),
+    return (; frequency=_as_number_or_expression(T, frequency),
+              strength=_as_number_or_expression(T, strength),
+              phase=_as_number_or_expression(T, phase), L=_as_number_or_expression(T, L),
+              beta0=_as_number_or_expression(T, beta0), gamma0=_as_number_or_expression(T, gamma0),
               phase_noise=_rule_scalar(phase_noise, :phase_noise),
               strength_noise=_rule_scalar(strength_noise, :strength_noise),
               tracking_method=tracking_method, kwargs...)
@@ -420,6 +481,10 @@ function ThinRFCavitySpec(; frequency=nothing, harmon=nothing, kwargs...)
             "give either `frequency` (Hz) or `harmon` (harmonic number, " *
             "resolved against the line's circumference at task compile), " *
             "not both"))
+        harmon isa AbstractKnobExpression && throw(ArgumentError(
+            "ThinRFCavitySpec: harmon cannot be a knob expression (it is resolved against the line's " *
+            "circumference at task compile); put the knob on frequency instead, " *
+            "frequency=@knob_expr(...), or give harmon from knob_value(expression)"))
         harmon > 0 || throw(ArgumentError("harmon must be positive, got $harmon"))
         # The frequency checks are deferred to the bind; everything else --
         # strength derivation, the reference-pair refusal -- is shared by
@@ -759,6 +824,11 @@ Numeric type as for `ThinRFCavitySpec`: the untyped form compiles in
 `numeric_type(spec)`, the promotion over a `Float64` floor;
 `ThinAcceleratingCavitySpec{T}(frequency; ...)` is the typed form (`Float32`
 for a Float32 line).
+
+Knob expressions (design D10) are accepted as for `ThinRFCavitySpec`: the
+same parameters, the same `voltage` derivation as expression trees, and the
+same caveat -- the positive-frequency, reference-pair and exit-pair checks run
+on numbers only and are not repeated at compile on the resolved values.
 """
 abstract type ThinAcceleratingCavitySpec{T} end
 
@@ -793,8 +863,8 @@ function _accelerating_cavity_params(frequency;
         (beta0 === nothing && gamma0 === nothing) || throw(ArgumentError(
             "give either `voltage` (with e0, mc2 — beta0 and gamma0 are derived) \
              or `strength` with explicit `beta0`/`gamma0`, not a mix"))
-        beta0, gamma0 = reference_beta_gamma(e0, mc2)
-        strength = rf_strength(; voltage=voltage, e0=e0, charge=charge, beta0=beta0)
+        beta0, gamma0 = _reference_pair_fold(e0, mc2)
+        strength = _rf_strength_fold(voltage, e0, charge, beta0)
     end
     strength === nothing && throw(ArgumentError(
         "ThinAcceleratingCavitySpec needs either `voltage` with `e0` and `mc2`, \
@@ -802,18 +872,26 @@ function _accelerating_cavity_params(frequency;
     (beta0 === nothing || gamma0 === nothing) && throw(ArgumentError(
         "ThinAcceleratingCavitySpec needs `beta0` and `gamma0`; derive them with \
          reference_beta_gamma(e0, mc2)"))
-    frequency > 0 || throw(ArgumentError("frequency must be positive, got $frequency"))
-    _check_reference_pair(beta0, gamma0; source="ThinAcceleratingCavitySpec")
+    # The eager checks run on numbers; a knob expression resolves at compile
+    # (design D10; the docstring names what the compile re-checks).
+    frequency isa AbstractKnobExpression ||
+        frequency > 0 || throw(ArgumentError("frequency must be positive, got $frequency"))
+    (beta0 isa AbstractKnobExpression || gamma0 isa AbstractKnobExpression) ||
+        _check_reference_pair(beta0, gamma0; source="ThinAcceleratingCavitySpec")
     # The exit pair must exist: a cavity whose design gain decelerates the
     # reference to or below its rest energy declares no particle at all.
-    gE = 1 + strength * beta0 * cos(phase)
-    gamma0 * gE > 1 || throw(ArgumentError(
-        "the design gain decelerates the reference below its rest energy: \
-         gamma0 * (1 + strength*beta0*cos(phase)) = $(gamma0 * gE) <= 1"))
-    T = float(promote_type(typeof(strength), typeof(frequency), typeof(phase),
-                           typeof(L), typeof(beta0), typeof(gamma0)))
-    return (; frequency=T(frequency), strength=T(strength), phase=T(phase), L=T(L),
-              beta0=T(beta0), gamma0=T(gamma0), tracking_method=tracking_method, kwargs...)
+    if !any(v -> v isa AbstractKnobExpression, (strength, beta0, phase, gamma0))
+        gE = 1 + strength * beta0 * cos(phase)
+        gamma0 * gE > 1 || throw(ArgumentError(
+            "the design gain decelerates the reference below its rest energy: \
+             gamma0 * (1 + strength*beta0*cos(phase)) = $(gamma0 * gE) <= 1"))
+    end
+    T = _cavity_eltype(strength, frequency, phase, L, beta0, gamma0)
+    return (; frequency=_as_number_or_expression(T, frequency),
+              strength=_as_number_or_expression(T, strength),
+              phase=_as_number_or_expression(T, phase), L=_as_number_or_expression(T, L),
+              beta0=_as_number_or_expression(T, beta0), gamma0=_as_number_or_expression(T, gamma0),
+              tracking_method=tracking_method, kwargs...)
 end
 
 """

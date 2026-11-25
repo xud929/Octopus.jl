@@ -816,6 +816,36 @@ _as_numeric_type(::Type{T}, v::AbstractArray{<:AbstractFloat}) where {T} = T.(v)
 _as_numeric_type(::Type{T}, v) where {T} = v
 
 """
+    _as_number_or_expression(T, x)
+
+The conversion rule of a friendly constructor's hand-typed site under design
+D10 (`docs/design/machine_description.md`): convert a number, keep an
+expression. A knob expression is stored as given and resolves at compile
+(`compile_runtime` calls `resolve_knobs` first); anything else goes through
+`T(x)`, the eager conversion the site always made, so nothing that constructs
+today changes meaning. The tuple method maps the rule over a tuple, so a
+`(number, expression, number)` strength or optics tuple keeps its numbers in
+`T` and its expressions as trees.
+"""
+_as_number_or_expression(::Type{T}, x) where {T} =
+    x isa AbstractKnobExpression ? x : T(x)
+_as_number_or_expression(::Type{T}, x::Tuple) where {T} =
+    map(v -> _as_number_or_expression(T, v), x)
+
+"""
+    _float_or_expression(x)
+
+`float(x)` for a number, the expression itself for a knob expression: the
+operand rule of the untyped friendly constructors under design D10 (the bend
+folds' `angle / L`, `angle / 2` and `e1 + angle / 2`, the boost's `angle`),
+so a numeric construction stays the floating-point value it was and an
+expression is stored, or folded through `_knob_arith`, as a tree. Both helpers
+test the type in their bodies, not in a method signature: this file is
+included before `src/knobs/Knobs.jl` defines `AbstractKnobExpression`.
+"""
+_float_or_expression(x) = x isa AbstractKnobExpression ? x : float(x)
+
+"""
     _stamp_numeric_type!(params::Dict, T) -> params
 
 `numeric_type = T` written into the stored parameters of a typed form that

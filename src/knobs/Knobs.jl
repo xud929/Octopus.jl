@@ -112,6 +112,47 @@ const _KNOB_NAMED_CONSTANTS = Dict{Symbol,Float64}(
     :NaN => NaN, :Inf => Inf,
 )
 
+"""
+    _knob_node(x) -> AbstractKnobExpression
+
+The tree node of one operand of a fold site that accepts knob expressions
+(design D10, `docs/design/machine_description.md`): an expression is itself,
+a number becomes the literal `KnobConst(Float64(x))`. Only a number a
+`Float64` can hold is a literal; a dual or a BigFloat operand beside an
+expression throws the conversion's own error rather than losing precision in
+a tree that prints as a plain literal.
+"""
+_knob_node(x::AbstractKnobExpression) = x
+_knob_node(x::Real) = KnobConst(Float64(x))
+
+"""
+    _knob_arith(op::Symbol, args...)
+
+The arithmetic of a friendly constructor's fold site under design D10: when
+every argument is a number, the plain operation (`angle / L` stays the
+floating-point division it always was, bit for bit); when any argument is a
+knob expression, the whitelisted tree node `KnobCall(op, nodes)` with the
+numbers folded in as literals, so the stored parameter stays a printable,
+resolvable expression (`angle / 1.0`) that `compile_runtime` evaluates through
+`resolve_knobs`. `op` must be a key of `_KNOB_OPERATORS` with an arity the
+whitelist allows; anything else is refused by name, because the operator
+whitelist is a deliberate boundary and a fold that needs more than it offers
+refuses the expression spelling instead of widening it.
+"""
+function _knob_arith(op::Symbol, args...)
+    entry = get(_KNOB_OPERATORS, op, nothing)
+    entry === nothing && throw(ArgumentError(
+        "fold site asked for the operator $(op), which the knob expression " *
+        "whitelist does not offer; the spelling that needs it cannot take a " *
+        "knob expression"))
+    f, arity = entry
+    length(args) in arity || throw(ArgumentError(
+        "fold site asked for $(op) with $(length(args)) arguments; the knob " *
+        "expression whitelist allows $(arity)"))
+    any(a -> a isa AbstractKnobExpression, args) || return f(args...)
+    return KnobCall(op, AbstractKnobExpression[_knob_node(a) for a in args])
+end
+
 # ---------------------------------------------------------------------------
 # Knob registry
 # ---------------------------------------------------------------------------
@@ -1089,6 +1130,7 @@ end
 # to both, consistently.
 _param_has_knob(v) = v isa AbstractKnobExpression
 _param_has_knob(v::Union{Tuple,NamedTuple,AbstractArray}) = any(_param_has_knob, v)
+_param_has_knob(v::ElementSpec) = _has_knob_parameters(v)
 
 """True when a line/spec/container holds any knob-expression parameter."""
 _has_knob_parameters(x) = false
@@ -1104,6 +1146,11 @@ _resolve_knob_param(v::Union{Tuple,NamedTuple}) = map(_resolve_knob_param, v)
 # once any one of them holds a knob.
 _resolve_knob_param(v::AbstractArray) =
     _param_has_knob(v) ? map(_resolve_knob_param, v) : v
+# A nested spec -- the Gaussian strong beam's `thin` kernel, where
+# `GaussianStrongBeamSpec(kbb=@knob_expr(...))` stores its knob (design D10) --
+# resolves with its parent and makes the parent knob-dependent; it records its
+# own `:knob_resolution` receipt, so the parent's lists only its own values.
+_resolve_knob_param(v::ElementSpec) = resolve_knobs(v)
 
 """
     resolve_knobs(spec)
@@ -1132,6 +1179,7 @@ function resolve_knobs(spec::ElementSpec{Kind}) where {Kind}
     for (key, value) in params(spec)
         r = _resolve_knob_param(value)
         resolved[key] = r
+        value isa ElementSpec && continue      # the nested spec's receipt is its own
         _param_has_knob(value) && push!(receipts, key => r)
     end
     _record_execution!(:knob_resolution, nothing,

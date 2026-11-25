@@ -93,12 +93,16 @@ descriptive metadata and take no part in the promotion.
 CrabDispersionSpec(; zeta1=0, zeta2=0, zeta3=0, zeta4=0, numeric_type=nothing, kwargs...) =
     _floor_form(CrabDispersionSpec{something(numeric_type, _linear_map_eltype(zeta1, zeta2, zeta3, zeta4))}(;
         zeta1=zeta1, zeta2=zeta2, zeta3=zeta3, zeta4=zeta4, kwargs...), numeric_type)
+# The typed forms of the three linear maps convert a number to `T` and keep a
+# knob expression as given (`_as_number_or_expression`, design D10): the
+# expression resolves at compile, where `_float_params` converts the value.
 function (::Type{CrabDispersionSpec{T}})(; zeta1=zero(T), zeta2=zero(T),
                                         zeta3=zero(T), zeta4=zero(T),
                                         tracking_method=Symplectic6DMap(),
                                         kwargs...) where {T}
     return ElementSpec{:crab_dispersion}(_stamp_numeric_type!(
-        _spec_params(; zeta1=T(zeta1), zeta2=T(zeta2), zeta3=T(zeta3), zeta4=T(zeta4),
+        _spec_params(; zeta1=_as_number_or_expression(T, zeta1), zeta2=_as_number_or_expression(T, zeta2),
+                     zeta3=_as_number_or_expression(T, zeta3), zeta4=_as_number_or_expression(T, zeta4),
                      tracking_method=tracking_method, kwargs...), T),
     )
 end
@@ -212,7 +216,8 @@ function (::Type{MomentumDispersionSpec{T}})(; eta1=zero(T), eta2=zero(T),
                                             tracking_method=Symplectic6DMap(),
                                             kwargs...) where {T}
     return ElementSpec{:momentum_dispersion}(_stamp_numeric_type!(
-        _spec_params(; eta1=T(eta1), eta2=T(eta2), eta3=T(eta3), eta4=T(eta4),
+        _spec_params(; eta1=_as_number_or_expression(T, eta1), eta2=_as_number_or_expression(T, eta2),
+                     eta3=_as_number_or_expression(T, eta3), eta4=_as_number_or_expression(T, eta4),
                      tracking_method=tracking_method, kwargs...), T),
     )
 end
@@ -343,7 +348,8 @@ function (::Type{XYCouplingSpec{T}})(; r1=zero(T), r2=zero(T), r3=zero(T),
                                     tracking_method=Symplectic6DMap(),
                                     kwargs...) where {T}
     return ElementSpec{:xy_coupling}(_stamp_numeric_type!(
-        _spec_params(; r1=T(r1), r2=T(r2), r3=T(r3), r4=T(r4), mode=mode,
+        _spec_params(; r1=_as_number_or_expression(T, r1), r2=_as_number_or_expression(T, r2),
+                     r3=_as_number_or_expression(T, r3), r4=_as_number_or_expression(T, r4), mode=mode,
                      tracking_method=tracking_method, kwargs...), T),
     )
 end

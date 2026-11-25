@@ -4337,6 +4337,283 @@ function _probe_deviation(moved, baseline)
     return dev
 end
 
+"""
+    _effectiveness_probe(contract, T, meta) -> Dict{Symbol,Any} | nothing
+
+The probe keywords of one kind for the element-parameter sweep, shared by the
+numeric sweep and the expression arm (design D10) so the two probe the same
+element. The curated probe when `contract.probes` has one; without an
+explicit probe, the kind's own curated example -- already the representative
+element, and for elements with no construction-time sugar its stored
+parameters are exactly the constructor keywords -- or `nothing` when the
+example is not an `ElementSpec`. Then the `ELEMENT_PARAM_PROBE_OVERRIDES` (a
+zero-argument function is evaluated HERE: an override whose value is an
+element spec cannot be built where the table is, the contracts being included
+before the elements), and every placement degree of freedom the probe does
+not set: the misalignment CONVENTION is observable only with every DOF
+nonzero (one rotation at a time cannot distinguish the composition orders --
+U4-12, measured 0.0 at single offsets and 1.294e-4 at the full quad_mis_all
+shape), and a probe that cannot show a declared alternative would report the
+parameter ignored when it is only unasked. Central, so the example-derived
+fallback probes are enriched identically to the curated ones.
+"""
+function _effectiveness_probe(contract::ElementParameterEffectivenessContract, T, meta)
+    probe = if haskey(contract.probes, meta.kind)
+        Dict{Symbol,Any}(pairs(contract.probes[meta.kind]))
+    else
+        ex = example_spec(T)
+        ex isa ElementSpec ? Dict{Symbol,Any}(params(ex)) : nothing
+    end
+    probe === nothing && return nothing
+    if haskey(ELEMENT_PARAM_PROBE_OVERRIDES, meta.kind)
+        for (k, v) in pairs(ELEMENT_PARAM_PROBE_OVERRIDES[meta.kind])
+            probe[k] = v isa Function ? v() : v
+        end
+    end
+    if _element_probe_placement_supported(T)
+        for (k, v) in pairs(_PLACEMENT_PROBE_DOF)
+            haskey(probe, k) || (probe[k] = v)
+        end
+    end
+    return probe
+end
+
+"""
+    _expression_arm_layout(current, moved) -> (knob_value, moved_value) pairs or nothing
+
+Where the expression arm places its knobs for one parameter: a floating-point
+scalar takes one knob; a tuple takes one knob per entry the move changes
+(every entry under the sweep's tuple rule, the two transverse ones under the
+strong beam's coupled `angle` move), the others staying numbers. `nothing`
+when the move changes nothing or the pair is not a floating-point scalar or a
+tuple of them.
+"""
+function _expression_arm_layout(current, moved)
+    if current isa AbstractFloat && moved isa Real
+        return [(1, Float64(current), Float64(moved))]
+    end
+    if current isa Tuple && moved isa Tuple && length(current) == length(moved) &&
+       all(v -> v isa AbstractFloat, current) && all(v -> v isa Real, moved)
+        layout = [(i, Float64(current[i]), Float64(moved[i]))
+                  for i in eachindex(current) if moved[i] != current[i]]
+        return isempty(layout) ? nothing : layout
+    end
+    return nothing
+end
+
+# A refusal is BY NAME when its message says "knob expression" and names a
+# remedy: the flexible form, `knob_value`, or another parameter to carry the knob.
+_expression_refusal_named(msg::AbstractString) =
+    occursin("knob expression", msg) &&
+    (occursin("ElementSpec{", msg) || occursin("knob_value", msg) || occursin("instead", msg) ||
+     occursin("flexible form", msg))
+
+"""
+    _element_expression_arm(contract, u) -> NamedTuple
+
+The expression arm of the element-parameter sweep (design D10,
+`docs/design/machine_description.md`): for every kind with a friendly
+constructor and every probe parameter the constructor accepts whose value is
+a floating-point scalar or a tuple of them, the spec built with knob
+references in place of the numbers (fresh knobs under
+`md2c_effect.<kind>.<parameter>`, holding the same values) must compile to
+the same runtime as the spec built with the numbers -- the tracked probe
+vector bitwise equal, the runtime objects `==` where they are isbits and the
+kind claims no RNG stream -- and a knob move by the sweep's own perturbation
+rule (`_perturb_candidates_or_reason`; the coupled overrides of
+`_perturb_coupled_overrides` honoured, so the RF cavity's reference pair
+moves jointly) must change the recompiled runtime. A constructor that refuses
+the expression is recorded with its message, by name when the message says
+"knob expression" and names a remedy. A parameter the constructor accepted
+and then dropped (the runtime unchanged after the move) is a FAILURE named by
+kind and parameter; so is a kind with a constructor whose every candidate was
+refused without the name and the remedy. Integers, flags, Symbols, rule
+objects, matrices and sub-specs are listed as inapplicable with the reason, as
+are the sweep's `inactive` and carried parameters and a move every candidate
+of which the compile refused. Every knob the arm declares is forgotten before
+it returns, whatever happens.
+"""
+function _element_expression_arm(contract::ElementParameterEffectivenessContract, u)
+    checked = String[]
+    refused = Pair{String,String}[]
+    unnamed = String[]
+    inapplicable = Pair{String,Symbol}[]
+    failures = String[]
+    without_constructor = Symbol[]
+    kinds_checked = Symbol[]
+    kinds_refused_only = Symbol[]
+    kinds_without_candidates = Symbol[]
+    declared = Symbol[]
+    try
+        for T in registered_element_specs()
+            meta = _element_meta_or_nothing(T)
+            meta === nothing && continue
+            ctor = meta.friendly_constructor
+            if ctor === nothing
+                push!(without_constructor, meta.kind)
+                continue
+            end
+            probe = _effectiveness_probe(contract, T, meta)
+            probe === nothing && continue
+            schema = parameter_schema(T)
+            baseline = nothing
+            n_checked = 0
+            n_named = 0
+            n_unnamed = 0
+            for key in sort!(collect(keys(probe)))
+                name = "$(meta.kind).$(key)"
+                current = probe[key]
+                if haskey(CARRIED_ELEMENT_PARAMS, key)
+                    push!(inapplicable, name => :carried)
+                    continue
+                elseif haskey(contract.inactive, (meta.kind, key))
+                    push!(inapplicable, name => :inactive)
+                    continue
+                elseif current isa Bool || current isa Integer
+                    push!(inapplicable, name => :integer_or_flag)
+                    continue
+                elseif !(current isa AbstractFloat || (current isa Tuple && !isempty(current) &&
+                                                       all(v -> v isa AbstractFloat, current)))
+                    push!(inapplicable, name => :not_a_float_or_float_tuple)
+                    continue
+                end
+                pmeta = get(schema, key, nothing)
+                coupled = _perturb_coupled_overrides(meta.kind, key, probe)
+                candidates = coupled === nothing ? _perturb_candidates_or_reason(key, current, pmeta) : coupled
+                if candidates isa Symbol
+                    push!(inapplicable, name => candidates)
+                    continue
+                end
+                # Each candidate move as Dict(key => moved): the plain rule moves
+                # one key, a coupled override may move several.
+                moves = [c isa Dict{Symbol,Any} ? c : Dict{Symbol,Any}(key => c) for c in candidates]
+                if baseline === nothing
+                    baseline = try
+                        _element_metadata_probe(ctor(; probe...), u)
+                    catch err
+                        :threw   # the numeric sweep reports the broken kind
+                    end
+                end
+                if baseline === :threw
+                    push!(inapplicable, name => :baseline_threw)
+                    continue
+                end
+                outcome = _expression_arm_case(T, ctor, probe, meta.kind, key, moves, baseline, u, declared)
+                if outcome[1] === :checked
+                    push!(checked, name)
+                    n_checked += 1
+                elseif outcome[1] === :refused
+                    push!(refused, name => outcome[2])
+                    if _expression_refusal_named(outcome[2])
+                        n_named += 1
+                    else
+                        push!(unnamed, name)
+                        n_unnamed += 1
+                    end
+                elseif outcome[1] === :failed
+                    push!(failures, name * ": " * outcome[2])
+                else
+                    push!(inapplicable, name => outcome[2])
+                end
+            end
+            if n_checked > 0
+                push!(kinds_checked, meta.kind)
+            elseif n_unnamed > 0
+                push!(failures, "$(meta.kind): no parameter could be checked with a knob expression and " *
+                                "$(n_unnamed) refusal(s) do not name the knob expression and a remedy")
+            elseif n_named > 0
+                push!(kinds_refused_only, meta.kind)
+            else
+                push!(kinds_without_candidates, meta.kind)
+            end
+        end
+    finally
+        for path in declared
+            _forget_knob!(path)
+        end
+    end
+    return (; checked, refused, unnamed, inapplicable, failures, without_constructor,
+              kinds_checked, kinds_refused_only, kinds_without_candidates)
+end
+
+# One (kind, parameter) case of the expression arm: the knobs declared (their
+# paths appended to `declared` for the caller's cleanup), the spec built with
+# the references, the equality against `baseline`, then the move. Returns a
+# tagged tuple: `(:checked,)`, `(:refused, message)`, `(:failed, message)` or
+# `(:inapplicable, reason)`.
+function _expression_arm_case(T, ctor, probe, kind::Symbol, key::Symbol, moves, baseline, u, declared)
+    # The knob layout follows the FIRST move; every move must fit it (a coupled
+    # override moves the same keys each time).
+    layouts = Dict{Symbol,Vector{Tuple{Int,Float64,Float64}}}()
+    for (k, moved) in moves[1]
+        layout = _expression_arm_layout(probe[k], moved)
+        layout === nothing && return (:inapplicable, :move_not_a_float_or_float_tuple)
+        layouts[k] = layout
+    end
+    kw = copy(probe)
+    for (k, layout) in layouts
+        current = probe[k]
+        if current isa AbstractFloat
+            path = Symbol("md2c_effect.$(kind).$(k)")
+            _knob_define!(path, layout[1][2])
+            push!(declared, path)
+            kw[k] = KnobRef(path)
+        else
+            refs = Dict{Int,KnobRef}()
+            for (i, value, _) in layout
+                path = Symbol("md2c_effect.$(kind).$(k)_$(i)")
+                _knob_define!(path, value)
+                push!(declared, path)
+                refs[i] = KnobRef(path)
+            end
+            kw[k] = ntuple(i -> haskey(refs, i) ? refs[i] : current[i], length(current))
+        end
+    end
+    spec_b = try
+        ctor(; kw...)
+    catch err
+        return (:refused, first(split(sprint(showerror, err), '\n')))
+    end
+    moved_b = try
+        _element_metadata_probe(spec_b, u)
+    catch err
+        return (:failed, "the constructor accepted the knob expression but the compile or the map threw at " *
+                         "the knob's current value: " * first(split(sprint(showerror, err), '\n')))
+    end
+    isequal(moved_b, baseline) || return (:failed,
+        "built with a knob expression holding the probe's value, the compiled element tracks differently " *
+        "from the numeric one (max |diff| $(_probe_deviation(moved_b, baseline)))")
+    if !_requires_tracking_task(T) && !haskey(parameter_schema(T), :rng_id)
+        ra = compile_runtime(ctor(; probe...))
+        rb = compile_runtime(spec_b)
+        isbits(ra) && !(ra == rb) && return (:failed,
+            "the isbits runtime objects differ although the tracked probe agrees")
+    end
+    # The move: every candidate in turn, the first the compile accepts decides.
+    for move in moves
+        for (k, moved) in move
+            layout = get(layouts, k, nothing)
+            layout === nothing && continue
+            for (i, _, _) in layout
+                path = probe[k] isa AbstractFloat ? Symbol("md2c_effect.$(kind).$(k)") :
+                                                    Symbol("md2c_effect.$(kind).$(k)_$(i)")
+                set_knob!(path, probe[k] isa AbstractFloat ? Float64(moved) : Float64(moved[i]))
+            end
+        end
+        after = try
+            _element_metadata_probe(spec_b, u)
+        catch err
+            nothing
+        end
+        after === nothing && continue
+        isequal(after, baseline) && return (:failed,
+            "the knob move left the compiled element unchanged: the constructor accepted the knob " *
+            "expression and the element never read it")
+        return (:checked,)
+    end
+    return (:inapplicable, :every_move_refused_at_compile)
+end
+
 validate(contract::ElementParameterEffectivenessContract; kwargs...) =
     _silence_deprecations(() -> _validate_element_parameter_effectiveness(contract; kwargs...))
 
@@ -4372,40 +4649,10 @@ function _validate_element_parameter_effectiveness(contract::ElementParameterEff
             push!(skipped, meta.kind)
             continue
         end
-        # Without an explicit probe, fall back to the kind's own curated
-        # example: it is already the representative element, and for elements
-        # with no construction-time sugar its stored parameters are exactly the
-        # constructor keywords.
-        probe = if haskey(contract.probes, meta.kind)
-            Dict{Symbol,Any}(pairs(contract.probes[meta.kind]))
-        else
-            ex = example_spec(T)
-            ex isa ElementSpec ? Dict{Symbol,Any}(params(ex)) : nothing
-        end
+        probe = _effectiveness_probe(contract, T, meta)
         if probe === nothing
             push!(skipped, meta.kind)
             continue
-        end
-        if haskey(ELEMENT_PARAM_PROBE_OVERRIDES, meta.kind)
-            for (k, v) in pairs(ELEMENT_PARAM_PROBE_OVERRIDES[meta.kind])
-                # A zero-argument function is evaluated HERE: an override whose
-                # value is an element spec cannot be built where the table is
-                # (the contracts are included before the elements).
-                probe[k] = v isa Function ? v() : v
-            end
-        end
-        # Every probe carries all six placement degrees of freedom unless it
-        # sets its own: the misalignment CONVENTION is observable only with
-        # every DOF nonzero (one rotation at a time cannot distinguish the
-        # composition orders -- U4-12, measured 0.0 at single offsets and
-        # 1.294e-4 at the full quad_mis_all shape), and a probe that cannot
-        # show a declared alternative would report the parameter ignored when
-        # it is only unasked. Central, so the example-derived fallback probes
-        # are enriched identically to the curated ones.
-        if _element_probe_placement_supported(T)
-            for (k, v) in pairs(_PLACEMENT_PROBE_DOF)
-                haskey(probe, k) || (probe[k] = v)
-            end
         end
         baseline = try
             _element_metadata_probe(ctor(; probe...), u)
@@ -4528,7 +4775,20 @@ function _validate_element_parameter_effectiveness(contract::ElementParameterEff
     rejected_names = sort!(collect(keys(rejected_reasons)))
     undeclared = sort!([name for (name, why) in unperturbable_reasons
                         if why === :undeclared_alternatives])
+    # The expression arm (design D10): its metrics under their own keys, so the
+    # numeric sweep's counts and the suite's ratchets on them are untouched.
+    arm = _element_expression_arm(contract, u)
     metrics = Dict{Symbol,Any}(:checked => checked, :ignored => length(ignored),
+                               :expression_checked => length(arm.checked),
+                               :expression_checked_names => arm.checked,
+                               :expression_refused => arm.refused,
+                               :expression_refused_unnamed => arm.unnamed,
+                               :expression_inapplicable => arm.inapplicable,
+                               :expression_failures => arm.failures,
+                               :expression_kinds_checked => arm.kinds_checked,
+                               :expression_kinds_refused_only => arm.kinds_refused_only,
+                               :expression_kinds_without_candidates => arm.kinds_without_candidates,
+                               :expression_kinds_without_constructor => arm.without_constructor,
                                :skipped_kinds => length(skipped),
                                :broken_kinds => length(broken),
                                :unperturbable => length(unperturbable_names),
@@ -4554,6 +4814,8 @@ function _validate_element_parameter_effectiveness(contract::ElementParameterEff
         "declared inactive but never reached by the sweep (stale exemptions -- the " *
         "kind or parameter is gone, or a probe change moved it out of range): " *
         join(stale_exemptions, ", "); metrics=metrics)
+    isempty(arm.failures) || return ContractResult(false,
+        "expression arm (design D10): " * join(arm.failures, "; "); metrics=metrics)
     isempty(ignored) && return ContractResult(true,
         "every parameter this contract could decide reached the map " *
         "($(checked) checked, $(length(skipped)) kinds without a probe); " *
@@ -4561,7 +4823,10 @@ function _validate_element_parameter_effectiveness(contract::ElementParameterEff
         _effectiveness_undecided_summary(unperturbable_reasons, rejected_reasons) *
         (isempty(weak) ? "" :
          "; $(length(weak)) checked on weak evidence (largest movement below " *
-         "$(contract.weak_evidence_floor)): " * join(sort!(collect(keys(weak))), ", "));
+         "$(contract.weak_evidence_floor)): " * join(sort!(collect(keys(weak))), ", ")) *
+        "; expression arm: $(length(arm.checked)) parameters built with a knob expression compile " *
+        "equal to their numeric twin and move with the knob, $(length(arm.refused)) refused by the " *
+        "constructor ($(length(arm.unnamed)) without the name and the remedy)";
         metrics=metrics)
     return ContractResult(false,
         "declared but not consumed: " * join(sort(ignored), ", "); metrics=metrics)

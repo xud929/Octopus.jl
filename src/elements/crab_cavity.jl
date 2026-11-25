@@ -58,6 +58,12 @@ This docstring sits on the abstract type because a docstring on the
 `function (::Type{ThinCrabCavitySpec{N}})(...)` method below binds to
 `Core.Type`, where `?ThinCrabCavitySpec` cannot show it (2026-10-13
 neighbour audit, U6-1; the suite's docstring sweep guards the shape).
+
+`frequency`, the `strengthX`/`strengthY` entries and the `phase` entries may
+be knob expressions (design D10, `docs/design/machine_description.md`): a
+number is converted as before, an expression is stored and resolves at
+compile. The finite-and-nonzero check of a frequency given as an expression
+runs at compile on the resolved value, not at construction.
 """
 abstract type ThinCrabCavitySpec{N,T} end
 
@@ -74,7 +80,7 @@ ThinCrabCavitySpec(; frequency, N, numeric_type=nothing, kwargs...) =
 # U9-6 rule of the linear maps), never `typeof(float(frequency))` alone, which
 # narrowed Float64 strengths to a Float32 frequency (fix D, 2026-10-16). The
 # typed method below stores it.
-function (::Type{ThinCrabCavitySpec{N}})(frequency::Real;
+function (::Type{ThinCrabCavitySpec{N}})(frequency::Union{Real,AbstractKnobExpression};
                                          strengthX=(),
                                          strengthY=(),
                                          phase=(),
@@ -91,7 +97,7 @@ end
 # The TYPED form (no docstring here either, U6-1): `T` as given, so
 # `ThinCrabCavitySpec{N,Float32}` is the deliberate Float32 cavity, as
 # `LumpedRadSpec{Float32}` and `XYCouplingSpec{Float32}` are for their kinds.
-function (::Type{ThinCrabCavitySpec{N,T}})(frequency::Real;
+function (::Type{ThinCrabCavitySpec{N,T}})(frequency::Union{Real,AbstractKnobExpression};
                                            strengthX=(),
                                            strengthY=(),
                                            phase=(),
@@ -99,11 +105,14 @@ function (::Type{ThinCrabCavitySpec{N,T}})(frequency::Real;
                                            strength_noise=(),
                                            tracking_method=Symplectic6DMap(),
                                            kwargs...) where {N,T}
-    _validate_crab_frequency(T(frequency))
+    # A knob expression for the frequency is validated at compile, when it
+    # resolves: `ThinCrabCavity(spec, ...)` runs `_validate_crab_frequency`
+    # on the resolved value (design D10).
+    frequency isa AbstractKnobExpression || _validate_crab_frequency(T(frequency))
     return ElementSpec{:thin_crab_cavity}(_stamp_numeric_type!(
         _spec_params(;
             N=N,
-            frequency=T(frequency),
+            frequency=_as_number_or_expression(T, frequency),
             strengthX=_harmonic_tuple(Val(N), strengthX, T),
             strengthY=_harmonic_tuple(Val(N), strengthY, T),
             phase=_harmonic_tuple(Val(N), phase, T),
@@ -256,7 +265,9 @@ function _harmonic_tuple(::Val{N}, values, ::Type{T}) where {N,T}
         return ntuple(_ -> zero(T), N)
     end
     length(values) == N || throw(ArgumentError("expected $N harmonic values, got $(length(values))"))
-    return ntuple(i -> T(values[i]), N)
+    # A number converts to `T`, a knob expression is kept (design D10); the
+    # compile sees the resolved numbers through this same coercion.
+    return ntuple(i -> _as_number_or_expression(T, values[i]), N)
 end
 
 # Defined here, above the `@element_spec` block, for the same reason
