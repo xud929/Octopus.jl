@@ -18411,6 +18411,22 @@ end
     for spec in (twins[2][1], twins[4][1], flat)
         @test !any(k -> haskey(stored(spec), k), (:reference, :charge, :voltage, :e0, :mc2))
     end
+
+    # The voltage route's keywords without `voltage` are refused by name rather
+    # than ignored (until 2026-11-25 a strength-route call carrying `e0` built
+    # with the `e0` unread): each of the three on both kinds, the message naming
+    # the keyword, `voltage` and the `reference` spelling, and all three given at
+    # once all named. The flat strength route without them is the `twins` above.
+    for K in (ThinRFCavitySpec, ThinAcceleratingCavitySpec)
+        for (kw, val) in ((:e0, 275e9), (:mc2, PMASS_EV), (:charge, 1))
+            msg_v = refusal(() -> K(400e6; strength = 0.01, beta0 = b, gamma0 = g, kw => val))
+            @test msg_v !== nothing && occursin("`$kw` given without `voltage`", msg_v) &&
+                  occursin("reference = ReferenceParticle", msg_v)
+        end
+        msg_3 = refusal(() -> K(400e6; strength = 0.01, beta0 = b, gamma0 = g,
+                                 e0 = 275e9, mc2 = PMASS_EV, charge = 1))
+        @test msg_3 !== nothing && occursin("`e0`, `mc2`, `charge` given without `voltage`", msg_3)
+    end
 end
 
 @testset "Cavity chain composition, single-pass refusal, harmon resolution" begin
