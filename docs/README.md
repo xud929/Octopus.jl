@@ -224,6 +224,22 @@ Procedures, one per task class, routed from the Task Routing table in
   [`history/audit_linear_optics_2026_11_21_unit_reports/U1.md`](history/audit_linear_optics_2026_11_21_unit_reports/U1.md)
   and the U1-1 reproduction
   [`history/audit_linear_optics_2026_11_21_U1_1_repro.jl`](history/audit_linear_optics_2026_11_21_U1_1_repro.jl).
+- [`machine_description.md`](design/machine_description.md) — the machine
+  description designed 2026-11-24 and not yet implemented: Julia stays the
+  input language (no lattice language, no operator algebra); `Lattice` as a
+  record around a top-level `BeamLine` with the entrance reference particle,
+  a knob root and a numeric type, and no closure flag; `Machine` as the
+  facility's namespace of lattices, knobs, references and beam definitions
+  with no connections and no interaction-point concept; the `@elements`
+  block (names from bindings, the kind vocabulary from the registry, the
+  type in the header); the friendly constructors accepting knob expressions;
+  three variation routes; the TOML snapshot's rules (explicit version and
+  type, a schema derived from the metadata, expressions as `{ expr = ... }`
+  in the knob grammar, knobs mirroring their dotted paths, stored
+  parameters only, a deterministic emitter, a self-contained loader), its
+  embedding in the run artifact, the additive compatibility rule, the
+  staging, the measurements behind it, and what is deliberately not now
+  (filling patterns, collision-owned boosts, translators).
 - [`linear_optics_examples_2026_11_21.md`](history/linear_optics_examples_2026_11_21.md)
   — the shipped examples in the `LinearOptics` form (the weak-strong,
   strong-strong and crab-noise scripts spell each beam's optics as IP and

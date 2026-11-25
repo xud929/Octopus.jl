@@ -89,6 +89,15 @@ measured in that session's scratch and is recorded only here (stated
   aggregate; the pole-face wedge maps converge like 1/N to the Ψ₂ floor. The
   wrong construction's stall value is pinned in the suite as a negative
   control.
+- The machine-description design (2026-11-24, `design/machine_description.md`)
+  was about to specify a TOML emitter of its own because the standard
+  library's printer "is basic", a claim made in conversation and never
+  measured. A ten-line probe run before the note showed `TOML.print` takes
+  `sorted`, `by` and `inline_tables` keywords and prints shortest round-trip
+  floats, so the emitter is a thin wrapper choosing the inline set and the
+  key order; the same probe confirmed the parser handles mixed arrays, nested
+  inline tables and quoted dotted keys. The probe cost less than the paragraph
+  it replaced; a library's limits are measured, not remembered.
 
 ## Derive, don't hand-copy — and give every derived list a tripwire
 
