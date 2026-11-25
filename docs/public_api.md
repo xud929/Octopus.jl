@@ -45,6 +45,26 @@ and their product determines the macroparticle count. See the
 [initialization design](design/beam_initialization.md) for the decisions behind
 the API; `?Beam` owns the endpoint and inactive-option rules.
 
+The beam's species and energy come from the lattice's reference particle as
+one object, the recommended spelling since the reference batch (design D12,
+record `docs/history/machine_description_reference_2026_11_25.md`; the flat
+`charge`, `mc2`, `E0` keywords remain accepted on their own and build the same
+beam bit for bit):
+
+```julia
+ref  = ReferenceParticle(; charge = 1, mc2 = PMASS_EV, E0 = 275e9)
+beam = Beam(N, policy; reference = ref, r0 = r0, npart = npart, ...)   # r0, npart stay keywords
+```
+
+`reference` replaces `charge`, `mc2` and `E0` on every constructor form, the
+bounded and grid forms included; any of the three given beside it, whatever
+its value, is refused by name before anything is drawn or activated, as is a
+`reference` that is not a `ReferenceParticle`. `r0` and `npart` stay keywords
+(the classical radius is not derived from the reference in this batch).
+`reference` is a beam-parameter keyword documented on `?Beam`, not an entry of
+`beam_initialization_option_schema`, which enumerates the receipt-bearing
+distribution options only.
+
 A beam matched to a lattice point takes the point's optics as one object, the
 recommended spelling (design D15; the flat `beta`, `alpha`, `zeta`, `eta`, `R`
 keywords remain as the stored representation and for scripts written before
@@ -130,6 +150,30 @@ level (with `sigz` and `sigma_delta`, design `design/strong_beam_element.md`
 S2); the deprecated `ThinStrongBeamSpec`, kept for existing scripts and
 warning once per process, is transverse and refuses one.
 
+
+The two cavities take the lattice's reference particle in place of their flat
+reference keywords, on either route and in the typed and `harmon` forms, the
+recommended spelling since the reference batch (design D12; record
+`docs/history/machine_description_reference_2026_11_25.md`); the flat keywords
+remain accepted on their own and store the same numbers bit for bit:
+
+```julia
+ref = ReferenceParticle(; charge = 1, mc2 = PMASS_EV, E0 = 275e9)
+ThinRFCavitySpec(400.8e6; voltage = 12e6, reference = ref)              # in place of e0, mc2, charge
+ThinRFCavitySpec(400.8e6; strength = 12e6 / 275e9, reference = ref)     # in place of beta0, gamma0
+ThinAcceleratingCavitySpec(1.3e9; voltage = 25e6, reference = ref)      # the ENTRY reference
+```
+
+`reference_beta_gamma(ref)` is the derivation the constructors use, so the
+stored `beta0`, `gamma0` and `strength` are the flat call's and `reference`
+itself is not stored (nothing downstream changes). Any of `beta0`, `gamma0`,
+`e0`, `mc2`, `charge` given beside `reference`, whatever its value, is refused
+by name, as is a `reference` that is not a `ReferenceParticle`; the flat
+voltage route keeps `charge = 1` as its default, and `e0`, `mc2` or `charge`
+given on the strength route (no `voltage`) is refused by name rather than
+ignored, and the five flat keywords are read by presence, so an explicit
+`nothing` is refused by name too. `construction_help` and
+`element_help` of both kinds name the keyword.
 
 For the element development pattern, use Julia help:
 
@@ -618,6 +662,7 @@ shipped DBA example declares its ring this way in a module. Use Julia help:
 ```
 
 ```julia
+ref = ReferenceParticle(; charge = 1, mc2 = PMASS_EV, E0 = 3.0e9)   # spelled once
 @knob ring.qf_k1 = 1.5                       # `ring`: the knob root of the shipped modules
 
 @elements begin                              # `@elements Float32 begin ... end` types the block
@@ -625,13 +670,12 @@ shipped DBA example declares its ring this way in a module. Use Julia help:
     QD   = quadrupole(L = 0.25, k1 = -1.1)
     D    = drift(L = 0.6)
     B    = sbend(L = 1.0, angle = 0.2)
-    RF   = thin_rf_cavity(500e6; voltage = 2e6, e0 = 3.0e9, mc2 = PMASS_EV)
+    RF   = thin_rf_cavity(500e6; voltage = 2e6, reference = ref)
     RING = line(QF, D, B, D, QD, D, B, D, QF, RF)
 end
 
-lattice = Lattice("DBA_RING"; line = RING,
-                  reference = ReferenceParticle(; charge = 1, mc2 = PMASS_EV, E0 = 3.0e9),
-                  knob_root = :ring)
+lattice = Lattice("DBA_RING"; line = RING, reference = ref, knob_root = :ring)
+beam    = Beam(N, policy; reference = ref, ...)       # the same object, spelled once
 task   = TrackingTask(lattice)                        # the placements the bare line gives
 result = analyze(TwissDispersionAnalysis(), lattice)  # one_turn_matrix(lattice) likewise
 ```
@@ -650,11 +694,15 @@ this stage (design D10; `docs/knob_control.md`, section 2): a number is
 converted, an expression is kept, and the folds build expression nodes, so
 `k1 = @knob_expr(ring.qf_k1)` above stores the expression in `kn`; a
 derivation the tree cannot express still refuses by name with the
-flexible-form remedy (what still refuses: the RBend `chord` with an expression `angle`, the strong beams' optics and covariance keywords, the inert third components of the strong beam's `angle`, `curvature` and `mean`, the cavity's `harmon`, and every entry of a `LinearOptics` point, kept numeric on a measurement; the stage record lists each with its remedy). `ReferenceParticle` is
-carried on the lattice and not yet consumed: `Beam` and the cavities keep
-their `charge`, `mc2`, `E0`, `beta0`, `gamma0` keywords until the compile-path
-campaign of D12 (`reference_beta_gamma(ref)` derives the factors a script
-spells by hand today). `Lattice` forwards `line_entries`, `s_positions`,
+flexible-form remedy (what still refuses: the RBend `chord` with an expression `angle`, the strong beams' optics and covariance keywords, the inert third components of the strong beam's `angle`, `curvature` and `mean`, the cavity's `harmon`, and every entry of a `LinearOptics` point, kept numeric on a measurement; the stage record lists each with its remedy). The lattice's
+`ReferenceParticle` is the object the beam and the cavities take: `Beam(N,
+policy; reference = ref)` in place of `charge`, `mc2`, `E0`, and
+`thin_rf_cavity(f; voltage = V, reference = ref)` in place of `e0`, `mc2`,
+`charge` (or `beta0`, `gamma0` beside `strength`), the one object spelled once
+(see "Construct Beams" and "Construct Elements"; record
+`docs/history/machine_description_reference_2026_11_25.md`); no task yet
+compares the beam's reference with a cavity's stored pair at compile, the
+compile-path half of D12 (`todo.md`). `Lattice` forwards `line_entries`, `s_positions`,
 `find_entries` and `knob_report` to its line, and `eltype(lattice)` is its
 numeric type. `StrongStrongTask` and `Machine` are stage 3.
 

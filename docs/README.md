@@ -230,6 +230,8 @@ Procedures, one per task class, routed from the Task Routing table in
   `TrackingTask` and `analyze` taking a lattice, the DBA example converted) is
   implemented and recorded in
   [`history/machine_description_stage2_2026_11_25.md`](history/machine_description_stage2_2026_11_25.md),
+  its reference batch (`Beam` and the cavities taking the `ReferenceParticle`)
+  in [`history/machine_description_reference_2026_11_25.md`](history/machine_description_reference_2026_11_25.md),
   stages 3 to 5 (`Machine`, the TOML form, `with_overrides`) are not started.
   The note: Julia stays the
   input language (no lattice language, no operator algebra); `Lattice` as a
@@ -269,6 +271,19 @@ Procedures, one per task class, routed from the Task Routing table in
   [`machine_description_stage2_2026_11_25_optics_trees.jl`](history/machine_description_stage2_2026_11_25_optics_trees.jl)
   (the 36-entry matrix and the Edwards-Teng block as knob trees, their node
   counts and the evaluation cost against the numeric build).
+- [`machine_description_reference_2026_11_25.md`](history/machine_description_reference_2026_11_25.md)
+  — the reference batch after stage 2: `Beam` and the two cavities take
+  `reference = ReferenceParticle` in place of `charge`, `mc2`, `E0` and of
+  `beta0`, `gamma0`, `e0`, `mc2`, `charge` (the light form: one funnel per
+  consumer flattens the object into the stored keywords, the flat call's
+  numbers bit for bit; a flat keyword beside it is refused by name), the
+  four examples converted with their fingerprints against the stage-2
+  baseline on CPU and CUDA, the strength-route keywords both cavity
+  constructors silently ignored (found and refused), the decisions (the
+  light form, docstring not schema, `r0` kept), the carried gap (no task
+  compares the beam's reference with a cavity's pair at compile), the
+  per-unit verification and the gate, and the previous push's ledger (CI
+  run 489, the 5edd08a intermediate commit).
 - [`linear_optics_owner_items_2026_11_21.md`](history/linear_optics_owner_items_2026_11_21.md)
   — the second LinearOptics batch, closing the design note's owner items 1, 4
   and 5 (D11-D13): form 2 reaching `ChromaticityKickSpec` and `LumpedRadSpec`

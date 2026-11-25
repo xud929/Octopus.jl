@@ -6,9 +6,13 @@
 > [`../history/machine_description_stage2_2026_11_25.md`](../history/machine_description_stage2_2026_11_25.md):
 > implemented are D3 (`Lattice`), D7 (the knob-root tripwire), D9
 > (`@elements`, `@element`), D10 (the friendly constructors accepting knob
-> expressions at every fold site and typed-by-hand form of section 4, the `LinearOptics` point measured and kept numeric by name), D12 as acceptance only
-> (`ReferenceParticle` exists and is carried on the lattice; the consumers
-> keep their keywords), D15 for `TrackingTask` and `analyze`, and D16
+> expressions at every fold site and typed-by-hand form of section 4, the `LinearOptics` point measured and kept numeric by name), D12 as acceptance
+> (`ReferenceParticle` exists and is carried on the lattice; since the
+> reference batch of 2026-11-25, record
+> [`../history/machine_description_reference_2026_11_25.md`](../history/machine_description_reference_2026_11_25.md),
+> `Beam` and both cavities take it as `reference = ReferenceParticle` in
+> place of their flat keywords, while the compile-path unification of D12
+> remains proposed), D15 for `TrackingTask` and `analyze`, and D16
 > (`src/lattice/`). `Machine` (D5), the TOML form (D13, D14) and
 > `with_overrides` (D11) remain proposed, and the "(proposed)" markers below
 > read as the state when the note was written.** Parent notes:
@@ -278,6 +282,15 @@ left out is in section 2's last decision.
   six hundred test and validation sites of section 1 is a compile-path
   campaign of its own with backend consistency; the description work accepts
   the type and carries it, nothing more.
+  Status 2026-11-25: `Beam` and both cavities accept `reference =
+  ReferenceParticle` in place of their flat keywords, in the light form
+  (the object is flattened into the stored keywords by one funnel per
+  consumer, so nothing downstream changes; record
+  [`../history/machine_description_reference_2026_11_25.md`](../history/machine_description_reference_2026_11_25.md));
+  the compile-path unification remains proposed, and its first lead is the
+  gap that batch carried: no task compares the beam's reference with a
+  cavity's stored `beta0`/`gamma0` at compile (`_validate_reference_chain`
+  compares the cavities with one another only).
 
 - **D13 TOML is the data form, and these rules make it one.** The file
   states its `format` version and the lattice `eltype` explicitly, never
