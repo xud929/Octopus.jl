@@ -37,7 +37,11 @@
 > override classes the derived route refuses). Every item of the staging
 > (section 3) has landed; what remains proposed is the compile-path half of
 > D12 and the owner items the records carry, and the "(proposed)" markers
-> below read as the state when the note was written.** Parent notes:
+> below read as the state when the note was written. The owner's rulings of
+> 2026-11-26 on the carried items and on the data form's questions, and the
+> batches they add up to, are in
+> [`machine_description_followups.md`](machine_description_followups.md);
+> D5's beam-definition question is closed there (no).** Parent notes:
 > [`../theory/beam_line_composition.md`](../theory/beam_line_composition.md)
 > (the line layer this builds on: placements, provenance, selectors, its
 > decisions 1 to 7), [`../knob_control.md`](../knob_control.md) (knobs as
@@ -183,6 +187,10 @@ left out is in section 2's last decision.
   reference particles and beam definitions are not stored, since no runtime
   consumer reads a machine-level one while each `Lattice` carries its
   entrance reference (D3), an owner question that record carries.
+  Decided 2026-11-26 (owner): no. The machine stores lattices and shared
+  knob roots only; a beam describes a run, and the reproducibility motive
+  moves to a beam receipt in the run artifact
+  ([`machine_description_followups.md`](machine_description_followups.md), R1).
 
 - **D6 Observers and solvers stay inside the lines; the solver stays on the
   collision marker.** Nothing changes in how a line is built or how
@@ -594,6 +602,24 @@ parameters over `eltype` is `eltype` itself, so a kind storing no numeric
 value passes and a wider literal is refused with the typed-form remedy, while
 a stored `numeric_type` must equal `eltype`; the expression acceptance of D10
 is stage 2's batch.
+
+Decided 2026-11-26 (owner), on the items the stage records carried and on
+the data form's questions, recorded with their reasoning, acceptance and
+prices in [`machine_description_followups.md`](machine_description_followups.md):
+no beam definitions on the machine (R1); a collision marker outside a
+strong-strong task inert and counted, never an error (R2); `r0` derived
+from a richer, immutable `ReferenceParticle` with required inputs, species
+presets and knob-expression inputs, and retired as a `Beam` input (R3,
+R4); the zero factors of the derived kick scale refused at the preflight
+and the scale reported, `npart` warn or refuse the owner's last choice
+(R5); a wider-than-`Float64` override refused, the `Float64`-to-`Float32`
+convention kept (R6); a ramp as a knob on the reference, its campaign
+after a theory note (R7); the four priced leads dispositioned (R8); the
+artifact's snapshot content-addressed, cached and switchable by
+`machine_snapshot` (R9); no include and no templates in the TOML,
+`read_lattice` and the multi-file `read_machine` added (R10); the MAD-X
+class form on the friendly constructors (R11); a library as a Julia module
+(R12). The compile-path half of D12 is that note's batch A.
 
 ## 6. Precedents read for this design
 

@@ -2586,3 +2586,11 @@ Closed with reasons; reopen only if the stated condition changes.
   the Measured Lessons, and `docs/history/`; procedures live in
   `docs/guides/`, one guide per routing row. A fact that will age does not
   go in the entry point; a tripwire test replaces any hand-maintained count.
+- **Include directives, element templates and element libraries inside the
+  TOML snapshot** (owner decision 2026-11-26). The snapshot is the flat data
+  form (D2 and D13 of the machine description: pure data cannot abstract,
+  stored parameters only); abstraction lives in the Julia module, through
+  `include`, `using` a library module and the class form on the friendly
+  constructors (`design/machine_description_followups.md`, R10 to R12).
+  Reopen only if a hand-authored TOML workflow appears that the D17
+  translators do not cover.

@@ -265,6 +265,26 @@ Procedures, one per task class, routed from the Task Routing table in
   embedding in the run artifact, the additive compatibility rule, the
   staging, the measurements behind it, and what is deliberately not now
   (filling patterns, collision-owned boosts, translators).
+- [`machine_description_followups.md`](design/machine_description_followups.md)
+  — the owner's rulings of 2026-11-26 on the items the machine-description
+  records carried and on the data form's questions, with reasoning,
+  acceptance and prices: no beam definitions on the machine; the collision
+  marker inert and counted outside a strong-strong task; `r0` derived from
+  a richer, immutable `ReferenceParticle` (required inputs, one of four
+  energy spellings, species presets, derived fields computed once,
+  knob-expression inputs) and retired as a `Beam` input; the zero factors
+  of the derived kick scale refused at the preflight and the scale
+  reported; a wider-than-`Float64` override refused; the ramp as a knob on
+  the reference, its campaign after a theory note; the stream id claimed at
+  the flexible form, the cavity flag cached, the `EveryNSteps` `stop` case;
+  the artifact's snapshot content-addressed, cached and switchable by
+  `machine_snapshot`; no include and no templates in the TOML, with
+  `read_lattice` and the multi-file `read_machine`; the MAD-X class form on
+  the friendly constructors (`quadrupole(RHIC.Q; k1 = 1.0)`); a library as
+  a Julia module. The agreed batches ("compile-path, part 1" first), the
+  measurements behind them (a hand-written `k1` accepted by the snapshot
+  reader and dropped at compile among them) and the choices still the
+  owner's. Nothing implemented; the next session starts at its section 3.
 - [`linear_optics_examples_2026_11_21.md`](history/linear_optics_examples_2026_11_21.md)
   — the shipped examples in the `LinearOptics` form (the weak-strong,
   strong-strong and crab-noise scripts spell each beam's optics as IP and
