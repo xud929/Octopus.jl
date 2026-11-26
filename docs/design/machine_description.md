@@ -19,9 +19,17 @@
 > share (beam definitions and machine-level reference particles, which D5
 > lists, are deferred until a runtime consumer reads them, an owner question
 > that record carries), the machine-level half of D7's tripwire, and D15 for
-> `StrongStrongTask` and `one_turn_matrix`. The TOML form (D13, D14) and
-> `with_overrides` (D11) remain proposed, and the "(proposed)" markers below
-> read as the state when the note was written.** Parent notes:
+> `StrongStrongTask` and `one_turn_matrix`. Stage 4 landed 2026-11-25, record
+> [`../history/machine_description_stage4_2026_11_25.md`](../history/machine_description_stage4_2026_11_25.md):
+> D13 implemented as `write_machine`, `read_machine`, `machine_toml` and
+> `parse_machine` over the format the `write_machine` docstring states (the
+> registry-derived round trip per kind, the knobs by path, the hooks, markers
+> and solvers by their option schemas, the bulk tables by digest), and D14 as
+> the `machine_toml` and `machine_sha256` columns of the run artifact's
+> ledger with the tables under `/machine_tables`, read back by
+> `read(out, :machine)` and `read_machine(out)`. `with_overrides` (D11)
+> remains proposed, and the "(proposed)" markers below read as the state when
+> the note was written.** Parent notes:
 > [`../theory/beam_line_composition.md`](../theory/beam_line_composition.md)
 > (the line layer this builds on: placements, provenance, selectors, its
 > decisions 1 to 7), [`../knob_control.md`](../knob_control.md) (knobs as
@@ -349,12 +357,39 @@ left out is in section 2's last decision.
   nested inline tables (exact and parser-free, but TOML 1.0 keeps an inline
   table on one line); evaluating expressions at save time (loses the
   dependency structure, so a retuned knob would not propagate after a load).
+  Status 2026-11-25: implemented in `src/lattice/toml.jl` (the format as the
+  `write_machine` docstring, which is the one source the writer and the
+  reader derive from; the element, value, line, knob, reference and lattice
+  rules; the deterministic emitter) and `src/lattice/toml_hooks.jl` (the
+  hooks, markers, solvers, schedules and turn rules through their option
+  schemas, the tables sidecar), record
+  [`../history/machine_description_stage4_2026_11_25.md`](../history/machine_description_stage4_2026_11_25.md).
+  Two details the implementation settled differ from the text above and
+  the docstring is the authority: every element is a
+  `[lattices.X.elements.NAME]` table (no width rule and no inline form, so
+  the reader needs no second shape), and the elements print in
+  first-placement order with one table per DISTINCT spec object (an object
+  placed twice is one table referenced twice, so the identity the family
+  queries rely on survives the round trip), both confirmed by unit A's report.
 
 - **D14 The run artifact embeds the snapshot.** A run records the machine it
   ran as the TOML text, so it can be reproduced from the artifact alone and
   two runs can be diffed on their lattices. This gives the two provenance
   rows of section 1 the stable identity they lack; closing them is their own
   work.
+  Status 2026-11-25: implemented (the record above; `run_artifact.md`, "The
+  machine snapshot"). The task structs carry the machine they were given, by
+  spelling (`machine`: `Machine(lattice)` for a lattice, the machine itself
+  for a machine, the derived `Machine("<name1>+<name2>")` for
+  `StrongStrongTask(lattice1, lattice2)`, `nothing` for tuples, vectors and
+  bare lines, or when no machine can hold the pair); `prepare_run_artifact!`
+  writes `machine_toml(machine, tables)` into the ledger columns
+  `machine_toml` and `machine_sha256` and the tables under
+  `/machine_tables/<sha256>`; `read(out, :machine; slot)` and
+  `read_machine(out; slot, receipt)` read them back. A tuple-built task's row
+  holds `""` and the readers refuse by name with the lattice spelling as the
+  remedy; a machine the codec refuses warns at prepare and records `""`
+  rather than stopping the run, since the snapshot is the run's by-product.
 
 - **D15 Compatibility is additive.** Tasks keep accepting the tuples,
   vectors and `BeamLine`s they accept today; `Lattice` joins `_element_tuple`
@@ -446,6 +481,10 @@ in the same commits (`AGENTS.md`, Definition of Done).
    one lattice byte-identical); the artifact's embedded text equal to the
    file's. The three hand-spelled benchmark generators are not touched here;
    D17 reads them from the snapshot later.
+   Landed 2026-11-25, record
+   [`../history/machine_description_stage4_2026_11_25.md`](../history/machine_description_stage4_2026_11_25.md)
+   (the per-kind and per-type round-trip counts, the fingerprints and the
+   gate are in it).
 5. **`override` and derived lattices, then the neighbour audit** the
    invariants require after every campaign: the fix's neighbours are where
    the next defect is, and here they are `_element_tuple`'s callers, the two

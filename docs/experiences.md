@@ -2510,6 +2510,32 @@ measurement answered the owner's performance question for free: identical
 compiled blocks are identical kernels, so the parity driver had only to show
 that nothing per turn sits in front of them.
 
+## A serializer is the strictest reader of metadata
+
+The machine description's stage 4 (2026-11-25, record
+[`history/machine_description_stage4_2026_11_25.md`](history/machine_description_stage4_2026_11_25.md))
+derived the TOML snapshot's schema from the element metadata, as the design
+said it would, and found at once what no earlier consumer had needed:
+`ParamMeta` records a default, a unit, a meaning and alternatives, and no
+type. A writer can print any value; a reader must know whether `"center"`
+comes back as a `Symbol` or a `String`, whether `[0.0, 0.0]` is a tuple or a
+vector, whether `0` is the `UInt64` a stream id was, and the metadata could
+not say. The codec takes the class from the default, the alternatives and
+the kind's example value, and where none of the three speaks it prints a
+marker form (`{ tuple = [...] }`, `{ symbol = "..." }`) that needs no hint,
+so the round trip is total but the text is less readable exactly where the
+metadata is thinnest (`Linear6DSpec`'s optics tuples, a schedule's unset
+`stop` printed as `typemax(Int)`). The same reading surfaced run state kept
+inside description objects (`MomentObserver`'s buffer and artifact handle,
+which make a lattice unequal to its pristine twin once it has run) and an
+identity `==` on a schedule holding a `Set`. The lesson: when a design says
+"derived from the metadata", build the strictest consumer first, a round
+trip that must rebuild every value, because it audits the metadata the way
+help text and validators never will; and what it finds missing (here a
+type, or a typed default, on every parameter) is a metadata campaign, not a
+codec special case, so record it as the lead and keep the marker forms
+honest rather than guessing a class.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

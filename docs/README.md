@@ -236,7 +236,12 @@ Procedures, one per task class, routed from the Task Routing table in
   roots; `StrongStrongTask`, `TrackingTask`, `analyze` and `one_turn_matrix`
   taking a machine; the strong-strong example as two lattices) in
   [`history/machine_description_stage3_2026_11_25.md`](history/machine_description_stage3_2026_11_25.md),
-  stages 4 and 5 (the TOML form, `with_overrides`) are not started.
+  its stage 4 (the TOML snapshot: `write_machine`, `read_machine`,
+  `machine_toml`, `parse_machine` over the format the `write_machine`
+  docstring states, the registry-derived round trip; the run artifact
+  embedding the text and its tables) in
+  [`history/machine_description_stage4_2026_11_25.md`](history/machine_description_stage4_2026_11_25.md),
+  stage 5 (`with_overrides`) is not started.
   The note: Julia stays the
   input language (no lattice language, no operator algebra); `Lattice` as a
   record around a top-level `BeamLine` with the entrance reference particle,
@@ -305,6 +310,21 @@ Procedures, one per task class, routed from the Task Routing table in
   (threads, CUDA, MPI), the decisions (lattices and shared roots only, beam
   definitions and machine-level references deferred as an owner question),
   the per-unit verification and the gate, and the previous push's ledger.
+- [`machine_description_stage4_2026_11_25.md`](history/machine_description_stage4_2026_11_25.md)
+  — the machine description's stage 4: the TOML snapshot (`write_machine`,
+  `read_machine`, `machine_toml`, `parse_machine`; the format as the
+  `write_machine` docstring: elements by their stored parameters under
+  `kind`, the value rules, knob expressions as `{ expr = ... }`, the knobs
+  by dotted path, hooks, markers, solvers, schedules and turn rules by their
+  option schemas, bulk tables by SHA-256 digest in a sidecar, lines as
+  members with provenance paths, a deterministic emitter, a self-contained
+  loader with its receipt and refusals), the registry-derived round-trip
+  tripwires per kind and per object type, the run artifact embedding the
+  text and its tables (`machine_toml`, `machine_sha256`, `/machine_tables`;
+  `read(out, :machine)`, `read_machine(out)`; the tasks' `machine` field by
+  spelling), the shipped strong-strong example writing its snapshot beside
+  the artifact with its fingerprints, the decisions, the per-unit
+  verification and the gate, and the previous push's ledger.
 - [`linear_optics_owner_items_2026_11_21.md`](history/linear_optics_owner_items_2026_11_21.md)
   — the second LinearOptics batch, closing the design note's owner items 1, 4
   and 5 (D11-D13): form 2 reaching `ChromaticityKickSpec` and `LumpedRadSpec`

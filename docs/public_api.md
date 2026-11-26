@@ -294,6 +294,8 @@ read(out, :bpm; name = "BPM_07", column = :x)
 read(out, :snapshot; name = "inj", turn = 100)
 read(out, :losses)                        # rows + apertures + summary
 read(out, :execution)                     # per-execute! ledger
+read(out, :machine)                       # the embedded machine snapshot's TOML text (D14; slot = n for one row)
+read_machine(out)                         # the Machine rebuilt from it, bulk tables included
 read(out, :all)                           # everything, nested by kind
 ```
 
@@ -322,7 +324,12 @@ name in force when each `execute!` began (`rng_seed`, `rng_method`; a
 `set_global_rng!` between two windows is on record row by row). A continued
 (`append = true`) file written before those columns existed is refused by
 name rather than padded; reading it stays possible, the missing columns
-read as `nothing`. A continuation is validated before anything is written
+read as `nothing`. Since 2026-11-25 (the machine description, design D14) the
+row also carries `machine_toml` and `machine_sha256`, the TOML snapshot of
+the machine the task was built from and its SHA-256 digest (`""` for a task
+built from tuples; `nothing` on an older file), with the snapshot's bulk
+tables under `/machine_tables`; `read(out, :machine)` and `read_machine(out)`
+read them (see "Describe A Lattice", "Snapshot A Machine"). A continuation is validated before anything is written
 (2026-10-19): every by-name refusal of the prepare leaves the file
 byte-identical, a refused probe bind leaves every group's rows and cursor as
 found, and the replay rule -- rows at or beyond the window's first turn
@@ -668,6 +675,10 @@ shipped DBA example declares its ring this way in a module. Use Julia help:
 ?ReferenceParticle
 ?@elements
 ?@element
+?write_machine
+?read_machine
+?machine_toml
+?parse_machine
 ```
 
 ```julia
@@ -752,6 +763,51 @@ task = StrongStrongTask(eic, :ESR, :HSR; policy = policy, ...)  # beam 1 tracks 
 keys(eic)                     # ("ESR", "HSR"), declaration order
 eic[:HSR] === hsr             # true; eic["HSR"] likewise
 Machine(esr) == Machine("ESR"; lattices = (esr,))   # the implicit one-lattice machine
+```
+
+**Snapshot A Machine** (stage 4; record
+`docs/history/machine_description_stage4_2026_11_25.md`). The machine
+description has a data form (design D13): `write_machine(path, machine)`
+writes the TOML snapshot (`write_machine(path, lattice)` writes the implicit
+one-lattice machine), with the bulk tables a `TurnTable` holds in the sidecar
+`<path without extension>.tables.h5` beside it, and `read_machine(path)`
+reads it back into an equal machine, declaring the file's knobs in the
+process (independent knobs first, then the dependent ones in dependency
+order; a path already present with the same definition is kept, a
+conflicting one refused by name; `receipt = true` returns what was declared,
+kept, loaded and built). `machine_toml(machine)` is the text without a file
+and `parse_machine(text; tables)` its reader, for a snapshot held in memory.
+The file states what it is (`format`, each lattice's `eltype`, each element's
+`kind` and `numeric_type`), holds the STORED parameters in the folded form
+the friendly constructors produce (`kn`, not `k1`), knob expressions as
+`{ expr = "..." }` in the knob grammar and never a resolved value beside one,
+the knobs by dotted path, the hooks, markers and solvers by their option
+schemas, and every placement with its provenance path; the emitter is
+deterministic, so two snapshots of one machine are byte-identical and two
+machines differ where their snapshots differ. Refused by name at write: a
+value the format does not cover (a function-valued parameter: a
+`TuneFunction`, a predicate schedule, an aperture callback, a spectral shape);
+at read: an unknown format, key or kind, a bare string where a number
+belongs, an undefined or conflicting knob, a member referencing nothing, a
+sidecar digest that does not match (`?write_machine` is the format's one
+source). A run embeds the same text (design D14): a `TrackingTask` built from
+a `Lattice` or a `Machine`, and a `StrongStrongTask` built from two lattices
+or a machine, write `machine_toml(machine)` into their run artifact's
+`/execution` ledger row (`machine_toml`, with its SHA-256 in
+`machine_sha256`) and the bulk tables under `/machine_tables`, so `read(out,
+:machine)` is the text of the last `execute!` (or of `slot = n`) and
+`read_machine(out)` the machine rebuilt from the artifact alone; a
+tuple-built task records `""` and both readers refuse by name with the
+lattice spelling as the remedy. The shipped strong-strong example writes
+`result/<seed>/<case_name>.machine.toml` beside its artifact.
+
+```julia
+write_machine("result/eic.machine.toml", eic)      # the data form; eic.machine.tables.h5 beside it when a TurnTable is held
+eic2 = read_machine("result/eic.machine.toml")      # == eic, the file's knobs declared in the process
+text = machine_toml(eic)                            # the same text, no file; parse_machine(text) reads it
+out  = TaskOutput("result/42/pic_hcc.h5")
+read(out, :machine) == text                         # a run built from `eic` carries its description
+read_machine(out) == eic                            # the run's machine, from the artifact alone
 ```
 
 ## Fixed Particle Tunes

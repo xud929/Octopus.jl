@@ -119,6 +119,14 @@ position as attributes:
     /turn_modulation/3/state              RESERVED for a stateful rule's
                              checkpoint (turn_modulation_record.md, D10);
                              written by nothing today
+    /machine_tables/<sha256> one Float64 dataset per distinct bulk table (a
+                             TurnTable's offsets) the embedded machine
+                             snapshot references, content-addressed by
+                             SHA-256 and shared by every ledger row; present
+                             only when a row's snapshot holds one; not a
+                             product kind (2026-11-25, D14 of
+                             machine_description.md; the paragraph "The
+                             machine snapshot" below)
 
 (2026-10-22, F-64: the luminosity `s` and the probe's provenance-path
 attribute shown here until this date were never stamped; `name` is the
@@ -799,6 +807,45 @@ padding of `current_turn`, whose files lack these columns too.) Reading an
 old file stays possible: `read(out, :execution)` returns `nothing` for a
 column the file lacks, the `/losses` reader's posture for its later-added
 attributes. Record: `../history/audit_crab_cavity_noise_neighbours_2026_10_16.md`.
+
+**The machine snapshot (decided 2026-11-24, `machine_description.md` D14;
+implemented 2026-11-25, record
+`../history/machine_description_stage4_2026_11_25.md`).** The ledger row
+carries two more columns, appended with the row at prepare: `machine_toml`
+(a string: the TOML snapshot text of the machine the task was built from,
+`machine_toml(machine, tables)`, byte for byte what `write_machine` writes,
+so the description that produced a run travels in the run's file and two
+runs can be diffed on their lattices) and `machine_sha256` (a string: the
+SHA-256 hex digest of that text, the cheap identity for comparing two runs'
+descriptions without parsing them). Both are the empty string when the task
+recorded no machine: a task built from tuples, a vector or a bare `BeamLine`
+(the task's `machine` field is `nothing`; a `Lattice` is the implicit
+one-lattice machine `Machine(lattice)`, a `Machine` is itself, and
+`StrongStrongTask(lattice1, lattice2)` derives `Machine("<name1>+<name2>")`
+with the roots both declare as its shared ones, or `nothing` when no machine
+can hold the pair), or a machine the codec refuses to snapshot (a
+function-valued parameter, refused by name at `write_machine` time), in
+which case the prepare warns once with the codec's message and the run
+proceeds: the snapshot is the run's by-product, not its condition. The
+snapshot's bulk tables (a `TurnTable`'s offsets, referenced in the text by
+digest) go under `/machine_tables/<sha256>`, one `Float64` dataset per
+distinct table, written at the first row that references it and shared by
+every later one, so a continued file holds each table once; the group exists
+only when a table does, and it is not a product kind (`read(out, :all)` and
+the contents walker skip it; the table of contents lists its digests and
+lengths). Readers: `read(out, :machine; slot = nothing)` is the text of one
+row, the last `execute!`'s or the ledger row `slot`, refusing by name an
+empty text (with the `Lattice` or `Machine` spelling as the remedy), a `slot`
+outside the ledger, `slot` with any other kind, and a file written before the
+column existed; `read_machine(out; slot, receipt)` parses it with the tables
+of the group into the `Machine` (`parse_machine`), under the knob rules of
+`read_machine(path)`. The eight columns stay ONE table
+(`_RA_LEDGER_COLUMNS`), and a continued (`append=true`) file lacking any of
+them is refused by name as before, the message now naming the generation the
+absent columns belong to (the seed columns, 2026-10-16; the machine columns,
+2026-11-25): a padded empty machine column would claim "built from tuples"
+of rows that recorded nothing either way. Reading an old file stays
+possible: the two columns read `nothing`.
 
 ## Migration
 
