@@ -94,12 +94,13 @@ include("elements/Elements.jl")
 
 # The machine description (design note docs/design/machine_description.md):
 # the `Lattice` record with its `ReferenceParticle`, the `Machine` namespace
-# of lattices, the TOML snapshot's writer and reader, and the `@elements`
-# block macro. Records over the line layer,
+# of lattices, the derived lattice (`with_overrides`), the TOML snapshot's
+# writer and reader, and the `@elements` block macro. Records over the line layer,
 # not Core Objects; after the elements they wrap, before the beam, the
 # one-turn-matrix helper and the tasks, which accept them.
 include("lattice/Lattice.jl")
 include("lattice/Machine.jl")
+include("lattice/overrides.jl")
 include("lattice/toml.jl")
 include("lattice/elements_macro.jl")
 

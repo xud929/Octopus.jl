@@ -22183,6 +22183,18 @@ end
     end
 end
 
+# [MD5-A] Machine description stage 5, unit A: the derived lattice `with_overrides` (the copy, the
+# selectors, the guards, the machine form, the variant's snapshot). Unit A's testsets land directly
+# below this comment and nowhere else.
+
+# [MD5-B] Machine description stage 5, unit B: the neighbour audit's fixes in the lattice, machine,
+# codec and task-constructor layer, each with its regression test. Unit B's testsets land directly
+# below this comment and nowhere else.
+
+# [MD5-C] Machine description stage 5, unit C: the neighbour audit's fixes in the artifact, observer,
+# schedule and solver layer, each with its regression test. Unit C's testsets land directly below
+# this comment and nowhere else.
+
 mutable struct _PhaseResetFailureObserver <: Octopus.AbstractBeamObserver
     failure_turn::Int
     fail_finalize::Bool

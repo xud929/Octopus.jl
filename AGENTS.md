@@ -81,8 +81,9 @@ submodules. Every directory under `src/` has a bullet below; the suite checks.
 - `src/lattice/`: the machine description's records over the line layer:
   `Lattice` (a top-level `BeamLine` with its entrance `ReferenceParticle`,
   knob roots and numeric type), `Machine` (the facility's lattices by name
-  and their shared knob roots), the TOML snapshot (`write_machine`,
-  `read_machine`) and the `@elements` block macro; design note
+  and their shared knob roots), the derived lattice (`with_overrides`), the
+  TOML snapshot (`write_machine`, `read_machine`) and the `@elements` block
+  macro; design note
   `docs/design/machine_description.md`. Records, not Core Objects.
 - `src/knowledge/`: `ElementSpec`, `ElementMeta`, schemas, abstract roots.
 - `src/registry/`: the reflection registry and the generated snapshot.
