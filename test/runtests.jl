@@ -22187,6 +22187,210 @@ end
 # selectors, the guards, the machine form, the variant's snapshot). Unit A's testsets land directly
 # below this comment and nowhere else.
 
+@testset "Machine description: with_overrides derives a lattice without touching the source" begin
+    # The DBA ring by hand (the stage-2 DBA testset's declarations) under the
+    # knob root md5a_ring, QF inside a tagged one-element line (no own state,
+    # so it dissolves: path DBA_RING/QFT/QF): ten placements, QD at 1 and 9,
+    # BEND at 3 and 7, D at 2, 4, 6, 8, QF at 5, RF at 10.
+    @knob md5a_ring.qf_k1 = 1.5
+    @knob md5a_ring.trim = 0.02
+    ref = ReferenceParticle(; charge = 1, mc2 = PMASS_EV, E0 = 3.0e9)
+    beta0, gamma0 = reference_beta_gamma(ref)
+    QF = QuadrupoleSpec(; name = "QF", numeric_type = Float64, L = 0.35, k1 = @knob_expr(md5a_ring.qf_k1), nst = 4, integrator_order = 4)
+    QD = QuadrupoleSpec(; name = "QD", numeric_type = Float64, L = 0.25, kn = (0.0, -1.1), nst = 4, integrator_order = 4)
+    D = DriftSpec(; name = "D", numeric_type = Float64, L = 0.6)
+    BEND = SBendSpec(; name = "BEND", numeric_type = Float64, L = 1.0, h = 0.2, b0 = 0.2, nst = 4, integrator_order = 4)
+    RF = ThinRFCavitySpec(400.0e6; name = "RF", numeric_type = Float64, strength = 0.02, beta0, gamma0)
+    build() = Lattice("DBA_RING"; line = BeamLine("DBA_RING", QD, D, BEND, D, BeamLine("QFT", QF; tags = (:cryostat,)), D, BEND, D, QD, RF),
+                      reference = ref, knob_root = :md5a_ring)
+    source = build()
+    s_entries = line_entries(source.line)
+    @test length(s_entries) == 10 && entry_path(s_entries[5]) == "DBA_RING/QFT/QF" && entry_path(s_entries[9]) == "DBA_RING/QD[2]"
+    no_overrides(lat) = all(isempty(getfield(e, :overrides)) for e in line_entries(lat.line))
+    @test no_overrides(source)
+
+    # One derivation through every selector kind; the last pair wins over the
+    # QuadrupoleSpec pair on QD[2]'s nst.
+    pairs = (sel"DBA_RING/QD[2]" => (kn = (0.0, -1.2),),
+             r"^DBA_RING/BEND" => (nst = 8,),
+             :cryostat => (L = 0.36,),
+             QuadrupoleSpec => (nst = 6,),
+             (e -> getparam(e, :L, 0.0) == 0.6) => (L = 0.61,),
+             sel"DBA_RING/QD[2]" => (nst = 7,))
+    variant = with_overrides(source, pairs...)
+    v_entries = line_entries(variant.line)
+    @test variant isa Lattice && length(v_entries) == 10
+    @test getfield(v_entries[9], :overrides) == Dict(:kn => (0.0, -1.2), :nst => 7)
+    @test v_entries[9].kn == (0.0, -1.2) && getparam(v_entries[9], :nst) == 7 && v_entries[9].L == 0.25
+    @test getfield(v_entries[1], :overrides) == Dict(:nst => 6)                       # QD: the type pair only
+    @test getfield(v_entries[5], :overrides) == Dict(:L => 0.36, :nst => 6)           # QF: the tag and the type
+    @test getfield(v_entries[3], :overrides) == Dict(:nst => 8) == getfield(v_entries[7], :overrides)
+    @test all(getfield(v_entries[i], :overrides) == Dict(:L => 0.61) for i in (2, 4, 6, 8))
+    @test isempty(getfield(v_entries[10], :overrides))                                # RF: unselected
+    # QF's stored focusing strength is still the knob expression (merged under the overrides).
+    @test getparam(v_entries[5], :kn)[2] isa AbstractKnobExpression && knob_value(getparam(v_entries[5], :kn)[2]) == 1.5
+
+    # The source is untouched: equal to a fresh build, no override anywhere, the
+    # specs the same objects (the module's declarations), the placements distinct.
+    @test source == build() && no_overrides(source)
+    @test all(getfield(a, :spec) === getfield(b, :spec) for (a, b) in zip(v_entries, s_entries))
+    @test all(a !== b for (a, b) in zip(v_entries, s_entries))
+    @test map(entry_path, v_entries) == map(entry_path, s_entries) && entry_tags(v_entries[5]) == Set([:cryostat])
+    @test variant.line !== source.line && line_name(variant.line) == "DBA_RING"
+    # The record's other fields come from the source; the name is the source's unless given.
+    @test variant.name == "DBA_RING" && variant.reference == ref && variant.knob_roots == (:md5a_ring,) && eltype(variant) === Float64
+    @test with_overrides(source, pairs[1]; name = "DBA_trim").name == "DBA_trim"
+    # Structural equality: the variant differs from the source by its overrides
+    # and equals a second identical derivation (anti-vacuity: a derivation with
+    # one value changed is not equal).
+    @test variant != source
+    @test variant == with_overrides(source, pairs...) && hash(variant) == hash(with_overrides(source, pairs...))
+    @test variant != with_overrides(source, pairs[1:5]..., sel"DBA_RING/QD[2]" => (nst = 5,))
+
+    # A knob expression as the override value: QF's strength as the main knob
+    # plus a trim, stored as the expression and evaluating to the sum. The
+    # knob-root tripwire runs again on the variant: an override reading a knob
+    # outside the declared roots is refused by name, with the site.
+    trimmed = with_overrides(source, sel"DBA_RING/QFT/QF" => (kn = (0.0, @knob_expr(md5a_ring.qf_k1 + md5a_ring.trim)),))
+    tk = getparam(line_entries(trimmed.line)[5], :kn)[2]
+    @test tk isa AbstractKnobExpression && knob_value(tk) ≈ 1.52 && knob_value(tk) != 1.5
+    @knob md5a_elsewhere.x = 1.0
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    m = msg(() -> with_overrides(source, sel"DBA_RING/QFT/QF" => (kn = (0.0, @knob_expr(md5a_elsewhere.x)),)))
+    @test occursin("md5a_elsewhere.x", m) && occursin("knob root", m) && occursin("DBA_RING/QFT/QF", m)
+
+    # The override reached the compile: the variant with QD[2] at kn = (0, -1.2)
+    # tracks differently from the source and bitwise like a lattice built by
+    # hand with the same override written in place (`entry.kn = v`), the two
+    # routes agreeing structurally as well.
+    v1 = with_overrides(source, sel"DBA_RING/QD[2]" => (kn = (0.0, -1.2),))
+    by_hand = build()
+    by_hand.line[9].kn = (0.0, -1.2)
+    @test getfield(line_entries(by_hand.line)[9], :overrides) == Dict(:kn => (0.0, -1.2)) && by_hand == v1
+    mk() = Phase6DRep([1.0e-3, 2.0e-3], [0.0, 1.0e-4], [0.5e-3, -1.0e-3], [0.0, -1.0e-4], [0.0, 0.0], [1.0e-3, 0.0])
+    a, b, c = mk(), mk(), mk()
+    execute!(TrackingTask(source), a; turns = 3)
+    execute!(TrackingTask(v1), b; turns = 3)
+    execute!(TrackingTask(by_hand), c; turns = 3)
+    @test collect(a[1]) != collect(mk()[1])                                   # the particles moved
+    @test collect(b[1]) != collect(a[1])                                      # the override changed the map
+    @test collect(b[1]) == collect(c[1]) && collect(b[2]) == collect(c[2])    # bitwise the in-place route
+    @test no_overrides(source) && source == build()                           # and the source is still pristine
+end
+
+@testset "Machine description: with_overrides refuses by name" begin
+    # A ring with every placement a refusal needs: quadrupoles (a folded k1), a
+    # kept-whole cell (own state: an offset), a hook placement and a marker;
+    # an untyped quadrupole in a second lattice for the eltype tripwire.
+    @knob md5a_ring.qf_k1 = 1.5
+    ref = ReferenceParticle(; charge = 1, mc2 = PMASS_EV, E0 = 3.0e9)
+    QF = QuadrupoleSpec(; name = "QF", numeric_type = Float64, L = 0.35, k1 = @knob_expr(md5a_ring.qf_k1), nst = 4, integrator_order = 4)
+    QD = QuadrupoleSpec(; name = "QD", numeric_type = Float64, L = 0.25, kn = (0.0, -1.1), nst = 4, integrator_order = 4)
+    D = DriftSpec(; name = "D", numeric_type = Float64, L = 0.6)
+    BEND = SBendSpec(; name = "BEND", numeric_type = Float64, L = 1.0, h = 0.2, b0 = 0.2, nst = 4, integrator_order = 4)
+    IP = MarkerSpec(; name = "IP", numeric_type = Float64)
+    cell = BeamLine("CELL", D, BEND, D; x_offset = 1.0e-4)
+    hook = ScheduledObserver(MomentObserver(; name = "md5a_mom"), EveryNSteps(step = 2))
+    children = (IP, QD, cell, QF, hook, cell, QD)
+    source = Lattice("DBA_RING"; line = BeamLine("DBA_RING", children...), reference = ref, knob_root = :md5a_ring)
+    paths = map(entry_path, line_entries(source.line))
+    @test paths == ["DBA_RING/IP", "DBA_RING/QD", "DBA_RING/CELL", "DBA_RING/QF", "DBA_RING/SCHEDULEDOBSERVER", "DBA_RING/CELL[2]", "DBA_RING/QD[2]"]
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    raw(f) = try; f(); "ACCEPTED"; catch err; err.msg; end                   # the message without the exception's name
+    refused(pairs...; kwargs...) = msg(() -> with_overrides(source, pairs...; kwargs...))
+    overrides_at(lat, i) = getfield(line_entries(lat.line)[i], :overrides)
+
+    # No match: the selector's repr and every path of the line; no pair at all.
+    m = refused(sel"DBA_RING/QX" => (kn = (0.0, 1.0),))
+    @test startswith(m, "ArgumentError: with_overrides(\"DBA_RING\"):") && occursin("sel\"DBA_RING/QX\"", m) && occursin("matches no placement", m)
+    @test all(occursin(p, m) for p in paths)
+    @test occursin(":nowhere", refused(:nowhere => (L = 0.7,)))
+    @test occursin("no `selector => overrides` pair", refused())
+    # The in-place guards, their messages verbatim (the same text `entry.k = v`
+    # throws on a fresh line) plus the placement: a folded strength with the
+    # remedy kn; the cell's length and structure.
+    fresh = line_entries(BeamLine("DBA_RING", children...))
+    m = refused(sel"DBA_RING/QD[2]" => (k1 = -1.2,))
+    @test occursin("Assign `kn` instead", m) && occursin("placement DBA_RING/QD[2]", m) && occursin(raw(() -> (fresh[7].k1 = -1.2)), m)
+    for (key, needle) in ((:L, "arc length is computed from its entries"), (:entries, "structure of line \"CELL\""), (:name, "structure of line \"CELL\""))
+        m = refused(sel"DBA_RING/CELL" => NamedTuple{(key,)}((0.5,)))
+        @test occursin(needle, m) && occursin("placement DBA_RING/CELL", m)
+    end
+    @test occursin(raw(() -> (fresh[3].L = 0.5)), refused(sel"DBA_RING/CELL" => (L = 0.5,)))
+    # ... while the cell's own state is overridable (anti-vacuity for the guard).
+    @test overrides_at(with_overrides(source, sel"DBA_RING/CELL[2]" => (x_offset = 2.0e-4,)), 6) == Dict(:x_offset => 2.0e-4)
+    # A key on the hook placement: not an element spec, nothing to override.
+    m = refused(sel"DBA_RING/SCHEDULEDOBSERVER" => (step = 3,))
+    @test occursin("placement DBA_RING/SCHEDULEDOBSERVER is a ScheduledObserver, not an element spec", m) && occursin("`step`", m)
+    # A key the kind does not declare: L on the marker (its declared keys listed,
+    # a placement key among them, and that one is accepted), a misspelling on
+    # every quadrupole.
+    m = refused(sel"DBA_RING/IP" => (L = 0.1,))
+    @test occursin("`L` is not a parameter the kind :marker declares", m) && occursin("placement DBA_RING/IP", m) && occursin("x_offset", m)
+    @test overrides_at(with_overrides(source, sel"DBA_RING/IP" => (x_offset = 1.0e-5,)), 1) == Dict(:x_offset => 1.0e-5)
+    m = refused(QuadrupoleSpec => (nts = 8,))
+    @test occursin("`nts` is not a parameter the kind :quadrupole declares", m) && occursin("element_help(:quadrupole)", m)
+    # The table: empty, a non-Symbol key, a wrong right-hand type.
+    @test occursin("is empty", refused(sel"DBA_RING/QD" => (;)))
+    m = refused(sel"DBA_RING/QD" => Dict("nst" => 8))
+    @test occursin("must be a Symbol", m) && occursin("\"nst\"", m)
+    m = refused(sel"DBA_RING/QD" => 8)
+    @test occursin("right-hand side", m) && occursin("got 8 of type Int64", m)
+    # An eltype-violating value: a BigFloat on an untyped Float64 element is
+    # refused by the lattice's eltype tripwire, which the derivation runs again.
+    plain = Lattice("md5a_PLAIN"; line = BeamLine("PLAIN", DriftSpec(; name = "D", L = 0.5), QuadrupoleSpec(; name = "Q", L = 0.3, k1 = 1.0)))
+    m = msg(() -> with_overrides(plain, sel"PLAIN/Q" => (L = big"0.31",)))
+    @test occursin("compiles in BigFloat, not the lattice's numeric type Float64", m) && occursin("PLAIN/Q", m)
+    @test overrides_at(with_overrides(plain, sel"PLAIN/Q" => (L = 0.31,)), 2) == Dict(:L => 0.31)
+    # The machine form's unknown name lists the keys.
+    other = Lattice("md5a_OTHER"; line = BeamLine("OTHER", DriftSpec(; name = "D", numeric_type = Float64, L = 0.5)))
+    m = msg(() -> with_overrides(Machine("md5a_M"; lattices = (source, other)), :NOPE, sel"DBA_RING/QD" => (nst = 8,)))
+    @test startswith(m, "ArgumentError: with_overrides(\"md5a_M\"):") && occursin("no lattice named \"NOPE\"", m) && occursin("\"DBA_RING\", \"md5a_OTHER\"", m)
+    # Nothing above touched the source.
+    @test all(isempty(overrides_at(source, i)) for i in 1:7)
+end
+
+@testset "Machine description: the derived lattice's snapshot shows the overrides as placement data" begin
+    # The DBA ring by hand (the stage-2 declarations); the variant moves QD[2].
+    @knob md5a_ring.qf_k1 = 1.5
+    ref = ReferenceParticle(; charge = 1, mc2 = PMASS_EV, E0 = 3.0e9)
+    beta0, gamma0 = reference_beta_gamma(ref)
+    QF = QuadrupoleSpec(; name = "QF", numeric_type = Float64, L = 0.35, k1 = @knob_expr(md5a_ring.qf_k1), nst = 4, integrator_order = 4)
+    QD = QuadrupoleSpec(; name = "QD", numeric_type = Float64, L = 0.25, kn = (0.0, -1.1), nst = 4, integrator_order = 4)
+    D = DriftSpec(; name = "D", numeric_type = Float64, L = 0.6)
+    BEND = SBendSpec(; name = "BEND", numeric_type = Float64, L = 1.0, h = 0.2, b0 = 0.2, nst = 4, integrator_order = 4)
+    RF = ThinRFCavitySpec(400.0e6; name = "RF", numeric_type = Float64, strength = 0.02, beta0, gamma0)
+    source = Lattice("DBA_RING"; line = BeamLine("DBA_RING", QD, D, BEND, D, QF, D, BEND, D, QD, RF), reference = ref, knob_root = :md5a_ring)
+    moved = sel"DBA_RING/QD[2]" => (kn = (0.0, -1.2), nst = 8)
+    variant = with_overrides(source, moved)
+    # The text: the overrides as placement data on the selected member only, by
+    # key in sorted order; the source's text has none.
+    text = machine_toml(Machine(variant))
+    @test occursin("  { ref = \"QD\", path = \"DBA_RING/QD[2]\", overrides = { kn = [0.0, -1.2], nst = 8 } },\n", text)
+    @test occursin("  { ref = \"QD\", path = \"DBA_RING/QD\" },\n", text) && count("overrides = {", text) == 1
+    @test !occursin("overrides", machine_toml(Machine(source)))
+    mktempdir() do dir
+        path = joinpath(dir, "variant.toml")
+        write_machine(path, variant)
+        back = read_machine(path)
+        @test back isa Machine && back == Machine(variant) && back[:DBA_RING] == variant
+        @test back[:DBA_RING] != source && getfield(line_entries(back[:DBA_RING].line)[9], :overrides) == Dict(:kn => (0.0, -1.2), :nst => 8)
+        # The machine form: the named lattice replaced (by Symbol or String), the
+        # other lattice kept as the same object, the name keyword, and the source
+        # machine's lattice still without overrides; its snapshot round-trips.
+        other = Lattice("md5a_OTHER"; line = BeamLine("OTHER", DriftSpec(; name = "D", numeric_type = Float64, L = 0.5)))
+        mach = Machine("md5a_M"; lattices = (source, other))
+        mv = with_overrides(mach, :DBA_RING, moved; name = "md5a_MV")
+        @test mv isa Machine && mv.name == "md5a_MV" && keys(mv) == ("DBA_RING", "md5a_OTHER")
+        @test mv[:DBA_RING] == variant && mv[:md5a_OTHER] === other && mv.knob_roots == mach.knob_roots
+        @test with_overrides(mach, "DBA_RING", moved) == Machine("md5a_M"; lattices = (variant, other))
+        @test all(isempty(getfield(e, :overrides)) for e in line_entries(mach[:DBA_RING].line))
+        mpath = joinpath(dir, "machine.toml")
+        write_machine(mpath, mv)
+        @test read_machine(mpath) == mv
+    end
+end
+
 # [MD5-B] Machine description stage 5, unit B: the neighbour audit's fixes in the lattice, machine,
 # codec and task-constructor layer, each with its regression test. Unit B's testsets land directly
 # below this comment and nowhere else.
