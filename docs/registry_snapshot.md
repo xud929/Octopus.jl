@@ -476,5 +476,5 @@ queries, and lifecycle functions outside the architectural type registry.
 - `splitmix_uint64`, `splitmix_uniform01`, `strong_strong_task_option_schema`, `summarize_registry`, `supported_analyses`, `supported_tracking_methods`
 - `survey`, `symbol`, `track!`, `track_particle`, `tracking_convention`, `tracking_method`
 - `tracking_task_option_schema`, `transverse_covariance`, `turn_modulation_provenance`, `turn_timings`, `update`, `update_line`
-- `validate`, `validate_configuration_metadata`, `validate_element_metadata`, `with_execution_audit`, `with_index_offset`, `with_turn`
-- `write_beam_coordinates`, `write_loss_record`, `write_machine`, `write_registry_snapshot`
+- `validate`, `validate_configuration_metadata`, `validate_element_metadata`, `with_execution_audit`, `with_index_offset`, `with_overrides`
+- `with_turn`, `write_beam_coordinates`, `write_loss_record`, `write_machine`, `write_registry_snapshot`

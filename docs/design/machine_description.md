@@ -27,9 +27,17 @@
 > and solvers by their option schemas, the bulk tables by digest), and D14 as
 > the `machine_toml` and `machine_sha256` columns of the run artifact's
 > ledger with the tables under `/machine_tables`, read back by
-> `read(out, :machine)` and `read_machine(out)`. `with_overrides` (D11)
-> remains proposed, and the "(proposed)" markers below read as the state when
-> the note was written.** Parent notes:
+> `read(out, :machine)` and `read_machine(out)`. Stage 5 landed 2026-11-25,
+> record
+> [`../history/machine_description_stage5_2026_11_25.md`](../history/machine_description_stage5_2026_11_25.md):
+> D11 implemented as `with_overrides` for a lattice and for a machine (the
+> derived lattice; since the campaign's neighbour audit, recorded in
+> [`../history/audit_machine_description_2026_11_25.md`](../history/audit_machine_description_2026_11_25.md),
+> the in-place route and the snapshot's writer and reader refuse the same
+> override classes the derived route refuses). Every item of the staging
+> (section 3) has landed; what remains proposed is the compile-path half of
+> D12 and the owner items the records carry, and the "(proposed)" markers
+> below read as the state when the note was written.** Parent notes:
 > [`../theory/beam_line_composition.md`](../theory/beam_line_composition.md)
 > (the line layer this builds on: placements, provenance, selectors, its
 > decisions 1 to 7), [`../knob_control.md`](../knob_control.md) (knobs as
@@ -286,7 +294,19 @@ left out is in section 2's last decision.
   not one a script of record uses. Access itself is Julia's: `ESRLattice.TCCB`
   reaches the binding, and a `const` binding cannot be rebound, nor can
   another module's globals be assigned. The verb: `with_overrides` (owner,
-  2026-11-24; stage 5), not `override`.
+  2026-11-24; stage 5), not `override`. Status 2026-11-25: implemented in
+  stage 5 (record
+  [`../history/machine_description_stage5_2026_11_25.md`](../history/machine_description_stage5_2026_11_25.md))
+  as `with_overrides(lattice, selector => (param = value, ...), ...; name)`
+  and the machine form `with_overrides(machine, name, pairs...)`: the copy
+  through `BeamLine(; entries)`, every selector `find_entries` takes, every
+  key through the in-place route's guards plus the hook-placement and
+  undeclared-key refusals (which the stage-5 neighbour audit then added to
+  the in-place route, the snapshot's writer and its reader too, B-2 and B-10
+  of [`../history/audit_machine_description_2026_11_25.md`](../history/audit_machine_description_2026_11_25.md)),
+  a selector matching nothing and a call with no pair refused by name, no
+  spec-epoch bump, the variant's snapshot showing the overrides as placement
+  data; `override(...)` above reads as the proposal's spelling.
 
 - **D12 `ReferenceParticle`, one type wherever a reference is spelled.**
   Species and momentum (charge, mass, energy or `p0c`; proposed), accepted by
@@ -489,6 +509,14 @@ in the same commits (`AGENTS.md`, Definition of Done).
    invariants require after every campaign: the fix's neighbours are where
    the next defect is, and here they are `_element_tuple`'s callers, the two
    task constructors, the placement-override guards and the knob epoch.
+   Landed 2026-11-25 as `with_overrides`, record
+   [`../history/machine_description_stage5_2026_11_25.md`](../history/machine_description_stage5_2026_11_25.md)
+   (the three testsets, the per-unit verification and the gate are in it);
+   the neighbour audit's report
+   [`../history/audit_machine_description_2026_11_25.md`](../history/audit_machine_description_2026_11_25.md)
+   (two reading units, 18 leads: 5 findings fixed with red-first regression
+   tests, 4 ledgered with their price, 1 owner item carried, the clean
+   regions with their evidence). The staging is complete.
 
 Targeted checks before each stage's gate, from the matrix: `validate_element_metadata()`
 and both `element_help` forms where a kind's constructor changed;

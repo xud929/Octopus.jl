@@ -2536,6 +2536,30 @@ type, or a typed default, on every parameter) is a metadata campaign, not a
 codec special case, so record it as the lead and keep the marker forms
 honest rather than guessing a class.
 
+## A new route to an old state inherits the old route's missing guards
+
+Stage 5 of the machine description (2026-11-25, records
+[`history/machine_description_stage5_2026_11_25.md`](history/machine_description_stage5_2026_11_25.md)
+and [`history/audit_machine_description_2026_11_25.md`](history/audit_machine_description_2026_11_25.md))
+added `with_overrides`, a second route to the placement overrides the in-place
+`entry.k = v` route had written since the line layer landed, and gave the new
+route the guards its docstring promised: a key on a hook or marker placement
+refused, a key the kind does not declare refused. The audit that followed
+walked the OLD route with the new route's guard list in hand and found both
+holes there: an override on a hook placement was stored, bumped the epoch and
+was read by nothing, and an undeclared key was stored, written by the
+snapshot's writer and refused by its reader, a file that could not be read
+back. The audit's other finding came the same way: the codec's round trip,
+a new route through every schedule, compared two `AtTurns` built apart and
+found their `==` was identity. The lesson is procedural: when a feature adds
+a second route to a state the code already reaches, enumerate the routes to
+that state before writing the new one's guards, and give every route the one
+guard family (here `_reject_folded_override`, `_reject_line_placement_override`,
+`_reject_hook_placement_override`, `_reject_undeclared_override`, run by the
+in-place route, the derived route and the snapshot's writer and reader alike);
+a guard the new route needs is a guard the old route needed all along, and
+the new route's tests are the cheapest place to discover it.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

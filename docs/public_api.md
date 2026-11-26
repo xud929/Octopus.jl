@@ -679,6 +679,7 @@ shipped DBA example declares its ring this way in a module. Use Julia help:
 ?read_machine
 ?machine_toml
 ?parse_machine
+?with_overrides
 ```
 
 ```julia
@@ -753,7 +754,7 @@ line is wanted (`machine[:NAME]`, or the pairing form, is the remedy).
 structural; `show` is one line. The machine stores lattices and shared roots
 only: beam definitions and machine-level reference particles are deferred
 until a consumer reads them (the record), the TOML form is stage 4 and
-`with_overrides` stage 5.
+the derived lattice `with_overrides` stage 5 (both below).
 
 ```julia
 esr = Lattice("ESR"; line = ESR_LINE, reference = electron, knob_root = (:esr, :ip))
@@ -808,6 +809,53 @@ text = machine_toml(eic)                            # the same text, no file; pa
 out  = TaskOutput("result/42/pic_hcc.h5")
 read(out, :machine) == text                         # a run built from `eic` carries its description
 read_machine(out) == eic                            # the run's machine, from the artifact alone
+```
+
+**Derive A Lattice** (stage 5; record
+`docs/history/machine_description_stage5_2026_11_25.md`; design D11).
+`with_overrides(lattice, selector => (param = value, ...), ...)` is the
+third variation route beside knobs (numbers that move) and placement
+overrides written in place (`entry.k = v`): it copies the source lattice's
+placements, as `BeamLine(; entries)` copies them, applies every pair's
+overrides to every placement its selector matches, and returns a NEW
+`Lattice` with the source's reference, knob roots and numeric type, both
+construction tripwires run again; the source lattice, its line and its
+module are untouched, so the pristine lattice and the variant coexist in
+one process, and the variant's snapshot shows the overrides as placement
+data (`{ ref = "QF", path = "...", overrides = { kn = [...] } }`). A
+selector is anything `find_entries` takes: `sel"ARC1/QF[*]"`, a `String`
+parsed as one, a `Regex` against the rendered path, a tag `Symbol`, a spec
+or friendly-constructor `Type` (`QuadrupoleSpec`), or a predicate
+`LineEntry -> Bool`; the right-hand side is a `NamedTuple` or a
+`Dict{Symbol}` of parameter => value (a number, a knob expression, a tuple,
+a rule object); later pairs win on the same placement and key, and an
+override the source placement already carries is replaced. Every key
+passes the guards an in-place override passes: a folded named strength
+(`k1`: write `kn`), a line placement's structure or length, a key on an
+in-line hook placement, and a key the placement's kind does not declare
+(`L` on a marker, a misspelling: the snapshot's own table of a kind's keys)
+are refused by name with the remedy, as are a selector matching no
+placement (with the selector and the lattice's paths), a call with no pair
+at all and an empty table (a variant that changed nothing is a study that
+measured nothing); the derived route bumps no spec epoch, since nothing
+shared is mutated. Placements inside a nested line kept whole are not
+addressed (derive that line's lattice first and rebuild). The machine form
+`with_overrides(machine, :ESR, pairs...)` replaces the named lattice by its
+variant (the lattice keeps its name, the machine's key) and returns a new
+`Machine` with the other lattices as they are and the shared roots kept;
+an unknown name is refused listing the keys. Since the stage-5 neighbour
+audit (`docs/history/audit_machine_description_2026_11_25.md`) the
+in-place route refuses the same two classes the derived route refuses (a
+key on a hook or collision-marker placement, an undeclared key) and the
+snapshot's writer and reader refuse them too, so the four routes to one
+override table agree.
+
+```julia
+dba_trim = with_overrides(lattice, sel"DBA_RING/QF[2]" => (kn = (0.0, 1.52),))   # one magnet of a family
+scan     = [with_overrides(lattice, QuadrupoleSpec => (nst = n,); name = "DBA_nst$n") for n in (2, 4, 8)]
+eic_var  = with_overrides(eic, :ESR, :crab => (phase_noise = (WhiteNoise(1e-5; rng_id = 11), nothing, nothing),))
+lattice == dba_trim                                  # false; the source lattice and its line are untouched
+write_machine("result/dba_trim.machine.toml", dba_trim)   # the QF[2] member carries `overrides = { kn = [0.0, 1.52] }`
 ```
 
 ## Fixed Particle Tunes

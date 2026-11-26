@@ -241,7 +241,15 @@ Procedures, one per task class, routed from the Task Routing table in
   docstring states, the registry-derived round trip; the run artifact
   embedding the text and its tables) in
   [`history/machine_description_stage4_2026_11_25.md`](history/machine_description_stage4_2026_11_25.md),
-  stage 5 (`with_overrides`) is not started.
+  its stage 5 (`with_overrides`, the derived lattice of D11, and the
+  campaign's neighbour audit) in
+  [`history/machine_description_stage5_2026_11_25.md`](history/machine_description_stage5_2026_11_25.md);
+  neighbour audit
+  [`history/audit_machine_description_2026_11_25.md`](history/audit_machine_description_2026_11_25.md)
+  with its unit reports
+  [`U1_report.md`](history/audit_machine_description_2026_11_25_unit_reports/U1_report.md)
+  and [`U2_report.md`](history/audit_machine_description_2026_11_25_unit_reports/U2_report.md);
+  the staging is complete.
   The note: Julia stays the
   input language (no lattice language, no operator algebra); `Lattice` as a
   record around a top-level `BeamLine` with the entrance reference particle,
@@ -325,6 +333,35 @@ Procedures, one per task class, routed from the Task Routing table in
   spelling), the shipped strong-strong example writing its snapshot beside
   the artifact with its fingerprints, the decisions, the per-unit
   verification and the gate, and the previous push's ledger.
+- [`machine_description_stage5_2026_11_25.md`](history/machine_description_stage5_2026_11_25.md)
+  — the machine description's stage 5: the derived lattice `with_overrides`
+  for a lattice and for a machine (the placements copied through
+  `BeamLine(; entries)`, the selectors `find_entries` takes, every key
+  through the in-place route's guards plus the hook-placement and
+  undeclared-key refusals, a selector matching nothing and a call with no
+  pair refused by name, no spec-epoch bump, the variant's snapshot showing
+  the overrides as placement data), the campaign's neighbour audit's fixes
+  by unit (`AtTurns` by its set, lattice equality by the observers'
+  configuration view, the hook/marker and undeclared placement-override
+  refusals on the in-place route and in the snapshot's writer and reader,
+  `StrongStrongTask`'s unknown-keyword refusal by its own name, a derived
+  registration tripwire), the decisions, the per-unit verification and the
+  gate, what the audit ledgered with its price, and the previous push's
+  ledger.
+- [`audit_machine_description_2026_11_25.md`](history/audit_machine_description_2026_11_25.md)
+  — the scoped neighbour audit of the machine-description campaign (stages
+  2 to 4 and the reference batch), two reading units over the lattice,
+  machine, codec and task-constructor layer (U1) and the artifact,
+  observer, schedule, solver and reference-reader layer (U2): the coverage
+  ledger, the traceability of D3, D5, D7, D9, D10, D11, D12, D13, D14 and
+  D15 to the neighbours re-walked and the tests pinning them, 18 leads
+  dispositioned (5 fixed with red-first regression tests, 4 ledgered with
+  their price, 1 owner item carried, 1 owner question, the clean regions
+  with their evidence), the corrections to the campaign's own records, the
+  verification of the fixes and the remaining risks; its unit reports
+  [`U1_report.md`](history/audit_machine_description_2026_11_25_unit_reports/U1_report.md)
+  and [`U2_report.md`](history/audit_machine_description_2026_11_25_unit_reports/U2_report.md)
+  (the queue's file:line ground truth, archived by the stage-5 fold).
 - [`linear_optics_owner_items_2026_11_21.md`](history/linear_optics_owner_items_2026_11_21.md)
   — the second LinearOptics batch, closing the design note's owner items 1, 4
   and 5 (D11-D13): form 2 reaching `ChromaticityKickSpec` and `LumpedRadSpec`
@@ -667,6 +704,7 @@ exists fails the suite, so these cannot rot silently.
 <!-- indexed-wholesale: history/comprehensive_audit_2026_08_05_b_unit_reports -->
 <!-- indexed-wholesale: history/audit_crab_cavity_noise_neighbours_2026_10_16_unit_reports -->
 <!-- indexed-wholesale: history/comprehensive_audit_2026_10_18_unit_reports -->
+<!-- indexed-wholesale: history/audit_machine_description_2026_11_25_unit_reports -->
 
 Dated records of implemented work — optimization campaigns, benchmark decisions,
 and audits. The source code is the authority; these preserve the rationale.
