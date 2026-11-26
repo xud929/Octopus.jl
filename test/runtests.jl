@@ -22395,6 +22395,164 @@ end
 # codec and task-constructor layer, each with its regression test. Unit B's testsets land directly
 # below this comment and nowhere else.
 
+@testset "Machine description audit: a placement override on a hook or marker placement is refused by name on every route" begin
+    # Stage-3 lead, confirmed by measurement (unit B, 2026-11-25): `entry.name = "x"` on a
+    # placement whose spec is an in-line hook or a collision marker was STORED (no guard
+    # named it), bumped the spec epoch, and was never read -- the compile walk hands the
+    # hook or marker itself to the run (`_append_runtime_line!`, `_append_strong_strong_line!`
+    # unwrap the placement), so the compiled schedule stayed the spec's -- and the snapshot
+    # wrote it and read it back. Three routes, one refusal: `setproperty!(::LineEntry, ...)`
+    # (the guard family), the writer (a hand-built entry) and the reader (an edited text).
+    O = Octopus
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    d = DriftSpec(; name="D", L=0.5)
+    qf = QuadrupoleSpec(; name="QF", L=0.3, k1=1.2)
+    obs = ScheduledObserver(MomentObserver(; name="md5b_hook"), EveryNSteps(step=2))
+    ip = StrongStrongCollision(:md5b_ip)
+    line = BeamLine("K", d, obs, qf, ip)
+    entries = line_entries(line)
+    @test getfield(entries[2], :spec) === obs && getfield(entries[4], :spec) === ip
+    epoch0 = O._spec_epoch()
+    for (entry, tname) in ((entries[2], "ScheduledObserver"), (entries[4], "StrongStrongCollision"))
+        m = msg(() -> (entry.name = "x"))
+        @test occursin("`name` cannot be overridden on this placement", m) && occursin(tname, m) &&
+              occursin("Configure the object at its construction", m)
+        @test isempty(getfield(entry, :overrides))
+    end
+    # A refused assignment leaves the spec epoch alone (no task recompiles for nothing);
+    # anti-vacuity: an element placement still takes the key, stored, epoch bumped.
+    @test O._spec_epoch() == epoch0
+    entries[3].x_offset = 1.0e-3
+    @test getfield(entries[3], :overrides) == Dict(:x_offset => 1.0e-3) && O._spec_epoch() == epoch0 + 1
+    # The writer: a hand-built hook placement carrying an override (the one way left to
+    # make one) is refused by name at write, never printed as placement data.
+    hand = O.LineEntry(obs, [("K", 1), ("SCHEDULEDOBSERVER", 1)], Set{Symbol}(), Dict{Symbol,Any}(:name => "x"))
+    handline = BeamLine(; name="K", entries=[entries[1], hand, entries[3]])
+    let m = msg(() -> machine_toml(Machine(Lattice("K"; line=handline))))
+        @test occursin("machine snapshot: at", m) && occursin("members[2].overrides", m) &&
+              occursin("ScheduledObserver", m) && occursin("no compile reads", m)
+    end
+    # The reader: `overrides` on a hook member is refused by name; the same text without
+    # it reads back (anti-vacuity of the edit).
+    clean = BeamLine("K", d, obs, qf)
+    text = machine_toml(Machine(Lattice("K"; line=clean)))
+    member = "{ ref = \"SCHEDULEDOBSERVER\", path = \"K/SCHEDULEDOBSERVER\" }"
+    @test occursin(member, text)
+    edited = replace(text, member => "{ ref = \"SCHEDULEDOBSERVER\", path = \"K/SCHEDULEDOBSERVER\", overrides = { name = \"x\" } }")
+    let m = msg(() -> parse_machine(edited))
+        @test occursin("members[2].overrides", m) && occursin("ScheduledObserver", m) && occursin("Drop `overrides`", m)
+    end
+    @test length(line_entries(parse_machine(text)[:K].line)) == 3
+end
+
+@testset "Machine description audit: StrongStrongTask refuses an unknown keyword by its own name on the line and machine forms" begin
+    # Stage-4 lead, measured (unit B, 2026-11-25): since the line form became a wrapper over
+    # `_strong_strong_task`, an unknown keyword's `MethodError` named the inner builder
+    # (`no method matching _strong_strong_task(::Tuple, ::Tuple, ::Nothing; md5b_bogus=1)`),
+    # not the constructor the caller wrote; the two machine forms forwarded the same way.
+    # Now every public form refuses by name first, listing the keywords it takes -- a roster
+    # read from the builder's method (`Base.kwarg_decl`), never hand-copied -- the retired
+    # keywords included since each throws its own message naming the replacement.
+    O = Octopus
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    ip = StrongStrongCollision(:md5b_kw)
+    l6a = Linear6DSpec(; beta1=(0.55, 0.056, 12.7), dmu=2pi .* (0.08, 0.14, -0.069))
+    l6b = Linear6DSpec(; beta1=(0.8, 0.072, 90.9), dmu=2pi .* (0.228, 0.210, -0.01))
+    la = Lattice("md5b_KA"; line=BeamLine("A", ip, l6a))
+    lb = Lattice("md5b_KB"; line=BeamLine("B", ip, l6b))
+    machine = Machine("md5b_KM"; lattices=(la, lb))
+    forms = (() -> StrongStrongTask((ip, l6a), (ip, l6b); md5b_bogus=1),
+             () -> StrongStrongTask(la, lb; md5b_bogus=1),
+             () -> StrongStrongTask(machine, :md5b_KA, :md5b_KB; md5b_bogus=1),
+             () -> StrongStrongTask(machine; md5b_bogus=1))
+    for f in forms
+        m = msg(f)
+        @test startswith(m, "ArgumentError: StrongStrongTask: unknown keyword `md5b_bogus`")
+        @test !occursin("_strong_strong_task", m) && occursin("policy", m) && occursin("artifact", m)
+    end
+    # The roster is the builder's own keyword list; a known keyword still passes every form
+    # (anti-vacuity), and a retired one still throws its own precise message, not this one.
+    roster = O._STRONG_STRONG_KEYWORDS
+    @test roster == Tuple(Base.kwarg_decl(only(methods(O._strong_strong_task)))) &&
+          :policy in roster && :record_turn_times in roster && !(:md5b_bogus in roster)
+    @test StrongStrongTask(machine; policy=CPUThreadsExecutionPolicy()).machine === machine
+    @test StrongStrongTask(machine, :md5b_KA, :md5b_KB; policy=CPUThreadsExecutionPolicy()).machine === machine
+    let m = msg(() -> StrongStrongTask(la, lb; seed=1))
+        @test occursin("seed keyword was retired", m) && !occursin("unknown keyword", m)
+    end
+end
+
+@testset "Machine description audit: every tracking method and enum of the module is a registered snapshot object type" begin
+    # src/lattice/toml.jl registers the tracking-method singletons and the module's enums by
+    # `subtypes` at ITS include time (before the tasks), and the stage-4 tripwire's roster
+    # derives observers, schedules, actions, solvers, rules and option types but neither
+    # methods nor enums (an `Enum` is not a struct type), so a method or an enum defined
+    # later in the include order would be missing until a write refused it by name.
+    # Derived here at test time from the type tree; the injection arm shows the check
+    # discriminates (unit B, 2026-11-25).
+    O = Octopus
+    registered(types) = all(get(O._TOML_OBJECT_TYPES, string(nameof(T)), nothing) === T for T in types)
+    methods_ = O._concrete_octopus_subtypes(O.AbstractTrackingMethod)
+    enums = [T for T in O.subtypes(Enum) if parentmodule(T) === O]
+    @test length(methods_) >= 3 && length(enums) >= 1 && registered(methods_) && registered(enums)
+    T0 = first(methods_)
+    k0 = string(nameof(T0))
+    delete!(O._TOML_OBJECT_TYPES, k0)
+    @test !registered(methods_)
+    O._TOML_OBJECT_TYPES[k0] = T0
+    @test registered(methods_)
+end
+
+@testset "Machine description audit: an undeclared placement override key is refused by name where the spec route refuses it and is never written" begin
+    # Unit A's lead (b), measured (unit B, 2026-11-25): `qf.bogus = 1` on the SPEC is refused by
+    # name (`element kind :quadrupole has no parameter bogus; valid parameters: ...`), while
+    # `line[1].bogus = 1` on the PLACEMENT was stored, read by nothing (the compile warned
+    # "stored as descriptive metadata only"), written by the snapshot as
+    # `overrides = { bogus = 1 }` and REFUSED by the reader (`unknown override key "bogus"`):
+    # a snapshot that could not be read back. The placement route now mirrors the spec
+    # route's check (the kind's declared parameters, the placement keys, a key the spec
+    # already stores), and the writer refuses an undeclared override key by name as the
+    # element table refuses an undeclared stored key.
+    O = Octopus
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    qf = QuadrupoleSpec(; name="QF", L=0.3, k1=1.2)
+    d = DriftSpec(; name="D", L=0.5)
+    line = BeamLine("U", qf, d)
+    spec_msg = msg(() -> (QuadrupoleSpec(; name="QF2", L=0.3, k1=1.2).bogus = 1))
+    @test startswith(spec_msg, "ArgumentError: element kind :quadrupole has no parameter bogus")
+    let m = msg(() -> (line[1].bogus = 1))
+        @test occursin("element kind :quadrupole has no parameter bogus", m) && occursin("valid parameters:", m) &&
+              occursin("placement", m)
+        @test isempty(getfield(line[1], :overrides))
+    end
+    # What the spec route accepts, the placement route accepts: a declared parameter, a
+    # placement key, and a key the spec already stores through `set_param!`.
+    line[1].L = 0.31
+    line[1].x_offset = 1.0e-3
+    noted = QuadrupoleSpec(; name="QN", L=0.3, k1=1.2)
+    set_param!(noted, :note, "cryostat A")
+    nline = BeamLine("N", noted, d)
+    nline[1].note = "cryostat B"
+    @test getfield(line[1], :overrides) == Dict(:L => 0.31, :x_offset => 1.0e-3) &&
+          getfield(nline[1], :overrides) == Dict(:note => "cryostat B")
+    # The writer: a hand-built placement carrying an undeclared override is refused by name
+    # (the reader would refuse it); the reader's refusal stands.
+    hand = O.LineEntry(qf, [("U", 1), ("QF", 1)], Set{Symbol}(), Dict{Symbol,Any}(:bogus => 1))
+    handline = BeamLine(; name="U", entries=[hand, line_entries(line)[2]])
+    let m = msg(() -> machine_toml(Machine(Lattice("U"; line=handline))))
+        @test occursin("members[1].overrides.bogus", m) && occursin("not declared by the kind :quadrupole", m) &&
+              occursin("its declared keys are", m)
+    end
+    clean = BeamLine("U", qf, d)
+    text = machine_toml(Machine(Lattice("U"; line=clean)))
+    member = "{ ref = \"QF\", path = \"U/QF\" }"
+    @test occursin(member, text)
+    let m = msg(() -> parse_machine(replace(text, member => "{ ref = \"QF\", path = \"U/QF\", overrides = { bogus = 1 } }")))
+        @test occursin("members[1].overrides.bogus", m) && occursin("unknown override key \"bogus\"", m)
+    end
+    @test parse_machine(replace(text, member => "{ ref = \"QF\", path = \"U/QF\", overrides = { L = 0.31 } }")) isa Machine
+end
+
 # [MD5-C] Machine description stage 5, unit C: the neighbour audit's fixes in the artifact, observer,
 # schedule and solver layer, each with its regression test. Unit C's testsets land directly below
 # this comment and nowhere else.
@@ -31267,9 +31425,9 @@ end
     @test getfield(ri[1], :overrides) !== getfield(ci[2], :overrides)
     @test getfield(ri[1], :path) !== getfield(ci[2], :path)
     @test getfield(ri[1], :spec) === getfield(ci[2], :spec)   # order still reversed
-    ri[1].k1 = 9.9
-    @test getparam(ri[1], :k1) == 9.9
-    @test getparam(ci[2], :k1, nothing) === nothing            # no write-through
+    ri[1].x_offset = 9.9   # a placement key: an undeclared key is refused since the stage 5 audit
+    @test getparam(ri[1], :x_offset) == 9.9
+    @test getparam(ci[2], :x_offset, nothing) === nothing            # no write-through
 
     tq = ThinQuadrupoleSpec(k1l=0.05)
     entry = line_entries(BeamLine("L", tq, DriftSpec(L=1.0)))[1]

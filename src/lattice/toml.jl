@@ -943,9 +943,19 @@ function _toml_line_table(line::ElementSpec{:line}, ids::IdDict, ctx::_TomlConte
         isempty(tags) || push!(pairs, "tags" => Any[String(t) for t in sort!(collect(tags); by=string)])
         overrides = getfield(e, :overrides)
         if !isempty(overrides)
+            # The in-place route refuses an override on a hook or marker placement, so one
+            # here was built by hand; refused rather than printed as placement data nothing reads.
+            obj isa AbstractElementSpec || _toml_refuse(_toml_at(mctx, "overrides"),
+                "the member places a $(nameof(typeof(obj))) (a hook or a marker, not an element) and carries " *
+                "$(length(overrides)) placement override(s) ($(join(sort!(map(string, collect(keys(overrides)))), ", "))) " *
+                "that no compile reads; setproperty!(::LineEntry, ...) refuses them, so this entry was built by hand. " *
+                "Drop the overrides and configure the object at its construction")
             meta = obj isa ElementSpec ? _element_meta_or_nothing(kind(obj)) : nothing
             opairs = Pair{String,Any}[]
             for key in sort!(collect(keys(overrides)); by=string)
+                meta === nothing || key in _toml_declared_keys(meta) || _toml_refuse(_toml_at(mctx, "overrides.$(key)"),
+                    "the placement override $(key) is not declared by the kind $(repr(kind(obj))) (its declared keys are " *
+                    "$(join(sort!(map(string, collect(_toml_declared_keys(meta)))), ", "))); the reader would refuse it")
                 hint = meta === nothing ? nothing : _toml_element_hint(meta, key)
                 push!(opairs, string(key) => _toml_encode_value(overrides[key], hint, _toml_at(mctx, "overrides.$(key)")))
             end
@@ -1019,6 +1029,12 @@ function _toml_decode_line(tbl::AbstractDict, id::AbstractString, objects::Abstr
         if haskey(m, "overrides")
             ov = m["overrides"]
             ov isa AbstractDict || _toml_refuse(_toml_at(mctx, "overrides"), "`overrides` must be an inline table; got $(repr(ov))")
+            # A hook or a marker has no parameters for an override to land on and no
+            # compile reads one (`setproperty!(::LineEntry, ...)` refuses it; stage 5 audit, unit B).
+            (obj isa AbstractElementSpec || isempty(ov)) || _toml_refuse(_toml_at(mctx, "overrides"),
+                "member $(repr(String(ref))) places a $(nameof(typeof(obj))) (a hook or a marker, not an element), " *
+                "which has no parameters for a placement override to land on: the compile never reads an override " *
+                "on it. Drop `overrides` from this member and configure the object in its own table")
             ometa = obj isa ElementSpec ? _element_meta_or_nothing(kind(obj)) : nothing
             octx = obj isa ElementSpec && haskey(getfield(obj, :params), :numeric_type) ?
                    _TomlContext(numeric_type(obj), ctx.tables, ctx.where) : lctx

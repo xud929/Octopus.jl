@@ -77,8 +77,10 @@ function Base.setproperty!(entry::LineEntry, name::Symbol, value)
     name in _ENTRY_FIELDS &&
         throw(ArgumentError("LineEntry.$(name) is structural and cannot be assigned; \
                              set a parameter instead, or rebuild the line"))
+    _reject_hook_placement_override(getfield(entry, :spec), name)
     _reject_folded_override(getfield(entry, :spec), name)
     _reject_line_placement_override(getfield(entry, :spec), name)
+    _reject_undeclared_override(getfield(entry, :spec), name)
     getfield(entry, :overrides)[name] = value
     _SPEC_EPOCH[] += 1
     return value
@@ -166,6 +168,61 @@ function _reject_folded_override(spec, name::Symbol)
         end
     end
     return nothing
+end
+
+"""
+A placement whose spec is not an element spec -- an in-line hook
+(`ScheduledObserver`, `ScheduledAction`, a bare observer or action) or a
+collision marker (`StrongStrongCollision`) -- has no parameters for an
+override to land on: the compile walk hands the object itself to the run
+(`_append_runtime_line!` routes a non-element placement to the hook path,
+`_append_strong_strong_line!` cuts the line at the marker's spec) and never
+reads the placement's overrides. `entry.name = "x"` on such a placement was
+stored, bumped the spec epoch (every task built from the line recompiled at
+its next `execute!`) and changed nothing the run read; the snapshot wrote it
+and read it back the same way (measured: a `schedule` override on an
+observer placement compiled the spec's schedule). Refused at the assignment,
+where the message can say what to do instead; the derived route
+(`with_overrides`, src/lattice/overrides.jl) and the snapshot codec
+(src/lattice/toml.jl) refuse the same key (machine-description stage 5
+neighbour audit, unit B, 2026-11-25).
+"""
+function _reject_hook_placement_override(spec, name::Symbol)
+    spec isa AbstractElementSpec && return nothing
+    throw(ArgumentError(
+        "`$(name)` cannot be overridden on this placement: its spec is a " *
+        "$(nameof(typeof(spec))), an in-line hook or a collision marker, which has no " *
+        "parameters for a placement override to land on -- the compile hands the object " *
+        "itself to the run and never reads the placement's overrides. Configure the object " *
+        "at its construction (ScheduledObserver(observer, schedule), " *
+        "ScheduledAction(action, schedule), StrongStrongCollision(label; poisson_solver)) " *
+        "and rebuild the line with it."))
+end
+
+"""
+The placement twin of the spec route's schema check (`setproperty!(::ElementSpec, ...)`,
+src/knowledge/Knowledge.jl): a key that is neither a declared parameter of the
+kind, nor a placement key, nor a key the spec already stores (`set_param!`'s
+metadata door) is refused by name with the kind's valid parameters. Until the
+machine-description stage 5 audit (unit B, 2026-11-25) the placement route
+STORED it (`line[1].bogus = 1`), the compile warned "stored as descriptive
+metadata only" and read nothing, the snapshot writer printed it as
+`overrides = { bogus = 1 }` and the reader refused it -- a snapshot that could
+not be read back. A kind without metadata keeps the old acceptance, as the
+spec route does.
+"""
+function _reject_undeclared_override(spec, name::Symbol)
+    spec isa ElementSpec || return nothing
+    (haskey(getfield(spec, :params), name) || name in _PLACEMENT_PARAM_KEYS) && return nothing
+    meta = _element_meta_or_nothing(spec)
+    (meta === nothing || isempty(meta.parameters) || haskey(meta.parameters, name)) && return nothing
+    throw(ArgumentError(
+        "element kind $(repr(kind(spec))) has no parameter $(name); valid parameters: " *
+        join(sort!(collect(propertynames(meta.parameters)); by=string), ", ") *
+        ". A placement override lands on a declared parameter or a placement key " *
+        "($(join(string.(_PLACEMENT_PARAM_KEYS), ", "))), the keys the spec route " *
+        "(spec.$(name) = ...) takes too; for out-of-schema metadata use " *
+        "set_param!(spec, $(repr(name)), value) on the spec, which every placement reads."))
 end
 
 # `_FOLDED_NAMED_STRENGTHS` / `_FOLDED_TUPLE_KEYS`, which this guard reads,

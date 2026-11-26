@@ -2617,8 +2617,10 @@ required_contracts(::StrongStrongTask) =
              StrongStrongPICBackendConsistencyContract,
              StrongStrongPICMultiProcessConsistencyContract]
 
-StrongStrongTask(line1, line2; kwargs...) =
-    _strong_strong_task(line1, line2, _strong_strong_machine(line1, line2); kwargs...)
+function StrongStrongTask(line1, line2; kwargs...)
+    _strong_strong_refuse_unknown_keywords(kwargs)
+    return _strong_strong_task(line1, line2, _strong_strong_machine(line1, line2); kwargs...)
+end
 
 """
     _strong_strong_task(line1, line2, machine; kwargs...) -> StrongStrongTask
@@ -2698,6 +2700,34 @@ function _strong_strong_task(line1, line2, machine::Union{Nothing,Machine};
     )
 end
 
+# The builder's keyword roster, read from its method rather than copied by hand
+# (`only`: a second method would need a second roster, and fails loudly here).
+const _STRONG_STRONG_KEYWORDS = Tuple(Base.kwarg_decl(only(methods(_strong_strong_task))))
+
+"""
+    _strong_strong_refuse_unknown_keywords(kwargs) -> nothing
+
+Refuse, by name, a keyword the line form's body (`_strong_strong_task`) does
+not take, before a public form forwards its keywords to it. Since the stage-4
+split the public `StrongStrongTask(line1, line2; kwargs...)` is a wrapper, so
+an unknown keyword's `MethodError` named the inner builder
+(`no method matching _strong_strong_task(::Tuple, ::Tuple, ::Nothing; foo=1)`)
+and not the constructor the caller wrote; the two machine forms forwarded the
+same way (machine-description stage 5 neighbour audit, unit B, 2026-11-25).
+The roster is the builder's own keyword list (`_STRONG_STRONG_KEYWORDS`); the
+retired keywords stay in it since each throws its own message naming the
+replacement.
+"""
+function _strong_strong_refuse_unknown_keywords(kwargs)
+    for key in keys(kwargs)
+        key in _STRONG_STRONG_KEYWORDS && continue
+        throw(ArgumentError(
+            "StrongStrongTask: unknown keyword `$(key)`; the keywords are " *
+            join(string.(_STRONG_STRONG_KEYWORDS), ", ")))
+    end
+    return nothing
+end
+
 """
     _strong_strong_machine(line1, line2) -> Union{Nothing,Machine}
 
@@ -2741,9 +2771,11 @@ line form applies unchanged.
 """
 function StrongStrongTask(machine::Machine, lattice1::Union{Symbol,AbstractString},
                           lattice2::Union{Symbol,AbstractString}; kwargs...)
+    _strong_strong_refuse_unknown_keywords(kwargs)
     return _strong_strong_task(machine[lattice1], machine[lattice2], machine; kwargs...)
 end
 function StrongStrongTask(machine::Machine; kwargs...)
+    _strong_strong_refuse_unknown_keywords(kwargs)
     names = keys(machine)
     length(names) == 2 || throw(ArgumentError(
         "StrongStrongTask(machine): Machine($(repr(getfield(machine, :name)))) holds " *
