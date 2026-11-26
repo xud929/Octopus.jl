@@ -58,6 +58,16 @@ struct AtTurns <: AbstractSchedule
     turns::Set{Int}
 end
 AtTurns(turns::Union{AbstractVector,AbstractRange,Tuple}) = AtTurns(Set(Int.(turns)))
+# Value equality over the set, as `LongitudinalSlicing` defines it over its
+# positions vector: a struct with a mutable field compares by identity unless
+# it says otherwise, so two `AtTurns(Set([1, 2]))` built separately were
+# unequal, `solver_configuration` of two solvers scheduling luminosity on them
+# compared unequal, and `_collision_solver` refused two lines built
+# independently with equal configurations (the stage-5 neighbour audit of the
+# machine description, lead C-1). `hash` follows `==`.
+Base.:(==)(a::AtTurns, b::AtTurns) = a.turns == b.turns
+Base.isequal(a::AtTurns, b::AtTurns) = a == b
+Base.hash(s::AtTurns, h::UInt) = hash(s.turns, hash(:AtTurns, h))
 
 """Run when `predicate(ctx)` returns true."""
 struct PredicateSchedule{F} <: AbstractSchedule

@@ -461,7 +461,9 @@ end
 # (`params` dictionaries key by key through this walker, so nested specs,
 # `LineEntry` vectors, tuples, arrays, rule objects and knob expressions
 # compare by content; numbers with `isequal`, so NaN pins hold), placements by
-# spec, path, tags and overrides. Defined on `Lattice` ONLY: `ElementSpec` and
+# spec, path, tags and overrides, an in-line observer with an option schema by
+# that schema's values (its configuration view, never its run state; the walker's
+# observer branch). Defined on `Lattice` ONLY: `ElementSpec` and
 # `LineEntry` keep their identity `==`, which `find_entries`, `unique` and the
 # family query `e.spec === qf` rely on.
 Base.:(==)(a::Lattice, b::Lattice) =
@@ -524,6 +526,19 @@ function _lattice_structurally_equal(a, b)
         return a === b
     elseif a isa Union{Symbol,AbstractString,Nothing,AbstractSet}
         return a == b
+    elseif a isa AbstractBeamObserver && hasmethod(observer_option_schema, Tuple{typeof(a)})
+        # An observer with an option schema compares by its configuration view, the
+        # schema's values -- what the snapshot writes for it (D6) -- not by every field:
+        # the artifact-view observers keep run state in the object (a `MomentObserver`'s
+        # row buffer, record count and artifact handle, a `BPMObserver`'s readings), so a
+        # lattice whose observers had run was no longer `==` its pristine twin (the
+        # stage-5 neighbour audit, lead C-2). An observer type without a schema (a
+        # user's) keeps the field walk below, run state included.
+        b isa AbstractBeamObserver && typeof(a) === typeof(b) || return false
+        for key in keys(observer_option_schema(a))
+            _lattice_structurally_equal(getproperty(a, key), getproperty(b, key)) || return false
+        end
+        return true
     end
     # Any other value: same type, then a primitive (an `@enum` such as
     # `XYCouplingMode`, which has no fields, so the field walk below found

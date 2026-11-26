@@ -22399,6 +22399,74 @@ end
 # schedule and solver layer, each with its regression test. Unit C's testsets land directly below
 # this comment and nowhere else.
 
+@testset "Machine description audit: AtTurns compares by its set, so independently built solvers scheduling the same turns pair" begin
+    # Lead C-1 of the stage-5 neighbour audit (carried by the stage-4 record): `AtTurns`
+    # holds a `Set{Int}`, and a struct with a mutable field compares by identity unless
+    # it defines `==`, so two `AtTurns(Set([1, 2]))` built separately were unequal,
+    # `solver_configuration` of two solvers scheduling luminosity on them compared
+    # unequal, and `_collision_solver` refused two lines built independently with equal
+    # configurations. The precedent is `LongitudinalSlicing`'s `==`/`isequal`/`hash`
+    # over its positions vector (src/tasks/strongstrong/interface.jl).
+    O = Octopus
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    a, b = AtTurns(Set([1, 2])), AtTurns(Set([1, 2]))
+    @test a !== b && a == b && isequal(a, b) && hash(a) == hash(b)
+    @test AtTurns([2, 1]) == a && length(Set([a, b, AtTurns([2, 1])])) == 1
+    @test a != AtTurns(Set([1, 3])) && a != AtTurns(Int[]) && hash(a) != hash(AtTurns(Set([1, 3])))   # anti-vacuity
+    # The other schedules were value-equal already (Int fields, a singleton); a schedule of
+    # another type is never equal to an AtTurns.
+    @test EveryNSteps(step=2) == EveryNSteps(step=2) && AlwaysSchedule() == AlwaysSchedule() && a != AlwaysSchedule()
+    s1 = GaussianPoissonSolver(luminosity_schedule=AtTurns(Set([1, 2])))
+    s2 = GaussianPoissonSolver(luminosity_schedule=AtTurns(Set([1, 2])))
+    @test s1 !== s2 && solver_configuration(s1) == solver_configuration(s2)
+    @test solver_configuration(s1) != solver_configuration(GaussianPoissonSolver(luminosity_schedule=AtTurns(Set([1, 3]))))
+    ip1 = StrongStrongCollision(:md5c_ip; poisson_solver=s1)
+    ip2 = StrongStrongCollision(:md5c_ip; poisson_solver=s2)
+    task = StrongStrongTask((ip1, DriftSpec(L=1.0)), (ip2, DriftSpec(L=1.0)))
+    @test O._collision_solver(task, ip1, ip2) === s1                       # paired: line 1's solver, as for one object
+    # A genuine mismatch of the schedule still refuses by name.
+    ip3 = StrongStrongCollision(:md5c_ip; poisson_solver=GaussianPoissonSolver(luminosity_schedule=AtTurns(Set([1, 3]))))
+    @test occursin("different Poisson solver configurations", msg(() -> O._collision_solver(task, ip1, ip3)))
+    # The PIC solver pairs by the same comparison.
+    p1, p2 = PICPoissonSolver(luminosity_schedule=AtTurns([3])), PICPoissonSolver(luminosity_schedule=AtTurns([3]))
+    @test O._collision_solver(task, StrongStrongCollision(:md5c_ip; poisson_solver=p1),
+                              StrongStrongCollision(:md5c_ip; poisson_solver=p2)) === p1
+end
+
+@testset "Machine description audit: a lattice whose observers have run is still equal to its pristine twin" begin
+    # Lead C-2 of the stage-5 neighbour audit (carried by the stage-4 record): the
+    # artifact-view observers keep run state in the object (a `MomentObserver`'s row
+    # buffer, record count and artifact handle, a `BPMObserver`'s readings, a
+    # `CoordinateSnapshotObserver`'s handle), and `Lattice`'s structural equality
+    # walked every field, so a lattice that had run through a `TrackingTask` was no
+    # longer `==` the same description built again. The walker compares an observer
+    # with an option schema by its configuration view, the schema's values (what the
+    # snapshot writes for it, design D6), and an observer without one by its fields.
+    proton = ReferenceParticle(charge=1.0, mc2=PMASS_EV, E0=3.0e9)
+    rep() = Phase6DRep([1.0e-4, -2.0e-4], [0.0, 1.0e-5], [1.0e-4, 0.0], [0.0, 0.0], [0.0, 1.0e-3], [0.0, 0.0])
+    mk(; name="md5c_eq", moments=("m100000", "m001000")) = Lattice("md5c_EQ"; line=BeamLine("EQ", DriftSpec(L=1.0),
+        ScheduledObserver(MomentObserver(; name=name, moments=moments), EveryNSteps()),
+        ScheduledObserver(BPMObserver("md5c_eqbpm"; rng_id=0x6d35c0002), EveryNSteps()),
+        ScheduledObserver(CoordinateSnapshotObserver(; name="md5c_eqsnap"), AtTurns([0]))), reference=proton)
+    la, lb = mk(), mk()
+    @test la == lb && hash(la) == hash(lb)
+    task = TrackingTask(la; artifact=RunArtifact(; storage=:memory))
+    execute!(task, rep(); turns=2)
+    moments = getfield(line_entries(la)[2], :spec).observer
+    bpm = getfield(line_entries(la)[3], :spec).observer
+    @test moments.record_count == 2 && moments.artifact_ref !== nothing && bpm.turns == [0, 1]   # the run's state is in the objects
+    @test la == lb && Machine(la) == Machine(lb) && task.machine == Machine(lb)
+    # Anti-vacuity: the configuration view still decides -- another selection, another name.
+    @test la != mk(moments=("m100000",)) && la != mk(name="md5c_eq2")
+    # An observer type without an option schema (a user's) keeps the field walk, run
+    # state included: the suite's TestTurnObserver records the turns it saw.
+    ta, tb = TestTurnObserver(Int[]), TestTurnObserver(Int[])
+    mkt(o) = Lattice("md5c_EQT"; line=BeamLine("EQT", DriftSpec(L=1.0), ScheduledObserver(o, EveryNSteps())), reference=proton)
+    @test mkt(ta) == mkt(tb)
+    execute!(TrackingTask(mkt(ta)), rep(); turns=1)
+    @test ta.turns == [0] && mkt(ta) != mkt(tb)
+end
+
 mutable struct _PhaseResetFailureObserver <: Octopus.AbstractBeamObserver
     failure_turn::Int
     fail_finalize::Bool
