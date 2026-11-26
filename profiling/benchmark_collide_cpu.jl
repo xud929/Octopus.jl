@@ -130,12 +130,10 @@ const PRO = (charge = 1.0, mass = PMASS_EV, energy = 275.0e9, n_particle = 0.688
 
 beam_ele = Beam(N_ELE, policy, Float64; beta = ELE.beta, alpha = ELE.alpha,
                 sigma = ELE.sigma, cutoff = ELE.cutoff, rng_id = 1,
-                charge = ELE.charge, mc2 = ELE.mass, E0 = ELE.energy,
-                r0 = RE * ME0 / ELE.mass, npart = ELE.n_particle)
+                charge = ELE.charge, mc2 = ELE.mass, E0 = ELE.energy, npart = ELE.n_particle)
 beam_pro = Beam(N_PRO, policy, Float64; beta = PRO.beta, alpha = PRO.alpha,
                 sigma = PRO.sigma, cutoff = PRO.cutoff, rng_id = 2,
-                charge = PRO.charge, mc2 = PRO.mass, E0 = PRO.energy,
-                r0 = RE * ME0 / PRO.mass, npart = PRO.n_particle)
+                charge = PRO.charge, mc2 = PRO.mass, E0 = PRO.energy, npart = PRO.n_particle)
 
 slicing = LongitudinalSlicing(; method = :normal_quantile, nslices = NSLICES,
                               center_position = :centroid)

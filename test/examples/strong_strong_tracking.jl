@@ -584,7 +584,6 @@ beam_ele = Beam(n_macro_ele, policy, Float64;
     charge = ele.charge,
     mc2 = ele.mass,
     E0 = electron_energy,
-    r0 = RE * ME0 / ele.mass,
     npart = ele.n_particle,
 )
 
@@ -597,7 +596,6 @@ beam_pro = Beam(n_macro_pro, policy, Float64;
     charge = pro.charge,
     mc2 = pro.mass,
     E0 = proton_energy,
-    r0 = RE * ME0 / pro.mass,
     npart = pro.n_particle,
 )
 

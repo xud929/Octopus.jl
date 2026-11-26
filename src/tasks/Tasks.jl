@@ -140,6 +140,21 @@ struct TrackingTask <: AbstractTask
     # The tracking itself never reads it (`_element_tuple` fixed the
     # placements), so the field changes no result and no kernel.
     machine::Union{Nothing,Machine}
+    # The rendered snapshot of `machine` -- its text, digest and bulk tables
+    # keyed on the knob and spec epochs -- kept by `_ra_machine_snapshot` so
+    # the artifact renders and digests the machine once per distinct machine
+    # state rather than once per `execute!` (R9 of
+    # docs/design/machine_description_followups.md, 2026-11-26). `nothing`
+    # until the first prepare; never read by the tracking.
+    machine_snapshot_cache::Base.RefValue{Any}
+    # Whether `elements` holds an accelerating cavity (`_has_accelerating_cavity`,
+    # a spec walk), fixed at construction: the tuple of specs is immutable and a
+    # kind cannot change by mutation, so the single-pass refusal of
+    # `_execute_tracking_window!` reads this flag instead of re-walking the
+    # line at every `execute!` (R8c of the follow-ups note, 2026-11-26, closing
+    # the audit's C-3: 416 B per call for a lattice's placements, through
+    # `Any`-typed specs). The ramp campaign (R7) rewrites the refusal itself.
+    has_accelerating_cavity::Bool
 end
 
 """Routes `luminosity_tracking` accepts."""
@@ -171,7 +186,14 @@ function configuration_report(task::TrackingTask, rep::Phase6DRep)
                         "summary in the artifact's /losses group",
                         :tracking_output)),
             record_turn_times=task.record_turn_times,
-            luminosity_tracking=task.luminosity_tracking)
+            luminosity_tracking=task.luminosity_tracking,
+            # The spec-level half of the binding, stated before the run (the
+            # strong-strong report's `binding` twin): the aperture count and
+            # the inert collision markers the line holds (R2, 2026-11-26); the
+            # surveyed cavities and the circumference need the compile and are
+            # on the `:tracking_line_binding` receipt.
+            binding=(apertures=length(_aperture_specs(task.elements)),
+                     collision_markers=_collision_marker_count(task.elements)))
 end
 
 """
@@ -214,6 +236,15 @@ rule's successor across `execute!` calls -- see `execute!`.
 
 The older `actions` and `observers` keywords remain accepted as compatibility
 aliases and are merged into `hooks`.
+
+A `StrongStrongCollision` marker in `elements` -- bare, placed through a
+`BeamLine` or inside a line kept whole -- is INERT here (R2 of
+`docs/design/machine_description_followups.md`, 2026-11-26): it appends
+nothing and changes nothing, so a lattice of record that holds the
+strong-strong machine's marker tracks bitwise as the same lattice without it,
+and `one_turn_matrix` and `analyze` give the same matrix. No warning; the
+`:tracking_line_binding` receipt and `configuration_report(task, rep).binding`
+carry `collision_markers`, the count.
 
 `artifact` attaches the task's [`RunArtifact`](@ref) — the one-HDF5-per-task
 sink (`docs/design/run_artifact.md`), the same one `StrongStrongTask` takes.
@@ -303,7 +334,8 @@ function TrackingTask(elements;
                         loss_report, Ref{Any}(nothing), art, Ref{Any}(WeakRef(nothing)),
                         record_turn_times, Float64[], luminosity_tracking, reported_sharing,
                         Ref{Any}(nothing), Ref{Any}(nothing), Threads.Atomic{Int}(0),
-                        _task_machine(elements))
+                        _task_machine(elements), Ref{Any}(nothing),
+                        _has_accelerating_cavity(element_tuple))
 end
 
 """
@@ -1148,7 +1180,7 @@ end
 function _execute_tracking_window!(task::TrackingTask, rep; turns::Integer=1, start_turn=nothing)
     nturns, first_turn, next_turn =
         _task_execution_window(task.next_turn[], turns, start_turn)
-    if (nturns > 1 || first_turn != 0) && _has_accelerating_cavity(task.elements)
+    if (nturns > 1 || first_turn != 0) && task.has_accelerating_cavity
         throw(ArgumentError(
             "this line contains an accelerating cavity and the requested " *
             "window (turns = $(nturns), starting at turn $(first_turn)) " *
@@ -1575,6 +1607,13 @@ function _record_tracking_receipts!(task, runtime_entries, policy, turns::Int, f
     ))
     isempty(prov) || _record_execution!(:turn_modulation, backend_type(policy),
                                         (elements = prov, first_turn = first_turn, turns = turns))
+    # What this line's compile bound (`_bind_line_entries`): the aperture
+    # count and whether a loss record is attached, the surveyed cavities, the
+    # circumference `ds_turn` wraps, and the inert collision markers (R2,
+    # 2026-11-26) -- the TrackingTask twin of `:strong_strong_line_binding`,
+    # read from the compile cache `_runtime_entries` filled before this call.
+    cached = task.runtime_entries_cache[]
+    cached === nothing || _record_execution!(:tracking_line_binding, backend_type(policy), cached[6])
     return nothing
 end
 
@@ -1673,7 +1712,7 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
                               turn_modulation_columns=_turn_modulation_columns!(Any[], runtime_elems),
                               aperture_names=record === nothing ? String[] : aperture_names(record),
                               task_kind=string(nameof(typeof(task))),
-                              machine=task.machine)
+                              machine=task.machine, machine_cache=task.machine_snapshot_cache)
     end
     _bind_phase_space_reset_window!(reset_state, task, first_turn, turns)
     Base.ScopedValues.with(_ACTIVE_RUN_ARTIFACT => art,
@@ -2054,7 +2093,7 @@ function _runtime_entries(task::TrackingTask, rep=nothing)
     record = _ensure_loss_record!(task, rep)
     cached = task.runtime_entries_cache[]
     if cached !== nothing
-        entries, knob_dependent, kepoch, sepoch, crecord = cached
+        entries, knob_dependent, kepoch, sepoch, crecord, _ = cached
         # Knob-dependent lines recompile when the knob epoch has moved, and any
         # line recompiles when a spec parameter was mutated in place
         # (post-construction knob binding), so both kinds of change reach this
@@ -2068,14 +2107,16 @@ function _runtime_entries(task::TrackingTask, rep=nothing)
     # The three binding steps, in the one function both task kinds compile
     # through (`_bind_line_entries`; the strong-strong compile ran none of
     # them until the 2026-10-19 fix batch, unit R).
-    entries, _ = _bind_line_entries(entries, task.elements, record)
+    entries, binding = _bind_line_entries(entries, task.elements, record)
     # Once per compilation, before any bind: one observer object placed twice
     # in the line is refused by its cause (F-89; the count moved here from the
     # per-execute! prepare walk, which the 2026-10-16 cost pin keeps
     # allocation-free).
     _refuse_repeated_line_observers(entries)
+    # The binding travels with the compiled entries, so the per-run receipt
+    # (`:tracking_line_binding`, R2) reads what this compile bound.
     task.runtime_entries_cache[] =
-        (entries, _has_knob_parameters(task.elements), kepoch, sepoch, record)
+        (entries, _has_knob_parameters(task.elements), kepoch, sepoch, record, binding)
     empty!(task.plan_cache)
     # Once per compilation, over the RESOLVED line: equal table digests across
     # modulated elements (a SpectralNoise beside its offline twin, one spec
@@ -2251,9 +2292,26 @@ function _bind_line_entries(entries::Tuple, elements, record)
                loss_rows=record !== nothing && record.slots !== nothing,
                rf_cavities=survey.rf_cavities,
                accelerating_cavities=survey.accelerating_cavities,
-               circumference=survey.circumference)
+               circumference=survey.circumference,
+               collision_markers=_collision_marker_count(elements))
     return entries, binding
 end
+
+"""
+    _collision_marker_count(elements) -> Int
+
+How many `StrongStrongCollision` markers the elements hold (R2, 2026-11-26):
+bare in a tuple or vector, placed through a line (a `LineEntry` whose spec is
+the marker) or inside a line kept whole, nested lines descended -- the inert
+members the single-beam compile skipped, for the binding receipt's
+`collision_markers`; for a strong-strong line, the markers it was cut at.
+"""
+_collision_marker_count(elements::Union{Tuple,AbstractVector}) =
+    sum(_collision_marker_count, elements; init=0)
+_collision_marker_count(entry::LineEntry) = _collision_marker_count(getfield(entry, :spec))
+_collision_marker_count(line::ElementSpec{:line}) =
+    sum(_collision_marker_count, line_entries(line); init=0)
+_collision_marker_count(x) = _inert_in_single_beam(x) ? 1 : 0
 
 _bind_apertures(entries::Tuple, ::Nothing) = entries
 
@@ -2537,6 +2595,11 @@ function _append_runtime_line!(out, entry::LineEntry, hook_counter)
 end
 
 function _append_runtime_line!(out, element, hook_counter)
+    # A collision marker in a single-beam line is inert (R2, 2026-11-26): it
+    # appends nothing. Before this arm it fell through to
+    # `_runtime_or_existing(element) = element` as a physics entry and the
+    # first turn called it as a map (`MethodError: ... not callable`).
+    _inert_in_single_beam(element) && return out
     line_entry = _line_entry_or_nothing(element, hook_counter)
     if line_entry !== nothing
         push!(out, line_entry)

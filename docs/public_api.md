@@ -52,15 +52,30 @@ record `docs/history/machine_description_reference_2026_11_25.md`; the flat
 beam bit for bit):
 
 ```julia
-ref  = ReferenceParticle(; charge = 1, mc2 = PMASS_EV, E0 = 275e9)
-beam = Beam(N, policy; reference = ref, r0 = r0, npart = npart, ...)   # r0, npart stay keywords
+ref  = ReferenceParticle(:proton; E0 = 275e9)      # or (; charge, mc2, E0 | p0c | gamma0 | brho)
+beam = Beam(N, policy; reference = ref, npart = npart, ...)   # r0 comes with the reference; npart stays a keyword
 ```
 
 `reference` replaces `charge`, `mc2` and `E0` on every constructor form, the
 bounded and grid forms included; any of the three given beside it, whatever
 its value, is refused by name before anything is drawn or activated, as is a
-`reference` that is not a `ReferenceParticle`. `r0` and `npart` stay keywords
-(the classical radius is not derived from the reference in this batch).
+`reference` that is not a `ReferenceParticle`. `r0` is no longer a keyword
+(R3 of `design/machine_description_followups.md`, 2026-11-26): the classical
+radius `RE * ME0 / mc2` comes with the reference, or is derived from a flat
+`mc2`, bit for bit the value scripts used to type, and `r0 = ` is refused by
+name. `npart` stays the one beam-level physical input: when a strong-strong
+task derives its kick scale from the beams (no `kbb1`/`kbb2` on the solver),
+a reference-built beam without `npart` is refused by name before the first
+turn and a flat beam without it warns once per task, and a zero `charge`,
+`mc2` or `r0` entering the derived scale is refused by name (R5); the
+derived scales appear in `configuration_report(task, beam1, beam2)` under
+the solver's `kbb1`/`kbb2` entries. The reference itself (R4) takes a
+species preset (`:proton`, `:electron`, `:positron`) or `charge` and `mc2`,
+exactly one of `E0`, `p0c`, `gamma0` or `brho` (a number or a knob
+expression), and stores the derived `p0c`, `gamma0`, `beta0`, `brho` and
+`r0` once (`ref.brho`, `ref.beta0`); the key typed is the stored parameter
+(`reference_energy(ref)` returns its value, `ref.energy_key` its name), so two
+references typed through different keys are not `==`.
 `reference` is a beam-parameter keyword documented on `?Beam`, not an entry of
 `beam_initialization_option_schema`, which enumerates the receipt-bearing
 distribution options only.
@@ -325,11 +340,14 @@ name in force when each `execute!` began (`rng_seed`, `rng_method`; a
 (`append = true`) file written before those columns existed is refused by
 name rather than padded; reading it stays possible, the missing columns
 read as `nothing`. Since 2026-11-25 (the machine description, design D14) the
-row also carries `machine_toml` and `machine_sha256`, the TOML snapshot of
-the machine the task was built from and its SHA-256 digest (`""` for a task
-built from tuples; `nothing` on an older file), with the snapshot's bulk
-tables under `/machine_tables`; `read(out, :machine)` and `read_machine(out)`
-read them (see "Describe A Lattice", "Snapshot A Machine"). A continuation is validated before anything is written
+row also carries `machine_sha256`, the SHA-256 digest of the TOML snapshot of
+the machine the task was built from (`""` for a task built from tuples,
+`"disabled"` under `machine_snapshot = false`; `nothing` on an older file);
+since 2026-11-26 (R9 of the follow-ups note) the text itself is stored once
+per distinct digest under `/machine_snapshots` instead of in every row, with
+the snapshot's bulk tables under `/machine_tables`; `read(out, :machine)` and
+`read_machine(out)` read them from either layout (see "Describe A Lattice",
+"Snapshot A Machine"). A continuation is validated before anything is written
 (2026-10-19): every by-name refusal of the prepare leaves the file
 byte-identical, a refused probe bind leaves every group's rows and cursor as
 found, and the replay rule -- rows at or beyond the window's first turn
@@ -667,7 +685,17 @@ shares. The `@elements` block (`@element` for one declaration) declares
 elements by registered kind name over the friendly constructors, the
 binding name as each element's `name`, the header type as each element's
 `numeric_type` (`Float64` when omitted), and `line(...)` as `BeamLine`; the
-shipped DBA example declares its ring this way in a module. Use Julia help:
+shipped DBA example declares its ring this way in a module. The MAD-X class
+form (R11 of `docs/design/machine_description_followups.md`, 2026-11-26) is
+one method on every kind's friendly constructor, `QuadrupoleSpec(Q; name =
+"QF", k1 = 1.0)` -- in the block, `QF = quadrupole(RHIC.Q; k1 = 1.0)` -- a
+new spec derived from a template of the SAME kind: a keyword replaces its
+key, a named strength its slot in the stored tuple, a sector bend's `angle`
+resets `h` and `b0`, the RBEND alias (`RBendSpec(template; ...)`) reads its
+template as an RBEND and refolds the faces at the new angle; chains and knob
+expressions are accepted; a wrong kind, a mixed `numeric_type` and a missing
+`name` are refused by name; the template is never mutated and the snapshot
+stays flat. Use Julia help:
 
 ```julia
 ?Lattice
@@ -677,6 +705,7 @@ shipped DBA example declares its ring this way in a module. Use Julia help:
 ?@element
 ?write_machine
 ?read_machine
+?read_lattice
 ?machine_toml
 ?parse_machine
 ?with_overrides
@@ -721,7 +750,11 @@ policy; reference = ref)` in place of `charge`, `mc2`, `E0`, and
 `thin_rf_cavity(f; voltage = V, reference = ref)` in place of `e0`, `mc2`,
 `charge` (or `beta0`, `gamma0` beside `strength`), the one object spelled once
 (see "Construct Beams" and "Construct Elements"; record
-`docs/history/machine_description_reference_2026_11_25.md`); no task yet
+`docs/history/machine_description_reference_2026_11_25.md`; since 2026-11-26
+the record stores the derived `p0c`, `gamma0`, `beta0`, `brho` and `r0`,
+takes a species preset and any of four energy spellings with the typed key
+kept, and the beam's `r0` comes from it, R3 and R4 of
+`design/machine_description_followups.md`); no task yet
 compares the beam's reference with a cavity's stored pair at compile, the
 compile-path half of D12 (`todo.md`). `Lattice` forwards `line_entries`, `s_positions`,
 `find_entries` and `knob_report` to its line, and `eltype(lattice)` is its
@@ -780,7 +813,9 @@ kept, loaded and built). `machine_toml(machine)` is the text without a file
 and `parse_machine(text; tables)` its reader, for a snapshot held in memory.
 The file states what it is (`format`, each lattice's `eltype`, each element's
 `kind` and `numeric_type`), holds the STORED parameters in the folded form
-the friendly constructors produce (`kn`, not `k1`), knob expressions as
+the friendly constructors produce (`kn`, not `k1`; a hand-written `k1 = 1.0`
+reads as the constructors fold it, since 2026-11-26, and is written back as
+`kn`), knob expressions as
 `{ expr = "..." }` in the knob grammar and never a resolved value beside one,
 the knobs by dotted path, the hooks, markers and solvers by their option
 schemas, and every placement with its provenance path; the emitter is
@@ -791,15 +826,26 @@ value the format does not cover (a function-valued parameter: a
 at read: an unknown format, key or kind, a bare string where a number
 belongs, an undefined or conflicting knob, a member referencing nothing, a
 sidecar digest that does not match (`?write_machine` is the format's one
-source). A run embeds the same text (design D14): a `TrackingTask` built from
+source). The multi-file description is a Julia module, not an include
+directive (R10 of `design/machine_description_followups.md`, 2026-11-26; TOML
+has none and the snapshot stays one self-contained file per machine): one
+one-lattice snapshot per file, `write_machine(path, lattice)`, read back by
+`read_lattice(path)` (a file of several lattices is refused by name) or
+assembled at once by `read_machine(path1, path2, ...; name, knob_root)`, the
+lattices in argument order under the same-definition knob rule across the
+files; the module declares the shared roots and derives what differs. A run embeds the same text (design D14): a `TrackingTask` built from
 a `Lattice` or a `Machine`, and a `StrongStrongTask` built from two lattices
-or a machine, write `machine_toml(machine)` into their run artifact's
-`/execution` ledger row (`machine_toml`, with its SHA-256 in
-`machine_sha256`) and the bulk tables under `/machine_tables`, so `read(out,
+or a machine, write `machine_toml(machine)` into their run artifact once per
+distinct text under `/machine_snapshots/<sha256>`, with the digest (taken
+over the text's bytes) in each `/execution` ledger row's `machine_sha256`
+(R9, 2026-11-26; the 2026-11-25 layout kept the text in every row and still
+reads) and the bulk tables under `/machine_tables`, so `read(out,
 :machine)` is the text of the last `execute!` (or of `slot = n`) and
 `read_machine(out)` the machine rebuilt from the artifact alone; a
 tuple-built task records `""` and both readers refuse by name with the
-lattice spelling as the remedy. The shipped strong-strong example writes
+lattice spelling as the remedy; `RunArtifact(path; machine_snapshot =
+false)` switches the embedding off, and the readers then refuse by name
+saying so. The shipped strong-strong example writes
 `result/<seed>/<case_name>.machine.toml` beside its artifact.
 
 ```julia

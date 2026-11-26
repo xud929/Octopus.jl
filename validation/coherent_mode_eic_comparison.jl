@@ -78,11 +78,11 @@ policy = CPUThreadsExecutionPolicy()
 offset(b) = (0.1 * b.sigma[1], 0.0, 0.1 * b.sigma[2], 0.0, 0.0, 0.0)
 beam_e = Beam(N_MACRO, policy, Float64;
     beta=ele.beta, alpha=(0.0, 0.0, 0.0), sigma=ele.sigma, cutoff=5.0,
-    rng_id=1, charge=ele.charge, mc2=ele.mass, E0=ele.E, r0=r0_e,
+    rng_id=1, charge=ele.charge, mc2=ele.mass, E0=ele.E,
     npart=ele.N, initial_offset=offset(ele))
 beam_p = Beam(N_MACRO, policy, Float64;
     beta=pro.beta, alpha=(0.0, 0.0, 0.0), sigma=pro.sigma, cutoff=5.0,
-    rng_id=2, charge=pro.charge, mc2=pro.mass, E0=pro.E, r0=r0_p,
+    rng_id=2, charge=pro.charge, mc2=pro.mass, E0=pro.E,
     npart=pro.N, initial_offset=offset(pro))
 
 slicing = LongitudinalSlicing(; method=:normal_quantile, nslices=1,

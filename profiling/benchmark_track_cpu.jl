@@ -118,7 +118,7 @@ weak_r0 = RE * ME0 / wb.mass
 beam = Beam(N_MACRO, policy, Float64;
     beta = (wb.beta_x, wb.beta_y, beta_z), alpha = wb.alpha, emit = emit,
     cutoff = wb.cutoff, rng_id = 1, charge = wb.charge, mc2 = wb.mass,
-    E0 = wb.energy, r0 = weak_r0, npart = wb.n_particle, zeta = wb.zeta,
+    E0 = wb.energy, npart = wb.n_particle, zeta = wb.zeta,
     eta = wb.eta, R = wb.coupling, initial_offset = wb.initial_offset)
 
 cckick = tan(opt.crossing_angle) / sqrt(wb.beta_x * opt.crab_beta_x)

@@ -22,6 +22,13 @@
 > [`../history/audit_machine_description_2026_11_25.md`](../history/audit_machine_description_2026_11_25.md)
 > section 6 (the carried items by id: B-1b, B-6a, B-11, C-3, C-5, C-6).
 
+> **Status 2026-11-26, later the same day: batch A, "compile-path, part 1",
+> is implemented and recorded in [`../history/machine_description_compile_path1_2026_11_26.md`](../history/machine_description_compile_path1_2026_11_26.md)
+> with its scoped neighbour audit [`../history/audit_machine_description_compile_path1_2026_11_26.md`](../history/audit_machine_description_compile_path1_2026_11_26.md);
+> the owner's choices of section 5 are resolved there (and under each item
+> below); each ruling's dated `Status` line says what landed and where it
+> departed from the text; batches B and C remain, B first.**
+
 ## 1. What was open, and what this note does with it
 
 When `f877ac1` was pushed, the machine description's staging was complete
@@ -72,6 +79,7 @@ owner's, each with a default the implementer takes if no answer arrives.
   to `read(out, :machine)`. Unmeasured, a lead; deferred (section 3).
 - **Lands in:** the design note's D5 status line (done with this note).
   Nothing in code.
+- **Status 2026-11-26 (batch A):** nothing to land in code, as decided; `Machine` holds lattices and shared roots only, and D5's status line carries the ruling.
 
 ### R2 A collision marker outside a strong-strong task is inert, counted, never an error
 
@@ -122,6 +130,7 @@ owner's, each with a default the implementer takes if no answer arrives.
   `one_turn_matrix` equal; the receipt pinned at 0, 1 and 2 markers; the
   strong-strong pins unchanged. **Price:** about 40 lines plus tests; a full
   gate (the task compile).
+- **Status 2026-11-26 (batch A, U4; record [`../history/machine_description_compile_path1_2026_11_26.md`](../history/machine_description_compile_path1_2026_11_26.md)):** landed. The whole-line compile and the generic walk skip a `StrongStrongCollision` child (`_inert_in_single_beam`, `src/elements/beam_line.jl` and `src/tasks/Tasks.jl`), the task counts it at construction (`_collision_marker_count`), the `:tracking_line_binding` receipt and `configuration_report(task).binding` carry `collision_markers`, and the linear-map walk sees the identity. Pinned: a lattice tracks bitwise with and without its marker on CPU, `one_turn_matrix` and `analyze` equal, the count at 0, 1 and 2 markers, nothing warns; red first on c52d80e (`MethodError: not callable` at the first turn, the whole-line form refused as an in-line hook).
 
 ### R3 `r0` is not an input
 
@@ -144,6 +153,7 @@ owner's, each with a default the implementer takes if no answer arrives.
   strong-strong 2k+2k x 20, crab noise 10k x 50, the DBA ring) identical on
   CPU and within noise on CUDA; the grep count of `r0` spellers recorded in
   the batch record.
+- **Status 2026-11-26 (batch A, U2; record [`../history/machine_description_compile_path1_2026_11_26.md`](../history/machine_description_compile_path1_2026_11_26.md)):** landed. `Beam` derives `r0 = RE * ME0 / mc2` (`_reference_r0`), refuses `r0 =` by name, and the 180 `r0 =` keywords of the examples, harnesses, validation scripts, profiling drivers, contracts and the suite are gone; the examples' CPU fingerprints are identical to the stage-5 baseline (the derivation preserves the bits).
 
 ### R4 The richer, immutable `ReferenceParticle`
 
@@ -206,6 +216,7 @@ owner's, each with a default the implementer takes if no answer arrives.
   an electron at 10 GeV and a proton at 275 GeV; the numeric and the
   expression input agree after `resolve_knobs`; the fingerprints unchanged.
   **Price:** with R3 and R5, about three hours plus the gate.
+- **Status 2026-11-26 (batch A, U2):** landed as decided: `ReferenceParticle(:proton | :electron | :positron; <one energy>)` and `ReferenceParticle(; charge, mc2, <one energy>)` with exactly one of `E0`, `p0c`, `gamma0`, `brho` (a number or a knob expression), the other quantities and `r0` derived once and stored (`beta0` included), the typed key kept (`energy_key`, `reference_energy`) and written by the snapshot under the key the user typed (the owner's choice, section 5 item 2); structural `==` and `hash`, so a reference built from `E0` and one from the equivalent `p0c` are physically equal and structurally distinct; the knob-root check at `Lattice`.
 
 ### R5 The derived kick scale: zero factors refused, the value reported, `npart` loud
 
@@ -240,6 +251,7 @@ owner's, each with a default the implementer takes if no answer arrives.
   on purpose) runs before the refusal lands. C-5 closes with this.
 - **Class:** public configuration (`validate_configuration_metadata()`, the
   effectiveness contract) and acceptance (every probing test found first).
+- **Status 2026-11-26 (batch A, U2):** landed. `_preflight_solver_kbb` refuses a zero `mc2`, `r0` or `charge` of either beam by name (`_check_derived_kick`), the derived `kbb1`/`kbb2` are in the solver report (status `:inherited`) and the `:strong_strong_collision` receipt; `npart` per the owner's choice (section 5 item 1): a beam built from a `reference` without `npart` is refused by name, a flat-keyword beam without it warns once per task.
 
 ### R6 Wider than `Float64` is refused; `Float64` to `Float32` stays
 
@@ -267,6 +279,7 @@ owner's, each with a default the implementer takes if no answer arrives.
   lines 20655-20660 at the audit) still green; a grep of the suite for wide
   overrides on typed elements (expected none). **Price:** about twelve lines
   plus tests.
+- **Status 2026-11-26 (batch A, U3):** landed. `_as_numeric_type` refuses by name a value the element's type cannot hold (`BigFloat` into `Float64` or `Float32`, a dual or complex into a real type), naming the parameter and the remedy (`numeric_type = BigFloat`, or the untyped form); `Float64` to `Float32` keeps narrowing; `Lattice(...)` refuses early through `_lattice_check_typed_values`; the suite's pin at the old convention rewritten with it (red first).
 
 ### R7 Ramping: a knob on the reference, never a rebuilt reference
 
@@ -300,6 +313,7 @@ owner's, each with a default the implementer takes if no answer arrives.
   (R9): a per-turn ramp makes every turn a distinct machine state, so the
   ramp is recorded as a program (a table by digest) beside the declared
   machine, never as a snapshot per turn.
+- **Status 2026-11-26:** not in batch A; the ramp campaign is batch C, after the `ParamMeta` type campaign (the owner's choice, section 5 item 4).
 
 ### R8 The four priced leads
 
@@ -348,6 +362,7 @@ owner's, each with a default the implementer takes if no answer arrives.
   foreign lattice. The `Moment(::AbstractString)` `tryparse` (two lines;
   every caller's message changes) goes with the schedule case or stays with
   its price (section 5, item 5).
+- **Status 2026-11-26 (batch A, U4, U5 and U6; record [`../history/machine_description_compile_path1_2026_11_26.md`](../history/machine_description_compile_path1_2026_11_26.md)):** (a) R2's status line. (b) landed: `ElementMeta.rng_consumer` (`:lumped_radiation`, `:particle_tunes`; `validate_element_metadata` holds "declares `rng_id` iff declares a class"), the flexible form claims an explicit id under the class (`_claim_spec_stream!`), the spec route, the in-place placement override and `with_overrides` claim through `_claim_override_stream!`; found in the batch and recorded in the record: the friendly constructor stores the stream it resolved for `rng_id = 0`, so every rebuild through the flexible form passes the kind's OWN auto-assigned id, which a plain `claim_rng_id!` would have warned about on every knob resolve -- `_rng_id_held_by(id, class)` answers it and the form claims only what its class does not hold yet. (c) landed: `TrackingTask.has_accelerating_cavity`, fixed at construction (the element kinds are fixed there; a knob changes values, never kinds), read by `_execute_tracking_window!`; the suite pins the executor's text, since an allocation equality between the tuple and the lattice spelling does not hold (different runtime shapes, 17520 against 17488 bytes per single-turn `execute!`). (d) landed: `EveryNSteps` prints `stop` only when one was given (the hook's own rule in `toml_hooks.jl`), and `Moment(::AbstractString)` refuses a non-integer power by name through `tryparse` (the owner's choice, section 5 item 5).
 
 ### R9 The artifact's machine snapshot: content-addressed, cached, switchable
 
@@ -389,6 +404,7 @@ owner's, each with a default the implementer takes if no answer arrives.
   plus digest time per `execute!` on the three machines of table 1; the
   file size of a 1,000-call loop before and after; the readers on a stage-4
   file and on a new file; the keyword's effectiveness test.
+- **Status 2026-11-26 (batch A, U1; record [`../history/machine_description_compile_path1_2026_11_26.md`](../history/machine_description_compile_path1_2026_11_26.md)):** landed as decided: `/machine_snapshots/<sha256>` written once per distinct digest, the ledger row keeping `machine_sha256`, the digest over the text's bytes, the task-side cache keyed on the knob and spec epochs, `RunArtifact(...; machine_snapshot = true)` on both constructors with its schema entry and receipt (`machine_recorded`), the readers on the stage-4 layout and the new one. Measured (the record's table; the R9 cost probe's A500 fixture of 500 distinct elements, 200 single-turn `execute!` calls): the file's growth went from 12.3 MB to 0.91 MB and the call from 18.9 ms to 5.03 ms, the digest of a 1.24 MB text from 3.27 s over the `String` to 4.9 ms over its bytes.
 
 ### R10 TOML: no include, no templates; the multi-file description is a Julia module; two readers
 
@@ -439,6 +455,7 @@ owner's, each with a default the implementer takes if no answer arrives.
   relative path; about two hours) if a workflow needs a multi-file data
   form; a reader-side include of hand-written element libraries, which the
   D17 translators cover for an existing MAD-X or Xsuite library.
+- **Status 2026-11-26 (batch A, U7):** landed: `read_lattice(path; receipt)` (a several-lattice snapshot refused by name, listing the lattices and the `read_machine(path)[:name]` remedy) and `read_machine(path1, path2, paths...; name, knob_root, receipt)` (the name required, the receipts' union with `files`, `Machine`'s own tripwires inherited: a lattice name twice, a shared root the assembled machine does not declare); probe 4 is a suite testset: the split machine reassembles `==` with a byte-identical `machine_toml`.
 
 ### R11 Element templates: the MAD-X class form on the friendly constructors
 
@@ -520,6 +537,7 @@ owner's, each with a default the implementer takes if no answer arrives.
   Blast radius first: a grep of `ElementSpec{:quadrupole}(` and its siblings
   with a named strength in `test/`, `examples/` and `validation/`; the edited
   text red first. In batch A beside the class form.
+- **Status 2026-11-26 (batch A, U8; record [`../history/machine_description_compile_path1_2026_11_26.md`](../history/machine_description_compile_path1_2026_11_26.md)):** landed. The class form is installed by the registration itself (`_install_class_form!` in `src/knowledge/Knowledge.jl`, since a loop over the registry in a later file missed the aperture, which registers after `Elements.jl`), its body `_derive_spec` in `src/elements/templates.jl`; the registry-derived tripwire derives every kind's example with no change and finds it equal up to the name (31 kinds); the named strength replaces its slot through `_FOLDED_NAMED_STRENGTHS` (the thin kinds and the solenoid included); the sector bend's `angle` resets `h` and `b0`; there is no `:rbend` kind, so the ruling's `chord` lands on the alias, `RBendSpec(template; ...)`, which reads its template as the RBEND it derives (faces unfolded by the stored half angle `h L / 2` and refolded at the new angle, `chord` replacing the arc, a template with `h != b0` refused by name) while `SBendSpec(template; ...)` keeps the faces as stored -- a convention beyond the ruling's text, recorded for the owner in the record; the flexible form folds a named strength as the constructors do (the owner's choice, section 5 item 3; `_fold_flexible_params!`, installed as the form's hook), so a hand-written `k1 = 1.0` reads as meant and is written back as `kn`; `element_help` prints the class form; the blast-radius grep found one suite test probing the old flexible-form behaviour (the thin quadrupole's both-spellings refusal, now at construction rather than compile, still an `ArgumentError`).
 
 ### R12 A library module, and a machine built on another
 
@@ -554,6 +572,7 @@ owner's, each with a default the implementer takes if no answer arrives.
   enters through the D17 translator (one code first, table-driven; batch B's
   parameter types are its prerequisite), after which the derived relations
   are kept by authoring the EIC additions in Julia.
+- **Status 2026-11-26 (batch A):** nothing to land in code; the U8 testset derives from a template bound in an enclosing module through `@elements`, the probe-2 shape.
 
 ## 3. The batches
 
@@ -691,23 +710,32 @@ original's.
 
 Each item carries the default the implementer takes if no answer arrives
 before its unit.
+All five were put to the owner on 2026-11-26 before the batch started
+(the owner asked to be consulted rather than defaulted); the answers are
+recorded under each item, and a sixth, the push: on a green full gate the
+batch is pushed without a further question.
 
 1. **`npart` on a derived kick (R5, before U2):** warn once per strong-strong
    task when `npart == N` (the default and the recommendation), or refuse
    whenever a `reference` was given.
+   Resolved 2026-11-26 by the owner: refuse when a `reference` was given (a flat-keyword beam without `npart` warns once per task). Landed in U2.
 2. **The snapshot's energy key (R4, U2):** write the energy under the key
    the user typed, `E0`, `p0c`, `gamma0` or `brho`, so a `p0c` reference
    round-trips exactly (the default and the recommendation), or always
    write `E0` as the discussion first said.
+   Resolved 2026-11-26 by the owner: the key the user typed. Landed in U2 (`energy_key`).
 3. **A named strength at the flexible form (R11, before U8):** fold it as the
    friendly constructors do (the default and the recommendation), or refuse
    it by name with the `kn` remedy as the placement guard does.
+   Resolved 2026-11-26 by the owner: fold as the friendly constructors do. Landed in U8 (`_fold_flexible_params!`).
 4. **Batch order after A:** the `ParamMeta` type campaign (batch B) before the
    ramp theory note (batch C), since D17 needs the types (the
    recommendation), or the ramp first.
+   Resolved 2026-11-26 by the owner: the `ParamMeta` type campaign (batch B) first, then the ramp (batch C).
 5. **`Moment(::AbstractString)`'s `tryparse` (R8d, U6):** with the
    `EveryNSteps` case (two lines, every caller's message changes; the
    default), or left with its price in the carried row.
+   Resolved 2026-11-26 by the owner: fixed in U6.
 
 ## 6. Precedents read for these rulings
 

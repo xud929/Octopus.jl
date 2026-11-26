@@ -48,11 +48,11 @@ function measure_Y(; aspect=1.0, xi_x=0.005, turns=TURNS, n_macro=N_MACRO)
     offset1 = (0.1 * sigx, 0.0, 0.1 * sigy, 0.0, 0.0, 0.0)
     beam1 = Beam(n_macro, policy, Float64;
         beta=beta, alpha=(0.0, 0.0, 0.0), sigma=sigma, cutoff=5.0, rng_id=1,
-        charge=-1.0, mc2=EMASS_EV, E0=energy, r0=r0, npart=npart,
+        charge=-1.0, mc2=EMASS_EV, E0=energy, npart=npart,
         initial_offset=offset1)
     beam2 = Beam(n_macro, policy, Float64;
         beta=beta, alpha=(0.0, 0.0, 0.0), sigma=sigma, cutoff=5.0, rng_id=2,
-        charge=+1.0, mc2=EMASS_EV, E0=energy, r0=r0, npart=npart)
+        charge=+1.0, mc2=EMASS_EV, E0=energy, npart=npart)
 
     slicing = LongitudinalSlicing(; method=:normal_quantile, nslices=1,
                                   center_position=:centroid)

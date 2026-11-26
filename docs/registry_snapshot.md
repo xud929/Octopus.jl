@@ -466,15 +466,16 @@ queries, and lifecycle functions outside the architectural type registry.
 - `octopus_uint64`, `octopus_uniform01`, `offset_slices`, `offset_slices!`, `one_turn_matrix`, `param`
 - `parameter_schema`, `params`, `parse_machine`, `particle_beta`, `particle_tune_tables`, `passed`
 - `phase_space_reset_summary`, `philox4x32_self_test`, `physics_keywords`, `pic_phase_timings`, `policy_option_schema`, `prepare_line_observers!`
-- `prepare_observers!`, `read_beam_coordinates`, `read_loss_record`, `read_machine`, `readings`, `realize`
-- `reference_beta`, `reference_beta_gamma`, `reference_gamma`, `reference_pair_residual`, `register_element_meta!`, `register_element_spec!`
-- `register_friendly_alias!`, `registered_element_specs`, `registry_snapshot_markdown`, `required_contracts`, `requires_elementwise_tracking`, `reset_knobs!`
-- `reset_rng_id_counter!`, `resolve_knobs`, `rf_strength`, `run_actions!`, `run_artifact_option_schema`, `run_observers!`
-- `runtime_examples`, `runtime_type`, `runtime_variants`, `s_positions`, `save_run_artifact`, `schedule_option_schema`
-- `set_global_rng!`, `set_knob!`, `set_param!`, `should_run`, `slicing_option_schema`, `slope_dispersion`
-- `solver_configuration`, `solver_help`, `solver_option_schema`, `spectral_turn_table`, `splitmix_normal`, `splitmix_normal_pair`
-- `splitmix_uint64`, `splitmix_uniform01`, `strong_strong_task_option_schema`, `summarize_registry`, `supported_analyses`, `supported_tracking_methods`
-- `survey`, `symbol`, `track!`, `track_particle`, `tracking_convention`, `tracking_method`
-- `tracking_task_option_schema`, `transverse_covariance`, `turn_modulation_provenance`, `turn_timings`, `update`, `update_line`
-- `validate`, `validate_configuration_metadata`, `validate_element_metadata`, `with_execution_audit`, `with_index_offset`, `with_overrides`
-- `with_turn`, `write_beam_coordinates`, `write_loss_record`, `write_machine`, `write_registry_snapshot`
+- `prepare_observers!`, `read_beam_coordinates`, `read_lattice`, `read_loss_record`, `read_machine`, `readings`
+- `realize`, `reference_beta`, `reference_beta_gamma`, `reference_energy`, `reference_gamma`, `reference_pair_residual`
+- `register_element_meta!`, `register_element_spec!`, `register_friendly_alias!`, `registered_element_specs`, `registry_snapshot_markdown`, `required_contracts`
+- `requires_elementwise_tracking`, `reset_knobs!`, `reset_rng_id_counter!`, `resolve_knobs`, `rf_strength`, `run_actions!`
+- `run_artifact_option_schema`, `run_observers!`, `runtime_examples`, `runtime_type`, `runtime_variants`, `s_positions`
+- `save_run_artifact`, `schedule_option_schema`, `set_global_rng!`, `set_knob!`, `set_param!`, `should_run`
+- `slicing_option_schema`, `slope_dispersion`, `solver_configuration`, `solver_help`, `solver_option_schema`, `spectral_turn_table`
+- `splitmix_normal`, `splitmix_normal_pair`, `splitmix_uint64`, `splitmix_uniform01`, `strong_strong_task_option_schema`, `summarize_registry`
+- `supported_analyses`, `supported_tracking_methods`, `survey`, `symbol`, `track!`, `track_particle`
+- `tracking_convention`, `tracking_method`, `tracking_task_option_schema`, `transverse_covariance`, `turn_modulation_provenance`, `turn_timings`
+- `update`, `update_line`, `validate`, `validate_configuration_metadata`, `validate_element_metadata`, `with_execution_audit`
+- `with_index_offset`, `with_overrides`, `with_turn`, `write_beam_coordinates`, `write_loss_record`, `write_machine`
+- `write_registry_snapshot`

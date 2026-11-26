@@ -197,6 +197,38 @@ function _rng_id_held(id::Integer)
         unlock(_RNG_ID_REGISTRY_LOCK)
     end
 end
+"""
+    _rng_id_held_by(id::Integer, class::Symbol) -> Bool
+
+Whether `class` already holds `id` in this process: by an explicit claim
+(`claim_rng_id!`), or by an automatic assignment (`next_rng_id!`) whose class
+the registry still retains -- or retained once and has forgotten, an id auto
+issued more than `_RNG_ID_CLASS_WINDOW` assignments ago, which is answered
+`true` too. The query behind the flexible form's stream claim (R8b,
+2026-11-26): a friendly constructor stores the id it resolved for `rng_id =
+0`, so every rebuild of its spec through `ElementSpec{kind}(params)` -- the
+knob resolve at compile, the numeric retyping, a derived lattice's copy --
+hands the form the kind's own auto-assigned id, and claiming that one
+explicitly would warn "already held by an auto-assigned consumer" about the
+spec's own stream, loud and wrong. The form therefore claims only what its
+class does not hold yet; a forgotten auto class is read as the class's own
+(the same spec rebuilt late in a long session) rather than as a collision
+the registry can no longer name. Not a claim.
+"""
+function _rng_id_held_by(id::Integer, class::Symbol)
+    id > 0 || return false
+    uid = UInt64(id)
+    lock(_RNG_ID_REGISTRY_LOCK)
+    try
+        registry = _RNG_ID_REGISTRY
+        claim = get(registry.explicit, uid, nothing)
+        claim === nothing || return class in claim.classes
+        auto = _rng_id_auto_holder(registry, uid)
+        return auto === missing || auto === class
+    finally
+        unlock(_RNG_ID_REGISTRY_LOCK)
+    end
+end
 function _unheld_rng_id(start::Integer)
     id = UInt64(start)
     while _rng_id_held(id)

@@ -124,7 +124,7 @@ set_global_rng!(seed = SEED, method = :philox)
 point = LinearOptics(; beta = (bx, by, bz), alpha = (ax, ay, 0.0))
 emit_z = (bz * SIGD) * SIGD
 beam = Beam(N, policy, Float64; optics = point, emit = (EMIT[1], EMIT[2], emit_z), cutoff = 5.0, rng_id = 1,
-            charge = 1.0, mc2 = PMASS_EV, E0 = E0, r0 = RE * ME0 / PMASS_EV, npart = 1.0e11,
+            charge = 1.0, mc2 = PMASS_EV, E0 = E0, npart = 1.0e11,
             initial_offset = OFFSET)
 line_elems = copy(elements)
 if MOM > 0

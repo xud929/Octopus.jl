@@ -1036,8 +1036,7 @@ function run_noise_part()
     beam = Beam(256, policy, Float64;
                 beta=(BETA_X_STAR, 0.072, 6.0e-2 / 6.6e-4), alpha=(0.0, 0.0, 0.0),
                 emit=((95.0e-6)^2 / BETA_X_STAR, (8.5e-6)^2 / 0.072, 6.0e-2 * 6.6e-4),
-                cutoff=5.0, rng_id=1, charge=1.0, mc2=PMASS_EV, E0=275.0e9,
-                r0=RE * ME0 / PMASS_EV, npart=0.6881e11)
+                cutoff=5.0, rng_id=1, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.6881e11)
     specs = (cavity_spec(:table, 1.0, :tccb, tables[:tccb]),
              cavity_spec(:table, 1.0, :tcca, tables[:tcca]))
     task = TrackingTask(specs; policy=policy, artifact=RunArtifact(artifact_path; capacity=64))
@@ -2308,8 +2307,7 @@ function run_control_part()
     beam = Beam(n_macro, CPUThreadsExecutionPolicy(threads = :auto), Float64;
                 beta = (BETA_X_STAR, 0.072, beta_z), alpha = (0.0, 0.0, 0.0),
                 emit = ((95.0e-6)^2 / BETA_X_STAR, (8.5e-6)^2 / 0.072, 6.0e-2 * 6.6e-4),
-                cutoff = 5.0, rng_id = 1, charge = 1.0, mc2 = PMASS_EV, E0 = 275.0e9,
-                r0 = RE * ME0 / PMASS_EV, npart = 0.6881e11)
+                cutoff = 5.0, rng_id = 1, charge = 1.0, mc2 = PMASS_EV, E0 = 275.0e9, npart = 0.6881e11)
     coords = hcat((Vector{Float64}(getfield(beam.rep, f)) for f in (:x, :px, :y, :py, :z, :pz))...)
     Σ0 = cov(coords; corrected = false)
     z = coords[:, 5]

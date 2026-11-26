@@ -83,7 +83,7 @@ policy = CUDAExecutionPolicy()
 set_global_rng!(seed = SEED, method = :philox)
 emit_z = (bz * 1.0e-7) * 1.0e-7
 beam = Beam(N, policy, Float64; optics = point, emit = (1.0e-8, 1.0e-8, emit_z), cutoff = 5.0, rng_id = 1,
-            charge = 1.0, mc2 = PMASS_EV, E0 = E0, r0 = RE * ME0 / PMASS_EV, npart = 1.0e11,
+            charge = 1.0, mc2 = PMASS_EV, E0 = E0, npart = 1.0e11,
             initial_offset = (1.0e-4, 0.0, 1.0e-4, 0.0, 1.0e-3, 0.0))
 artifact = RunArtifact(; storage = :memory, capacity = 1024)
 task = TrackingTask(line; policy = policy, artifact = artifact, record_turn_times = true)

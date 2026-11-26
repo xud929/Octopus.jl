@@ -139,7 +139,7 @@ function tm_probe_run(v, spec, policy, path; record::Bool)
     beam = Octopus.Beam(1, policy, Float64;
         beta=(0.8, 0.072, 90.9), alpha=(0.0, 0.0, 0.0),
         emit=(1.0e-40, 1.0e-40, 1.0e-40), cutoff=5.0, rng_id=1,
-        charge=1.0, mc2=Octopus.PMASS_EV, E0=275.0e9, r0=Octopus.RE * Octopus.ME0 / Octopus.PMASS_EV,
+        charge=1.0, mc2=Octopus.PMASS_EV, E0=275.0e9,
         npart=1.0e11, zeta=(0.0, 0.0, 0.0, 0.0), eta=(0.0, 0.0, 0.0, 0.0), R=(0.0, 0.0, 0.0, 0.0),
         initial_offset=v.coords)
     init, nlocal, counts = tm_probe_initial_state(beam, policy)

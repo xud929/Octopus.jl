@@ -2436,6 +2436,17 @@ ip = StrongStrongCollision(:ip; poisson_solver=GaussianPoissonSolver())
 line1 = (arc1_to_ip, ip, arc1_after_ip)
 line2 = (arc2_to_ip, ip, arc2_after_ip)
 ```
+
+Outside a strong-strong task the marker is INERT (R2 of
+`docs/design/machine_description_followups.md`, owner decision 2026-11-26): a
+line holding it handed to `TrackingTask`, `one_turn_matrix` or `analyze`
+appends nothing and changes nothing, so the lattice tracks bitwise as the same
+lattice without the marker and its one-turn matrix is the same matrix. One
+lattice of record thus serves the strong-strong machine, weak-strong tracking
+(a `GaussianStrongBeamSpec` placed at the IP beside the inert marker) and the
+analyses. Nothing warns: the task's binding receipt
+(`:tracking_line_binding`, `:strong_strong_line_binding`) and
+`configuration_report` carry `collision_markers`, the count a line holds.
 """
 struct StrongStrongCollision{S} <: AbstractOctopusObject
     label::Symbol
@@ -2444,6 +2455,12 @@ end
 
 StrongStrongCollision(label; poisson_solver=nothing) =
     StrongStrongCollision(Symbol(label), poisson_solver)
+
+# The inert-member predicate of the single-beam compile (`_inert_in_single_beam`,
+# src/elements/beam_line.jl): the strong-strong compile never consults it --
+# `_append_strong_strong_line!` cuts the line at the marker before the element
+# walk sees it -- so the two routes cannot disagree about who owns the marker.
+_inert_in_single_beam(::StrongStrongCollision) = true
 
 """
     StrongStrongTask(line1, line2; policy=nothing,
@@ -2570,6 +2587,11 @@ struct StrongStrongTask{L1<:Tuple,L2<:Tuple,S<:AbstractPoissonSolver} <: Abstrac
     # lines are `nothing` too. The tracking never reads it: the field changes
     # no result and no kernel.
     machine::Union{Nothing,Machine}
+    # The rendered snapshot of `machine` keyed on the knob and spec epochs, the
+    # TrackingTask's `machine_snapshot_cache` twin (R9, 2026-11-26): the
+    # artifact renders and digests the machine once per distinct machine
+    # state. `nothing` until the first prepare; never read by the tracking.
+    machine_snapshot_cache::Base.RefValue{Any}
 end
 
 function configuration_report(task::StrongStrongTask, beam1::Beam, beam2::Beam)
@@ -2592,8 +2614,12 @@ function configuration_report(task::StrongStrongTask, beam1::Beam, beam2::Beam)
         # entry used to call the request `:resolved` (2026-10-16, S4-2).
         output=(_ra_artifact_entry(task.artifact, :strong_strong_output),),
         diagnostics=configuration_report(task.diagnostics; backend=backend_type(policy)),
-        solvers=Tuple(configuration_report(solver; policy=public_policy,
-                                           backend=backend_type(policy)) for solver in solvers),
+        # Each solver's entries, with a kick scale the solver leaves to the
+        # beams resolved to the value the collide will use (R5, 2026-11-26).
+        solvers=Tuple(_solver_report_with_derived_kicks(
+                          configuration_report(solver; policy=public_policy,
+                                               backend=backend_type(policy)),
+                          solver, beam1, beam2) for solver in solvers),
         # What each line's compile binds (`_bind_line_entries`): the spec-level
         # half -- aperture count, surveyed cavities, the circumference `ds_turn`
         # wraps -- which a report can state before the run. Whether a loss
@@ -2606,7 +2632,8 @@ end
 
 _binding_report(binding::NamedTuple) =
     (apertures=binding.apertures, rf_cavities=binding.rf_cavities,
-     accelerating_cavities=binding.accelerating_cavities, circumference=binding.circumference)
+     accelerating_cavities=binding.accelerating_cavities, circumference=binding.circumference,
+     collision_markers=binding.collision_markers)
 
 required_contracts(::Type{<:StrongStrongTask}) =
     DataType[StrongStrongGaussianBackendConsistencyContract,
@@ -2697,6 +2724,7 @@ function _strong_strong_task(line1, line2, machine::Union{Nothing,Machine};
         (Ref{Any}(WeakRef(nothing)), Ref{Any}(WeakRef(nothing))),
         reported_sharing,
         machine,
+        Ref{Any}(nothing),
     )
 end
 
@@ -3173,7 +3201,7 @@ function _execute_strong_strong_task!(
     prov = vcat(_turn_modulation_entries(_strong_strong_physics_line(blocks1), 1),
                 _turn_modulation_entries(_strong_strong_physics_line(blocks2), 2))
     solvers = _preflight_solver_configurations!(task, blocks1, blocks2, policy)
-    _preflight_solver_kbb(solvers, beam1, beam2)
+    _preflight_solver_kbb(task, solvers, beam1, beam2)
     # Validate every output preparer BEFORE any of them commits, then commit.
     #
     # Ordering alone cannot fix this and the history shows why: the 2026-08-05
@@ -3218,7 +3246,7 @@ function _execute_strong_strong_task!(
                               turn_modulation=prov, turn_modulation_columns=columns,
                               aperture_names=(beam_1=beam_apertures[1], beam_2=beam_apertures[2]),
                               task_kind=string(nameof(typeof(task))),
-                              machine=task.machine)
+                              machine=task.machine, machine_cache=task.machine_snapshot_cache)
     end
     # Absolute window, matching Tasks.jl: `should_run` sees `first_turn + offset`.
     # A refusal here (a duplicate probe name, a continued group's column
@@ -3395,7 +3423,7 @@ function _preflight_solver_configurations!(task, blocks1, blocks2, policy)
 end
 
 """
-    _preflight_solver_kbb(solvers, beam1, beam2) -> Nothing
+    _preflight_solver_kbb(task, solvers, beam1, beam2) -> Nothing
 
 The derived beam-beam strengths of every resolved collision solver, evaluated
 BEFORE the first turn: `_strong_strong_kbb1` / `_strong_strong_kbb2` refuse a
@@ -3407,14 +3435,125 @@ fixture: `beams unchanged after that throw => false`). Both inputs are known
 here, so the same `ArgumentError` lands with the beams untouched. Solvers
 without `kbb1`/`kbb2` fields (a user-defined solver) are not consulted. The
 values are discarded: the collide derives them again, as before.
+
+Since 2026-11-26 (R5 of docs/design/machine_description_followups.md, closing
+the audit's C-5) a DERIVED scale -- the solver gives no `kbb` -- is also
+checked for the factors that used to zero it silently (`_check_derived_kick`):
+a zero `charge`, `mc2` or `r0` of either beam that enters the product is
+refused by name with the beam, the factor and the two remedies (a reference on
+the beam, or `kbb` on the solver); and the population of the beam whose
+`npart` the scale multiplies is examined when it was left at its default, the
+macro-particle count: refused by name when that beam was built from a
+`ReferenceParticle` (a physical beam whose kick would be the population's
+fraction too weak; the owner's rule of 2026-11-26), warned once per task
+otherwise (many fixtures are small beams whose macro count is the population).
+Nothing changes for an explicit `kbb`, which never derives.
 """
-function _preflight_solver_kbb(solvers, beam1, beam2)
+function _preflight_solver_kbb(task::StrongStrongTask, solvers, beam1, beam2)
     for solver in solvers
         solver === nothing && continue
-        hasproperty(solver, :kbb1) && _strong_strong_kbb1(solver, beam1, beam2)
-        hasproperty(solver, :kbb2) && _strong_strong_kbb2(solver, beam1, beam2)
+        if hasproperty(solver, :kbb1)
+            _strong_strong_kbb1(solver, beam1, beam2)
+            solver.kbb1 === nothing && _check_derived_kick(task, solver, :kbb1, beam1, beam2, 1, 2)
+        end
+        if hasproperty(solver, :kbb2)
+            _strong_strong_kbb2(solver, beam1, beam2)
+            solver.kbb2 === nothing && _check_derived_kick(task, solver, :kbb2, beam2, beam1, 2, 1)
+        end
     end
     return nothing
+end
+
+"""
+    _check_derived_kick(task, solver, which, kicked, source, ki, si)
+
+The R5 checks of one derived kick scale `which` (`:kbb1` or `:kbb2`): `kicked`
+is the beam the scale kicks (its `charge`, `r0`, `mc2` and `E0` enter the
+product), `source` the beam whose `charge` and `npart` enter it, `ki` and `si`
+their numbers. A zero or non-finite factor is refused by name; a `source` whose
+`npart` was defaulted is refused when it carries a reference and warned once
+per task (keyed on the task and the beam) when it does not. The `E0` refusal
+stays with `_strong_strong_kbb1`/`_strong_strong_kbb2`, which the caller runs
+first.
+"""
+function _check_derived_kick(task::StrongStrongTask, solver, which::Symbol, kicked::Beam,
+                             source::Beam, ki::Int, si::Int)
+    sname = nameof(typeof(solver))
+    formula = "charge_$(ki) * charge_$(si) * r0_$(ki) * npart_$(si) * mc2_$(ki) / E0_$(ki)"
+    for (bi, beam, name) in ((ki, kicked, :mc2), (ki, kicked, :r0), (ki, kicked, :charge),
+                             (si, source, :charge))
+        v = getproperty(beam.params, name)
+        (isfinite(v) && !iszero(v)) || throw(ArgumentError(
+            "StrongStrongTask: the kick scale $(which) of the $(sname) solver is derived from " *
+            "the beams ($(formula)) when $(which) is not specified, and beam $(bi)'s `$(name)` " *
+            "is $(v): the beam-beam force would be zero while the luminosity is still computed " *
+            "and written. Give beam $(bi) `reference = ReferenceParticle(...)` (or `charge`, " *
+            "`mc2` and `E0`), or set `$(which) = ` on the solver to bypass the derivation."))
+    end
+    source.npart_given && return nothing
+    n = source.params.npart
+    if source.reference !== nothing
+        throw(ArgumentError(
+            "StrongStrongTask: the kick scale $(which) of the $(sname) solver is derived from " *
+            "the beams ($(formula)) when $(which) is not specified, and beam $(si) was built " *
+            "from a ReferenceParticle without `npart`, so its population defaults to its " *
+            "macro-particle count ($(n)) and the force would be that count's fraction of the " *
+            "bunch population too weak. Give beam $(si) `npart = <bunch population>`, or set " *
+            "`$(which) = ` on the solver to bypass the derivation."))
+    end
+    @warn "StrongStrongTask: beam $(si)'s `npart` defaults to its macro-particle count ($(n)): " *
+          "the derived kick scale $(which) ($(formula)) treats every macro-particle as one " *
+          "particle of the bunch. Give `npart = <bunch population>` on the beam if it stands " *
+          "for a real bunch, or set `$(which) = ` on the solver." maxlog = 1 _id = Symbol(
+          "octopus_npart_default_", si, "_", objectid(task))
+    return nothing
+end
+
+"""
+    _solver_kick_scales(solver, beam1, beam2) -> (kbb1, kbb2)
+
+The kick scales the collide uses, the solver's own when given and the derived
+ones otherwise (`_strong_strong_kbb1`/`_strong_strong_kbb2`), for the
+`:strong_strong_collision` receipt (R5: a zero or suspiciously small scale is
+visible after the fact); `(nothing, nothing)` for a solver without the fields.
+"""
+function _solver_kick_scales(solver, beam1, beam2)
+    (hasproperty(solver, :kbb1) && hasproperty(solver, :kbb2)) || return (nothing, nothing)
+    return (_strong_strong_kbb1(solver, beam1, beam2), _strong_strong_kbb2(solver, beam1, beam2))
+end
+
+"""
+    _solver_report_with_derived_kicks(report, solver, beam1, beam2) -> Tuple
+
+A solver's `configuration_report` entries with `kbb1` and `kbb2` resolved to the
+scales the collide will use when the solver gives none (R5): `requested =
+nothing`, `resolved` the derived value, status `:inherited` (taken from the
+beams rather than set on the solver), the reason naming the formula; an
+explicit `kbb` keeps its `:resolved` entry. A derivation the beams refuse (a
+zero `E0`) leaves `resolved = nothing` with the refusal's message as the
+reason, so the report never throws. A solver without the fields passes through.
+"""
+function _solver_report_with_derived_kicks(report::Tuple, solver, beam1, beam2)
+    (hasproperty(solver, :kbb1) && hasproperty(solver, :kbb2)) || return report
+    out = ConfigurationEntry[]
+    for e in report
+        if (e.name === :kbb1 || e.name === :kbb2) && e.requested === nothing
+            derive = e.name === :kbb1 ? _strong_strong_kbb1 : _strong_strong_kbb2
+            formula = e.name === :kbb1 ? "charge1 * charge2 * r0_1 * npart_2 * mc2_1 / E0_1" :
+                                         "charge1 * charge2 * r0_2 * npart_1 * mc2_2 / E0_2"
+            value, reason = try
+                (derive(solver, beam1, beam2),
+                 "derived from the beams as $(formula); give $(e.name) on the solver to bypass")
+            catch err
+                err isa ArgumentError || rethrow()
+                (nothing, "cannot be derived from the beams: " * sprint(showerror, err))
+            end
+            push!(out, ConfigurationEntry(e.name, nothing, value, :inherited, reason, e.consumer))
+        else
+            push!(out, e)
+        end
+    end
+    return Tuple(out)
 end
 
 function _warn_inactive_diagnostics(diagnostics::StrongStrongDiagnostics, backend)
@@ -3582,8 +3721,12 @@ function _strong_strong_collide!(task::StrongStrongTask, label::Symbol,
                                  solver::AbstractPoissonSolver,
                                  beam1::Beam, beam2::Beam, policy, ctx::TrackingContext)
     return Base.ScopedValues.with(_ACTIVE_PIC_TIMING_CONTEXT => (label=label, turn=ctx.turn)) do
+        # The kick scales beside the solver and the turn (R5): the derived
+        # values are on record where a zero or a suspiciously small one can be
+        # read after the fact.
+        kbb1, kbb2 = _solver_kick_scales(solver, beam1, beam2)
         _record_execution!(:strong_strong_collision, backend_type(policy),
-                           (solver=Symbol(nameof(typeof(solver))), turn=ctx.turn))
+                           (solver=Symbol(nameof(typeof(solver))), turn=ctx.turn, kbb1=kbb1, kbb2=kbb2))
         _record_solver_configuration!(solver, backend_type(policy))
         _with_solver_execution_configuration(solver, policy) do
             _strong_strong_collide_backend!(

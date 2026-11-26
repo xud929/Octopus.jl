@@ -83,6 +83,8 @@ function Base.setproperty!(entry::LineEntry, name::Symbol, value)
     _reject_undeclared_override(getfield(entry, :spec), name)
     getfield(entry, :overrides)[name] = value
     _SPEC_EPOCH[] += 1
+    # An `rng_id` override is a stream claim under the spec's class (R8b, 2026-11-26).
+    _claim_override_stream!(getfield(entry, :spec), name, value)
     return value
 end
 
@@ -852,6 +854,22 @@ _inner_method(elem::CompositeLine) =
 total_length(spec::ElementSpec{:line}) =
     sum(_placement_length, line_entries(spec); init=0.0)
 
+"""
+    _inert_in_single_beam(x) -> Bool
+
+Whether a line member is INERT in a single-beam compile -- the task's compile
+walk (`_append_runtime_line!`), the whole-line `CompositeLine` below and the
+analyses' linear-map walk through it: a `StrongStrongCollision` marker, which
+only a `StrongStrongTask` pairs and which appends nothing and changes nothing
+elsewhere (R2 of docs/design/machine_description_followups.md, owner decision
+2026-11-26, closing the audit's B-1b: one lattice of record serves the
+strong-strong machine, weak-strong tracking and the analyses). The method on
+the marker's type lives beside the type (src/tasks/strongstrong/interface.jl);
+everything else answers `false`. The count of inert markers a task holds is on
+its binding receipt (`collision_markers`).
+"""
+_inert_in_single_beam(::Any) = false
+
 function compile_runtime(spec::ElementSpec{:line}, args...)
     # A line has no tracking method of its own -- each placement compiles with
     # its own -- and the metadata advertises none. Accepting and discarding an
@@ -874,7 +892,7 @@ function compile_runtime(spec::ElementSpec{:line}, args...)
     # with the remedy.
     for e in line_entries(resolved)
         child = getfield(e, :spec)
-        child isa AbstractElementSpec || throw(ArgumentError(
+        child isa AbstractElementSpec || _inert_in_single_beam(child) || throw(ArgumentError(
             "line $(repr(line_name(resolved))) holds an in-line hook " *
             "($(nameof(typeof(child))) at $(entry_path(e))) and is being compiled " *
             "as ONE element, which has no runtime for a hook. A hook inside a line " *
@@ -884,7 +902,10 @@ function compile_runtime(spec::ElementSpec{:line}, args...)
             "vector compiles whole. Place the hook outside the line, or hand the " *
             "line itself to the task."))
     end
-    ops = Tuple(compile_runtime(e) for e in line_entries(resolved))
+    # An inert member (a collision marker, R2) compiles to nothing: the
+    # composite is the same tuple the line without it would give.
+    ops = Tuple(compile_runtime(e) for e in line_entries(resolved)
+                if !_inert_in_single_beam(getfield(e, :spec)))
     # The survey needs the line's length, which is derived rather than stored --
     # storing it would count as "own state" and stop every line from dissolving.
     geom = ElementSpec{:line}(merge(getfield(resolved, :params),

@@ -22,7 +22,7 @@ using Octopus, MPI, Printf, Statistics
 
 function get_beam_and_line(input, policy)
     beam = Beam(input.n_macro, policy, Float64; beta = input.beta, sigma = input.sigma, cutoff = input.cutoff, rng_id = input.rng_id, 
-        charge = input.charge, mc2 = input.mass, E0 = input.energy, r0 = RE * ME0 / input.mass, npart = input.n_particle)
+        charge = input.charge, mc2 = input.mass, E0 = input.energy, npart = input.n_particle)
 
     tccb2ip = Linear6DSpec{Float64}(; beta1 = input.crab_beta, beta2 = input.beta, dmu = input.crab2ip_dmu)
     tccb2ip_inv = Linear6DSpec{Float64}(matrix = inv(Matrix(Linear6D(tccb2ip))))

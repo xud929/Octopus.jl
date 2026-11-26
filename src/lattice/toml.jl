@@ -1,4 +1,4 @@
-export write_machine, read_machine, machine_toml, parse_machine
+export write_machine, read_machine, read_lattice, machine_toml, parse_machine
 
 using InteractiveUtils: subtypes
 
@@ -35,7 +35,8 @@ pending = { type = "Float64", unset = true }          # declared and not yet ass
 [lattices.ESR]
 eltype = "Float64"
 knob_roots = ["esr", "ip"]
-reference = { charge = -1.0, mc2 = 510998.95, E0 = 1.0e10 }   # absent when the lattice has none
+reference = { charge = -1.0, mc2 = 510998.95, E0 = 1.0e10 }   # absent when the lattice has none; the energy under the key
+                                                               # typed at construction (E0, p0c, gamma0 or brho), a number or { expr = "..." }
 line = "ESR"                              # the top-level line, one of [lattices.ESR.lines.*]
 
 [lattices.ESR.elements.QF]                # one table per DISTINCT spec object placed, first-placement order
@@ -232,6 +233,68 @@ function read_machine(path::AbstractString; receipt::Bool=false)
     digests = _toml_referenced_digests(_toml_parse_document(text))
     tables = isempty(digests) ? nothing : _toml_read_tables(_toml_tables_path(path), digests)
     return parse_machine(text; tables=tables, receipt=receipt)
+end
+
+"""
+    read_lattice(path; receipt=false) -> Lattice
+    read_lattice(path; receipt=true) -> (lattice, receipt)
+
+The one lattice of a one-lattice snapshot (`write_machine(path, lattice)`
+writes one): [`read_machine`](@ref) on the file, under its knob rules and
+refusals, then the lattice it holds. A file holding several lattices is
+refused by name, listing them, with `read_machine(path)[:NAME]` as the remedy
+(R10 of `docs/design/machine_description_followups.md`, 2026-11-26: the
+multi-file description is a Julia module reading one one-lattice snapshot
+per file and assembling the `Machine` itself).
+"""
+function read_lattice(path::AbstractString; receipt::Bool=false)
+    machine, rcpt = read_machine(path; receipt=true)
+    names = keys(machine)
+    length(names) == 1 || throw(ArgumentError(
+        "read_lattice: the snapshot at $(repr(String(path))) holds $(length(names)) lattices " *
+        "($(join(names, ", "))); read_lattice reads a one-lattice snapshot. Read the machine and " *
+        "pick one: read_machine(path)[:$(first(names))]"))
+    lattice = machine[first(names)]
+    return receipt ? (lattice, rcpt) : lattice
+end
+
+"""
+    read_machine(path1, path2, paths...; name, knob_root=nothing, receipt=false) -> Machine
+
+A machine assembled from several snapshot files, each read as
+[`read_machine`](@ref)`(path)` reads it (its knobs declared under the format's
+rules: a path already present with the same definition is kept, a conflicting
+one refused by name, so a shared knob repeated across the files must be
+written the same way in each), the lattices collected in argument order and
+gathered in `Machine(name; lattices, knob_root)` -- `name` required (the files
+each name their own machine; the facility's is yours to give), `knob_root`
+the shared roots as on `Machine`, a lattice name appearing twice refused by
+name as `Machine` refuses it. With `receipt = true` the second value is the
+union of the files' receipts: `format`, `declared`, `existing`, `tables`,
+`lattices` and `files`. The probe of R10 (the follow-ups note, section 4): the
+shipped strong-strong machine written as two one-lattice files and read back
+this way is `==` to the original and its `machine_toml` byte-identical.
+"""
+function read_machine(path1::AbstractString, path2::AbstractString, paths::AbstractString...;
+                      name::Union{Nothing,AbstractString}=nothing, knob_root=nothing,
+                      receipt::Bool=false)
+    name === nothing && throw(ArgumentError(
+        "read_machine(paths...): the machine assembled from several snapshot files needs a " *
+        "`name` (each file names its own machine; give the facility's: read_machine(paths...; " *
+        "name = \"EIC\"))"))
+    files = String[String(path1), String(path2), String.(paths)...]
+    lattices = Lattice[]
+    declared, existing, tables, lattice_names, formats = Symbol[], Symbol[], String[], String[], Int[]
+    for file in files
+        machine, r = read_machine(file; receipt=true)
+        append!(lattices, collect(machine))
+        append!(declared, r.declared); append!(existing, r.existing); append!(tables, r.tables)
+        append!(lattice_names, r.lattices); push!(formats, r.format)
+    end
+    machine = Machine(String(name); lattices=Tuple(lattices), knob_root=knob_root)
+    receipt || return machine
+    return machine, (format=only(unique(formats)), declared=declared, existing=existing,
+                     tables=unique(tables), lattices=lattice_names, files=files)
 end
 
 """
@@ -1294,24 +1357,49 @@ _toml_knob_definition_string(T, expr, value) =
     value === nothing ? "$(T), unset" : "$(T), value $(repr(value))"
 
 """
-    _toml_reference_table(ref::ReferenceParticle) -> _TomlTable
+    _toml_reference_table(ref::ReferenceParticle, ctx) -> _TomlTable
     _toml_decode_reference(tbl::AbstractDict, ctx) -> ReferenceParticle
 
-The reference particle as `{ charge, mc2, E0 }` (its three stored fields, as
-floats) and back through its keyword constructor; unknown or missing keys
-refused by name.
+The reference particle as `{ charge, mc2, <energy key> }`: `charge` and `mc2`
+as floats and the energy under the key typed at construction (`E0`, `p0c`,
+`gamma0` or `brho`; R4 of the follow-ups note, 2026-11-26) as a number or a
+knob expression `{ expr = "..." }`, so a reference given as `p0c` round-trips
+to the bit (the typed input is the stored parameter, D13); back through the
+keyword constructor, which re-derives the other quantities identically.
+Refused by name: an unknown key, a missing `charge` or `mc2`, two energy keys
+or none, a value that is neither a number nor an expression table, and the
+constructor's own refusals (an energy at rest), named with the table's path.
 """
-_toml_reference_table(ref::ReferenceParticle) =
-    _TomlTable("charge" => Float64(ref.charge), "mc2" => Float64(ref.mc2), "E0" => Float64(ref.E0))
+function _toml_reference_table(ref::ReferenceParticle, ctx::_TomlContext)
+    key = String(ref.energy_key)
+    return _TomlTable("charge" => Float64(ref.charge), "mc2" => Float64(ref.mc2),
+                      key => _toml_encode_value(reference_energy(ref), nothing, _toml_at(ctx, key)))
+end
 function _toml_decode_reference(tbl::AbstractDict, ctx::_TomlContext)
-    for key in keys(tbl)
-        key in ("charge", "mc2", "E0") || _toml_refuse(ctx, "unknown key $(repr(key)) in `reference`; its keys are charge, mc2, E0")
+    energy_keys = String.(_REFERENCE_ENERGY_KEYS)
+    for key in sort!(collect(String, keys(tbl)))
+        key in ("charge", "mc2", energy_keys...) || _toml_refuse(ctx,
+            "unknown key $(repr(key)) in `reference`; its keys are charge, mc2 and one of $(join(energy_keys, ", "))")
     end
-    for key in ("charge", "mc2", "E0")
+    for key in ("charge", "mc2")
         haskey(tbl, key) || _toml_refuse(ctx, "`reference` needs `$(key)`")
         _toml_is_number(tbl[key]) || _toml_refuse(_toml_at(ctx, key), "`$(key)` must be a number; got $(repr(tbl[key]))")
     end
-    return ReferenceParticle(; charge=Float64(tbl["charge"]), mc2=Float64(tbl["mc2"]), E0=Float64(tbl["E0"]))
+    present = [k for k in energy_keys if haskey(tbl, k)]
+    length(present) == 1 || _toml_refuse(ctx,
+        "`reference` needs exactly one of $(join(energy_keys, ", ")); " *
+        (isempty(present) ? "none was given" : "got " * join(present, ", ")))
+    key = only(present)
+    raw = tbl[key]
+    value = _toml_is_number(raw) ? Float64(raw) :
+            raw isa AbstractDict ? _toml_decode_value(raw, nothing, _toml_at(ctx, key)) :
+            _toml_refuse(_toml_at(ctx, key),
+                "`$(key)` must be a number or a knob expression { expr = \"...\" }; got $(repr(raw))")
+    value isa Union{Float64,AbstractKnobExpression} || _toml_refuse(_toml_at(ctx, key),
+        "`$(key)` must be a number or a knob expression { expr = \"...\" }; got $(repr(raw))")
+    return _toml_construct(ctx, :ReferenceParticle) do
+        ReferenceParticle(; charge=Float64(tbl["charge"]), mc2=Float64(tbl["mc2"]), (Symbol(key) => value,)...)
+    end
 end
 
 """
@@ -1337,7 +1425,7 @@ function _toml_lattice_tables(lattice::Lattice, ctx::_TomlContext)
     pairs = Pair{String,Any}["eltype" => _toml_type_name(getfield(lattice, :eltype), _toml_at(ctx, "eltype"))]
     push!(pairs, "knob_roots" => Any[String(r) for r in getfield(lattice, :knob_roots)])
     ref = getfield(lattice, :reference)
-    ref === nothing || push!(pairs, "reference" => _toml_reference_table(ref))
+    ref === nothing || push!(pairs, "reference" => _toml_reference_table(ref, _toml_at(ctx, "reference")))
     push!(pairs, "line" => ids[getfield(lattice, :line)])
     groups = Dict{String,_TomlBlock}(g => _TomlBlock() for g in ("elements", "hooks", "markers", "lines"))
     for obj in objects
@@ -1387,7 +1475,8 @@ function _toml_decode_lattice(name::AbstractString, tbl::AbstractDict, ctx::_Tom
         "`knob_roots` must be an array of strings; got $(repr(roots))")
     reference = haskey(tbl, "reference") ? begin
         r = tbl["reference"]
-        r isa AbstractDict || _toml_refuse(_toml_at(ctx, "reference"), "`reference` must be an inline table { charge, mc2, E0 }; got $(repr(r))")
+        r isa AbstractDict || _toml_refuse(_toml_at(ctx, "reference"),
+            "`reference` must be an inline table { charge, mc2, E0 | p0c | gamma0 | brho }; got $(repr(r))")
         _toml_decode_reference(r, _toml_at(ctx, "reference"))
     end : nothing
     objects = Dict{String,Any}()

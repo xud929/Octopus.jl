@@ -60,7 +60,7 @@ weak_r0 = RE * ME0 / wb.mass
 ip_point = LinearOptics(; beta = (wb.beta_x, wb.beta_y, beta_z))
 
 beam = Beam(N, policy, Float64; optics = ip_point, emit = emit, cutoff = wb.cutoff, rng_id = 1,
-            charge = wb.charge, mc2 = wb.mass, E0 = wb.energy, r0 = weak_r0, npart = wb.n_particle)
+            charge = wb.charge, mc2 = wb.mass, E0 = wb.energy, npart = wb.n_particle)
 
 kbb = wb.charge * strong.charge * strong.n_particle * weak_r0 * wb.mass / wb.energy
 klum = strong.n_particle * wb.n_particle / N

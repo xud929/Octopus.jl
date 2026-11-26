@@ -84,12 +84,10 @@ pic = gsolver.pic
 set_global_rng!(seed=config.seed, method=:philox)
 beam1 = Beam(config.npart, CPUThreadsBackend, T; beta=(0.8, 0.072, 90.0),
              alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-             rng_id=1, charge=1.0, mc2=PMASS_EV, E0=275.0e9,
-             r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+             rng_id=1, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
 beam2 = Beam(config.npart, CPUThreadsBackend, T; beta=(0.55, 0.056, 12.0),
              alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-             rng_id=2, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
-             r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+             rng_id=2, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
 
 slicing = LongitudinalSlicing(nslices=config.nslices, method=:normal_quantile,
                               center_position=:centroid)

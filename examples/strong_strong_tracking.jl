@@ -263,8 +263,8 @@ pro = input.proton
 # Each beam's species and energy as one ReferenceParticle
 # (docs/design/machine_description.md, D12): the Beam takes it in place of
 # the flat charge, mc2, E0 keywords, so the three cannot disagree. The
-# classical radius r0 stays a keyword of its own (not derived from the
-# reference in this batch).
+# classical radius r0 comes with it, derived once as RE * ME0 / mc2 (R3 of
+# the follow-ups note, 2026-11-26; the value this script used to type).
 ele_ref = ReferenceParticle(; charge = ele.charge, mc2 = ele.mass, E0 = ele.energy)
 pro_ref = ReferenceParticle(; charge = pro.charge, mc2 = pro.mass, E0 = pro.energy)
 
@@ -278,13 +278,11 @@ pro_ip = LinearOptics(; beta = pro.beta, alpha = pro.alpha)
 pro_crab = LinearOptics(; beta = pro.crab_beta, alpha = pro.alpha)
 beam_ele = Beam(config.n_macro_ele, policy, Float64;
     optics = ele_ip, sigma = ele.sigma, cutoff = ele.cutoff,
-    rng_id = 1, reference = ele_ref,
-    r0 = RE * ME0 / ele.mass, npart = ele.n_particle,
+    rng_id = 1, reference = ele_ref, npart = ele.n_particle,
 )
 beam_pro = Beam(config.n_macro_pro, policy, Float64;
     optics = pro_ip, sigma = pro.sigma, cutoff = pro.cutoff,
-    rng_id = 2, reference = pro_ref,
-    r0 = RE * ME0 / pro.mass, npart = pro.n_particle,
+    rng_id = 2, reference = pro_ref, npart = pro.n_particle,
 )
 
 slicing = LongitudinalSlicing(;

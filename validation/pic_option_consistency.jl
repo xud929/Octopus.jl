@@ -135,10 +135,10 @@ backend = config.backend === :gpu ? Octopus.CUDABackend : CPUThreadsBackend
 set_global_rng!(seed=123456789, method=:philox)
 beam_e = Beam(config.npart_e, policy, Float64; beta=ele.beta, alpha=ele.alpha,
     sigma=ele.sigma, cutoff=ele.cutoff, rng_id=1, charge=ele.charge, mc2=ele.mass,
-    E0=ele.energy, r0=RE * ME0 / ele.mass, npart=ele.n_particle)
+    E0=ele.energy, npart=ele.n_particle)
 beam_p = Beam(config.npart_p, policy, Float64; beta=pro.beta, alpha=pro.alpha,
     sigma=pro.sigma, cutoff=pro.cutoff, rng_id=2, charge=pro.charge, mc2=pro.mass,
-    E0=pro.energy, r0=RE * ME0 / pro.mass, npart=pro.n_particle)
+    E0=pro.energy, npart=pro.n_particle)
 
 slicing = LongitudinalSlicing(; method=:normal_quantile, nslices=config.nslices,
                               center_position=:centroid)

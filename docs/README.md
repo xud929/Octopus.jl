@@ -249,7 +249,12 @@ Procedures, one per task class, routed from the Task Routing table in
   with its unit reports
   [`U1_report.md`](history/audit_machine_description_2026_11_25_unit_reports/U1_report.md)
   and [`U2_report.md`](history/audit_machine_description_2026_11_25_unit_reports/U2_report.md);
-  the staging is complete.
+  the staging is complete; the follow-ups' batch A ("compile-path, part
+  1": rulings R2 to R6 and R8 to R11 implemented) in
+  [`history/machine_description_compile_path1_2026_11_26.md`](history/machine_description_compile_path1_2026_11_26.md)
+  with its scoped neighbour audit
+  [`history/audit_machine_description_compile_path1_2026_11_26.md`](history/audit_machine_description_compile_path1_2026_11_26.md)
+  and its unit reports under `history/audit_machine_description_compile_path1_2026_11_26_unit_reports/`.
   The note: Julia stays the
   input language (no lattice language, no operator algebra); `Lattice` as a
   record around a top-level `BeamLine` with the entrance reference particle,
@@ -284,7 +289,9 @@ Procedures, one per task class, routed from the Task Routing table in
   a Julia module. The agreed batches ("compile-path, part 1" first), the
   measurements behind them (a hand-written `k1` accepted by the snapshot
   reader and dropped at compile among them) and the choices still the
-  owner's. Nothing implemented; the next session starts at its section 3.
+  owner's. Batch A implemented 2026-11-26 (record
+  [`history/machine_description_compile_path1_2026_11_26.md`](history/machine_description_compile_path1_2026_11_26.md));
+  each ruling carries its dated `Status` line; batches B and C remain.
 - [`linear_optics_examples_2026_11_21.md`](history/linear_optics_examples_2026_11_21.md)
   — the shipped examples in the `LinearOptics` form (the weak-strong,
   strong-strong and crab-noise scripts spell each beam's optics as IP and
@@ -382,6 +389,33 @@ Procedures, one per task class, routed from the Task Routing table in
   [`U1_report.md`](history/audit_machine_description_2026_11_25_unit_reports/U1_report.md)
   and [`U2_report.md`](history/audit_machine_description_2026_11_25_unit_reports/U2_report.md)
   (the queue's file:line ground truth, archived by the stage-5 fold).
+- [`machine_description_compile_path1_2026_11_26.md`](history/machine_description_compile_path1_2026_11_26.md)
+  — batch A of the machine-description follow-ups, "compile-path, part 1":
+  the owner's five choices taken in discussion and the push rule; U1 the
+  content-addressed artifact snapshot (`/machine_snapshots/<sha256>`, the
+  byte digest, the task-side cache, `machine_snapshot`, with the measured
+  cost before and after); U2 the richer immutable `ReferenceParticle`
+  (species presets, one of four energy spellings, derived fields, the
+  typed key), `r0` derived and retired as a `Beam` input across 180 call
+  sites, the kick-scale refusals and the reported `kbb`, `npart` refused on
+  a reference-built beam; U3 the wider-than-`Float64` refusal; U4 the
+  inert, counted collision marker; U5 the stream claim at the flexible
+  form with `ElementMeta.rng_consumer` and the own-id rule found in the
+  batch; U6 the cavity flag at construction, `EveryNSteps`'s `stop`,
+  `Moment`'s `tryparse`; U7 `read_lattice` and the multi-file
+  `read_machine`; U8 the MAD-X class form installed by the registration,
+  the RBEND alias's convention, the flexible form's named-strength fold;
+  the red-first evidence per unit, the fingerprints (CPU identical, CUDA
+  within noise), the parity re-run, the gate and the push.
+- [`audit_machine_description_compile_path1_2026_11_26.md`](history/audit_machine_description_compile_path1_2026_11_26.md)
+  — the scoped neighbour audit of batch A: the call sites and sibling
+  surfaces of each unit re-walked, the properties re-run on what the units
+  did not change, the leads with their reproductions and dispositions,
+  the coverage ledger and the remaining risks; its unit reports
+  [`U1_report.md`](history/audit_machine_description_compile_path1_2026_11_26_unit_reports/U1_report.md),
+  [`U2_report.md`](history/audit_machine_description_compile_path1_2026_11_26_unit_reports/U2_report.md) and
+  [`U3_report.md`](history/audit_machine_description_compile_path1_2026_11_26_unit_reports/U3_report.md)
+  (the queue's file:line ground truth, archived with the record).
 - [`linear_optics_owner_items_2026_11_21.md`](history/linear_optics_owner_items_2026_11_21.md)
   — the second LinearOptics batch, closing the design note's owner items 1, 4
   and 5 (D11-D13): form 2 reaching `ChromaticityKickSpec` and `LumpedRadSpec`
@@ -725,6 +759,7 @@ exists fails the suite, so these cannot rot silently.
 <!-- indexed-wholesale: history/audit_crab_cavity_noise_neighbours_2026_10_16_unit_reports -->
 <!-- indexed-wholesale: history/comprehensive_audit_2026_10_18_unit_reports -->
 <!-- indexed-wholesale: history/audit_machine_description_2026_11_25_unit_reports -->
+<!-- indexed-wholesale: history/audit_machine_description_compile_path1_2026_11_26_unit_reports -->
 
 Dated records of implemented work — optimization campaigns, benchmark decisions,
 and audits. The source code is the authority; these preserve the rationale.

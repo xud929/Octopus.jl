@@ -457,6 +457,7 @@ end
 
 @element_spec begin
     kind = :lumped_radiation
+    rng_consumer = :lumped_radiation           # the stream class of `rng_id` (R8b, 2026-11-26)
     spec_type = ElementSpec{:lumped_radiation}
     friendly_constructor = LumpedRadSpec
     runtime_type = LumpedRad

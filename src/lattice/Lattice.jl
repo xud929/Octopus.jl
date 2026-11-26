@@ -1,4 +1,4 @@
-export ReferenceParticle, Lattice
+export ReferenceParticle, Lattice, reference_energy
 
 # ---------------------------------------------------------------------------
 # The machine description, stage 2 (design note docs/design/machine_description.md:
@@ -17,36 +17,103 @@ export ReferenceParticle, Lattice
 # ---------------------------------------------------------------------------
 
 """
-    ReferenceParticle(; charge, mc2, E0)     # total energy in eV
-    ReferenceParticle(; charge, mc2, p0c)    # or the momentum p0 c in eV
+    ReferenceParticle(; charge, mc2, E0)        # the total energy in eV
+    ReferenceParticle(; charge, mc2, p0c)       # or the momentum times c in eV
+    ReferenceParticle(; charge, mc2, gamma0)    # or the Lorentz factor
+    ReferenceParticle(; charge, mc2, brho)      # or the magnetic rigidity B rho in T m
+    ReferenceParticle(:proton; E0 = 275e9)      # a species preset: :proton, :electron, :positron
 
-The reference particle of a lattice (design D12): the species as the charge in
-units of e and the rest energy `mc2` in eV, and the momentum as either the
-total energy `E0` or `p0c`, both in eV, exactly one of the two (`E0` is what
-is stored; `p0c` gives `E0 = sqrt(p0c^2 + mc2^2)`). The relativistic factors
-follow from the existing accessors, `reference_beta_gamma(ref)`,
-`reference_beta(ref)` and `reference_gamma(ref)`, so a script that derives
-`beta0, gamma0` by hand today derives them from the lattice's reference
-instead.
+The reference particle of a lattice (design D12; the richer, immutable record
+of R4, `docs/design/machine_description_followups.md`, 2026-11-26): the
+species as the charge in units of e and the rest energy `mc2` in eV, both
+required numbers (a species preset supplies them from the named constants of
+`src/constants/Constants.jl`, `PMASS_EV` and `EMASS_EV`; an ion goes through
+the explicit form), and the energy as exactly ONE of `E0` (the total energy in
+eV), `p0c` (the momentum times c in eV), `gamma0` (the Lorentz factor) or
+`brho` (the magnetic rigidity in T m), a number or a knob expression (design
+D10). Nothing is defaulted: a defaulted physics number is a silent wrong value.
 
-Refused by name at construction: a non-finite or zero `charge`; a non-finite
-or non-positive `mc2`; both or neither of `E0` and `p0c`; an `E0` not above
-`mc2` (a reference at rest has no direction and `beta0 = 0` divides every
-cavity); a non-finite or non-positive `p0c`.
+Derived ONCE, in this constructor, and stored as fields of the immutable
+record (MAD-X's `BEAM` keeps the same quantities on a mutable global and
+recomputes them at every update; an immutable record with one constructor
+cannot go stale): `E0`, `p0c`, `gamma0`, `beta0`, `brho` and `r0`, with
 
-Stage 2 of the machine description accepts the type and carries it on the
-[`Lattice`](@ref); the consumers that spell the reference by hand today
-(`Beam`'s `charge`, `mc2`, `E0`; the cavities' `beta0`, `gamma0`; the
-strong-beam kick scale) keep their keywords and are unified in a compile-path
-campaign of their own (design D12 and section 3).
+    gamma0 = E0 / mc2                        beta0 = sqrt((gamma0 - 1) (gamma0 + 1)) / gamma0
+    p0c    = sqrt((E0 - mc2) (E0 + mc2))     brho  = p0c / (c |charge|)        [T m, p0c in eV]
+    r0     = RE * ME0 / mc2                  [m, the classical radius of a unit charge of rest energy mc2]
+
+the factored forms keeping their digits near `gamma0 = 1` (`reference_beta`,
+`src/track/longitudinal.jl`; `_reference_pair_fold` is the one source of the
+pair for the cavities and this record), and the other spellings inverted
+exactly (`E0 = sqrt(p0c^2 + mc2^2)`, `E0 = gamma0 mc2`, `p0c = brho c |charge|`).
+The typed value is stored in its own field as given and the others are derived
+from it. `beta0` is not an input: at 10 GeV an electron's `beta0` is
+`1 - 1.3e-9`, which nobody types. With a knob expression as the energy the
+derived quantities are expression trees over it, built from the whitelisted
+operations, that resolve at compile like every other parameter (a ramp is a
+knob on the reference, R7); `charge` and `mc2` stay numbers, so `r0` is always
+a number. The accessors `reference_beta(ref)`, `reference_gamma(ref)` and
+`reference_beta_gamma(ref)` read the fields.
+
+The key typed at construction is kept (`energy_key`: `:E0`, `:p0c`, `:gamma0`
+or `:brho`): it is the stored parameter the snapshot writes (D13), so a
+reference given as `p0c` round-trips to the bit, and two references compare
+`==` structurally -- the same charge, mass, typed key and energy value (knob
+expressions as trees); two physically equal references typed through
+different keys are not `==` (compare `ref1.E0 == ref2.E0` for that).
+
+Refused by name at construction: a non-finite or zero `charge`, or one that is
+not a number; a non-finite or non-positive `mc2`, or one that is not a
+number; two or more energy spellings, or none; a numeric `E0` not above `mc2`
+(a reference at rest has no direction and `beta0 = 0` divides every cavity),
+a `gamma0` not above 1, a non-positive or non-finite `p0c` or `brho`, or an
+energy that is neither a number nor a knob expression; a species outside the
+presets; `charge` or `mc2` given beside a species. A knob-given energy is
+checked only when it resolves (the bare `DomainError` of the derived tree's
+`sqrt`, the open row of `todo.md`).
+
+Consumers: [`Lattice`](@ref) carries it (a knob-given energy must read knobs
+under the lattice's declared roots, like every expression of the line);
+`Beam(N, policy; reference = ref)` takes `charge`, `mc2`, `E0` and `r0` from
+it (resolving a knob-given energy at construction); the cavities take `beta0`
+and `gamma0` (`thin_rf_cavity(f; voltage = V, reference = ref)`).
 """
-struct ReferenceParticle
+struct ReferenceParticle{E}
     charge::Float64
     mc2::Float64
-    E0::Float64
+    # The typed energy key as its index into `_REFERENCE_ENERGY_KEYS` (a
+    # `Symbol` field would cost the record its isbits property, which the
+    # numeric form keeps); read as the property `energy_key`.
+    energy_index::UInt8
+    E0::E
+    p0c::E
+    gamma0::E
+    beta0::E
+    brho::E
+    r0::Float64
 end
 
-function ReferenceParticle(; charge, mc2, E0=nothing, p0c=nothing)
+"""The four spellings of the energy, the key typed at construction being the stored parameter."""
+const _REFERENCE_ENERGY_KEYS = (:E0, :p0c, :gamma0, :brho)
+_reference_energy_index(key::Symbol) = UInt8(findfirst(==(key), _REFERENCE_ENERGY_KEYS))
+
+# `ref.energy_key` is the typed key as a `Symbol`; every other property is a field.
+Base.getproperty(ref::ReferenceParticle, s::Symbol) =
+    s === :energy_key ? _REFERENCE_ENERGY_KEYS[getfield(ref, :energy_index)] : getfield(ref, s)
+Base.propertynames(::ReferenceParticle) =
+    (:charge, :mc2, :energy_key, :E0, :p0c, :gamma0, :beta0, :brho, :r0)
+
+# The species presets: the charge in units of e and the rest energy, BY NAME
+# from the shared constants, the energy still required (MAD-X's PARTICLE=PROTON
+# convenience without its defaults). An ion is spelled through the explicit
+# form. The suite pins every preset number as `===` one of the named constants.
+const _REFERENCE_SPECIES = (
+    proton=(charge=1.0, mc2=PMASS_EV),
+    electron=(charge=-1.0, mc2=EMASS_EV),
+    positron=(charge=1.0, mc2=EMASS_EV),
+)
+
+function ReferenceParticle(; charge, mc2, E0=nothing, p0c=nothing, gamma0=nothing, brho=nothing)
     # The refusals of the docstring, by name, before anything is built. An
     # OUTER constructor: the default inner one stays available to tests that
     # need a raw instance.
@@ -56,37 +123,158 @@ function ReferenceParticle(; charge, mc2, E0=nothing, p0c=nothing)
     (mc2 isa Real && isfinite(mc2) && mc2 > 0) || throw(ArgumentError(
         "ReferenceParticle: `mc2` must be a finite, positive rest energy in eV " *
         "(PMASS_EV for a proton, EMASS_EV for an electron); got $(repr(mc2))"))
-    if E0 !== nothing && p0c !== nothing
-        throw(ArgumentError(
-            "ReferenceParticle: give exactly one of `E0` (the total energy in eV) and " *
-            "`p0c` (the momentum times c in eV), not both; got E0 = $(repr(E0)) and " *
-            "p0c = $(repr(p0c))"))
-    elseif E0 === nothing && p0c === nothing
-        throw(ArgumentError(
-            "ReferenceParticle: give exactly one of `E0` (the total energy in eV) and " *
-            "`p0c` (the momentum times c in eV); neither was given"))
+    given = [(k, v) for (k, v) in zip(_REFERENCE_ENERGY_KEYS, (E0, p0c, gamma0, brho)) if v !== nothing]
+    length(given) == 1 || throw(ArgumentError(
+        "ReferenceParticle: give exactly one of `E0` (the total energy in eV), `p0c` (the " *
+        "momentum times c in eV), `gamma0` (the Lorentz factor) and `brho` (the magnetic " *
+        "rigidity in T m), not " *
+        (isempty(given) ? "none; neither was given" :
+         "$(length(given)); got " * join(("$(k) = $(repr(v))" for (k, v) in given), " and "))))
+    key, value = only(given)
+    q, m = Float64(charge), Float64(mc2)
+    if value isa Real
+        x = Float64(value)
+        isfinite(x) || throw(ArgumentError(
+            "ReferenceParticle: `$(key)` must be finite; got $(key) = $(repr(value))"))
+        if key === :E0
+            x > m || throw(ArgumentError(
+                "ReferenceParticle: `E0` is the TOTAL energy in eV and must exceed " *
+                "`mc2` = $(m) eV (a reference at rest has no direction and beta0 = 0 " *
+                "divides every cavity); got E0 = $(repr(value))"))
+        elseif key === :gamma0
+            x > 1 || throw(ArgumentError(
+                "ReferenceParticle: `gamma0` is the Lorentz factor and must exceed 1 (a " *
+                "reference at rest has no direction and beta0 = 0 divides every cavity); " *
+                "got gamma0 = $(repr(value))"))
+        else
+            x > 0 || throw(ArgumentError(
+                "ReferenceParticle: `$(key)` must be a positive " *
+                (key === :p0c ? "momentum times c in eV" : "magnetic rigidity in T m") *
+                "; got $(key) = $(repr(value))"))
+        end
+        d = _reference_derive(q, m, key, x)
+        return ReferenceParticle{Float64}(q, m, _reference_energy_index(key), d.E0, d.p0c, d.gamma0,
+                                          d.beta0, d.brho, _reference_r0(m))
     end
-    if E0 !== nothing
-        (E0 isa Real && isfinite(E0) && E0 > mc2) || throw(ArgumentError(
-            "ReferenceParticle: `E0` is the TOTAL energy in eV and must exceed " *
-            "`mc2` = $(mc2) eV (a reference at rest has no direction and beta0 = 0 " *
-            "divides every cavity); got E0 = $(repr(E0))"))
-        return ReferenceParticle(Float64(charge), Float64(mc2), Float64(E0))
-    end
-    (p0c isa Real && isfinite(p0c) && p0c > 0) || throw(ArgumentError(
-        "ReferenceParticle: `p0c` must be a finite, positive momentum times c in eV; " *
-        "got $(repr(p0c))"))
-    return ReferenceParticle(Float64(charge), Float64(mc2),
-                             sqrt(Float64(p0c)^2 + Float64(mc2)^2))
+    value isa AbstractKnobExpression || throw(ArgumentError(
+        "ReferenceParticle: `$(key)` must be a number or a knob expression (@knob_expr(...)); " *
+        "got $(repr(value))"))
+    d = _reference_derive(q, m, key, value)
+    return ReferenceParticle{AbstractKnobExpression}(q, m, _reference_energy_index(key), d.E0, d.p0c,
+                                                     d.gamma0, d.beta0, d.brho, _reference_r0(m))
 end
 
-reference_beta_gamma(ref::ReferenceParticle) = reference_beta_gamma(ref.E0, ref.mc2)
-reference_beta(ref::ReferenceParticle) = reference_beta(ref.E0, ref.mc2)
-reference_gamma(ref::ReferenceParticle) = reference_gamma(ref.E0, ref.mc2)
+function ReferenceParticle(species::Symbol; kwargs...)
+    haskey(_REFERENCE_SPECIES, species) || throw(ArgumentError(
+        "ReferenceParticle: unknown species $(repr(species)); the presets are " *
+        join((":$(k)" for k in keys(_REFERENCE_SPECIES)), ", ") *
+        ". Spell another species through the explicit form ReferenceParticle(; charge, mc2, " *
+        "E0 | p0c | gamma0 | brho)"))
+    preset = _REFERENCE_SPECIES[species]
+    for k in (:charge, :mc2)
+        haskey(kwargs, k) && throw(ArgumentError(
+            "ReferenceParticle(:$(species)): `$(k)` is fixed by the species preset " *
+            "($(k) = $(preset[k])); drop it, or use the explicit form " *
+            "ReferenceParticle(; charge, mc2, ...)"))
+    end
+    return ReferenceParticle(; charge=preset.charge, mc2=preset.mc2, kwargs...)
+end
+
+"""The classical radius of a unit charge of rest energy `mc2`, `RE * ME0 / mc2` in metres (R3)."""
+_reference_r0(mc2::Float64) = RE * ME0 / mc2
+
+"""
+    _reference_derive(charge, mc2, key, value) -> (; E0, p0c, gamma0, beta0, brho)
+
+The derived quantities of a reference from the typed energy `value` under
+`key`, through `_knob_arith` and `_reference_pair_fold`, so a number gives
+numbers by the formulas of `reference_gamma` and `reference_beta` (bitwise
+what the accessors computed from `E0` and `mc2` before the fields existed)
+and a knob expression gives expression trees over the whitelisted operations
+(design D10). The typed value is returned in its own slot unchanged.
+"""
+function _reference_derive(charge::Float64, mc2::Float64, key::Symbol, value)
+    c_q = CLIGHT * abs(charge)
+    E0 = key === :E0 ? value :
+         key === :p0c ? _knob_arith(:sqrt, _knob_arith(:+, _knob_arith(:*, value, value), mc2 * mc2)) :
+         key === :gamma0 ? _knob_arith(:*, value, mc2) :
+         begin
+             p = _knob_arith(:*, value, c_q)
+             _knob_arith(:sqrt, _knob_arith(:+, _knob_arith(:*, p, p), mc2 * mc2))
+         end
+    p0c = key === :p0c ? value :
+          key === :brho ? _knob_arith(:*, value, c_q) :
+          _knob_arith(:sqrt, _knob_arith(:*, _knob_arith(:-, E0, mc2), _knob_arith(:+, E0, mc2)))
+    beta0, g = _reference_pair_fold(E0, mc2)
+    gamma0 = key === :gamma0 ? value : g
+    if key === :gamma0
+        # The typed Lorentz factor is the stored one; beta0 follows from it by
+        # the same factored form the pair fold uses.
+        beta0 = _knob_arith(:/, _knob_arith(:sqrt, _knob_arith(:*, _knob_arith(:-, gamma0, 1),
+                                                                 _knob_arith(:+, gamma0, 1))), gamma0)
+    end
+    brho = key === :brho ? value : _knob_arith(:/, p0c, c_q)
+    return (; E0, p0c, gamma0, beta0, brho)
+end
+
+"""The energy value as typed at construction: `getfield(ref, ref.energy_key)`, a number or a knob expression."""
+reference_energy(ref::ReferenceParticle) = getfield(ref, ref.energy_key)
+
+reference_beta_gamma(ref::ReferenceParticle) = (ref.beta0, ref.gamma0)
+reference_beta(ref::ReferenceParticle) = ref.beta0
+reference_gamma(ref::ReferenceParticle) = ref.gamma0
+
+# Structural equality over the stored inputs: charge, mass, the typed key and
+# its value (a knob expression as a tree); the derived fields follow from them.
+Base.:(==)(a::ReferenceParticle, b::ReferenceParticle) =
+    a.charge == b.charge && a.mc2 == b.mc2 && a.energy_key === b.energy_key &&
+    reference_energy(a) == reference_energy(b)
+Base.hash(a::ReferenceParticle, h::UInt) =
+    hash((:reference_particle, a.charge, a.mc2, a.energy_key, reference_energy(a)), h)
 
 function Base.show(io::IO, ref::ReferenceParticle)
-    # One line, with units: ReferenceParticle(charge = 1.0, mc2 = 9.38e8 eV, E0 = 3.0e9 eV)
-    print(io, "ReferenceParticle(charge = ", ref.charge, ", mc2 = ", ref.mc2, " eV, E0 = ", ref.E0, " eV)")
+    # One line, with units, the energy under its typed key:
+    # ReferenceParticle(charge = 1.0, mc2 = 9.38e8 eV, E0 = 3.0e9 eV)
+    key = ref.energy_key
+    unit = key === :gamma0 ? "" : key === :brho ? " T m" : " eV"
+    print(io, "ReferenceParticle(charge = ", ref.charge, ", mc2 = ", ref.mc2, " eV, ", key, " = ",
+          reference_energy(ref), unit, ")")
+end
+
+"""
+    _lattice_check_reference_knob_roots(reference, roots) -> nothing
+
+The D7 tripwire for the reference particle (R4, 2026-11-26): a knob-given
+energy must read knobs under one of the lattice's declared roots, transitively,
+exactly as the line's expressions must (`_lattice_check_knob_roots`); refused
+by name with the key, the expression text, the knob path and the roots. A
+numeric reference, or none, has nothing to check.
+"""
+function _lattice_check_reference_knob_roots(reference, roots::Tuple{Vararg{Symbol}})
+    reference === nothing && return nothing
+    value = reference_energy(reference)
+    value isa AbstractKnobExpression || return nothing
+    prefixes = map(string, roots)
+    key = reference.energy_key
+    for d in _site_knobs(value)
+        deps = _lattice_knob_declared(d) ? knob_dependencies(d; transitive=true) : Symbol[]
+        for p in (d, deps...)
+            any(r -> _knob_under_prefix(p, r), prefixes) && continue
+            via = p === d ? "" : " (a dependency of knob $(d))"
+            isempty(roots) && throw(ArgumentError(
+                "Lattice: the reference particle reads knob $(p)$(via) in its $(key) = " *
+                "$(string(value)), but the lattice declares no knob root. Name the knob " *
+                "namespace(s) the lattice's expressions live under: knob_root=:" *
+                "$(first(split(string(p), '.')))"))
+            throw(ArgumentError(
+                "Lattice: knob $(p)$(via), read by the reference particle's $(key) = " *
+                "$(string(value)), lies outside the declared knob root(s) " *
+                "$(join(prefixes, ", ")): every knob the lattice depends on must sit under " *
+                "a declared root. Add its namespace to knob_root, or move the knob under a " *
+                "declared root."))
+        end
+    end
+    return nothing
 end
 
 """
@@ -111,7 +299,9 @@ Two tripwires run at construction, so a convention becomes a check (D7):
   line's expressions depend on, transitively and through placement overrides,
   must sit under one of the declared roots; a dependency outside them, or any
   dependency when no root is declared, is refused by name with the element's
-  provenance path, the parameter, the knob path and the declared roots.
+  provenance path, the parameter, the knob path and the declared roots. A
+  reference particle whose energy is a knob expression (R4, 2026-11-26) is
+  checked by the same rule, with the energy key in place of the path.
 - **Numeric type.** The compile's own answer, re-read against `eltype`. An
   element built by a kind's typed form (`Spec{T}` or `numeric_type=T`) must
   store exactly `eltype`; an element built by an untyped friendly constructor
@@ -192,6 +382,7 @@ function Lattice(name::AbstractString; line, reference::Union{Nothing,ReferenceP
     roots = _lattice_knob_roots(knob_root)
     _lattice_check_eltype(line, eltype)
     _lattice_check_knob_roots(line, roots)
+    _lattice_check_reference_knob_roots(reference, roots)
     return Lattice(String(name), line, reference, roots, eltype)
 end
 
@@ -381,12 +572,13 @@ function _lattice_check_params_eltype(site::AbstractString, k::Symbol, params::A
                                       ::Type{T}) where {T}
     stored = get(params, :numeric_type, nothing)
     if stored !== nothing
-        stored === T && return nothing
-        throw(ArgumentError(
+        stored === T || throw(ArgumentError(
             "Lattice: $(site) ($(k)) stores numeric_type = $(stored), but the lattice's " *
             "numeric type is $(T), and every element of a lattice shares its eltype. Build " *
             "the element with $(_lattice_typed_form(k, T)), or declare the lattice with " *
             "eltype=$(stored)."))
+        _lattice_check_typed_values(site, k, params, T)
+        return nothing
     end
     P = _lattice_params_numeric_type(params)
     P === T && return nothing
@@ -394,8 +586,39 @@ function _lattice_check_params_eltype(site::AbstractString, k::Symbol, params::A
         "Lattice: $(site) ($(k)) compiles in $(P), not the lattice's numeric type $(T): an " *
         "untyped element's type is the promotion of its stored numeric parameters over the " *
         "Float64 floor (`numeric_type`), never narrower than Float64, and a task refuses a " *
-        "$(T) beam at an element compiled in $(P) by name. Build the element with " *
-        "$(_lattice_typed_form(k, T)), or declare the lattice with eltype=$(P)."))
+        "$(T) beam at an element compiled in $(P) by name. " * _lattice_eltype_remedy(k, T, P)))
+end
+
+"""
+    _lattice_check_typed_values(site, k, params, T)
+
+The R6 half of the typed element's check (2026-11-26, the audit's B-11): a typed
+element holds no value wider than its type. The merged view includes placement
+overrides, so an in-place override, `with_overrides`, the spec route, the
+flexible form and the snapshot reader all refuse here, with the typed form's own
+message (`_numeric_type_refusal`) behind the provenance path.
+"""
+function _lattice_check_typed_values(site::AbstractString, k::Symbol, params::AbstractDict,
+                                     ::Type{T}) where {T}
+    for key in sort!(collect(keys(params)); by=string)
+        key === :numeric_type && continue
+        W = _widest_float_type(params[key])
+        (W === nothing || _numeric_type_holds(T, W)) || throw(ArgumentError(
+            "Lattice: $(site) ($(k)): " * _numeric_type_refusal(T, W, key)))
+    end
+    return nothing
+end
+
+# The remedy of an untyped element or line whose promotion `P` differs from the
+# lattice's `T`: the typed form narrows a Float64 (or narrower) value into `T`,
+# so it is the remedy exactly when `T` holds `P` (R6); a value wider than
+# Float64 has no typed form to narrow into and the remedies are the value in
+# Float64 or narrower, or a lattice of its type.
+function _lattice_eltype_remedy(k::Symbol, ::Type{T}, ::Type{P}) where {T,P}
+    _numeric_type_holds(T, P) && return "Build the $(k === :line ? "line" : "element") with " *
+        "$(_lattice_typed_form(k, T)), or declare the lattice with eltype=$(P)."
+    return "A typed element never narrows a value wider than Float64 (R6, 2026-11-26), so give " *
+        "the value in Float64 or narrower, or declare the lattice with eltype=$(P)."
 end
 
 # A line kept whole: its wrap is built in `_wrap_numeric_type(spec, inner)`
@@ -409,12 +632,13 @@ function _lattice_check_line_eltype(site::AbstractString, params::AbstractDict,
                                     spec::ElementSpec{:line}, ::Type{T}) where {T}
     stored = get(params, :numeric_type, nothing)
     if stored !== nothing
-        stored === T && return nothing
-        throw(ArgumentError(
+        stored === T || throw(ArgumentError(
             "Lattice: $(site) (line) stores numeric_type = $(stored), but the lattice's " *
             "numeric type is $(T), and every element of a lattice shares its eltype. Build " *
             "the line with $(_lattice_typed_form(:line, T)), or declare the lattice with " *
             "eltype=$(stored)."))
+        _lattice_check_typed_values(site, :line, params, T)
+        return nothing
     end
     own = _lattice_params_numeric_type(params)
     wrap = !_lattice_line_has_element_members(spec) ? own :
@@ -425,8 +649,7 @@ function _lattice_check_line_eltype(site::AbstractString, params::AbstractDict,
         "a line kept whole is wrapped in its members' type while its own parameters " *
         "promote to the Float64 floor; a wider value (a BigFloat or dual offset) widens " *
         "the wrap (`_wrap_numeric_type`), and a line with no element member has only its " *
-        "own type ($(own)). Build the line with $(_lattice_typed_form(:line, T)), or " *
-        "declare the lattice with eltype=$(wrap)."))
+        "own type ($(own)). " * _lattice_eltype_remedy(:line, T, wrap)))
 end
 
 # Whether a line holds at least one element placement, nested lines descended:

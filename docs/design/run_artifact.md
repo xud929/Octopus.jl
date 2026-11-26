@@ -119,6 +119,16 @@ position as attributes:
     /turn_modulation/3/state              RESERVED for a stateful rule's
                              checkpoint (turn_modulation_record.md, D10);
                              written by nothing today
+    /machine_snapshots/<sha256> one string dataset per distinct machine
+                             snapshot text (`machine_toml(machine)`),
+                             content-addressed by SHA-256 over the text's
+                             bytes and referenced by the ledger rows'
+                             machine_sha256; attr bytes (the text's byte
+                             count, for the table of contents); present
+                             only when a row embedded one; not a product
+                             kind (2026-11-26, R9 of
+                             machine_description_followups.md; the
+                             paragraph "The content-addressed snapshot")
     /machine_tables/<sha256> one Float64 dataset per distinct bulk table (a
                              TurnTable's offsets) the embedded machine
                              snapshot references, content-addressed by
@@ -846,6 +856,43 @@ absent columns belong to (the seed columns, 2026-10-16; the machine columns,
 2026-11-25): a padded empty machine column would claim "built from tuples"
 of rows that recorded nothing either way. Reading an old file stays
 possible: the two columns read `nothing`.
+
+**The content-addressed snapshot (R9 of
+[`machine_description_followups.md`](machine_description_followups.md),
+owner decision 2026-11-26; implemented in the compile-path batch, record
+`../history/machine_description_compile_path1_2026_11_26.md`).** Measured
+on the layout above: rendering the shipped strong-strong example's machine
+costs 1.1 ms per `execute!` (14 kB) and a 10,000-element ring 130 ms
+(1.47 MB); the digest through `SHA.sha256(::String)` took the generic byte
+path at about 3 microseconds per byte (4.56 s for the 1.47 MB text against
+6.5 ms for the same bytes as a `Vector{UInt8}`); and the text column
+repeated the snapshot in every row, so a per-turn loop of 100,000 `execute!`
+calls carried 1.4 GB of repeated text for the small example and 150 GB for
+the large ring. The layout, not the snapshot, was the problem. Since
+2026-11-26 the text is written ONCE per distinct digest under
+`/machine_snapshots/<sha256>` as a string dataset carrying its byte count as
+the attribute `bytes` (content-addressed exactly as `/machine_tables`, and
+written before the row that references it, so a writer stopped between the
+two leaves an unreferenced snapshot and never a dangling digest), the ledger
+row keeps `machine_sha256` only (64 bytes per row; `_RA_LEDGER_COLUMNS` no
+longer lists a text column), the digest is taken over the text's bytes
+(`_ra_text_digest`), and each task caches the rendered text, its digest and
+its tables on the knob and spec epochs (`machine_snapshot_cache`), so a
+machine is rendered once per distinct machine state rather than once per
+`execute!`. `RunArtifact(path; machine_snapshot = true)` (both constructors;
+the schema entry in `run_artifact_option_schema()`) switches the embedding:
+with `false` neither text nor tables are written, the row's column reads
+`"disabled"`, and `read(out, :machine)` and `read_machine(out)` refuse by
+name saying the artifact was written without a snapshot; a task built from
+tuples records `""` either way. The `:run_artifact_output` receipt carries
+`machine_snapshot` (the request) beside `machine_recorded` (`:snapshot`,
+`:disabled`, `:none`, `:refused`). Readers: `read(out, :machine; slot)`
+resolves the row's digest under `/machine_snapshots` and, on a file of the
+2026-11-25 layout, falls back to the row's `machine_toml` column checked
+against the digest; a 2026-11-25 file is continued, its text column kept
+aligned with an empty entry per new row; the table of contents maps
+`machine_snapshots` to `digest => bytes`. The paragraph above describes the
+layout stage 4 landed and stays as its record.
 
 ## Migration
 

@@ -509,10 +509,13 @@ end
     _toml_encode_object(x::PredicateSchedule, ctx)
 
 A schedule by its `schedule_option_schema`: `AlwaysSchedule` is
-`{ type = "AlwaysSchedule" }` alone, `EveryNSteps` prints `start`, `stop`
-(the default `typemax(Int)` as that integer) and `step`, `AtTurns` prints
-`turns` as the sorted array of its set; rebuilt through `EveryNSteps(; ...)`
-and `AtTurns(Set)`. A `PredicateSchedule` holds the predicate function and
+`{ type = "AlwaysSchedule" }` alone, `EveryNSteps` prints `start`, `step` and
+`stop` only when one was given (the default, `typemax(Int)`, "no stop", is
+left out and read back as the constructor's default; R8d of the follow-ups
+note, 2026-11-26, closing the audit's C-6, which saw `stop =
+9223372036854775807` in every snapshot of a default schedule), `AtTurns`
+prints `turns` as the sorted array of its set; rebuilt through
+`EveryNSteps(; ...)` and `AtTurns(Set)`. A `PredicateSchedule` holds the predicate function and
 is refused by name (on `_toml_refused_object_types`); a schedule type whose
 schema declares a `Function` option is refused the same way.
 """
@@ -522,7 +525,10 @@ function _toml_encode_object(x::AbstractSchedule, ctx::_TomlContext)
         meta.option_type === Function && _toml_refuse(ctx,
             "a $(nameof(typeof(x))) schedule holds the function `$(key)` and cannot be snapshotted")
     end
-    return _toml_schema_table(x, schema, x, ctx)
+    tbl = _toml_schema_table(x, schema, x, ctx)
+    # "No stop" is the constructor's default, not a number anyone typed.
+    x isa EveryNSteps && x.stop == typemax(Int) && delete!(tbl, "stop")
+    return tbl
 end
 _toml_encode_object(x::PredicateSchedule, ctx::_TomlContext) = _toml_refuse(ctx,
     "a PredicateSchedule holds the function `predicate` and cannot be snapshotted; " *

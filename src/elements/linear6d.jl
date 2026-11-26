@@ -574,6 +574,7 @@ end
 
 @element_spec begin
     kind = :linear6d
+    rng_consumer = :particle_tunes           # the stream class of `rng_id` (R8b, 2026-11-26)
     spec_type = ElementSpec{:linear6d}
     friendly_constructor = Linear6DSpec
     runtime_type = Linear6D

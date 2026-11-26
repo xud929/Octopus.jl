@@ -78,7 +78,8 @@ struct PendingProbeBind
 end
 
 """
-    RunArtifact(path; append=false, capacity=64, record_turn_modulation=false, storage=:file)
+    RunArtifact(path; append=false, capacity=64, record_turn_modulation=false, storage=:file,
+                machine_snapshot=true)
 
 The one-output-file-per-task sink (docs/design/run_artifact.md): an HDF5 file
 with one group per producer, owned by the task that carries it. With
@@ -248,6 +249,24 @@ Inactive on a line with no modulated element: there is nothing to record and
 nothing is written, as the provenance writes nothing for such an `execute!`.
 Structured metadata: [`run_artifact_option_schema`](@ref).
 
+`machine_snapshot=true` (default) embeds the description of the machine a
+task built from a `Lattice` or a `Machine` was given (design D14; the layout
+of R9, `docs/design/machine_description_followups.md`, 2026-11-26): the TOML
+text `machine_toml(machine)` is written ONCE per distinct text under
+`/machine_snapshots/<sha256>`, content-addressed like the bulk tables under
+`/machine_tables`, and each `execute!`'s ledger row carries the digest in
+`machine_sha256` (64 bytes per row; the 2026-11-25 layout repeated the text
+in every row, 1.4 GB over 100,000 single-turn rows of the shipped example,
+and such a file still reads). The text is rendered and digested once per
+distinct machine state -- the task caches it on the knob and spec epochs --
+and the digest is taken over the text's bytes (the string path cost 3
+microseconds per byte). `false` writes neither text nor digest and the row's
+column reads `"disabled"`, so `read(out, :machine)` and `read_machine(out)`
+refuse by name saying the artifact was written without a snapshot; a task
+built from tuples records nothing either way (`""`). A value that is not
+`true` or `false` is refused by name. Carried by the `:run_artifact_output`
+receipt as `machine_snapshot` beside `machine_recorded` (what happened).
+
 **What the prepare resolved** is on record once per `execute!` as the
 `:run_artifact_output` receipt (`with_execution_audit`; 2026-10-16 fix batch,
 S4-1/S4-2), recorded by `prepare_run_artifact!` itself -- the one consumer
@@ -257,7 +276,10 @@ last refusal: `task` (the carrying task's kind), `artifact` (the path),
 was continued, or the file was created fresh), `capacity` (the batching every
 row producer and recorder uses), `record_turn_modulation` (the request)
 beside `recording` (recorders built: the switch on AND the line has a
-modulated element) and `execution` (the ledger row appended). Each task kind
+modulated element), `machine_snapshot` (the request) beside
+`machine_recorded` (`:snapshot`, `:disabled`, `:none` for a task without a
+machine, `:refused` for a machine the codec refused) and `execution` (the
+ledger row appended). Each task kind
 records its own output receipt beside it (`:tracking_output`,
 `:strong_strong_output`) with the artifact path and the luminosity channels
 it opened.
@@ -305,6 +327,14 @@ mutable struct RunArtifact <: AbstractRunArtifact
     # image in process memory (the library's core driver without a backing
     # store) that reaches disk only through `save_run_artifact`.
     storage::Symbol
+    # Whether the machine snapshot is embedded (R9 of
+    # docs/design/machine_description_followups.md, 2026-11-26): with `true` a
+    # task built from a `Lattice` or a `Machine` writes its TOML snapshot under
+    # `/machine_snapshots/<sha256>` once per distinct text and the digest into
+    # the ledger row; with `false` neither is written and the row's digest
+    # column reads `_RA_MACHINE_SNAPSHOT_DISABLED`, so the machine readers
+    # refuse by name saying the artifact was written without one.
+    machine_snapshot::Bool
     # execute!-scoped state
     file::Union{Nothing,HDF5.File}
     # Memory storage only: the image the last `execute!` left, kept between
@@ -341,6 +371,13 @@ mutable struct RunArtifact <: AbstractRunArtifact
     # path that does not exist yet is created fresh under `append=true`). The
     # `:run_artifact_output` receipt carries it (2026-10-16 fix batch, S4-2).
     continued::Bool
+    # What the prepare did with the machine snapshot (R9, 2026-11-26),
+    # execute!-scoped on rank 0, for the `:run_artifact_output` receipt:
+    # `:snapshot` (the text is under /machine_snapshots and the row holds its
+    # digest), `:disabled` (`machine_snapshot = false` with a machine present),
+    # `:none` (the task carries no machine), `:refused` (the codec refused the
+    # machine and the prepare warned by name).
+    machine_recorded::Symbol
     # The window protocol (2026-10-19 fix batch, F-56/F-58), execute!-scoped on
     # rank 0: the window's first turn the replay rule truncates against, the
     # probes bound and not yet committed, and whether `commit_run_artifact!`
@@ -352,23 +389,28 @@ mutable struct RunArtifact <: AbstractRunArtifact
 end
 
 function RunArtifact(path::AbstractString; append=false, capacity=64,
-                     record_turn_modulation=false, storage=:file)
-    return _run_artifact(String(path), append, capacity, record_turn_modulation, storage)
+                     record_turn_modulation=false, storage=:file, machine_snapshot=true)
+    return _run_artifact(String(path), append, capacity, record_turn_modulation, storage,
+                         machine_snapshot)
 end
 
 """
-    RunArtifact(; storage=:memory, append=false, capacity=64, record_turn_modulation=false)
+    RunArtifact(; storage=:memory, append=false, capacity=64, record_turn_modulation=false,
+                machine_snapshot=true)
 
 The path-less form, in-memory storage only (`storage = :file` needs a path and
 is refused by name): the artifact's label is `"<memory>"`, `append = true`
 continues the image within the process only, and `save_run_artifact(artifact,
 path)` needs its path spelled out.
 """
-function RunArtifact(; append=false, capacity=64, record_turn_modulation=false, storage=:file)
-    return _run_artifact(nothing, append, capacity, record_turn_modulation, storage)
+function RunArtifact(; append=false, capacity=64, record_turn_modulation=false, storage=:file,
+                     machine_snapshot=true)
+    return _run_artifact(nothing, append, capacity, record_turn_modulation, storage,
+                         machine_snapshot)
 end
 
-function _run_artifact(path::Union{Nothing,String}, append, capacity, record_turn_modulation, storage)
+function _run_artifact(path::Union{Nothing,String}, append, capacity, record_turn_modulation, storage,
+                       machine_snapshot)
     # Refused BY NAME (2026-10-16 neighbour audit, S4-6): `append=1` used to
     # die in a TypeError that named no keyword, and `capacity=true` was
     # accepted as 1 because `Integer` admits `Bool`.
@@ -389,6 +431,10 @@ function _run_artifact(path::Union{Nothing,String}, append, capacity, record_tur
     # live in memory -- there is no file to write otherwise.
     (storage isa Symbol && storage in (:file, :memory)) || throw(ArgumentError(
         "RunArtifact storage must be :file or :memory; got $(repr(storage))."))
+    # Refused BY NAME, as the others (R9, 2026-11-26): `machine_snapshot = 1`
+    # is not a request this option understands.
+    machine_snapshot isa Bool || throw(ArgumentError(
+        "RunArtifact machine_snapshot must be true or false; got $(repr(machine_snapshot))."))
     if path === nothing
         storage === :memory || throw(ArgumentError(
             "RunArtifact storage=:file needs a path: construct RunArtifact(path; ...) for a " *
@@ -399,10 +445,11 @@ function _run_artifact(path::Union{Nothing,String}, append, capacity, record_tur
             "RunArtifact: the path $(repr(_RA_MEMORY_LABEL)) is reserved as the label of an " *
             "in-memory artifact constructed without a path."))
     end
-    return RunArtifact(path, Bool(append), cap, record_turn_modulation, storage, nothing, nothing,
+    return RunArtifact(path, Bool(append), cap, record_turn_modulation, storage, machine_snapshot,
+                       nothing, nothing,
                        TurnModulationRecorder[],
                        Dict{String,Vector{Int64}}(), Dict{String,Vector{Float64}}(),
-                       0, UInt64(0), false, Int64(0), Set{String}(), nothing, false,
+                       0, UInt64(0), false, Int64(0), Set{String}(), nothing, false, :none,
                        Int64(0), false, PendingProbeBind[])
 end
 
@@ -447,11 +494,12 @@ end
     run_artifact_option_schema() -> NamedTuple
 
 Public configuration options of [`RunArtifact`](@ref) -- `append`, `capacity`,
-`record_turn_modulation` and `storage` -- as `ConfigurationOptionMeta`, the
+`record_turn_modulation`, `storage` and `machine_snapshot` -- as
+`ConfigurationOptionMeta`, the
 twin of `tracking_task_option_schema()`. Checked by
 `validate_configuration_metadata()`: every key is a field of the type, every
 declared default equals what the constructor builds, and every option names
-the runtime boundary that applies it. All four name the `:run_artifact_output`
+the runtime boundary that applies it. All five name the `:run_artifact_output`
 receipt, which
 `prepare_run_artifact!` -- the one boundary that applies them, reached from
 both task kinds -- records once per `execute!` after its last refusal, with
@@ -460,7 +508,11 @@ existing file continued, or created fresh), `capacity` as every row-shaped
 producer and recorder batches by it, `record_turn_modulation` beside
 `recording` (recorders built: the switch on AND the line has a modulated
 element), `storage` as the mode the rows live in (`:file` or `:memory`; the
-image a memory run keeps reaches disk only through `save_run_artifact`), and
+image a memory run keeps reaches disk only through `save_run_artifact`),
+`machine_snapshot` (the request) beside `machine_recorded` (what happened:
+`:snapshot`, the text under `/machine_snapshots` and its digest in the row;
+`:disabled`; `:none`, the task carries no machine; `:refused`, the codec
+refused it and the prepare warned), and
 the ledger row `execution`. Before the 2026-10-16 fix batch
 (neighbour audit S4-1, S4-2) `append` and `record_turn_modulation` named the
 `:strong_strong_output` receipt, unreachable from a `TrackingTask` and
@@ -531,6 +583,20 @@ run_artifact_option_schema() = (
         "than :file or :memory is refused by name. Carried as applied by the " *
         ":run_artifact_output receipt's `storage`.";
         category=:output, consumer=:run_artifact_output),
+    machine_snapshot=ConfigurationOptionMeta(Bool, true,
+        "Embed the TOML snapshot of the machine a task built from a Lattice or a Machine " *
+        "was given (design D14; the layout of R9, docs/design/machine_description_followups.md, " *
+        "2026-11-26): `true` (default) writes the text once per distinct text under " *
+        "/machine_snapshots/<sha256>, content-addressed, and each execute!'s ledger row carries " *
+        "the digest in `machine_sha256`, rendered and digested once per distinct machine state " *
+        "(cached on the knob and spec epochs); `false` writes neither text nor digest, the row's " *
+        "column reads \"disabled\", and read(out, :machine) and read_machine(out) refuse by name " *
+        "saying the artifact was written without a snapshot. Inactive on a task built from " *
+        "tuples, a vector or a bare line (no machine to embed; the row reads \"\" either way). " *
+        "A value other than true or false is refused by name. Resolved at prepare: the " *
+        ":run_artifact_output receipt's `machine_snapshot` is the request and `machine_recorded` " *
+        "what happened (:snapshot, :disabled, :none, :refused).";
+        category=:output, consumer=:run_artifact_output),
 )
 
 # ---------------------------------------------------------------------------
@@ -569,6 +635,8 @@ function _ra_output_receipt(art::RunArtifact, task_kind::AbstractString, turn_mo
             capacity=art.capacity,
             record_turn_modulation=art.record_turn_modulation, recording=recording,
             storage=art.storage,
+            machine_snapshot=art.machine_snapshot,
+            machine_recorded=root ? art.machine_recorded : nothing,
             execution=root ? art.execution_slot : nothing)
 end
 
@@ -844,52 +912,105 @@ end
 # global seed nowhere: after a `set_global_rng!` between two windows its only
 # mention of a seed was a spectral table's canonical name.
 #
-# The machine columns (the machine description, design D14; stage 4,
-# 2026-11-25): `machine_toml` is the TOML snapshot text of the machine the
-# task was built from (`machine_toml(machine, tables)`, byte for byte what
-# `write_machine` writes, so the description that produced a run is in the
-# run's file), and `machine_sha256` the SHA-256 hex digest of that text, the
-# cheap identity for comparing two runs' descriptions without parsing them.
-# Both are the empty string when the task recorded no machine: it was built
-# from tuples, a vector or a bare line, or its machine could not be
-# snapshotted (a function-valued parameter; the prepare warned by name).
-# The snapshot's bulk tables (a `TurnTable`'s offsets) go under
-# `/machine_tables/<sha256>`, one Float64 dataset per distinct table, shared
-# by every row that references them. Readers: `read(out, :machine)` (the
-# text of one row), `read_machine(out)` (the machine rebuilt with its tables),
-# `read(out, :execution).machine_sha256`.
+# The machine column (the machine description, design D14; stage 4,
+# 2026-11-25; the layout of R9, docs/design/machine_description_followups.md,
+# 2026-11-26): `machine_sha256` is the SHA-256 hex digest of the TOML snapshot
+# text of the machine the task was built from (`machine_toml(machine,
+# tables)`, byte for byte what `write_machine` writes), and the text itself is
+# stored ONCE per distinct digest under `/machine_snapshots/<sha256>`, content-
+# addressed like the bulk tables, so a loop of single-turn `execute!` calls
+# carries 64 bytes per row and one copy of the description (the stage-4 layout
+# repeated the text in every row as a `machine_toml` column: 1.4 GB over
+# 100,000 rows of the shipped example; a file of that layout still reads, and
+# a writer continuing one keeps its text column aligned with an empty entry).
+# The digest is the empty string when the task recorded no machine (built from
+# tuples, a vector or a bare line, or a machine the codec refused; the prepare
+# warned by name) and `_RA_MACHINE_SNAPSHOT_DISABLED` when the artifact was
+# constructed with `machine_snapshot = false`. The snapshot's bulk tables (a
+# `TurnTable`'s offsets) go under `/machine_tables/<sha256>`, one Float64
+# dataset per distinct table, shared by every row that references them.
+# Readers: `read(out, :machine)` (the text of one row), `read_machine(out)`
+# (the machine rebuilt with its tables), `read(out, :execution).machine_sha256`.
 # ---------------------------------------------------------------------------
 const _RA_LEDGER_COLUMNS = (("start_turn", Int64), ("turns", Int64), ("current_turn", Int64),
                             ("elapsed", Float64), ("rng_seed", UInt64), ("rng_method", String),
-                            ("machine_toml", String), ("machine_sha256", String))
+                            ("machine_sha256", String))
+# The digest column's value when the artifact was written with
+# `machine_snapshot = false` and a machine was present: distinct from the empty
+# string (no machine), so the readers can say which one happened.
+const _RA_MACHINE_SNAPSHOT_DISABLED = "disabled"
 
 """
-    _ra_machine_snapshot(machine, path) -> (text, digest, tables)
+    _ra_machine_snapshot(machine, path[, cache]) -> (text, digest, tables)
 
-The ledger row's machine columns and the bulk tables beside them (design D14):
-`machine_toml(machine, tables)`, the SHA-256 hex digest of that text, and the
-tables dictionary the codec filled (digest => offsets); three empty values
-(`""`, `""`, an empty dictionary) for `nothing`. A codec refusal (an
+The machine snapshot of a ledger row and the bulk tables beside it (design
+D14): `machine_toml(machine, tables)`, the SHA-256 hex digest of that text,
+and the tables dictionary the codec filled (digest => offsets); three empty
+values (`""`, `""`, an empty dictionary) for `nothing`. A codec refusal (an
 `ArgumentError`: a function-valued parameter the snapshot cannot hold, refused
-by name at `write_machine` time) warns once, naming the artifact and carrying
-the codec's message, and yields the empty values: the run is not stopped for
-its by-product, and `read(out, :machine)` later refuses by name. Any other
-error propagates.
+by name at `write_machine` time) warns once per call, naming the artifact and
+carrying the codec's message, and yields the empty values: the run is not
+stopped for its by-product, and `read(out, :machine)` later refuses by name.
+Any other error propagates.
+
+The digest is taken over the text's BYTES (`_ra_text_digest`): `SHA.sha256` on
+a `String` took the generic byte path at about 3 microseconds per byte (4.56 s
+for a 1.47 MB snapshot against 6.5 ms for the same bytes as a vector; R9 of
+docs/design/machine_description_followups.md, table 1). `cache`, a `Ref` the
+task owns (`machine_snapshot_cache`), keeps the rendered text, its digest and
+its tables keyed on the knob and spec epochs -- the keys the runtime cache is
+invalidated by -- so the machine is rendered and digested once per distinct
+machine state rather than once per `execute!`; a refused machine is not
+cached, so its warning fires at every `execute!` as before.
 """
-function _ra_machine_snapshot(machine::Union{Nothing,Machine}, path::AbstractString)
+function _ra_machine_snapshot(machine::Union{Nothing,Machine}, path::AbstractString,
+                              cache::Union{Nothing,Base.RefValue{Any}}=nothing)
     tables = Dict{String,Any}()
     machine === nothing && return ("", "", tables)
+    kepoch, sepoch = knob_epoch(), _spec_epoch()
+    if cache !== nothing
+        hit = cache[]
+        if hit !== nothing && hit.kepoch == kepoch && hit.sepoch == sepoch
+            return (hit.text, hit.digest, hit.tables)
+        end
+    end
     text = try
         machine_toml(machine, tables)
     catch err
         err isa ArgumentError || rethrow()
         @warn "RunArtifact at $(path): the machine $(repr(getfield(machine, :name))) could not " *
-              "be snapshotted, so this execute!'s ledger row records an empty machine_toml " *
+              "be snapshotted, so this execute!'s ledger row records no machine digest " *
               "(read(out, :machine) will refuse by name): $(sprint(showerror, err))"
         empty!(tables)
         return ("", "", tables)
     end
-    return (text, bytes2hex(SHA.sha256(text)), tables)
+    digest = _ra_text_digest(text)
+    cache === nothing ||
+        (cache[] = (kepoch=kepoch, sepoch=sepoch, text=text, digest=digest, tables=tables))
+    return (text, digest, tables)
+end
+
+"""The SHA-256 hex digest of a text's bytes, by the vector path (`_ra_machine_snapshot`)."""
+_ra_text_digest(text::AbstractString) = bytes2hex(SHA.sha256(Vector{UInt8}(codeunits(text))))
+
+"""
+    _ra_write_machine_snapshot!(file, digest, text)
+
+Write the snapshot text under `/machine_snapshots/<sha256>` as one string
+dataset carrying its byte count as the attribute `bytes` (the table of
+contents reads it without the data), creating the group at the first snapshot
+and leaving a digest already present as it is (content-addressed: equal texts
+are one dataset however many rows reference them). Nothing is written for the
+empty digest (no machine) or the disabled marker.
+"""
+function _ra_write_machine_snapshot!(file, digest::AbstractString, text::AbstractString)
+    (isempty(digest) || digest == _RA_MACHINE_SNAPSHOT_DISABLED) && return nothing
+    g = haskey(file, "machine_snapshots") ? file["machine_snapshots"] :
+        HDF5.create_group(file, "machine_snapshots")
+    haskey(g, digest) && return nothing
+    g[digest] = String(text)
+    _ra_set_attr!(g[digest], "bytes", Int64(ncodeunits(text)))
+    return nothing
 end
 
 """
@@ -1127,18 +1248,25 @@ A's open point, 2026-10-16); the lock keeps its place before the registry.
 
 `machine` is the task's `machine` field (the machine description, design
 D14; 2026-11-25): a `Machine` when the task was built from a `Lattice` or a
-`Machine`, `nothing` otherwise. With a machine, the ledger row's
-`machine_toml` column takes its snapshot text, `machine_toml(machine,
-tables)`, and `machine_sha256` the text's SHA-256 hex digest, and every bulk
-table the snapshot references is written under `/machine_tables/<sha256>`
-(a digest already present is left as it is: the tables are content-addressed
-and shared by every row). Without one, both columns take the empty string.
-A machine the codec refuses to snapshot (a function-valued parameter, refused
-by name at `write_machine` time) is not a reason to stop the run: the prepare
-warns once with the codec's message and records the empty columns, so the
-run proceeds and `read(out, :machine)` later refuses by name. The text is
-rendered on rank 0 before the lock and the open, so a codec error touches
-nothing.
+`Machine`, `nothing` otherwise; `machine_cache` the task's
+`machine_snapshot_cache`, the `Ref` `_ra_machine_snapshot` keeps the rendered
+text under (R9, 2026-11-26). With a machine and `art.machine_snapshot` on, the
+snapshot text `machine_toml(machine, tables)` is written once under
+`/machine_snapshots/<sha256>` (a digest already present is left as it is), the
+ledger row's `machine_sha256` column takes the digest, and every bulk table
+the snapshot references is written under `/machine_tables/<sha256>` (the same
+content-addressed rule); both before the row that references them, so a
+writer stopped between them leaves an unreferenced snapshot and never a row
+whose digest resolves to nothing. With `machine_snapshot = false` neither
+text nor tables are written and the column takes
+`_RA_MACHINE_SNAPSHOT_DISABLED`, so the readers refuse by name saying so.
+Without a machine the column takes the empty string. A machine the codec
+refuses to snapshot (a function-valued parameter, refused by name at
+`write_machine` time) is not a reason to stop the run: the prepare warns once
+with the codec's message and records the empty column, so the run proceeds
+and `read(out, :machine)` later refuses by name. The text is rendered on rank
+0 before the lock and the open, so a codec error touches nothing. What was
+done is on the `:run_artifact_output` receipt as `machine_recorded`.
 """
 function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
                                first_turn::Int, planned_turns::Int;
@@ -1146,7 +1274,8 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
                                turn_modulation_columns::AbstractVector=Any[],
                                aperture_names::Union{Nothing,AbstractVector{<:AbstractString},NamedTuple}=nothing,
                                task_kind::AbstractString="prepare_run_artifact!",
-                               machine::Union{Nothing,Machine}=nothing)
+                               machine::Union{Nothing,Machine}=nothing,
+                               machine_cache::Union{Nothing,Base.RefValue{Any}}=nothing)
     art.file === nothing || error("RunArtifact at $(art.path) is already open; " *
                                   "one artifact serves one execute! at a time")
     # A recorder outlives nothing: whatever the previous execute! left is gone
@@ -1167,7 +1296,17 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
     # The machine snapshot (D14), rendered before the lock and the open so a
     # codec refusal touches nothing on disk: the text, its digest and the bulk
     # tables it references; three empty values without a machine.
-    machine_text, machine_digest, machine_tables = _ra_machine_snapshot(machine, art.path)
+    if machine !== nothing && !art.machine_snapshot
+        # The switch off: nothing of the machine is rendered or reaches the
+        # file, and the row says so (the readers refuse by name naming the
+        # keyword).
+        machine_text, machine_digest, machine_tables = "", _RA_MACHINE_SNAPSHOT_DISABLED, Dict{String,Any}()
+        machine_recorded = :disabled
+    else
+        machine_text, machine_digest, machine_tables =
+            _ra_machine_snapshot(machine, art.path, machine_cache)
+        machine_recorded = machine === nothing ? :none : isempty(machine_digest) ? :refused : :snapshot
+    end
     if _ra_in_memory(art)
         # Memory storage (2026-11-03): the retained image continued, the saved
         # file loaded, or a fresh image -- and no lock, nothing on disk to
@@ -1238,9 +1377,17 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
         # the seed and the method are those in force NOW, as this execute!
         # begins, which is what every stochastic consumer of the window keys
         # its draws on.
+        # The machine snapshot and its bulk tables BEFORE the row that
+        # references them, both content-addressed (`/machine_snapshots/<sha256>`,
+        # `/machine_tables/<sha256>`; written once per distinct text or table,
+        # so a continued file holds each once): a writer stopped between the
+        # two leaves an unreferenced snapshot, never a row whose digest
+        # resolves to nothing.
+        _ra_write_machine_snapshot!(file, machine_digest, machine_text)
+        _ra_write_machine_tables!(file, machine_tables)
         row = (Int64(first_turn), Int64(planned_turns), Int64(first_turn) - 1, 0.0,
                UInt64(global_rng_seed()), string(global_rng_method()),
-               machine_text, machine_digest)
+               machine_digest)
         length(row) == length(_RA_LEDGER_COLUMNS) || error(
             "the /execution ledger row has $(length(row)) values for " *
             "$(length(_RA_LEDGER_COLUMNS)) columns")
@@ -1249,11 +1396,16 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
             HDF5.set_extent_dims(d, (n + 1,))
             d[n + 1] = convert(T, val)
         end
+        # A file of the stage-4 layout (2026-11-25) continued by this writer
+        # carries the text column `machine_toml`; it is kept aligned with the
+        # ledger by an empty entry (this row's text is content-addressed), so
+        # every row of such a file still reads by its own rule.
+        if haskey(ex, "machine_toml")
+            d = ex["machine_toml"]
+            HDF5.set_extent_dims(d, (n + 1,))
+            d[n + 1] = ""
+        end
         art.execution_slot = n + 1
-        # The snapshot's bulk tables, content-addressed under
-        # `/machine_tables/<sha256>`: written once per distinct table, so a
-        # continued file whose rows reference one table holds it once.
-        _ra_write_machine_tables!(file, machine_tables)
         # Keyed by the ledger row just appended, so written after it: the
         # provenance groups and, with the switch on, each element's `series`
         # dataset inside the same per-element loop, so the slot group's cursor
@@ -1301,6 +1453,7 @@ function prepare_run_artifact!(art::RunArtifact, labels::Vector{String},
     end
     art.file = file
     art.continued = !fresh
+    art.machine_recorded = machine_recorded
     empty!(art.pending_turns)
     empty!(art.pending_values)
     # The resolution, on record (S4-1, S4-2): recorded last, so a refused
@@ -1499,13 +1652,15 @@ end
 """
 Every column this writer appends is in the ledger. A file lacking any of them
 predates the `rng_seed` and `rng_method` columns (2026-10-16, S5-4) or the
-`machine_toml` and `machine_sha256` columns (2026-11-25, D14) and is refused
+`machine_sha256` column (2026-11-25, D14) and is refused
 BY NAME, as found and unchanged, rather than padded: a padded seed column
 would claim a provenance the earlier rows never recorded, and a padded empty
 machine column would claim "built from tuples" of rows that recorded nothing
 either way. (This supersedes the step-1 `current_turn` padding, whose files
 lack these too.) The message names the generation(s) the absent columns
-belong to.
+belong to. A file of the stage-4 layout, which carries the text column
+`machine_toml` beside the digest, has every column this writer appends and is
+continued; the writer keeps its text column aligned (`prepare_run_artifact!`).
 """
 function _ra_check_ledger_columns(file, ctx)
     ex = file["execution"]
@@ -1517,8 +1672,8 @@ function _ra_check_ledger_columns(file, ctx)
     generations = String[]
     any(in(("rng_seed", "rng_method")), absent) &&
         push!(generations, "the ledger's rng_seed and rng_method columns (2026-10-16)")
-    any(in(("machine_toml", "machine_sha256")), absent) &&
-        push!(generations, "the ledger's machine_toml and machine_sha256 columns (2026-11-25)")
+    "machine_sha256" in absent &&
+        push!(generations, "the ledger's machine_sha256 column (2026-11-25)")
     isempty(generations) && push!(generations, "the ledger's $(join(absent, ", ")) column(s)")
     throw(ArgumentError(
         "RunArtifact(append=true): the /execution ledger at $(ctx.path) has no " *
@@ -2637,9 +2792,9 @@ _ra_contents(out::TaskOutput) = _ra_open(_ra_contents, out)
 function _ra_contents(f::HDF5.File)
     out = Dict{String,Vector{String}}()
     for kind in keys(f)
-        # The machine snapshot's bulk tables are not a product kind: they are
-        # read with the ledger's text by `read_machine` (D14).
-        String(kind) == "machine_tables" && continue
+        # The machine snapshots and their bulk tables are not product kinds:
+        # `read(out, :machine)` and `read_machine` read them (D14, R9).
+        String(kind) in ("machine_tables", "machine_snapshots") && continue
         obj = f[kind]
         # Named-group kinds list their probe/channel names; single
         # products (losses, execution) are present with no names.
@@ -3100,22 +3255,29 @@ turn_modulation_provenance(art::RunArtifact) =
     _ra_open(_ra_turn_modulation_or_empty, TaskOutput(art))
 
 """
-    _ra_machine_text(ex, slot, path) -> String
+    _ra_machine_text(f, ex, slot, path) -> String
 
-The `machine_toml` text of one `/execution` ledger row (design D14): the last
-row, or row `slot`. Refused by name: a ledger without the column (the file was
-written before the machine snapshot was embedded, 2026-11-25), an empty
-ledger, a `slot` outside `1:rows`, and an empty text (the task was built from
-tuples, a vector or a bare line, or its machine could not be snapshotted and
-the prepare warned; the remedy is the `Lattice` or `Machine` spelling).
+The machine snapshot text one `/execution` ledger row references (design D14;
+the layout of R9, 2026-11-26): the last row, or row `slot`. The row's
+`machine_sha256` names the text under `/machine_snapshots/<sha256>`; a file of
+the stage-4 layout (2026-11-25) holds the text in the row's `machine_toml`
+column instead, which is read when the content-addressed copy is absent and
+checked against the digest. Refused by name: a ledger without the digest
+column (the file was written before the machine snapshot was embedded,
+2026-11-25), an empty ledger, a `slot` outside `1:rows`, an empty digest (the
+task was built from tuples, a vector or a bare line, or its machine could not
+be snapshotted and the prepare warned; the remedy is the `Lattice` or
+`Machine` spelling), the disabled marker (the artifact was written with
+`machine_snapshot = false`), a stage-4 text that does not hash to its digest,
+and a digest the file holds no snapshot for (a file written only partially).
 """
-function _ra_machine_text(ex, slot::Union{Nothing,Integer}, path::AbstractString)
-    haskey(ex, "machine_toml") || throw(ArgumentError(
-        "$(path) carries no machine_toml column in its /execution ledger: the file was " *
+function _ra_machine_text(f, ex, slot::Union{Nothing,Integer}, path::AbstractString)
+    haskey(ex, "machine_sha256") || throw(ArgumentError(
+        "$(path) carries no machine_sha256 column in its /execution ledger: the file was " *
         "written before the machine snapshot was embedded (2026-11-25), so no machine " *
         "description can be read from it"))
-    texts = read(ex["machine_toml"])
-    n = length(texts)
+    digests = read(ex["machine_sha256"])
+    n = length(digests)
     n == 0 && throw(ArgumentError(
         "$(path) has no execute! row in its /execution ledger, so there is no machine " *
         "snapshot to read"))
@@ -3123,15 +3285,38 @@ function _ra_machine_text(ex, slot::Union{Nothing,Integer}, path::AbstractString
     1 <= row <= n || throw(ArgumentError(
         "$(path): slot $(row) is not a row of the /execution ledger, which has $(n) " *
         "row$(n == 1 ? "" : "s") (1:$(n))"))
-    text = String(texts[row])
-    isempty(text) && throw(ArgumentError(
-        "$(path): execute! row $(row) recorded no machine snapshot (its machine_toml is " *
+    digest = String(digests[row])
+    isempty(digest) && throw(ArgumentError(
+        "$(path): execute! row $(row) recorded no machine snapshot (its machine_sha256 is " *
         "empty): the task was built from tuples, a vector or a bare line, which carry no " *
         "lattice context, or its machine could not be snapshotted (the prepare warned by " *
         "name). Spell the line as a Lattice (TrackingTask(lattice; artifact = ...)) or a " *
         "Machine (StrongStrongTask(machine, :A, :B; artifact = ...)) and the snapshot is " *
         "embedded with the run"))
-    return text
+    digest == _RA_MACHINE_SNAPSHOT_DISABLED && throw(ArgumentError(
+        "$(path): execute! row $(row) was written with machine_snapshot = false, so no machine " *
+        "snapshot is embedded for it; write the artifact with RunArtifact(path; " *
+        "machine_snapshot = true) (the default) to embed the description"))
+    if haskey(f, "machine_snapshots") && haskey(f["machine_snapshots"], digest)
+        return String(read(f["machine_snapshots"][digest]))
+    end
+    if haskey(ex, "machine_toml")
+        # The stage-4 layout: the text in the row, checked against the digest
+        # the row carries.
+        texts = read(ex["machine_toml"])
+        if row <= length(texts) && !isempty(texts[row])
+            text = String(texts[row])
+            _ra_text_digest(text) == digest || throw(ArgumentError(
+                "$(path): execute! row $(row)'s machine_toml text does not hash to its " *
+                "machine_sha256 $(digest); the file is corrupt"))
+            return text
+        end
+    end
+    throw(ArgumentError(
+        "$(path): execute! row $(row) references the machine snapshot $(digest), which the " *
+        "file does not hold under /machine_snapshots; the file was written only partially " *
+        "(a writer stopped between the ledger row and nothing else can explain a missing " *
+        "content-addressed snapshot, since the snapshot is written before its row)"))
 end
 
 """
@@ -3152,21 +3337,21 @@ end
     read_machine(out::TaskOutput; slot=nothing, receipt=true) -> (machine, receipt)
 
 The machine the run was built from, rebuilt from the snapshot embedded in the
-run artifact (the machine description, design D14): the `machine_toml` text
-of the last `execute!`'s ledger row (or of row `slot`), parsed by
+run artifact (the machine description, design D14): the snapshot text the
+last `execute!`'s ledger row references (or row `slot`), parsed by
 [`parse_machine`](@ref) with the bulk tables stored under `/machine_tables`,
 under the rules and refusals of [`read_machine`](@ref) on a file (the knobs
 the text declares are installed in the process, a path already present with
 the same definition is kept, a conflicting one refused by name). Refused by
-name, as `read(out, :machine)` is: a row whose text is empty (the task was
+name, as `read(out, :machine)` is: a row whose digest is empty (the task was
 built from tuples, a vector or a bare line; spell it as a `Lattice` or a
-`Machine`), a `slot` outside the ledger, a file written before the column
-existed. Reading a file another process is writing follows the readers' lock
-rule (`TaskOutput`).
+`Machine`), a row written with `machine_snapshot = false`, a `slot` outside
+the ledger, a file written before the column existed. Reading a file another
+process is writing follows the readers' lock rule (`TaskOutput`).
 """
 function read_machine(out::TaskOutput; slot::Union{Nothing,Integer}=nothing, receipt::Bool=false)
     text, tables = _ra_open(out) do f
-        (_ra_machine_text(_ra_require_group(f, out, :execution), slot, out.path),
+        (_ra_machine_text(f, _ra_require_group(f, out, :execution), slot, out.path),
          _ra_machine_tables(f))
     end
     return parse_machine(text; tables=tables, receipt=receipt)
@@ -3232,18 +3417,25 @@ ledger -- one entry per `execute!`: `start_turn`, `turns`,
 probe rows, turn-modulation series) and at finalize, and `rng_seed`/
 `rng_method`, the global stochastic seed and the counter-RNG method's name in
 force when that `execute!` began (`nothing` for a file written before
-2026-10-16), and `machine_toml`/`machine_sha256`, the embedded machine
-snapshot's TOML text and its SHA-256 hex digest (the machine description,
-design D14: `""` in a row whose task recorded no machine, `nothing` for a
-file written before 2026-11-25). `:machine` returns that text alone for one
+2026-10-16), and `machine_sha256`, the SHA-256 hex digest of the embedded
+machine snapshot's TOML text (the machine description, design D14: `""` in a
+row whose task recorded no machine, `"disabled"` in a row written with
+`machine_snapshot = false`, `nothing` for a file written before 2026-11-25);
+the text itself lives once per distinct digest under `/machine_snapshots`
+(R9, 2026-11-26; a file of the 2026-11-25 layout holds it in a `machine_toml`
+column instead, which this ledger view no longer lists). `:machine` returns
+that text for one
 row -- the last `execute!`'s, or the row `slot` (the ledger's row index, the
 slot the turn-modulation provenance is keyed by) -- as `machine_toml(machine)`
-rendered it, byte for byte what `write_machine` writes; `read_machine(out)`
+rendered it, byte for byte what `write_machine` writes, from either layout;
+`read_machine(out)`
 parses it with the bulk tables under `/machine_tables` into the `Machine`.
-Refused by name: a row whose text is empty (the task was built from tuples, a
-vector or a bare line, or its machine could not be snapshotted and the prepare
-warned; the remedy is the `Lattice` or `Machine` spelling), a `slot` outside
-the ledger's rows, a file written before the column existed, and `slot` with
+Refused by name: a row whose digest is empty (the task was built from tuples,
+a vector or a bare line, or its machine could not be snapshotted and the
+prepare warned; the remedy is the `Lattice` or `Machine` spelling), a row
+written with `machine_snapshot = false`, a `slot` outside
+the ledger's rows, a file written before the column existed, a digest whose
+snapshot the file does not hold, and `slot` with
 any other kind. `:turn_modulation` returns the turn-by-turn modulation provenance, one
 entry per `execute!` that had a modulated element, the vector
 [`turn_modulation_provenance`](@ref) documents (empty when no recorded
@@ -3294,7 +3486,7 @@ function Base.read(out::TaskOutput, kind::Symbol;
         kind === :execution && return _ra_execution(_ra_require_group(f, out, kind))
         # The machine snapshot is a column of the ledger (D14), so its group
         # is /execution; the row is the last one unless `slot` picks another.
-        kind === :machine && return _ra_machine_text(_ra_require_group(f, out, :execution), slot, out.path)
+        kind === :machine && return _ra_machine_text(f, _ra_require_group(f, out, :execution), slot, out.path)
         kind === :turn_modulation && return _ra_turn_modulation_or_empty(f)
         g = _ra_require_group(f, out, kind)
         one_group = kind === :luminosity ? _ra_lum_series : _ra_probe_columns
@@ -3336,8 +3528,10 @@ attribute reads; no data): each named kind maps to `Dict(name =>
 tail beyond the cursor shows as the difference; 2026-10-19), `s` the probe's
 arc position where stamped --
 and the single products carry their own `(columns, rows, ...)`;
-`machine_tables`, present when a row's machine snapshot referenced a bulk
-table (D14), maps each table's SHA-256 digest to its length;
+`machine_snapshots`, present when a row embedded a machine snapshot (D14, R9),
+maps each snapshot's SHA-256 digest to its byte count, and `machine_tables`,
+present when a snapshot referenced a bulk table, maps each table's digest to
+its length;
 `turn_modulation` is its provenance vector whole (attributes, the nominals
 included), with each slot's `series` standing as the recorded ROW COUNT in
 place of the column that `read(out, :turn_modulation)` returns (`nothing`
@@ -3360,6 +3554,11 @@ function Base.read(out::TaskOutput)
             elseif k == "machine_tables"
                 # The snapshot's bulk tables, content-addressed: digest => length.
                 toc[k] = Dict{String,Int}(String(name) => length(obj[name]) for name in keys(obj))
+            elseif k == "machine_snapshots"
+                # The snapshot texts, content-addressed: digest => byte count,
+                # from the attribute the writer stamps (no data read).
+                toc[k] = Dict{String,Int}(String(name) => Int(_ra_get_attr(obj[name], "bytes", 0))
+                                          for name in keys(obj))
             elseif k == "turn_modulation"
                 # The provenance IS the metadata; a recorded series is read as
                 # its row count here, not as data.

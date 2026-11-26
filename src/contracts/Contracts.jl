@@ -2080,12 +2080,11 @@ function _strong_strong_contract_base_beams(contract::Union{
     beam1 = Beam(n, builder, Float64;
         beta=(0.55, 0.056, 0.7e-2 / 5.5e-4), alpha=(0.0, 0.0, 0.0),
         sigma=(106e-6, 9.5e-6, 0.7e-2), cutoff=5.0, rng_id=1,
-        charge=-1.0, mc2=EMASS_EV, E0=10e9, r0=RE, npart=1.7203e11)
+        charge=-1.0, mc2=EMASS_EV, E0=10e9, npart=1.7203e11)
     beam2 = Beam(n, builder, Float64;
         beta=(0.8, 0.072, 6e-2 / 6.6e-4), alpha=(0.0, 0.0, 0.0),
         sigma=(95e-6, 8.5e-6, 6e-2), cutoff=5.0, rng_id=2,
-        charge=1.0, mc2=PMASS_EV, E0=275e9,
-        r0=RE * ME0 / PMASS_EV, npart=0.6881e11)
+        charge=1.0, mc2=PMASS_EV, E0=275e9, npart=0.6881e11)
     return beam1, beam2
 end
 
@@ -2943,13 +2942,11 @@ function validate(contract::HighEnergyWeakStrongLimitContract; kwargs...)
         electron = Beam(contract.n_particles, CPUThreadsBackend, Float64;
             beta=(0.55, 0.056, 0.7e-2 / 5.5e-4), alpha=(0.0, 0.0, 0.0),
             sigma=(106e-6, 9.5e-6, 0.7e-2), cutoff=5.0, rng_id=11,
-            charge=-1.0, mc2=EMASS_EV, E0=contract.electron_gev * 1.0e9,
-            r0=RE, npart=1.7203e11)
+            charge=-1.0, mc2=EMASS_EV, E0=contract.electron_gev * 1.0e9, npart=1.7203e11)
         proton = Beam(contract.n_particles, CPUThreadsBackend, Float64;
             beta=(0.8, 0.072, 6e-2 / 6.6e-4), alpha=(0.0, 0.0, 0.0),
             sigma=(95e-6, 8.5e-6, 6e-2), cutoff=5.0, rng_id=12,
-            charge=1.0, mc2=PMASS_EV, E0=275e9,
-            r0=RE * ME0 / PMASS_EV, npart=0.6881e11)
+            charge=1.0, mc2=PMASS_EV, E0=275e9, npart=0.6881e11)
         slicing = LongitudinalSlicing(
             method=:normal_quantile, nslices=contract.nslices, center_position=:centroid)
         gaussian = GaussianPoissonSolver(
@@ -3110,11 +3107,11 @@ function _coherent_mode_lambdas(contract::CoherentModePhysicsContract, kind::Sym
                contract.offset_sigma * sigma[2], 0.0, 0.0, 0.0)
     beam1 = Beam(contract.n_macro, policy, Float64;
         beta=beta, alpha=(0.0, 0.0, 0.0), sigma=sigma, cutoff=5.0, rng_id=1,
-        charge=-1.0, mc2=EMASS_EV, E0=energy, r0=r0, npart=npart,
+        charge=-1.0, mc2=EMASS_EV, E0=energy, npart=npart,
         initial_offset=offset1)
     beam2 = Beam(contract.n_macro, policy, Float64;
         beta=beta, alpha=(0.0, 0.0, 0.0), sigma=sigma, cutoff=5.0, rng_id=2,
-        charge=+1.0, mc2=EMASS_EV, E0=energy, r0=r0, npart=npart)
+        charge=+1.0, mc2=EMASS_EV, E0=energy, npart=npart)
 
     slicing = LongitudinalSlicing(; method=:normal_quantile, nslices=1,
                                   center_position=:centroid)

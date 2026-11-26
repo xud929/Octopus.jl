@@ -69,10 +69,10 @@ function run_config(tag; angle, crab)
     r0 = RE * ME0 / EMASS_EV
     b1 = Beam(nmacro, policy, Float64; beta = beta, alpha = (0.0, 0.0, 0.0),
         sigma = sig, cutoff = 5.0, rng_id = 1, charge = -1.0, mc2 = EMASS_EV,
-        E0 = energy, r0 = r0, npart = npart_small)
+        E0 = energy, npart = npart_small)
     b2 = Beam(nmacro, policy, Float64; beta = beta, alpha = (0.0, 0.0, 0.0),
         sigma = sig, cutoff = 5.0, rng_id = 2, charge = +1.0, mc2 = EMASS_EV,
-        E0 = energy, r0 = r0, npart = npart_small)
+        E0 = energy, npart = npart_small)
 
     sl = LongitudinalSlicing(; method = :normal_quantile, nslices = nslices,
         center_position = :centroid)

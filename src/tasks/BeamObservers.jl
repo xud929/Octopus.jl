@@ -600,6 +600,18 @@ Moment(; x::Integer=0, px::Integer=0, y::Integer=0, py::Integer=0,
        z::Integer=0, pz::Integer=0) =
     Moment(Int(x), Int(px), Int(y), Int(py), Int(z), Int(pz))
 Moment(name::Symbol) = Moment(String(name))
+
+# One power of a moment name, refused BY NAME when it is not a nonnegative
+# integer (R8d of the follow-ups note, 2026-11-26, the audit's C-6: `parse`
+# answered `invalid base 10 digit 'a'`, naming neither the moment nor the text).
+function _moment_power(text::AbstractString, s)
+    p = tryparse(Int, string(s))
+    (p === nothing || p < 0) && throw(ArgumentError(
+        "moment name $(text): the power `$(s)` is not a nonnegative integer; a moment name is " *
+        "`m` followed by six digit powers (m100000, the mean of x) or six `_`-separated " *
+        "integers (m10_0_0_0_0_0)"))
+    return p
+end
 function Moment(raw::AbstractString)
     text = String(raw)
     startswith(text, "m") || throw(ArgumentError("moment name must start with `m`: $text"))
@@ -608,10 +620,10 @@ function Moment(raw::AbstractString)
     powers = if occursin('_', body)
         parts = split(body, '_')
         length(parts) == 6 || throw(ArgumentError("separated moment name must contain six powers: $text"))
-        ntuple(i -> parse(Int, parts[i]), 6)
+        ntuple(i -> _moment_power(text, parts[i]), 6)
     else
         length(body) == 6 || throw(ArgumentError("compact moment name must contain six powers: $text"))
-        ntuple(i -> parse(Int, body[i]), 6)
+        ntuple(i -> _moment_power(text, body[i]), 6)
     end
     return Moment(powers)
 end

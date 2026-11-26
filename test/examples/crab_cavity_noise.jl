@@ -830,7 +830,6 @@ beam = Beam(n_macro, policy, Float64;
     charge = wb.charge,
     mc2 = wb.mass,
     E0 = wb.energy,
-    r0 = weak_r0,
     npart = wb.n_particle,
     zeta = wb.zeta,
     eta = wb.eta,

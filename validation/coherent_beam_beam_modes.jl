@@ -136,11 +136,11 @@ function run_case(kind::Symbol)
     beam1 = Beam(config.n_macro, policy, Float64;
         beta = config.beta, alpha = (0.0, 0.0, 0.0), sigma = config.sigma,
         cutoff = config.cutoff, rng_id = 1, charge = -1.0, mc2 = EMASS_EV,
-        E0 = config.energy, r0 = r0, npart = npart, initial_offset = offset1)
+        E0 = config.energy, npart = npart, initial_offset = offset1)
     beam2 = Beam(config.n_macro, policy, Float64;
         beta = config.beta, alpha = (0.0, 0.0, 0.0), sigma = config.sigma,
         cutoff = config.cutoff, rng_id = 2, charge = +1.0, mc2 = EMASS_EV,
-        E0 = config.energy, r0 = r0, npart = npart)
+        E0 = config.energy, npart = npart)
 
     slicing = LongitudinalSlicing(; method = :normal_quantile, nslices = 1,
                                   center_position = :centroid)

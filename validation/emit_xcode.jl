@@ -37,10 +37,10 @@ function emit_series(; aspect, turns, n_macro, xi, seed, offset)
     off = (offset * sig, 0.0, offset * sigy, 0.0, 0.0, 0.0)
     b1 = Beam(n_macro, policy, Float64; beta=beta, alpha=(0.0,0.0,0.0),
         sigma=sigma, cutoff=5.0, rng_id=1, charge=-1.0, mc2=EMASS_EV,
-        E0=energy, r0=r0, npart=npart, initial_offset=off)
+        E0=energy, npart=npart, initial_offset=off)
     b2 = Beam(n_macro, policy, Float64; beta=beta, alpha=(0.0,0.0,0.0),
         sigma=sigma, cutoff=5.0, rng_id=2, charge=+1.0, mc2=EMASS_EV,
-        E0=energy, r0=r0, npart=npart)
+        E0=energy, npart=npart)
     slicing = LongitudinalSlicing(; method=:normal_quantile, nslices=1,
                                   center_position=:centroid)
     solver = PICPoissonSolver(; slicing=slicing, grid=(128,128),

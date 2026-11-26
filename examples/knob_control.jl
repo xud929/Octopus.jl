@@ -11,7 +11,8 @@ Two production-shaped scenarios:
 2. A real lattice: a FODO cell as a `BeamLine`, its quadrupoles driven
    `+K`/`-K` from ONE power-supply chain
    (`HSR.arc_k1 = HSR.power_supply.arc_quad * HSR.current_transfer /
-   HSR.B_rho`), plus a trim supply on one PLACEMENT via an
+   HSR.B_rho`, the rigidity being the reference particle's derived
+   `brho`), plus a trim supply on one PLACEMENT via an
    expression-valued override — main bus *plus* trim, the pattern the
    `LineEntry` docstring recommends over a detached numeric override. The
    wiring is inspected with the container `knob_report(cell)`, and a bus
@@ -93,8 +94,14 @@ pro_crab = ElementSpec{:thin_crab_cavity}(;
 # folds the same expression into `kn[2]` (design D10, machine description
 # stage 2; before it the friendly constructors refused expressions).
 # ---------------------------------------------------------------------------
-@knob HSR.B_rho = 81.1                             # T*m
-@knob HSR.current_transfer = 0.05                  # (strength units) per A
+# The rigidity is the reference particle's, derived once from the species and
+# the energy (R4 of docs/design/machine_description_followups.md, 2026-11-26:
+# `brho = p0c / (c |charge|)`, 917.3 T m for a 275 GeV proton), never a number
+# typed beside the energy it must agree with.
+hsr_ref = ReferenceParticle(:proton; E0 = 275.0e9)
+@knob HSR.B_rho                                    # T*m; a computed value is SET (the @knob right-hand side is the knob grammar)
+set_knob!("HSR.B_rho", hsr_ref.brho)
+@knob HSR.current_transfer = 0.5655                # (strength units) per A: K ~ 0.62 /m^2 at the 1000 A working point
 @knob HSR.power_supply.arc_quad = 1000.0           # A, the main bus
 @knob HSR.power_supply.qd_trim = 0.0               # A, one magnet's trim
 @knob HSR.arc_k1 =

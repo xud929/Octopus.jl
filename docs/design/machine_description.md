@@ -253,6 +253,14 @@ left out is in section 2's last decision.
   carries the cavity count in its first parameter and a numeric `{T}` cannot
   be applied to it uniformly; an explicit `numeric_type =` on one call wins,
   as an explicit `name =` does.
+  Status 2026-11-26 (R11 of
+  [`machine_description_followups.md`](machine_description_followups.md),
+  the compile-path batch): the MAD-X class form, `QuadrupoleSpec(Q; name =
+  "QF", k1 = 1.0)` -- in the block `QF = quadrupole(RHIC.Q; k1 = 1.0)`, the
+  positional template passing through rule 6 -- is one method on every
+  kind's friendly constructor, installed by the registration itself; the
+  flexible form folds a named strength as the constructors do, so the
+  snapshot reader reads a hand-written `k1` as meant.
 
 - **D10 The friendly constructors accept knob expressions** (owner,
   2026-11-24; consistency with D9, since the block maps kind calls onto the
@@ -342,6 +350,16 @@ left out is in section 2's last decision.
   gap that batch carried: no task compares the beam's reference with a
   cavity's stored `beta0`/`gamma0` at compile (`_validate_reference_chain`
   compares the cavities with one another only).
+  Status 2026-11-26 (R3 to R5 of
+  [`machine_description_followups.md`](machine_description_followups.md),
+  the compile-path batch): the record is the richer immutable one (species
+  presets; exactly one of `E0`, `p0c`, `gamma0`, `brho`, a number or a knob
+  expression, the typed key stored; `p0c`, `gamma0`, `beta0`, `brho` and
+  `r0` derived once); `Beam` takes `r0` from it or derives it from `mc2` and
+  refuses the keyword; the strong-strong preflight refuses a zero factor of
+  a derived kick scale and a reference-built beam without `npart`, warns once
+  per task for a flat one, and the derived scales are reported. The chain gap
+  above stays open.
 
 - **D13 TOML is the data form, and these rules make it one.** The file
   states its `format` version and the lattice `eltype` explicitly, never
@@ -399,6 +417,14 @@ left out is in section 2's last decision.
   first-placement order with one table per DISTINCT spec object (an object
   placed twice is one table referenced twice, so the identity the family
   queries rely on survives the round trip), both confirmed by unit A's report.
+  Status 2026-11-26 (R10 of
+  [`machine_description_followups.md`](machine_description_followups.md),
+  the compile-path batch): no include and no template in the format, by
+  decision; the multi-file description is a Julia module, and the format
+  gained its two readers for it, `read_lattice(path)` for a one-lattice
+  snapshot and `read_machine(path1, path2, ...; name, knob_root)` assembling
+  a machine from several, equal to the original with a byte-identical
+  `machine_toml`.
 
 - **D14 The run artifact embeds the snapshot.** A run records the machine it
   ran as the TOML text, so it can be reproduced from the artifact alone and
@@ -418,6 +444,14 @@ left out is in section 2's last decision.
   holds `""` and the readers refuse by name with the lattice spelling as the
   remedy; a machine the codec refuses warns at prepare and records `""`
   rather than stopping the run, since the snapshot is the run's by-product.
+  Status 2026-11-26 (R9 of
+  [`machine_description_followups.md`](machine_description_followups.md),
+  the compile-path batch): the text is stored once per distinct digest under
+  `/machine_snapshots/<sha256>` and the row keeps `machine_sha256` only, the
+  digest is taken over the text's bytes, the task caches the rendered text
+  on the knob and spec epochs, and `RunArtifact(...; machine_snapshot)`
+  switches the embedding (the readers refuse by name when it was off); a
+  2026-11-25 file still reads and is continued.
 
 - **D15 Compatibility is additive.** Tasks keep accepting the tuples,
   vectors and `BeamLine`s they accept today; `Lattice` joins `_element_tuple`

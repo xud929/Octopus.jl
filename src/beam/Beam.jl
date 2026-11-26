@@ -28,6 +28,12 @@ Physical beam parameters: `charge` in units of the elementary charge, `mc2` the
 rest energy and `E0` the reference total energy in eV, `r0` the classical
 radius in m, `npart` the represented particle count (a float: the population a
 macro-particle set stands for). Any keyword may be omitted; its default is zero.
+This is the runtime record; built through [`Beam`](@ref), `r0` is never an
+input but derived from the rest energy as `RE * ME0 / mc2` (R3 of
+`docs/design/machine_description_followups.md`, 2026-11-26: the value every
+script used to type), or taken from the beam's `ReferenceParticle`, which
+derives it the same way; this constructor keeps the field free for runtime
+fixtures (a synthetic kick scale in a test).
 The untyped form stores the keywords in the type they promote to over a
 `Float64` floor and never narrows (`BeamParams(charge=1, E0=275e9)` is a
 `BeamParams{Float64}`, the precision rule every element kind follows); the typed
@@ -591,7 +597,24 @@ representation and an execution backend tag.
 struct Beam{BTAG <: AbstractExecutionBackend, BPAR <: BeamParams, REP<:AbstractPhaseRep}
 	params::BPAR
 	rep::REP
+	# The ReferenceParticle the beam was built from, numeric (a knob-given
+	# energy is resolved at construction), or `nothing` for the flat keywords
+	# and the positional form (R3 to R5 of
+	# docs/design/machine_description_followups.md, 2026-11-26); read by the
+	# strong-strong preflight's `npart` rule and never by a kernel.
+	reference::Union{Nothing,ReferenceParticle{Float64}}
+	# Whether `npart` was given (`true`) or defaulted to the macro-particle
+	# count (`false`), for the same rule: a reference-built beam without it is
+	# refused when its kick scale would be derived, a flat one warns once per
+	# task. The positional form records `true`: its caller built the
+	# `BeamParams` itself.
+	npart_given::Bool
 end
+
+# The two-field form every caller before 2026-11-26 wrote (the validation
+# scripts and the suite hold a few): no reference, `npart` taken as given.
+Beam{BTAG,BPAR,REP}(params::BPAR, rep::REP) where {BTAG,BPAR,REP} =
+    Beam{BTAG,BPAR,REP}(params, rep, nothing, true)
 
 coordinate_arrays(beam::Beam) = coordinate_arrays(beam.rep)
 coordinate_array(beam::Beam, dim::Integer) = coordinate_array(beam.rep, dim)
@@ -622,7 +645,7 @@ end
          coupling=zeros(4), R=nothing, C=nothing, mode=XY_MODEA,
          eta=zeros(4), zeta=zeros(4), optics=nothing, initial_offset=zeros(6),
          cutoff=5, rng=nothing, seed=nothing, rng_id=0,
-         charge=0, mc2=0, E0=0, r0=0, npart=N, reference=nothing)
+         charge=0, mc2=0, E0=0, npart=N, reference=nothing)
 
 Construct a beam with randomized six-dimensional coordinates on either the CPU
 threaded backend or CUDA backend. The default `distribution=:gaussian` follows
@@ -682,8 +705,18 @@ whatever its value, is refused by name, and the beam equals the one the
 flat keywords build, bit for bit under one seed. The bounded distributions
 refuse `optics` as they refuse every other optics keyword. `cutoff` truncates the standard normals at that many
 standard deviations before they are standardized (`Inf` disables it; it must be
-positive). The remaining keywords (`charge`, `mc2`, `E0`, `r0`, `npart`) build
-the beam's [`BeamParams`](@ref); `npart` defaults to `N`.
+positive). The remaining keywords (`charge`, `mc2`, `E0`, `npart`) build the
+beam's [`BeamParams`](@ref); `npart` defaults to `N`, and the classical radius
+`r0` is DERIVED, `RE * ME0 / mc2` (zero while `mc2` is), never given: `r0 = `
+is refused by name since 2026-11-26 (R3 of
+`docs/design/machine_description_followups.md`; the derived value is bit for
+bit what every script used to type, so a converted script's results do not
+move). `npart` is the one beam-level physical input: when a strong-strong
+task derives its kick scale from the beams (`kbb1`/`kbb2` not given on the
+solver), a reference-built beam without `npart` is refused by name before
+the first turn and a flat-keyword beam without it warns once per task (R5),
+because the default, the macro-particle count, makes the force the
+population's fraction too weak with nothing else saying so.
 
 `reference = ref`, a [`ReferenceParticle`](@ref) (design
 `docs/design/machine_description.md`, D12), gives `charge`, `mc2` and `E0` at
@@ -693,9 +726,11 @@ either way is the same bit for bit, `BeamParams` included (the reference's
 values are converted to the coordinate type exactly as the flat ones are). Any
 of `charge`, `mc2`, `E0` given beside `reference`, whatever its value, is
 refused by name before anything is drawn or activated (drop it, or drop
-`reference` and give the flat keywords). `r0` and `npart` stay separate
-keywords: the classical radius is not derived from the reference in this
-batch. Every form of the constructor takes `reference`, the bounded and grid
+`reference` and give the flat keywords). `r0` comes with it (the reference
+derives `RE * ME0 / mc2`, R3); `npart` stays a keyword. A reference whose
+energy is a knob expression (R4) is resolved at construction -- a beam is a
+run object, read once -- and the numeric reference is kept on the beam
+(`beam.reference`). Every form of the constructor takes `reference`, the bounded and grid
 forms included; it is a beam-parameter keyword, so it is documented here and
 not in [`beam_initialization_option_schema`](@ref), which enumerates the
 distribution and bounds options only.
@@ -780,7 +815,8 @@ end
 _shard_initialized_beam(whole::Beam, ::Nothing) = whole
 function _shard_initialized_beam(whole::Beam{BTAG}, shard::UnitRange) where {BTAG}
     rep = _shard_rep(whole.rep, shard)
-    return Beam{BTAG,typeof(whole.params),typeof(rep)}(whole.params, rep)
+    return Beam{BTAG,typeof(whole.params),typeof(rep)}(whole.params, rep, whole.reference,
+                                                      whole.npart_given)
 end
 
 """This rank's copy of `rep[range]`: a copy, not a view, so the whole beam the
@@ -796,7 +832,7 @@ end
 """
     Beam(policy_or_backend, FloatT=Float64; distribution=:grid,
          lower, upper, grid_size=nothing, grid_step=nothing,
-         charge=0, mc2=0, E0=0, r0=0, npart=prod(grid_size), reference=nothing)
+         charge=0, mc2=0, E0=0, npart=prod(grid_size), reference=nothing)
 
 Construct an endpoint-inclusive Cartesian grid in physical `(x, px, y, py, z,
 pz)` coordinates. Supply six bounds and exactly one six-component `grid_size`
@@ -898,7 +934,7 @@ function _initialize_beam(N::Union{Nothing,Integer}, backend::Type{BTAG}, FloatT
         value === nothing || throw(ArgumentError("Beam $(key) is inactive for distribution=:gaussian"))
     end
 	N > 0 || throw(ArgumentError("random Beam construction requires a positive particle count; got $(N)"))
-	params = _beam_params(RT, Int(N); kwargs...)
+	params, reference, npart_given = _beam_params(RT, Int(N); kwargs...)
 	# Every keyword is validated BEFORE the policy is activated and before the
 	# draw takes or claims a stream id and allocates 6N normals (2026-10-18
 	# audit F-187/U27-3: a construction refused for `beta=(1.0, 2.0)` had
@@ -930,7 +966,7 @@ function _initialize_beam(N::Union{Nothing,Integer}, backend::Type{BTAG}, FloatT
 	_apply_initial_maps!(rep, BTAG, RT;
 		coupling=r, eta=η, zeta=ζ, mode=mode, policy=execution_policy)
 	add_offset!(rep, offset)
-    beam = _shard_initialized_beam(Beam{BTAG,typeof(params),typeof(rep)}(params, rep), shard)
+    beam = _shard_initialized_beam(Beam{BTAG,typeof(params),typeof(rep)}(params, rep, reference, npart_given), shard)
     _record_execution!(:beam_initialization, BTAG,
         (distribution=:gaussian, lower=nothing, upper=nothing, grid_size=nothing,
          grid_step=nothing, requested_grid_size=nothing, requested_grid_step=nothing,
@@ -1143,11 +1179,11 @@ function _bounded_beam(N, ::Type{BTAG}, ::Type{T}; distribution, lower, upper,
         # New bounded modes validate full counter widths before claiming a stream.
         seed === nothing || seed <= typemax(UInt64) || throw(ArgumentError("Beam seed exceeds UInt64"))
         rng_id <= typemax(UInt64) || throw(ArgumentError("Beam rng_id exceeds UInt64"))
-        params = _beam_params(T, n; kwargs...)
+        params, reference, npart_given = _beam_params(T, n; kwargs...)
         shard = _prepare_beam_initialization(execution_policy, n)
         host_rep = _uniform_box_rep(T, n, lo, hi; rng, seed, rng_id)
         rep = _rep_on_backend(BTAG, host_rep)
-        beam = _shard_initialized_beam(Beam{BTAG,typeof(params),typeof(rep)}(params, rep), shard)
+        beam = _shard_initialized_beam(Beam{BTAG,typeof(params),typeof(rep)}(params, rep, reference, npart_given), shard)
         _record_execution!(:beam_initialization, BTAG,
             (distribution=:uniform, lower=lo, upper=hi, grid_size=nothing,
              grid_step=nothing, requested_grid_size=nothing, requested_grid_step=nothing,
@@ -1158,7 +1194,7 @@ function _bounded_beam(N, ::Type{BTAG}, ::Type{T}; distribution, lower, upper,
         isequal(value, default) || throw(ArgumentError("Beam $(key) is inactive for distribution=:grid"))
     end
     axes, counts, spacing, grid_n = _beam_grid_axes(lo, hi, grid_size, grid_step, T)
-    params = _beam_params(T, grid_n; kwargs...)
+    params, reference, npart_given = _beam_params(T, grid_n; kwargs...)
     shard = _prepare_beam_initialization(execution_policy, grid_n)
     coords = ntuple(_ -> Vector{T}(undef, grid_n), 6)
     for (i, point) in enumerate(Iterators.product(axes...))
@@ -1167,7 +1203,7 @@ function _bounded_beam(N, ::Type{BTAG}, ::Type{T}; distribution, lower, upper,
         end
     end
     rep = _rep_on_backend(BTAG, Phase6DRep(coords...))
-    beam = _shard_initialized_beam(Beam{BTAG,typeof(params),typeof(rep)}(params, rep), shard)
+    beam = _shard_initialized_beam(Beam{BTAG,typeof(params),typeof(rep)}(params, rep, reference, npart_given), shard)
     _record_execution!(:beam_initialization, BTAG,
         (distribution=:grid, lower=lo, upper=hi, grid_size=counts, grid_step=spacing,
          requested_grid_size=grid_size === nothing ? nothing : Tuple(grid_size),
@@ -1223,22 +1259,39 @@ function _beam_coupling_coefficients(coupling, R, C, ::Type{T}) where {T}
 	return _tuple_typed(last(given[1]), 4, T; keyword=first(given[1]))
 end
 
+"""
+    _beam_params(T, N; reference=nothing, kwargs...) -> (params, reference, npart_given)
+
+The beam's `BeamParams` from its physical keywords, the numeric reference it
+was built from (`nothing` for the flat spelling) and whether `npart` was given,
+for the `Beam` fields. The classical radius is derived (R3, 2026-11-26): from
+the reference, which carries `RE * ME0 / mc2`, or as the same expression over
+the flat `mc2` (zero while `mc2` is zero); `r0 = ` is refused by name. A
+reference whose energy is a knob expression is resolved here, once
+(`_numeric_reference`), so the beam holds numbers.
+"""
 function _beam_params(::Type{T}, N::Int; reference=nothing, kwargs...) where {T}
-	allowed = (:charge, :mc2, :E0, :r0, :npart)
+	allowed = (:charge, :mc2, :E0, :npart)
+	haskey(kwargs, :r0) && throw(ArgumentError(
+		"Beam: `r0` is not an input (R3 of docs/design/machine_description_followups.md, " *
+		"2026-11-26): the classical radius is derived from the rest energy as " *
+		"r0 = RE * ME0 / mc2 -- the value every script hand-typed -- and stored on the " *
+		"BeamParams. Drop `r0 = ...` and give `mc2` (or `reference = ReferenceParticle(...)`, " *
+		"which carries it). A synthetic kick scale belongs on the solver: kbb1 = / kbb2 =."))
 	unknown = setdiff(Tuple(keys(kwargs)), allowed)
 	isempty(unknown) || throw(ArgumentError(
 		"unknown Beam keyword(s): $(join(string.(unknown), ", ")). " *
 		"Beam-parameter keywords are $(join(string.(allowed), ", ")), " *
 		"or reference (a ReferenceParticle) in place of charge, mc2 and E0."))
+	npart_given = haskey(kwargs, :npart)
 	# `reference` arrives as `nothing` when not given and is checked by hand,
 	# as `optics` is: a wrong type is refused by name with an ArgumentError
 	# rather than a TypeError at keyword binding. With a ReferenceParticle the
 	# three flat keywords it replaces must be absent, whatever their value
 	# (design docs/design/machine_description.md D12: one type wherever a
-	# reference is spelled, never two sources of one truth). `r0` and `npart`
-	# stay flat: the classical radius is not derived from the reference here.
-	# Every path calls this before the policy is activated and before the
-	# stream is taken, so a refusal here draws nothing.
+	# reference is spelled, never two sources of one truth). Every path calls
+	# this before the policy is activated and before the stream is taken, so
+	# a refusal here draws nothing.
 	if reference !== nothing
 		reference isa ReferenceParticle || throw(ArgumentError(
 			"Beam reference must be a ReferenceParticle; got $(typeof(reference))"))
@@ -1247,20 +1300,37 @@ function _beam_params(::Type{T}, N::Int; reference=nothing, kwargs...) where {T}
 			"Beam takes charge, mc2 and E0 from the ReferenceParticle given as reference; " *
 			join(clash, ", ") * " cannot be given beside it (drop " *
 			(length(clash) == 1 ? "it" : "them") * ", or drop reference and give the flat keywords)"))
-		charge, mc2, E0 = reference.charge, reference.mc2, reference.E0
+		ref = _numeric_reference(reference)
+		charge, mc2, E0, r0 = ref.charge, ref.mc2, ref.E0, ref.r0
 	else
+		ref = nothing
 		charge = get(kwargs, :charge, 0)
 		mc2 = get(kwargs, :mc2, 0)
 		E0 = get(kwargs, :E0, 0)
+		# The same expression the reference stores, over the flat rest energy,
+		# so the two spellings build one BeamParams bit for bit.
+		r0 = mc2 isa Real && mc2 > 0 ? _reference_r0(Float64(mc2)) : 0.0
 	end
-	return BeamParams{T}(;
+	params = BeamParams{T}(;
 		charge=T(charge),
 		mc2=T(mc2),
 		E0=T(E0),
-		r0=T(get(kwargs, :r0, 0)),
+		r0=T(r0),
 		npart=T(get(kwargs, :npart, N)),
 	)
+	return params, ref, npart_given
 end
+
+"""
+The numeric form of a reference for a beam: a `ReferenceParticle{Float64}` as it
+is; one with a knob-given energy rebuilt through the constructor from the typed
+energy resolved now (`_resolve_knob_param`, the compile's own resolver), so the
+constructor's refusals run on the resolved number.
+"""
+_numeric_reference(ref::ReferenceParticle{Float64}) = ref
+_numeric_reference(ref::ReferenceParticle) =
+    ReferenceParticle(; charge=ref.charge, mc2=ref.mc2,
+                      (ref.energy_key => _resolve_knob_param(reference_energy(ref)),)...)
 
 function _tuple_typed(values, n::Int, ::Type{T}; keyword=nothing) where {T}
 	# Named when a `Beam` keyword is being checked, so the refusal says which

@@ -10782,7 +10782,7 @@ end
     pol = CPUThreadsExecutionPolicy()
     mk(policy) = (set_global_rng!(seed=20261122, method=:philox);
                   Beam(400, policy, Float64; beta=(0.8, 0.072, 90.0), sigma=(95e-6, 8.5e-6, 0.06), rng_id=2061,
-                       charge=1.0, mc2=PMASS_EV, E0=275e9, r0=RE * ME0 / PMASS_EV, npart=1e11))
+                       charge=1.0, mc2=PMASS_EV, E0=275e9, npart=1e11))
     coords(b) = vcat(collect(b.rep.x), collect(b.rep.px), collect(b.rep.y), collect(b.rep.py), collect(b.rep.z), collect(b.rep.pz))
     run(spec, policy) = (b = mk(policy);
                          execute!(TrackingTask((spec,); policy=policy, artifact=RunArtifact(tempname() * ".h5"; storage=:memory)), b; turns=2);
@@ -14043,7 +14043,7 @@ end
         set_global_rng!(seed=seed, method=:philox)
         beam = Beam(1, policy, Float64;
             beta=(0.8, 0.072, 90.9), alpha=(0.0, 0.0, 0.0), emit=(1.0e-40, 1.0e-40, 1.0e-40), cutoff=5.0, rng_id=1,
-            charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=1.0e11,
+            charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=1.0e11,
             zeta=(0.0, 0.0, 0.0, 0.0), eta=(0.0, 0.0, 0.0, 0.0), R=(0.0, 0.0, 0.0, 0.0),
             initial_offset=(1.0e-4, 0.0, 0.0, 0.0, 1.0e-2, 0.0))
         task = TrackingTask((spec,); policy=policy,
@@ -15122,7 +15122,7 @@ end
         e
     end
     @test occursin("ThinRFCavity: the beam's coordinates are Float32", message(err_beam))
-    mkb(T, id) = Beam(64, cpu, T; charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV,
+    mkb(T, id) = Beam(64, cpu, T; charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
                       npart=1.7e11, rng_id=id)
     ss = StrongStrongTask((StrongStrongCollision(:ip), DriftSpec{Float32}(L=1.0)),   # Float32, so beam 2's element is the one refused
                           (StrongStrongCollision(:ip), rad64))
@@ -15634,7 +15634,7 @@ end
     # and tracks the typed line.
     mkb(T, id) = Beam(64, cpu, T; beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
                       sigma=(1.0e-4, 1.0e-5, 1.0e-2), cutoff=5.0, charge=-1.0, mc2=EMASS_EV,
-                      E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11, rng_id=id)
+                      E0=10.0e9, npart=1.7e11, rng_id=id)
     err_ss = attempt(() -> execute!(StrongStrongTask((StrongStrongCollision(:ip), DriftSpec(L=1.0)),
                                                      (StrongStrongCollision(:ip), DriftSpec{Float32}(L=1.0))),
                                     mkb(Float32, 4121), mkb(Float32, 4122); turns=1))
@@ -17476,8 +17476,7 @@ end
         set_global_rng!(seed=7, method=:philox)
         b = Beam(256, CUDAExecutionPolicy(), Float64; beta=(0.55, 0.056, 12.7),
                  alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-5, 1.0e-2), cutoff=5.0,
-                 rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
-                 r0=RE * ME0 / EMASS_EV, npart=1.0e11)
+                 rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.0e11)
         resolved(t) = Octopus._resolve_execution_policy(
             CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=t)), b.rep)
         threads(pol, solver) = Octopus._with_solver_execution_configuration(solver, pol) do
@@ -17532,8 +17531,7 @@ end
         set_global_rng!(seed=7, method=:philox)
         b = Beam(64, CUDAExecutionPolicy(), Float64; beta=(0.55, 0.056, 12.7),
                  alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-5, 1.0e-2), cutoff=5.0,
-                 rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
-                 r0=RE * ME0 / EMASS_EV, npart=1.0e11)
+                 rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.0e11)
         pol = Octopus._resolve_execution_policy(
             CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=128)), b.rep)
         @test_logs Octopus._with_solver_execution_configuration(s, pol) do
@@ -19546,19 +19544,20 @@ end
         # The same beam twice under one seed and one stream: the flat spelling
         # (an Int charge, as scripts write it) and the reference. BeamParams is
         # an isbits struct, so `===` is the bit-for-bit comparison of every
-        # field; the coordinate arrays are compared whole. r0 and npart stay
-        # flat on both sides (the classical radius is not derived here).
+        # field; the coordinate arrays are compared whole. npart stays flat on
+        # both sides; r0 is derived on both (R3, 2026-11-26), the reference's
+        # and the flat mc2's derivation being one expression.
         flat = Beam(256, CPUThreadsBackend; rng_id=rid, sigma=(1.0e-3, 1.0e-3, 1.0e-2),
-                    charge=1, mc2=PMASS_EV, E0=275.0e9, r0=1.535e-18, npart=1.0e11)
+                    charge=1, mc2=PMASS_EV, E0=275.0e9, npart=1.0e11)
         viaref = Beam(256, CPUThreadsBackend; rng_id=rid, sigma=(1.0e-3, 1.0e-3, 1.0e-2),
-                      reference=ref, r0=1.535e-18, npart=1.0e11)
+                      reference=ref, npart=1.0e11)
         @test viaref.params === flat.params
-        @test flat.params === BeamParams{Float64}(1.0, PMASS_EV, 275.0e9, 1.535e-18, 1.0e11)   # non-trivial
+        @test flat.params === BeamParams{Float64}(1.0, PMASS_EV, 275.0e9, RE * ME0 / PMASS_EV, 1.0e11)   # non-trivial
         @test coordinate_arrays(viaref) == coordinate_arrays(flat)
         # Anti-vacuity: a reference of another energy changes the parameters
         # and nothing else (the reference never touches the draw).
         viaother = Beam(256, CPUThreadsBackend; rng_id=rid, sigma=(1.0e-3, 1.0e-3, 1.0e-2),
-                        reference=other, r0=1.535e-18, npart=1.0e11)
+                        reference=other, npart=1.0e11)
         @test viaother.params !== flat.params && viaother.params.E0 == 100.0e9
         @test coordinate_arrays(viaother) == coordinate_arrays(flat)
         # The typed form converts the reference's Float64 fields to the
@@ -19573,7 +19572,7 @@ end
         # The two bounded call sites of `_beam_params`: the no-count grid form
         # (npart defaults to the derived count) and the uniform box.
         grid = Beam(CPUThreadsBackend; lower, upper, grid_size=(2, 2, 2, 2, 2, 2), reference=ref)
-        @test grid.params === BeamParams{Float64}(1.0, PMASS_EV, 275.0e9, 0.0, 64.0)
+        @test grid.params === BeamParams{Float64}(1.0, PMASS_EV, 275.0e9, RE * ME0 / PMASS_EV, 64.0)   # r0 derived from mc2 (R3, 2026-11-26)
         @test grid.params === Beam(CPUThreadsExecutionPolicy(threads=1); lower, upper,
                                    grid_size=(2, 2, 2, 2, 2, 2), charge=1, mc2=PMASS_EV, E0=275.0e9).params
         @test Beam(32, CPUThreadsBackend; distribution=:uniform, lower, upper, rng_id=rid2, reference=ref).params ===
@@ -19622,9 +19621,8 @@ end
         execute!(task, tracked; turns=2)
         @test tracked.params.E0 == 275.0e9 && coordinate_arrays(tracked) != before   # it ran, on a reference-built beam
         solver = GaussianPoissonSolver()
-        flat2 = Beam(256, CPUThreadsBackend; rng_id=rid2, charge=-1, mc2=EMASS_EV, E0=10.0e9,
-                     r0=2.818e-15, npart=1.0e11)
-        viaref2 = Beam(256, CPUThreadsBackend; rng_id=rid2, r0=2.818e-15, npart=1.0e11,
+        flat2 = Beam(256, CPUThreadsBackend; rng_id=rid2, charge=-1, mc2=EMASS_EV, E0=10.0e9, npart=1.0e11)
+        viaref2 = Beam(256, CPUThreadsBackend; rng_id=rid2, npart=1.0e11,
                        reference=ReferenceParticle(; charge=-1, mc2=EMASS_EV, E0=10.0e9))
         k1 = Octopus._strong_strong_kbb1(solver, viaref, viaref2)
         k2 = Octopus._strong_strong_kbb2(solver, viaref, viaref2)
@@ -19780,7 +19778,7 @@ end
                            grid_step=collect(spacing))
             @test coordinate_arrays(by_step) == coordinate_arrays(grid)
             physical = Beam(second, T; lower=lower, upper=upper, grid_size=counts,
-                            npart=8.0e10, charge=-1, mc2=EMASS_EV, E0=10.0e9, r0=RE)
+                            npart=8.0e10, charge=-1, mc2=EMASS_EV, E0=10.0e9)
             @test physical.params.npart == T(8.0e10)
             @test physical.params.charge == -one(T) && physical.params.E0 == T(10.0e9)
             @test coordinate_arrays(physical) == coordinate_arrays(grid)
@@ -20343,7 +20341,10 @@ end
     by_energy = ReferenceParticle(charge=1.0, mc2=3.0e8, E0=5.0e8)
     by_momentum = ReferenceParticle(charge=1, mc2=3.0e8, p0c=4.0e8)
     @test isbits(by_energy)
-    @test by_energy == by_momentum
+    # One particle physically (the exact triple), two stored parameters: the
+    # typed key is kept since R4 (2026-11-26), so `==` is structural.
+    @test by_energy != by_momentum && by_energy.E0 == by_momentum.E0 == 5.0e8 && by_energy.p0c == by_momentum.p0c == 4.0e8
+    @test by_energy.energy_key === :E0 && by_momentum.energy_key === :p0c
     @test by_energy.E0 == 5.0e8 && by_momentum.charge === 1.0
     # Anti-vacuity: a different momentum is a different reference.
     @test by_energy != ReferenceParticle(charge=1.0, mc2=3.0e8, p0c=4.5e8)
@@ -20362,7 +20363,7 @@ end
     @test occursin("`mc2`", msg(() -> ReferenceParticle(charge=1.0, mc2=-1.0, E0=2.0)))
     @test occursin("`mc2`", msg(() -> ReferenceParticle(charge=1.0, mc2=Inf, E0=2.0)))
     let both = msg(() -> ReferenceParticle(charge=1.0, mc2=1.0, E0=2.0, p0c=1.0))
-        @test occursin("`E0`", both) && occursin("`p0c`", both) && occursin("not both", both)
+        @test occursin("`E0`", both) && occursin("`p0c`", both) && occursin("exactly one of", both)   # R4 (2026-11-26): one of four energy spellings
     end
     let neither = msg(() -> ReferenceParticle(charge=1.0, mc2=1.0))
         @test occursin("`E0`", neither) && occursin("`p0c`", neither) && occursin("neither", neither)
@@ -20373,6 +20374,674 @@ end
     @test occursin("`p0c`", msg(() -> ReferenceParticle(charge=1.0, mc2=1.0, p0c=NaN)))
     # The guard is the keyword constructor: a valid call does reach `ACCEPTED`.
     @test msg(() -> ReferenceParticle(charge=-1.0, mc2=EMASS_EV, E0=1.0e10)) == "ACCEPTED"
+end
+
+@testset "Machine description: the reference particle derives its quantities once, takes presets and four energy spellings, and refuses by name" begin
+    # R4 of docs/design/machine_description_followups.md (2026-11-26): the
+    # richer immutable record. Every assertion below was red on c52d80e
+    # (result/gates/cp1/red/u2_red.log): no presets, no derived fields, no
+    # p0c/gamma0/brho beyond p0c, no expression energy, no typed key.
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    # (a) The presets name the shared constants (the tripwire: every preset
+    # number is one of them, by identity), the energy still required.
+    @test Octopus._REFERENCE_SPECIES.proton.mc2 === PMASS_EV && Octopus._REFERENCE_SPECIES.proton.charge === 1.0
+    @test Octopus._REFERENCE_SPECIES.electron.mc2 === EMASS_EV && Octopus._REFERENCE_SPECIES.electron.charge === -1.0
+    @test Octopus._REFERENCE_SPECIES.positron.mc2 === EMASS_EV && Octopus._REFERENCE_SPECIES.positron.charge === 1.0
+    for preset in values(Octopus._REFERENCE_SPECIES)
+        @test (preset.mc2 === PMASS_EV || preset.mc2 === EMASS_EV) && abs(preset.charge) === 1.0
+    end
+    p = ReferenceParticle(:proton; E0=275.0e9)
+    @test p == ReferenceParticle(; charge=1.0, mc2=PMASS_EV, E0=275.0e9) && p isa ReferenceParticle{Float64} && isbits(p)
+    let none = msg(() -> ReferenceParticle(:proton))
+        @test occursin("exactly one of", none) && occursin("neither was given", none)
+    end
+    let unknown = msg(() -> ReferenceParticle(:muon; E0=1.0e9))
+        @test occursin("unknown species", unknown) && occursin(":positron", unknown) && occursin("explicit form", unknown)
+    end
+    @test occursin("fixed by the species preset", msg(() -> ReferenceParticle(:proton; E0=1.0e9, mc2=PMASS_EV)))
+    # (b) The derived fields against hand formulas at 1e-15 relative, an
+    # electron at 10 GeV and a proton at 275 GeV; the accessors read the
+    # fields, and the fields are the accessors' old formulas bit for bit.
+    for (ref, q, m, E0) in ((ReferenceParticle(:electron; E0=10.0e9), -1.0, EMASS_EV, 10.0e9),
+                            (p, 1.0, PMASS_EV, 275.0e9))
+        g = E0 / m
+        @test ref.E0 == E0 && ref.charge == q && ref.mc2 == m && ref.energy_key === :E0
+        @test isapprox(ref.gamma0, g; rtol=1e-15) && isapprox(ref.beta0, sqrt(1 - 1 / g^2); rtol=1e-15)
+        @test isapprox(ref.p0c, sqrt(E0^2 - m^2); rtol=1e-15)
+        @test isapprox(ref.brho, sqrt(E0^2 - m^2) / (CLIGHT * abs(q)); rtol=1e-15)
+        @test ref.r0 == RE * ME0 / m
+        @test reference_beta(ref) === ref.beta0 === reference_beta(E0, m)
+        @test reference_gamma(ref) === ref.gamma0 === reference_gamma(E0, m)
+        @test reference_beta_gamma(ref) === (ref.beta0, ref.gamma0) === reference_beta_gamma(E0, m)
+    end
+    @test isapprox(p.brho, 917.3; rtol=2.0e-4)                   # 3.3356 T m per GeV/c
+    @test ReferenceParticle(:electron; E0=10.0e9).r0 == RE       # (RE * ME0) / EMASS_EV is RE to the bit
+    # (c) The four spellings of one particle: each keeps its typed key and
+    # value as given, the other fields agree to a few ulps (the inversions
+    # are exact in exact arithmetic), and they are structurally distinct.
+    pe = ReferenceParticle(:proton; p0c=p.p0c)
+    pg = ReferenceParticle(:proton; gamma0=p.gamma0)
+    pb = ReferenceParticle(:proton; brho=p.brho)
+    @test pe.energy_key === :p0c && pg.energy_key === :gamma0 && pb.energy_key === :brho
+    @test pe.p0c === p.p0c && pg.gamma0 === p.gamma0 && pb.brho === p.brho
+    @test reference_energy(pe) === p.p0c && reference_energy(p) === p.E0
+    for other in (pe, pg, pb)
+        for f in (:E0, :p0c, :gamma0, :beta0, :brho)
+            @test isapprox(getfield(other, f), getfield(p, f); rtol=4.0e-16)
+        end
+        @test other.r0 == p.r0 && other != p && hash(other) != hash(p)
+    end
+    @test occursin("p0c = ", sprint(show, pe)) && endswith(sprint(show, pe), " eV)")
+    @test occursin("gamma0 = ", sprint(show, pg)) && !occursin("eV)", sprint(show, pg))
+    @test occursin("brho = ", sprint(show, pb)) && endswith(sprint(show, pb), " T m)")
+    # (d) Every refusal by name.
+    @test occursin("`gamma0`", msg(() -> ReferenceParticle(:proton; gamma0=1.0))) && occursin("exceed 1", msg(() -> ReferenceParticle(:proton; gamma0=0.5)))
+    @test occursin("`brho`", msg(() -> ReferenceParticle(:proton; brho=0.0))) && occursin("positive", msg(() -> ReferenceParticle(:proton; brho=-1.0)))
+    @test occursin("`p0c`", msg(() -> ReferenceParticle(:proton; p0c=Inf))) && occursin("finite", msg(() -> ReferenceParticle(:proton; p0c=Inf)))
+    let two = msg(() -> ReferenceParticle(:proton; E0=1.0e12, brho=900.0))
+        @test occursin("exactly one of", two) && occursin("E0 = 1.0e12", two) && occursin("brho = 900.0", two)
+    end
+    @test occursin("number or a knob expression", msg(() -> ReferenceParticle(:proton; E0="275 GeV")))
+    @test occursin("`charge`", msg(() -> ReferenceParticle(; charge="1", mc2=PMASS_EV, E0=1.0e12)))
+    @test occursin("`mc2`", msg(() -> ReferenceParticle(; charge=1, mc2=nothing, E0=1.0e12)))
+    # (e) A knob expression as the energy: the derived fields are expression
+    # trees over it (design D10) that resolve to the numeric reference's
+    # values and follow the knob; the lattice's knob-root tripwire covers it.
+    @knob md6_ref.E0 = 275.0e9
+    kp = ReferenceParticle(:proton; E0=@knob_expr(md6_ref.E0))
+    @test kp isa ReferenceParticle{AbstractKnobExpression} && !isbits(kp) && kp.energy_key === :E0
+    @test kp.E0 isa KnobRef && kp.p0c isa KnobCall && kp.gamma0 isa KnobCall && kp.beta0 isa KnobCall && kp.brho isa KnobCall
+    @test kp.r0 == p.r0 && kp.charge == 1.0 && kp.mc2 === PMASS_EV
+    for f in (:E0, :p0c, :gamma0, :beta0, :brho)
+        @test Octopus._resolve_knob_param(getfield(kp, f)) == getfield(p, f)
+    end
+    @test reference_beta_gamma(kp) === (kp.beta0, kp.gamma0)
+    @test kp == ReferenceParticle(:proton; E0=@knob_expr(md6_ref.E0)) && kp != p
+    set_knob!("md6_ref.E0", 100.0e9)
+    @test Octopus._resolve_knob_param(kp.gamma0) == 100.0e9 / PMASS_EV
+    set_knob!("md6_ref.E0", 275.0e9)
+    let m = msg(() -> Lattice("md6_REF"; line=BeamLine("L", DriftSpec(L=1.0)), reference=kp))
+        @test occursin("reference particle reads knob md6_ref.E0", m) && occursin("declares no knob root", m)
+    end
+    let m = msg(() -> Lattice("md6_REF"; line=BeamLine("L", DriftSpec(L=1.0)), reference=kp, knob_root=:other))
+        @test occursin("knob md6_ref.E0", m) && occursin("reference particle's E0", m) && occursin("outside the declared knob root", m)
+    end
+    lat_k = Lattice("md6_REF"; line=BeamLine("L", DriftSpec(L=1.0)), reference=kp, knob_root=:md6_ref)
+    @test lat_k.reference === kp
+    # A cavity built from the expression reference stores expression trees and
+    # compiles to the numeric reference's cavity bit for bit once resolved.
+    rf_num = ThinRFCavitySpec(400.0e6; strength=0.01, reference=p)
+    rf_kn = ThinRFCavitySpec(400.0e6; strength=0.01, reference=kp)
+    @test param(rf_kn, :beta0) isa KnobCall && param(rf_kn, :gamma0) isa KnobCall
+    @test compile_runtime(rf_kn).beta0 === compile_runtime(rf_num).beta0 === p.beta0
+    # (f) The snapshot writes the energy under the typed key and reads it back
+    # exact, for every key and for the expression; the reader refuses two
+    # keys, none, an unknown key and an energy at rest, by name.
+    for ref in (p, pe, pg, pb)
+        lat = Lattice("md6_SNAP"; line=BeamLine("L", DriftSpec(L=1.0)), reference=ref)
+        text = machine_toml(Machine(lat))
+        refline = only(filter(l -> occursin("reference = {", l), split(text, "\n")))
+        @test occursin("$(ref.energy_key) = ", refline) && count(k -> occursin(" $(k) = ", refline), ("E0", "p0c", "gamma0", "brho")) == 1
+        back = parse_machine(text)[:md6_SNAP]
+        @test back.reference == ref && reference_energy(back.reference) === reference_energy(ref)
+    end
+    let text = machine_toml(Machine(lat_k))
+        @test occursin("md6_ref.E0", text) && occursin("expr", text)
+        @test parse_machine(text)[:md6_REF].reference == kp
+    end
+    base = machine_toml(Machine(Lattice("md6_SNAP"; line=BeamLine("L", DriftSpec(L=1.0)), reference=p)))
+    refline = only(filter(l -> occursin("reference = {", l), split(base, "\n")))
+    e0text = match(r"E0 = [0-9.eE+-]+", refline).match
+    edited(repl) = replace(base, refline => replace(refline, e0text => repl))
+    bad(text) = msg(() -> parse_machine(text))
+    @test occursin("exactly one of E0, p0c, gamma0, brho", bad(edited(e0text * ", brho = 900.0"))) && occursin("got E0, brho", bad(edited(e0text * ", brho = 900.0")))
+    @test occursin("exactly one of E0, p0c, gamma0, brho", bad(replace(base, refline => replace(refline, ", " * e0text => ""))))
+    @test occursin("unknown key \"beta0\"", bad(edited("beta0 = 0.99")))
+    @test occursin("must exceed", bad(edited("E0 = 1.0"))) && occursin("ReferenceParticle", bad(edited("E0 = 1.0")))
+    @test occursin("number or a knob expression", bad(edited("E0 = \"275 GeV\"")))
+end
+
+@testset "Machine description: the beam derives its classical radius and carries its reference; the strong-strong preflight refuses a zero or defaulted kick factor by name" begin
+    # R3 and R5 of docs/design/machine_description_followups.md (2026-11-26),
+    # closing the audit's C-5. Red on c52d80e (result/gates/cp1/red/u2_red.log).
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    cpu = CPUThreadsExecutionPolicy(threads=1)
+    rid = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
+    rid2 = Octopus._unheld_rng_id(rid + 1)
+    old_seed, old_method = global_rng_seed(), global_rng_method()
+    try
+        set_global_rng!(seed=20261126, method=:philox)
+        ref = ReferenceParticle(:proton; E0=275.0e9)
+        # (a) r0 is derived, bit for bit the hand-typed value, from the
+        # reference or from a flat mc2; the keyword is refused by name with
+        # the remedy; the beam carries its reference and whether npart was given.
+        viaref = Beam(64, cpu; rng_id=rid, reference=ref, npart=1.0e11)
+        flat = Beam(64, cpu; rng_id=rid, charge=1, mc2=PMASS_EV, E0=275.0e9, npart=1.0e11)
+        @test viaref.params.r0 === RE * ME0 / PMASS_EV === flat.params.r0 && viaref.params === flat.params
+        @test viaref.reference === ref && flat.reference === nothing
+        @test viaref.npart_given && flat.npart_given && !Beam(16, cpu; rng_id=rid, reference=ref).npart_given
+        let bare = Beam(16, cpu; rng_id=rid)
+            @test bare.params.r0 == 0.0 && bare.reference === nothing && !bare.npart_given
+        end
+        let m = msg(() -> Beam(16, cpu; rng_id=rid, reference=ref, npart=1.0e11, r0=RE * ME0 / PMASS_EV))
+            @test occursin("`r0` is not an input", m) && occursin("RE * ME0 / mc2", m) && occursin("kbb1", m)
+        end
+        @test occursin("`r0` is not an input", msg(() -> Beam(16, cpu; rng_id=rid, charge=1, mc2=PMASS_EV, E0=275.0e9, r0=1.0e-18)))
+        @test occursin("`r0` is not an input", msg(() -> Beam(cpu; lower=(-1.0, 0.0, 0.0, 0.0, 0.0, 0.0), upper=(1.0, 0.0, 0.0, 0.0, 0.0, 0.0), grid_size=(2, 1, 1, 1, 1, 1), r0=1.0)))
+        # The positional form keeps working and records no reference.
+        pos = Beam{CPUThreadsBackend,typeof(flat.params),typeof(flat.rep)}(flat.params, flat.rep)
+        @test pos.reference === nothing && pos.npart_given && pos.params === flat.params
+        # A knob-given energy resolves at construction; the beam holds numbers.
+        @knob md6_beam.E0 = 275.0e9
+        kb = Beam(16, cpu; rng_id=rid, reference=ReferenceParticle(:proton; E0=@knob_expr(md6_beam.E0)), npart=1.0e11)
+        @test kb.params === Beam(16, cpu; rng_id=rid, reference=ref, npart=1.0e11).params && kb.reference == ref && kb.reference isa ReferenceParticle{Float64}
+        # (b) The preflight. The fixtures: two one-element lines sharing a
+        # marker, a soft-Gaussian solver that derives its kick, small beams.
+        mkip(; kw...) = StrongStrongCollision(:md6; poisson_solver=GaussianPoissonSolver(; kw...))
+        task(ip=mkip()) = StrongStrongTask((DriftSpec(L=0.1), ip), (DriftSpec(L=0.1), ip); policy=cpu)
+        good(id; kw...) = Beam(64, cpu; rng_id=id, beta=(0.5, 0.5, 10.0), alpha=(0.0, 0.0, 0.0),
+                               sigma=(1.0e-4, 1.0e-4, 1.0e-2), cutoff=5.0, kw...)
+        e_ref = ReferenceParticle(:electron; E0=10.0e9)
+        b1 = good(rid; reference=e_ref, npart=1.7e11)
+        b2 = good(rid2; reference=ref, npart=0.7e11)
+        snapshot(b) = map(copy, coordinate_arrays(b.rep))
+        unchanged(b, before) = all(map(==, before, coordinate_arrays(b.rep)))
+        # A zero factor of a derived kick: refused by name with the beam, the
+        # factor and both remedies, the beams untouched; the E0 refusal of the
+        # 2026-10-20 batch keeps its message and runs first.
+        for (x1, x2, beam_no, factor) in ((good(rid; charge=-1.0, E0=10.0e9, npart=1.7e11), b2, 1, "mc2"),                 # mc2 left at 0
+                                           (b1, good(rid2; mc2=PMASS_EV, E0=275.0e9, npart=0.7e11), 2, "charge"))           # charge left at 0
+            s1, s2 = snapshot(x1), snapshot(x2)
+            m = msg(() -> execute!(task(), x1, x2; turns=1))
+            @test occursin("kick scale kbb1", m) && occursin("GaussianPoissonSolver", m) && occursin("beam $(beam_no)'s `$(factor)` is 0.0", m)
+            @test occursin("reference = ReferenceParticle(...)", m) && occursin("kbb1 = ", m) && occursin("when kbb1 is not specified", m)
+            @test unchanged(x1, s1) && unchanged(x2, s2)
+        end
+        let m = msg(() -> execute!(task(), good(rid), b2; turns=1))
+            @test occursin("beam1 E0 must be finite and nonzero when kbb1 is not specified", m)
+        end
+        # A reference-built beam without npart: refused by name (the owner's
+        # rule of 2026-11-26); with npart, or with kbb on the solver, it runs.
+        let m = msg(() -> execute!(task(), b1, good(rid2; reference=ref); turns=1))
+            @test occursin("beam 2 was built from a ReferenceParticle without `npart`", m) && occursin("macro-particle count (64.0)", m) &&
+                  occursin("npart = <bunch population>", m) && occursin("kbb1 = ", m)
+        end
+        @test msg(() -> execute!(task(), b1, b2; turns=1)) == "ACCEPTED"
+        @test msg(() -> execute!(task(mkip(kbb1=1.0e-6, kbb2=1.0e-6)), good(rid; reference=e_ref), good(rid2; reference=ref); turns=1)) == "ACCEPTED"
+        # A flat beam without npart warns ONCE per task (both beams, each once),
+        # and not again on the same task's next execute!; a second task warns
+        # anew; an explicit npart is silent.
+        f1 = good(rid; charge=-1.0, mc2=EMASS_EV, E0=10.0e9)
+        f2 = good(rid2; charge=1.0, mc2=PMASS_EV, E0=275.0e9)
+        t_warn = task()
+        logs, _ = Test.collect_test_logs(() -> (execute!(t_warn, f1, f2; turns=1); execute!(t_warn, f1, f2; turns=1)))
+        npart_warnings = filter(l -> occursin("`npart` defaults to its macro-particle count", string(l.message)), logs)
+        @test length(npart_warnings) == 2 && any(l -> occursin("beam 1's", string(l.message)), npart_warnings) && any(l -> occursin("beam 2's", string(l.message)), npart_warnings)
+        logs2, _ = Test.collect_test_logs(() -> execute!(task(), f1, f2; turns=1))
+        @test count(l -> occursin("`npart` defaults", string(l.message)), logs2) == 2
+        logs3, _ = Test.collect_test_logs(() -> execute!(task(), good(rid; charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11), good(rid2; charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11); turns=1))
+        @test count(l -> occursin("`npart` defaults", string(l.message)), logs3) == 0
+        # (c) The derived scales are reported: the solver's entries in
+        # configuration_report carry them as :inherited with the formula, an
+        # explicit kbb stays :resolved, a beam the derivation refuses leaves
+        # the value nothing with the refusal as the reason; the collision
+        # receipt carries both scales.
+        solver = GaussianPoissonSolver()
+        rep = configuration_report(task(), b1, b2)
+        entry(r, name) = only(filter(e -> e.name === name, collect(only(r.solvers))))
+        @test entry(rep, :kbb1).status === :inherited && entry(rep, :kbb1).requested === nothing &&
+              entry(rep, :kbb1).resolved === Octopus._strong_strong_kbb1(solver, b1, b2) && entry(rep, :kbb1).resolved != 0
+        @test entry(rep, :kbb2).resolved === Octopus._strong_strong_kbb2(solver, b1, b2) && occursin("derived from the beams", entry(rep, :kbb2).reason)
+        rep_x = configuration_report(task(mkip(kbb1=1.0e-6, kbb2=2.0e-6)), b1, b2)
+        @test entry(rep_x, :kbb1).status === :resolved && entry(rep_x, :kbb1).resolved == 1.0e-6
+        rep_bad = configuration_report(task(), good(rid), b2)
+        @test entry(rep_bad, :kbb1).resolved === nothing && occursin("cannot be derived", entry(rep_bad, :kbb1).reason) && occursin("E0", entry(rep_bad, :kbb1).reason)
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do; execute!(task(), b1, b2; turns=2); end
+        collisions = filter(r -> r.consumer === :strong_strong_collision, execution_receipts(audit))
+        @test length(collisions) == 2 && all(r -> r.values.kbb1 === Octopus._strong_strong_kbb1(solver, b1, b2) &&
+                                                   r.values.kbb2 === Octopus._strong_strong_kbb2(solver, b1, b2), collisions)
+    finally
+        set_global_rng!(seed=old_seed, method=old_method)
+    end
+end
+
+@testset "Machine description: a typed element refuses a value wider than Float64 by name and keeps narrowing Float64 to Float32" begin
+    # R6 of docs/design/machine_description_followups.md (2026-11-26), closing
+    # the audit's B-11. Red on c52d80e (result/gates/cp1/red/u3_red.log): the
+    # typed form converted big"..." to Float64 silently on every route.
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    wide = big"0.30000000000000000001"
+    # (a) The typed friendly form, by keyword and by type parameter, lengths,
+    # strengths and placements, scalars and tuples.
+    for f in (() -> QuadrupoleSpec(; numeric_type=Float64, L=wide, k1=1.0),
+              () -> QuadrupoleSpec{Float64}(L=wide, k1=1.0),
+              () -> QuadrupoleSpec{Float32}(L=0.3, k1=wide),
+              () -> QuadrupoleSpec{Float64}(L=0.3, kn=(0.0, wide)),
+              () -> DriftSpec{Float64}(L=0.5, x_offset=wide))
+        m = msg(f)
+        @test occursin("cannot hold", m) && occursin("BigFloat", m) && occursin("without losing digits", m) &&
+              occursin("numeric_type = BigFloat", m) && occursin("untyped form", m) && occursin("R6", m)
+    end
+    @test occursin("parameter `L`", msg(() -> QuadrupoleSpec{Float64}(L=wide, k1=1.0)))
+    @test occursin("parameter `kn`", msg(() -> QuadrupoleSpec{Float64}(L=0.3, kn=(0.0, wide))))
+    # The intended narrowings stay: a Float64 literal on a Float32 element
+    # compiles to Float32 (the suite's standing pin), Float16 too, and a
+    # BigFloat into a BigFloat element; the untyped form promotes as before.
+    @test getparam(DriftSpec{Float32}(L=0.7), :L) === 0.7f0 && compile_runtime(DriftSpec{Float32}(L=0.7)) isa Octopus.LatticeMagnet{Symplectic6DMap,Float32}
+    @test Octopus.numeric_type(QuadrupoleSpec{Float32}(L=Float16(0.5), k1=1.0)) === Float32
+    @test Octopus.numeric_type(QuadrupoleSpec{BigFloat}(L=wide, k1=1.0)) === BigFloat && getparam(QuadrupoleSpec{BigFloat}(L=wide, k1=1.0), :L) == wide
+    @test Octopus.numeric_type(QuadrupoleSpec(L=wide, k1=1.0)) === BigFloat
+    # (b) The predicate and the widest-type helper.
+    @test Octopus._numeric_type_holds(Float32, Float64) && Octopus._numeric_type_holds(Float64, Float16) &&
+          Octopus._numeric_type_holds(BigFloat, BigFloat) && Octopus._numeric_type_holds(BigFloat, Float64)
+    @test !Octopus._numeric_type_holds(Float64, BigFloat) && !Octopus._numeric_type_holds(Float32, BigFloat)
+    @test Octopus._widest_float_type((0.0, wide)) === BigFloat && Octopus._widest_float_type((1, :a)) === nothing &&
+          Octopus._widest_float_type([0.5f0, 1.0f0]) === Float32 && Octopus._widest_float_type(((0.0, 1.0f0), wide)) === BigFloat
+    # (c) Every route into a Lattice refuses with one message: an in-place
+    # override on a typed element, with_overrides, the spec route, the
+    # flexible form, a typed line's own offset.
+    q = QuadrupoleSpec(; numeric_type=Float64, name="Q", L=0.3, k1=1.0)
+    lt = BeamLine("T", q, DriftSpec(; numeric_type=Float64, name="D", L=0.5))
+    @test msg(() -> Lattice("T"; line=lt)) == "ACCEPTED"
+    lt[1].L = wide
+    let m = msg(() -> Lattice("T"; line=lt))
+        @test occursin("T/Q (quadrupole): numeric_type = Float64 cannot hold parameter `L`'s BigFloat value", m)
+    end
+    lt[1].L = 0.3
+    lattice = Lattice("T"; line=lt)
+    let m = msg(() -> with_overrides(lattice, sel"T/Q" => (L = wide,)))
+        @test occursin("T/Q (quadrupole)", m) && occursin("cannot hold parameter `L`'s BigFloat value", m)
+    end
+    let dl = with_overrides(lattice, sel"T/Q" => (L = 0.31,)).line
+        @test getparam(line_entries(dl)[only(find_entries(dl, sel"T/Q"))], :L) == 0.31   # the Float64 override still lands
+    end
+    q2 = QuadrupoleSpec(; numeric_type=Float64, name="Q2", L=0.3, k1=1.0)
+    q2.L = wide                                                          # the spec route stores it; the lattice refuses it
+    @test occursin("S/Q2 (quadrupole): numeric_type = Float64 cannot hold parameter `L`", msg(() -> Lattice("S"; line=BeamLine("S", q2))))
+    raw = ElementSpec{:quadrupole}(Dict{Symbol,Any}(:numeric_type => Float64, :L => wide, :kn => (0.0, 1.0), :name => "R"))
+    @test occursin("R/R (quadrupole): numeric_type = Float64 cannot hold parameter `L`", msg(() -> Lattice("R"; line=BeamLine("R", raw))))
+    let m = msg(() -> Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), BeamLine("CRYO", DriftSpec{Float32}(L=0.3); x_offset=wide, numeric_type=Float32)), eltype=Float32))
+        @test occursin("TOP/CRYO (line): numeric_type = Float32 cannot hold parameter `x_offset`'s BigFloat value", m)
+    end
+    # (d) The untyped case's remedy no longer names a typed form R6 refuses.
+    let m = msg(() -> Lattice("U"; line=BeamLine("U", QuadrupoleSpec(; name="Q", L=wide, k1=1.0))))
+        @test occursin("compiles in BigFloat", m) && occursin("Float64 or narrower", m) && occursin("eltype=BigFloat", m) && !occursin("numeric_type = Float64", m)
+    end
+    let m = msg(() -> Lattice("V"; line=BeamLine("V", DriftSpec(L=0.5)), eltype=Float32))
+        @test occursin("compiles in Float64", m) && occursin("numeric_type = Float32", m)     # a Float64 into Float32 keeps the typed-form remedy
+    end
+end
+
+@testset "Machine description: a collision marker in a single-beam line is inert, counted, never an error" begin
+    # R2 of docs/design/machine_description_followups.md (2026-11-26), closing
+    # the audit's B-1b. Red on c52d80e (result/gates/cp1/red/u4_red.log): the
+    # marker was pushed as a physics entry and called as a map at the first
+    # turn (MethodError: not callable), and the analysis refused it as an
+    # in-line hook.
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    ip = StrongStrongCollision(:md8_ip; poisson_solver=GaussianPoissonSolver())
+    q = QuadrupoleSpec(; name="Q", L=0.3, k1=1.2); d = DriftSpec(; name="D", L=0.7); qd = QuadrupoleSpec(; name="QD", L=0.3, k1=-1.2)
+    without = Lattice("md8_W0"; line=BeamLine("L", q, d, qd, d))
+    with1 = Lattice("md8_W1"; line=BeamLine("L", q, d, ip, qd, d))
+    with2 = Lattice("md8_W2"; line=BeamLine("L", ip, q, d, qd, d, ip))
+    rep() = Phase6DRep([1.0e-4, -2.0e-4, 3.0e-4], [0.0, 1.0e-5, -1.0e-5], [1.0e-4, 0.0, 2.0e-4],
+                       [0.0, 0.0, 1.0e-5], [0.0, 1.0e-3, -1.0e-3], [0.0, 0.0, 1.0e-4])
+    cpu = CPUThreadsExecutionPolicy(threads=1)
+    function tracked(elements)
+        r = rep(); execute!(TrackingTask(elements; policy=cpu), r; turns=5)
+        return map(copy, coordinate_arrays(r))
+    end
+    base = tracked(without)
+    @test base != map(copy, coordinate_arrays(rep()))                          # it tracked
+    @test tracked(with1) == base && tracked(with2) == base                     # bitwise, CPU
+    @test tracked((q, d, ip, qd, d)) == base && tracked((ip, q, d, qd, d, ip)) == base   # the tuple spelling
+    # A marker inside a line kept whole (an offset girder) is inert in the composite too.
+    g1 = Lattice("md8_G1"; line=BeamLine("T", BeamLine("G", q, d, ip, qd, d; x_offset=1.0e-4)))
+    g0 = Lattice("md8_G0"; line=BeamLine("T", BeamLine("G", q, d, qd, d; x_offset=1.0e-4)))
+    @test tracked(g1) == tracked(g0) != base
+    # The analyses: the same matrix, the same result.
+    @test one_turn_matrix(with1).matrix == one_turn_matrix(without).matrix == one_turn_matrix(with2).matrix
+    @test one_turn_matrix(g1).matrix == one_turn_matrix(g0).matrix
+    r0 = analyze(TwissDispersionAnalysis(strict=false), without); r1 = analyze(TwissDispersionAnalysis(strict=false), with1)
+    @test r1.status === r0.status && r1.matrix == r0.matrix
+    # The receipt and the report count the markers: 0, 1 and 2; nothing warns.
+    for (lat, n) in ((without, 0), (with1, 1), (with2, 2), (g1, 1))
+        task = TrackingTask(lat; policy=cpu)
+        audit = ExecutionAudit()
+        logs, _ = Test.collect_test_logs(() -> with_execution_audit(audit) do; execute!(task, rep(); turns=1); end)
+        @test isempty(logs)
+        b = only(filter(r -> r.consumer === :tracking_line_binding, execution_receipts(audit))).values
+        @test b.collision_markers == n && b.apertures == 0 && b.circumference == Octopus.total_length(lat.line)
+        @test configuration_report(task, rep()).binding == (apertures=0, collision_markers=n)
+    end
+    @test Octopus._collision_marker_count((q, ip, [d, ip], BeamLine("N", ip, q))) == 3
+    # The strong-strong task still pairs the markers (its pins elsewhere); its
+    # binding receipt carries the count per line.
+    audit_ss = ExecutionAudit()
+    mkb(id) = Beam(32, cpu; rng_id=id, sigma=(1.0e-4, 1.0e-4, 1.0e-2), reference=ReferenceParticle(:proton; E0=275.0e9), npart=1.0e11)
+    with_execution_audit(audit_ss) do
+        execute!(StrongStrongTask(with1, with1; policy=cpu), mkb(Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)),
+                 mkb(Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_001)); turns=1)
+    end
+    bs = filter(r -> r.consumer === :strong_strong_line_binding, execution_receipts(audit_ss))
+    @test length(bs) == 2 && all(r -> r.values.collision_markers == 1, bs)
+    if CUDA_TESTS_ACTIVE
+        # CUDA: the same deterministic kernels, bitwise with and without the marker.
+        gpu = CUDAExecutionPolicy()
+        function tracked_gpu(elements)
+            set_global_rng!(seed=20261126, method=:philox)
+            b = Beam(64, gpu, Float64; rng_id=7, sigma=(1.0e-4, 1.0e-4, 1.0e-2))
+            execute!(TrackingTask(elements; policy=gpu), b; turns=5)
+            return map(a -> Array(a), coordinate_arrays(b))
+        end
+        gbase = tracked_gpu(without)
+        @test tracked_gpu(with1) == gbase && tracked_gpu(with2) == gbase
+        set_global_rng!(seed=0x5eed, method=:philox)
+    end
+end
+
+@testset "Machine description: the accelerating-cavity flag is fixed at construction, EveryNSteps prints stop only when given, and a bad moment name is refused by name" begin
+    # R8c and R8d of docs/design/machine_description_followups.md
+    # (2026-11-26), closing the audit's C-3 and C-6. Red on c52d80e
+    # (result/gates/cp1/red/u6_red.log): the lattice spelling allocated 416 B
+    # more per execute! than the tuple spelling, the snapshot printed stop =
+    # 9223372036854775807, and Moment("m1a0000") died in parse(Int, ...).
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    q = QuadrupoleSpec(; name="Q", L=0.3, k1=1.2); d = DriftSpec(; name="D", L=0.7); qd = QuadrupoleSpec(; name="QD", L=0.3, k1=-1.2)
+    cpu = CPUThreadsExecutionPolicy(threads=1)
+    tuple_task = TrackingTask((q, d, qd, d); policy=cpu)
+    lattice_task = TrackingTask(Lattice("md9_L"; line=BeamLine("L", q, d, qd, d)); policy=cpu)
+    @test !tuple_task.has_accelerating_cavity && !lattice_task.has_accelerating_cavity
+    acc = TrackingTask((DriftSpec(L=1.0), ThinAcceleratingCavitySpec(1.3e9; voltage=25.0e6, e0=1.0e9, mc2=EMASS_EV)); policy=cpu)
+    @test acc.has_accelerating_cavity && Octopus._has_accelerating_cavity(acc.elements)
+    one() = Phase6DRep([1.0e-4], [0.0], [1.0e-4], [0.0], [0.0], [0.0])
+    @test occursin("SINGLE-PASS", msg(() -> execute!(acc, one(); turns=2)))     # the refusal reads the flag
+    @test msg(() -> execute!(acc, one(); turns=1)) == "ACCEPTED"
+    # The cost pin, structural (an allocation equality between the tuple and
+    # the lattice spelling does not hold: the whole-line runtime and the element
+    # tuple are different shapes, measured 17520 vs 17488 bytes per single-turn
+    # execute!, 2026-11-26): the window executor reads the flag the constructor
+    # fixed and names no per-call survey of the elements.
+    tasks_src = read(joinpath(pkgdir(Octopus), "src", "tasks", "Tasks.jl"), String)
+    window = match(r"\nfunction _execute_tracking_window!\(.*?\nend\n"s, tasks_src)
+    @test window !== nothing && occursin("task.has_accelerating_cavity", window.match) &&
+          !occursin("_has_accelerating_cavity(", window.match)
+    n = 64
+    rep() = Phase6DRep(collect(range(-1.0e-4, 1.0e-4; length=n)), zeros(n), fill(3.0e-5, n), zeros(n), fill(1.0e-2, n), zeros(n))
+    r1, r2 = rep(), rep()
+    execute!(tuple_task, r1; turns=1); execute!(lattice_task, r2; turns=1)
+    @test coordinate_arrays(r1) == coordinate_arrays(r2)                       # the two spellings track alike
+    # EveryNSteps: `stop` is printed only when one was given; the default reads back.
+    ctx = Octopus._TomlContext(Float64, nothing, String[])
+    t1 = Octopus._toml_encode_object(EveryNSteps(step=2), ctx)
+    @test !haskey(t1, "stop") && t1["step"] == 2 && t1["start"] == 0 && t1["type"] == "EveryNSteps"
+    @test Octopus._toml_decode_object(t1, ctx) == EveryNSteps(step=2) && Octopus._toml_decode_object(t1, ctx).stop == typemax(Int)
+    t2 = Octopus._toml_encode_object(EveryNSteps(start=1, stop=10, step=3), ctx)
+    @test t2["stop"] == 10 && Octopus._toml_decode_object(t2, ctx) == EveryNSteps(start=1, stop=10, step=3)
+    lat = Lattice("md9_S"; line=BeamLine("S", q, ScheduledObserver(MomentObserver(; name="md9_m"), EveryNSteps(step=2)), d))
+    text = machine_toml(Machine(lat))
+    @test !occursin("stop", text) && occursin("step = 2", text) && parse_machine(text)[:md9_S] == lat
+    lat_stop = Lattice("md9_T"; line=BeamLine("S", q, ScheduledObserver(MomentObserver(; name="md9_m"), EveryNSteps(step=2, stop=9)), d))
+    @test occursin("stop = 9", machine_toml(Machine(lat_stop))) && parse_machine(machine_toml(Machine(lat_stop)))[:md9_T] == lat_stop
+    # Moment: a power that is not a nonnegative integer is refused by name, with the text.
+    for bad in ("m1a0000", "m1_a_0_0_0_0", "m1_-1_0_0_0_0")
+        m = msg(() -> Moment(bad))
+        @test occursin("moment name $(bad)", m) && occursin("not a nonnegative integer", m) && occursin("m100000", m)
+    end
+    @test Moment("m1_0_0_0_0_0") == Moment("m100000") == Moment(; x=1)
+end
+
+@testset "Machine description: an explicit stream id reaches the registry on every route into the flexible form, and the kind's own id passes silently" begin
+    # R8b of docs/design/machine_description_followups.md (2026-11-26), closing
+    # the audit's B-6a. Red on c52d80e (result/gates/cp1/red/u5_red.log): the
+    # flexible form claimed nothing, so a snapshot's explicit id was unheld after
+    # the reload and a reload onto another class's id was silent; ElementMeta had
+    # no rng_consumer. The claim is the friendly constructor's (`claim_rng_id!`
+    # under the kind's class); the kind's own id -- the stream the constructor
+    # resolved for rng_id = 0 and stored, or its own explicit claim -- passes the
+    # form again silently on every rebuild (the knob resolve, the retyping, a
+    # derived lattice's copy), which `_rng_id_held_by` answers.
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    fresh() = Octopus._unheld_rng_id(next_rng_id!() + 1_000_000)
+    warnings(f) = filter(r -> r.level == Base.CoreLogging.Warn, first(Test.collect_test_logs(f)))
+    dt = (1000.0, 1000.0, 500.0)
+    # (a) The declaration, registry-derived: a kind declaring rng_id declares the
+    # class, only such a kind does, and the validator holds the equivalence.
+    with_id = Set(k for (k, m) in Octopus.ELEMENT_META_BY_KIND if haskey(Octopus.parameter_schema(m.spec_type), :rng_id))
+    with_class = Set(k for (k, m) in Octopus.ELEMENT_META_BY_KIND if m.rng_consumer !== nothing)
+    @test with_id == with_class && !isempty(with_id)
+    @test Octopus.ELEMENT_META_BY_KIND[:lumped_radiation].rng_consumer === :lumped_radiation
+    @test Octopus.ELEMENT_META_BY_KIND[:linear6d].rng_consumer === :particle_tunes
+    @test validate_element_metadata().passed
+    # (b) The flexible form -- the snapshot reader's route -- claims an unheld
+    # explicit id under the class; the same class again is the silent handle.
+    b = fresh()
+    @test !Octopus._rng_id_held(b)
+    @test isempty(warnings(() -> ElementSpec{:lumped_radiation}(; damping_turns=dt, rng_id=b)))
+    @test Octopus._rng_id_held(b) && Octopus._rng_id_held_by(b, :lumped_radiation) && !Octopus._rng_id_held_by(b, :beam)
+    @test isempty(warnings(() -> ElementSpec{:lumped_radiation}(; damping_turns=dt, rng_id=b)))
+    # (c) A reload onto another class's explicit id warns, naming both classes.
+    c = fresh(); claim_rng_id!(c; consumer=:beam)
+    w = warnings(() -> ElementSpec{:lumped_radiation}(; damping_turns=dt, rng_id=c))
+    @test length(w) == 1 && occursin("claimed explicitly by a lumped_radiation consumer", w[1].message) &&
+          occursin("by a beam consumer (explicit)", w[1].message)
+    # (d) ... and onto another class's auto-assigned id (S1-6's shape, through the reader).
+    a = next_rng_id!(consumer=:beam)
+    w = warnings(() -> ElementSpec{:lumped_radiation}(; damping_turns=dt, rng_id=a))
+    @test length(w) == 1 && occursin("by a beam consumer (auto-assigned at construction)", w[1].message)
+    # (e) The kind's own stored id passes every rebuild silently: the raw rebuild,
+    # the retyping, a derived lattice's copy; the registry reads it as the class's.
+    own = LumpedRadSpec(damping_turns=dt)
+    oid = getparam(own, :rng_id)
+    @test oid > 0 && Octopus._rng_id_held(oid) && Octopus._rng_id_held_by(oid, :lumped_radiation)
+    @test !Octopus._rng_id_held_by(oid, :beam) && !Octopus._rng_id_held_by(0, :lumped_radiation)
+    @test isempty(warnings(() -> ElementSpec{:lumped_radiation}(copy(getfield(own, :params)))))
+    @test isempty(warnings(() -> Octopus._with_numeric_type(own, Float64)))
+    line = BeamLine("md8R", DriftSpec(; name="D", L=1.0), LumpedRadSpec(damping_turns=dt; name="RAD"))
+    lat = Lattice("md8L"; line=line)
+    @test isempty(warnings(() -> with_overrides(lat, sel"md8R/D" => (L = 1.5,))))
+    # (f) The override routes claim too: the spec route, the in-place placement
+    # override, the derived lattice; another class's id warns through them.
+    d1 = fresh(); own.rng_id = d1
+    @test Octopus._rng_id_held(d1) && getparam(own, :rng_id) == d1
+    d2 = fresh(); line[2].rng_id = d2
+    @test Octopus._rng_id_held(d2)
+    d3 = fresh(); dl = with_overrides(lat, sel"md8R/RAD" => (rng_id = d3,))
+    @test Octopus._rng_id_held(d3) && getparam(line_entries(dl.line)[2], :rng_id) == d3
+    d4 = fresh(); claim_rng_id!(d4; consumer=:beam)
+    w = warnings(() -> (line[2].rng_id = d4))
+    @test length(w) == 1 && occursin("by a beam consumer (explicit)", w[1].message)
+    d5 = fresh(); claim_rng_id!(d5; consumer=:beam)
+    w = warnings(() -> with_overrides(lat, sel"md8R/RAD" => (rng_id = d5,)))
+    @test length(w) == 1 && occursin("by a beam consumer (explicit)", w[1].message)
+    # (g) Nothing is claimed for rng_id = 0 (the fresh-stream request, refused at
+    # compile as before), a non-integer, or a key that is not rng_id.
+    z = fresh()
+    @test ElementSpec{:lumped_radiation}(; damping_turns=dt, rng_id=0) isa ElementSpec && !Octopus._rng_id_held(z)
+    @test ElementSpec{:lumped_radiation}(; damping_turns=dt, rng_id=1.5) isa ElementSpec
+    @test isempty(warnings(() -> (line[1].L = 2.0))) && !Octopus._rng_id_held(z)
+    @test occursin("rng_id = 0", msg(() -> compile_runtime(ElementSpec{:lumped_radiation}(; damping_turns=dt, rng_id=0))))
+end
+
+@testset "Machine description: read_lattice reads a one-lattice snapshot and read_machine assembles a machine from several files" begin
+    # R10 of docs/design/machine_description_followups.md (2026-11-26), probe 4:
+    # the multi-file description as a reader over one-lattice snapshots. Red on
+    # c52d80e (result/gates/cp1/red/u7_red.log): no read_lattice, no multi-path
+    # read_machine. Two lattices under their own roots and one shared root; the
+    # shared knob is written identically into both files and reads once.
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    @knob md10s.k1 = 0.4
+    @knob md10a.k1 = 1.2
+    @knob md10b.k1 = -1.1
+    QS = QuadrupoleSpec(; name="QS", numeric_type=Float64, L=0.2, k1=@knob_expr(md10s.k1))
+    QA = QuadrupoleSpec(; name="QA", numeric_type=Float64, L=0.3, k1=@knob_expr(md10a.k1))
+    QB = QuadrupoleSpec(; name="QB", numeric_type=Float64, L=0.3, k1=@knob_expr(md10b.k1))
+    D = DriftSpec(; name="D", numeric_type=Float64, L=1.0)
+    a = Lattice("A"; line=BeamLine("A", QA, D, QS, D), reference=ReferenceParticle(:proton; E0=275.0e9), knob_root=(:md10a, :md10s))
+    b = Lattice("B"; line=BeamLine("B", QB, D, QS, D), reference=ReferenceParticle(:electron; E0=10.0e9), knob_root=(:md10b, :md10s))
+    m = Machine("md10_M"; lattices=(a, b), knob_root=:md10s)
+    dir = mktempdir()
+    pa, pb, pm = joinpath(dir, "a.toml"), joinpath(dir, "b.toml"), joinpath(dir, "m.toml")
+    write_machine(pa, a); write_machine(pb, b); write_machine(pm, m)
+    @test occursin("[knobs.md10s]\nk1 = 0.4\n", read(pa, String)) && occursin("[knobs.md10s]\nk1 = 0.4\n", read(pb, String))
+    # read_lattice: the lattice, equal and distinct; the receipt on request; a
+    # two-lattice file refused by name with the remedy.
+    la = read_lattice(pa)
+    @test la == a && la !== a
+    lb, r = read_lattice(pb; receipt=true)
+    @test lb == b && r.lattices == ["B"] && r.format == 1
+    e = msg(() -> read_lattice(pm))
+    @test occursin("holds 2 lattices (A, B)", e) && occursin("read_machine(path)[:A]", e)
+    # read_machine over the files: equal to the original, its snapshot
+    # byte-identical (probe 4), the receipt the union with the files.
+    m2 = read_machine(pa, pb; name="md10_M", knob_root=:md10s)
+    @test m2 == m && m2 !== m && machine_toml(m2) == machine_toml(m) == read(pm, String)
+    @test m2[:A] == a && m2[:B] == b && collect(keys(m2)) == ["A", "B"]
+    m3, r3 = read_machine(pa, pb; name="md10_M", knob_root=:md10s, receipt=true)
+    @test m3 == m && r3.files == [pa, pb] && r3.lattices == ["A", "B"] && r3.format == 1
+    @test count(x -> occursin("md10s", string(x)), r3.existing) == 2        # the shared knob, present in both files, kept twice
+    @test knob_value("md10s.k1") == 0.4
+    # The one-file reader is unchanged: the file's own implicit machine.
+    @test read_machine(pa) == Machine(a)
+    # Refused by name: no name; the same lattice name from two files; a root two
+    # files declare that the assembled machine does not declare shared (the
+    # machine's own tripwire, which the multi-file reader inherits).
+    @test occursin("needs a `name`", msg(() -> read_machine(pa, pb)))
+    e = msg(() -> read_machine(pa, pa; name="X"))
+    @test e != "ACCEPTED" && occursin("A", e)
+    e = msg(() -> read_machine(pa, pb; name="md10_N"))
+    @test occursin("knob root md10s is declared by 2 lattices", e) && occursin("knob_root = :md10s", e)
+end
+
+@testset "Machine description: the class form derives a spec from a template of its kind on every friendly constructor, and the flexible form folds a named strength" begin
+    # R11 of docs/design/machine_description_followups.md (2026-11-26, owner
+    # decision). Red on c52d80e (result/gates/cp1/red/u8_red.log): no template
+    # method on any constructor, and the flexible form stored `k1` unfolded, a
+    # declared key the compile never reads (section 4, probe 3). The class-form
+    # methods are installed by the registration itself (`_install_class_form!`),
+    # so the aperture -- registered after Elements.jl -- has one too.
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    same_value(a, b) = a == b || (a isa Number && b isa Number && isapprox(a, b; rtol=1e-12, atol=0)) ||
+        (a isa Tuple && b isa Tuple && length(a) == length(b) && all(map(same_value, a, b)))
+    params_of(s) = getfield(s, :params)
+    # (a) Registry-derived: every kind with a type as its friendly constructor
+    # has the class form, and a no-change derivation of the metadata example
+    # equals it up to the name (the all-keyword form accepts every stored key).
+    checked = Symbol[]
+    Octopus._silence_deprecations() do
+        for k in sort!(collect(keys(Octopus.ELEMENT_META_BY_KIND)))
+            meta = Octopus.ELEMENT_META_BY_KIND[k]
+            ctor = meta.friendly_constructor
+            (ctor isa Type && k !== :line) || continue
+            @test hasmethod(ctor, Tuple{ElementSpec{k}})
+            ex = meta.example
+            ex isa ElementSpec || continue
+            d = ctor(ex; name="md11_derived")
+            @test d !== ex && getparam(d, :name) == "md11_derived" && Octopus.kind(d) === k
+            p0 = copy(params_of(ex)); p1 = copy(params_of(d)); delete!(p0, :name); delete!(p1, :name)
+            @test keys(p0) == keys(p1) && all(kk -> same_value(p0[kk], p1[kk]), keys(p0))
+            push!(checked, k)
+        end
+    end
+    @test length(checked) >= 30 && :aperture in checked && :sbend in checked && :thin_crab_cavity in checked
+    @test !hasmethod(BeamLine, Tuple{ElementSpec{:line}})                       # the line composes, it does not derive
+    # (b) A named strength replaces exactly its slot; the template is untouched;
+    # the tuple spelling replaces the tuple; the thin kinds and the solenoid
+    # through their own tables.
+    q = QuadrupoleSpec(; name="Q", L=0.3, k1=1.2, nst=4)
+    qf = QuadrupoleSpec(q; name="QF", k1=2.0)
+    @test getparam(qf, :kn) == (0.0, 2.0) && getparam(qf, :L) == 0.3 && getparam(qf, :nst) == 4
+    @test getparam(q, :kn) == (0.0, 1.2) && getparam(q, :name) == "Q"
+    qs = QuadrupoleSpec(qf; name="QS", k1s=0.1)
+    @test getparam(qs, :ks) == (0.0, 0.1) && getparam(qs, :kn) == (0.0, 2.0)
+    @test getparam(SextupoleSpec(SextupoleSpec(; name="S", L=0.2, k2=3.0); name="S2", k2=-3.0), :kn) == (0.0, 0.0, -3.0)
+    @test getparam(QuadrupoleSpec(q; name="QX", kn=(0.0, 0.0, 0.3)), :kn) == (0.0, 0.0, 0.3)
+    @test getparam(MultipoleSpec(MultipoleSpec(; name="M", L=0.1, k1=1.0); name="M2", k3=0.5), :kn) == (0.0, 1.0, 0.0, 0.5)
+    @test getparam(ThinQuadrupoleSpec(ThinQuadrupoleSpec(; name="TQ", k1l=0.05); name="TQ2", k1l=0.07), :knl) == (0.0, 0.07)
+    so = SolenoidSpec(SolenoidSpec(; name="SO", L=1.0, ks=0.1, k1=0.5); name="SO2", k1s=0.2)
+    @test getparam(so, :kskew) == (0.0, 0.2) && getparam(so, :kn) == (0.0, 0.5) && getparam(so, :ks) == 0.1
+    # (c) The bends: a sector bend's new angle resets h and b0 (no angle is
+    # stored); a given h replaces h alone; the RBEND alias reads its template
+    # as an RBEND -- faces refolded at the new angle, chord replacing the arc,
+    # a no-change derivation equal -- while the sector-bend form keeps the
+    # faces as stored, and a template with h != b0 is refused by name.
+    bd = SBendSpec(; name="B", L=1.0, angle=0.1)
+    b2 = SBendSpec(bd; name="B2", angle=0.2)
+    @test getparam(b2, :h) == getparam(b2, :b0) == 0.2 && !haskey(params_of(b2), :angle)
+    b3 = SBendSpec(bd; name="B3", h=0.3)
+    @test getparam(b3, :h) == 0.3 && getparam(b3, :b0) == 0.1
+    rb = RBendSpec(; name="R", L=1.0, angle=0.1)
+    @test getparam(rb, :e1) == getparam(rb, :e2) == 0.05 && Octopus.kind(rb) === :sbend
+    r2 = RBendSpec(rb; name="R2", angle=0.2)
+    @test getparam(r2, :e1) ≈ 0.1 && getparam(r2, :e2) ≈ 0.1 && getparam(r2, :h) ≈ 0.2 && getparam(r2, :L) == 1.0
+    r3 = RBendSpec(rb; name="R3")
+    @test all(kk -> kk === :name || same_value(getparam(r3, kk), getparam(rb, kk)), keys(params_of(rb)))
+    rf = RBendSpec(RBendSpec(; name="RF", L=1.0, angle=0.1, e1=0.01); name="RF2", angle=0.2)
+    @test getparam(rf, :e1) ≈ 0.11 && getparam(rf, :e2) ≈ 0.1
+    rc = RBendSpec(; name="RC", chord=1.0, angle=0.1)
+    @test getparam(RBendSpec(rc; name="RC2", chord=2.0), :L) ≈ 2 * getparam(rc, :L)
+    @test getparam(SBendSpec(rb; name="S2", angle=0.2), :e1) == 0.05
+    e = msg(() -> RBendSpec(SBendSpec(; name="S", L=1.0, h=0.1, b0=0.2); name="X"))
+    @test occursin("h = 0.1 and b0 = 0.2 differ", e) && occursin("SBendSpec(template; ...)", e)
+    # (d) Refused by name: a wrong kind (with the right form named), a mixed
+    # numeric type, a missing name. The types: an untyped template takes the
+    # given type, a typed one is inherited.
+    e = msg(() -> QuadrupoleSpec(DriftSpec(; name="D", L=1.0); name="X"))
+    @test occursin("the template is a drift spec, not a quadrupole", e) && occursin("DriftSpec(template; ...)", e)
+    e = msg(() -> QuadrupoleSpec(QuadrupoleSpec{Float32}(; name="Q32", L=0.3, k1=1.0); name="X", numeric_type=Float64))
+    @test occursin("stores numeric_type = Float32 and numeric_type = Float64 was given", e)
+    @test occursin("`name` is required", msg(() -> QuadrupoleSpec(q)))
+    t32 = QuadrupoleSpec(q; name="T32", numeric_type=Float32)
+    @test Octopus.numeric_type(t32) === Float32 && getparam(t32, :kn) === (0.0f0, 1.2f0)
+    d32 = QuadrupoleSpec(QuadrupoleSpec{Float32}(; name="Q32", L=0.3, k1=1.0); name="D32", k1=2.0)
+    @test Octopus.numeric_type(d32) === Float32 && getparam(d32, :kn) === (0.0f0, 2.0f0)
+    # (e) A chain and an expression value.
+    @knob md11.k1 = 1.5
+    qe = QuadrupoleSpec(qf; name="QE", k1=@knob_expr(md11.k1))
+    @test getparam(qe, :kn)[2] isa Octopus.AbstractKnobExpression && compile_runtime(qe).kn[2] == 1.5
+    qq = QuadrupoleSpec(qe; name="QQ", L=0.4)
+    @test getparam(qq, :L) == 0.4 && getparam(qq, :kn) == getparam(qe, :kn) && getparam(qf, :kn) == (0.0, 2.0)
+    # (f) The @elements block: the positional template passes through, the
+    # binding name and the header type apply (rules 1, 3, 6); the derived
+    # lattice's snapshot is flat and round-trips.
+    sandbox = Module(:md11_elements)
+    Core.eval(sandbox, :(using Octopus))
+    Core.eval(sandbox, quote
+        const Q = QuadrupoleSpec(; name = "Q", L = 0.3, k1 = 1.2)
+        @elements begin
+            QF = quadrupole(Q; k1 = 1.0)
+            QD = quadrupole(Q; k1 = -1.0)
+            CELL = line(QF, drift(L = 1.0), QD)
+        end
+    end)
+    QF, QD, CELL = Core.eval(sandbox, :QF), Core.eval(sandbox, :QD), Core.eval(sandbox, :CELL)
+    @test getparam(QF, :name) == "QF" && getparam(QF, :kn) == (0.0, 1.0) && Octopus.numeric_type(QF) === Float64
+    @test params_of(QF) == params_of(QuadrupoleSpec(Core.eval(sandbox, :Q); name="QF", numeric_type=Float64, k1=1.0))
+    @test getparam(QD, :kn) == (0.0, -1.0) && getparam(Core.eval(sandbox, :Q), :kn) == (0.0, 1.2)
+    lat = Lattice("md11_L"; line=CELL)
+    text = machine_toml(Machine(lat))
+    @test occursin("kn = [0.0, 1.0]", text) && occursin("kn = [0.0, -1.0]", text)
+    @test !occursin("k1", text) && !occursin("template", text) && !occursin("base", text)
+    @test parse_machine(text)[:md11_L] == lat
+    # (g) The flexible form folds a named strength as the constructors do:
+    # stored as the tuple, compiled, both spellings refused, the typed form
+    # narrowed, a sector bend's angle folded; a hand-written `k1 = 1.0`
+    # through the snapshot reader reads as meant and is written back as `kn`.
+    f = ElementSpec{:quadrupole}(; name="F", L=0.3, k1=1.0)
+    @test getparam(f, :kn) == (0.0, 1.0) && !haskey(params_of(f), :k1)
+    @test compile_runtime(f).kn == compile_runtime(QuadrupoleSpec(; name="F", L=0.3, k1=1.0)).kn == (0.0, 1.0)
+    @test occursin("both set the same strength", msg(() -> ElementSpec{:quadrupole}(; name="F", L=0.3, k1=1.0, kn=(0.0, 1.0))))
+    @test getparam(ElementSpec{:quadrupole}(; name="F32", numeric_type=Float32, L=0.3, k1=1.0), :kn) === (0.0f0, 1.0f0)
+    fb = ElementSpec{:sbend}(; name="FB", L=1.0, angle=0.1)
+    @test getparam(fb, :h) == getparam(fb, :b0) == 0.1 && !haskey(params_of(fb), :angle)
+    @test getparam(ElementSpec{:thin_quadrupole}(; name="FT", k1l=0.05), :knl) == (0.0, 0.05)
+    @test getparam(ElementSpec{:solenoid}(; name="FS", L=1.0, ks=0.1, k1s=0.2), :kskew) == (0.0, 0.2)
+    @test params_of(ElementSpec{:quadrupole}(copy(params_of(qf)))) == params_of(qf)     # a folded dictionary is left as it is
+    hand = replace(text, "kn = [0.0, 1.0]" => "k1 = 1.0"; count=1)
+    @test hand != text
+    reread = parse_machine(hand)[:md11_L]
+    @test getparam(line_entries(reread.line)[1], :kn) == (0.0, 1.0) && machine_toml(Machine(reread)) == text
 end
 
 @testset "Machine description: a Lattice wraps a line and is accepted where the line is" begin
@@ -20561,8 +21230,11 @@ end
     # computed type and the keyword remedy.
     @test eltype(Lattice("F64"; line=BeamLine("F64", MarkerSpec(), QuadrupoleSpec(L=0.3, k1=1.0), DriftSpec(L=1)))) === Float64
     let m = msg(() -> Lattice("F64"; line=BeamLine("F64", DriftSpec(L=0.5), ElementSpec{:drift}(; L=big"0.5"))))
+        # Since R6 (2026-11-26) the remedy for a value wider than Float64 is the
+        # value in Float64 or a lattice of its type, never the typed form, which
+        # would narrow it.
         @test occursin("F64/DRIFT[2] (drift) compiles in BigFloat", m) && occursin("numeric type Float64", m) &&
-              occursin("DriftSpec(...; numeric_type = Float64)", m)
+              occursin("Float64 or narrower", m) && occursin("eltype=BigFloat", m) && !occursin("DriftSpec(...; numeric_type = Float64)", m)
     end
     # A typed Float32 element in a Float64 lattice: a stored type must be exactly eltype.
     let m = msg(() -> Lattice("MIX"; line=BeamLine("MIX", QuadrupoleSpec{Float32}(L=0.3, k1=1.0), DriftSpec(L=0.5))))
@@ -20627,14 +21299,23 @@ end
         execute!(TrackingTask(top), b; turns=1)
         @test eltype(b.x) === Float32 && collect(b.x) != collect(rep32().x)
     end
+    # ... and since R6 (2026-11-26) the remedy for a value wider than Float64
+    # is the value in Float64 or a lattice of its type, never a typed form,
+    # which would narrow it (the typed line below is refused for that).
     let m = msg(() -> Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), BeamLine("CRYO", DriftSpec{Float32}(L=0.3); x_offset=big"1.0e-3")), eltype=Float32))
-        @test occursin("TOP/CRYO (line) compiles in BigFloat", m) && occursin("BeamLine(...; numeric_type = Float32)", m)
+        @test occursin("TOP/CRYO (line) compiles in BigFloat", m) && occursin("Float64 or narrower", m) &&
+              occursin("eltype=BigFloat", m) && !occursin("numeric_type = Float32", m)
     end
     # The `:line` kind declares `numeric_type` (the remedy's keyword; it was
     # undeclared until this stage although `_wrap_numeric_type` reads it), so
-    # the remedy constructs silently.
-    let typed_cryo = @test_nowarn BeamLine("CRYO", DriftSpec{Float32}(L=0.3); x_offset=big"1.0e-3", numeric_type=Float32)
+    # the remedy constructs silently -- for a Float64 offset, which it narrows;
+    # a BigFloat offset on the typed line is refused by name at the lattice (R6).
+    let typed_cryo = @test_nowarn BeamLine("CRYO", DriftSpec{Float32}(L=0.3); x_offset=1.0e-3, numeric_type=Float32)
         @test eltype(Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), typed_cryo), eltype=Float32)) === Float32
+    end
+    let wide_cryo = BeamLine("CRYO", DriftSpec{Float32}(L=0.3); x_offset=big"1.0e-3", numeric_type=Float32),
+        m = msg(() -> Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), wide_cryo), eltype=Float32))
+        @test occursin("TOP/CRYO (line): numeric_type = Float32 cannot hold parameter `x_offset`'s BigFloat value", m)
     end
     let cryo64 = @test_nowarn BeamLine("CRYO", DriftSpec{Float32}(L=0.3); numeric_type=Float64)
         @test occursin("TOP/CRYO (line) stores numeric_type = Float64", msg(() -> Lattice("TOP"; line=BeamLine("TOP", DriftSpec{Float32}(L=0.5), cryo64), eltype=Float32)))
@@ -21175,7 +21856,7 @@ end
         set_global_rng!(seed=20261125, method=:philox)
         Beam(200, CPUThreadsExecutionPolicy(), Float64; beta=beta, alpha=(0.0, 0.0, 0.0),
              sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
-             charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+             charge=charge, mc2=mc2, E0=E0, npart=1.0e10)
     end
     beams() = (mkb(4111, -1.0, EMASS_EV, 10.0e9, (0.55, 0.056, 12.7)), mkb(4112, 1.0, PMASS_EV, 275.0e9, (0.8, 0.072, 90.9)))
     coords(b) = [collect(getproperty(b.rep, f)) for f in (:x, :px, :y, :py, :z, :pz)]
@@ -21929,7 +22610,7 @@ end
     mkb(rng_id, p, optics, ref) = begin
         set_global_rng!(seed=20261125, method=:philox)
         Beam(200, CPUThreadsExecutionPolicy(), Float64; optics=optics, sigma=p.sigma, cutoff=p.cutoff, rng_id=rng_id,
-             reference=ref, r0=RE * ME0 / p.mass, npart=p.n_particle)
+             reference=ref, npart=p.n_particle)
     end
     beams() = (mkb(0x4d444221, ele, ele_ip, ele_ref), mkb(0x4d444222, pro, pro_ip, pro_ref))
     coords(b) = [collect(getproperty(b.rep, f)) for f in (:x, :px, :y, :py, :z, :pz)]
@@ -21957,11 +22638,17 @@ end
 # this comment and nowhere else.
 
 @testset "Machine description: the run artifact embeds the machine snapshot and reads it back" begin
-    # Design D14 (stage 4, 2026-11-25): a task built from a Lattice or a
-    # Machine embeds `machine_toml(machine)` in its execute! ledger row, the
-    # text's SHA-256 beside it and the bulk tables under /machine_tables; the
-    # readers give the description back; a tuple-built task records "" and the
-    # readers refuse by name with the lattice spelling as the remedy.
+    # Design D14 (stage 4, 2026-11-25) in the layout of R9 (the follow-ups
+    # note docs/design/machine_description_followups.md, 2026-11-26): a task
+    # built from a Lattice or a Machine writes `machine_toml(machine)` ONCE
+    # under /machine_snapshots/<sha256>, the digest of the text's bytes into
+    # each execute!'s ledger row and the bulk tables under /machine_tables;
+    # the readers give the description back from this layout and from the
+    # 2026-11-25 one (the text in a `machine_toml` column); a tuple-built task
+    # records "" and the readers refuse by name with the lattice spelling as
+    # the remedy; `machine_snapshot = false` writes nothing of the machine and
+    # the readers say so; the rendered text is cached on the task across
+    # execute! calls until a knob or a spec moves.
     dir = mktempdir()
     msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
     @knob md4c_art.kf = 1.5
@@ -21973,21 +22660,33 @@ end
     lattice = Lattice("md4c_ART"; line=BeamLine("ART", qd, d, qf, d), reference=proton, knob_root=:md4c_art)
     rep() = Phase6DRep([1.0e-4, -2.0e-4], [0.0, 1.0e-5], [1.0e-4, 0.0], [0.0, 0.0], [0.0, 1.0e-3], [0.0, 0.0])
     want = machine_toml(Machine(lattice))
+    digest = bytes2hex(Octopus.SHA.sha256(Vector{UInt8}(codeunits(want))))
     # Anti-vacuity: the text is this lattice's (its knob, its table), and it is not another lattice's.
     @test occursin("md4c_art.kf", want) && occursin("md4c_ART", want)
     @test want != machine_toml(Machine(Lattice("md4c_ART2"; line=BeamLine("ART", qd, d, qf, d), reference=proton, knob_root=:md4c_art)))
+    # The byte path and the string path agree on the VALUE (the byte path is the fast one; R9, table 1).
+    @test Octopus._ra_text_digest(want) == digest == bytes2hex(Octopus.SHA.sha256(want))
+    function audited(f)
+        audit = ExecutionAudit()
+        with_execution_audit(audit) do; f(); end
+        return execution_receipts(audit)
+    end
+    ra_receipt(rs) = only(filter(r -> r.consumer === :run_artifact_output, rs)).values
 
-    # (a) One execute! of two turns on CPU: the two columns in the table and
-    # the file, the text byte for byte the writer's and the file's, the digest,
-    # the machine rebuilt equal; a second execute! appends a row with the same text.
-    @test ("machine_toml", String) in Octopus._RA_LEDGER_COLUMNS && ("machine_sha256", String) in Octopus._RA_LEDGER_COLUMNS
+    # (a) One execute! of two turns on CPU: the digest column in the table and
+    # the file, the text under /machine_snapshots once, byte for byte the
+    # writer's and the file's, the machine rebuilt equal; a second execute!
+    # appends a row with the same digest and no second copy of the text.
+    @test ("machine_sha256", String) in Octopus._RA_LEDGER_COLUMNS
+    @test !any(c -> c[1] == "machine_toml", Octopus._RA_LEDGER_COLUMNS)   # the text is no longer a column
     p = joinpath(dir, "lattice.h5")
     task = TrackingTask(lattice; artifact=RunArtifact(p; append=true))
-    @test task.machine == Machine(lattice)
-    execute!(task, rep(); turns=2)
+    @test task.machine == Machine(lattice) && task.machine_snapshot_cache[] === nothing
+    rs = audited(() -> execute!(task, rep(); turns=2))
+    @test ra_receipt(rs).machine_snapshot === true && ra_receipt(rs).machine_recorded === :snapshot
     ex = read(TaskOutput(p), :execution)
-    @test ex.machine_toml == [want] && ex.machine_sha256 == [bytes2hex(Octopus.SHA.sha256(want))]
-    @test length(want) > 200 && length(ex.machine_sha256[1]) == 64
+    @test ex.machine_sha256 == [digest] && !haskey(ex, :machine_toml)
+    @test length(want) > 200 && length(digest) == 64
     @test read(TaskOutput(p), :machine) == want
     @test read(TaskOutput(p), :machine) == read(write_machine(joinpath(dir, "lattice.machine.toml"), lattice), String)
     @test read_machine(TaskOutput(p)) == Machine(lattice)
@@ -21996,17 +22695,44 @@ end
               any(string(k) == "md4c_art.kf" for k in receipt.existing)   # the knob was declared above, same definition
     end
     Octopus.HDF5.h5open(p, "r") do f
-        @test haskey(f["execution"], "machine_toml") && haskey(f["execution"], "machine_sha256")
+        @test haskey(f["execution"], "machine_sha256") && !haskey(f["execution"], "machine_toml")
+        @test haskey(f, "machine_snapshots") && collect(String.(keys(f["machine_snapshots"]))) == [digest]
+        @test read(f["machine_snapshots"][digest]) == want
+        @test read(Octopus.HDF5.attributes(f["machine_snapshots"][digest])["bytes"]) == ncodeunits(want)
         @test !haskey(f, "machine_tables")          # no bulk table in this lattice: no group
     end
+    # The cache: filled by the first execute!, reused by the second (the same
+    # object), the file holding ONE copy of the text under two rows.
+    cached = task.machine_snapshot_cache[]
+    @test cached !== nothing && cached.digest == digest && cached.text == want
     execute!(task, rep(); turns=2)
+    @test task.machine_snapshot_cache[] === cached
     ex2 = read(TaskOutput(p), :execution)
-    @test ex2.machine_toml == [want, want] && ex2.start_turn == [0, 2]
+    @test ex2.machine_sha256 == [digest, digest] && ex2.start_turn == [0, 2]
     @test read(TaskOutput(p), :machine; slot=1) == read(TaskOutput(p), :machine; slot=2) == want
-    @test read(TaskOutput(p), :all).execution.machine_toml == [want, want]
-    @test "machine_toml" in read(TaskOutput(p))["execution"].columns && !haskey(read(TaskOutput(p)), "machine_tables")
-    let m = msg(() -> read(TaskOutput(p), :machine; slot=3))
-        @test occursin("slot 3 is not a row", m) && occursin("(1:2)", m) && occursin(p, m)
+    @test read(TaskOutput(p), :all).execution.machine_sha256 == [digest, digest]
+    @test !haskey(read(TaskOutput(p), :all), :machine_snapshots)   # not a product kind
+    let toc = read(TaskOutput(p))
+        @test "machine_sha256" in toc["execution"].columns && !haskey(toc, "machine_tables")
+        @test toc["machine_snapshots"] == Dict(digest => ncodeunits(want))
+    end
+    Octopus.HDF5.h5open(p, "r") do f
+        @test length(keys(f["machine_snapshots"])) == 1
+    end
+    # A retuned knob is a new machine state: the next execute! re-renders (a
+    # new cache object, a new digest), the file gains a second snapshot, and
+    # each row reads its own text.
+    set_knob!("md4c_art.kf", 1.6)
+    execute!(task, rep(); turns=2)
+    want2 = machine_toml(Machine(lattice)); digest2 = Octopus._ra_text_digest(want2)
+    @test want2 != want && occursin("1.6", want2)
+    @test task.machine_snapshot_cache[] !== cached && task.machine_snapshot_cache[].digest == digest2
+    @test read(TaskOutput(p), :execution).machine_sha256 == [digest, digest, digest2]
+    @test read(TaskOutput(p), :machine; slot=1) == want && read(TaskOutput(p), :machine) == want2
+    @test read(TaskOutput(p))["machine_snapshots"] == Dict(digest => ncodeunits(want), digest2 => ncodeunits(want2))
+    set_knob!("md4c_art.kf", 1.5)
+    let m = msg(() -> read(TaskOutput(p), :machine; slot=4))
+        @test occursin("slot 4 is not a row", m) && occursin("(1:3)", m) && occursin(p, m)
     end
     let m = msg(() -> read(TaskOutput(p), :execution; slot=1))
         @test occursin("slot selects the ledger row of the :machine snapshot", m) && occursin("execution", m)
@@ -22015,12 +22741,15 @@ end
         @test occursin("machine is not a named group", m)
     end
 
-    # (b) A tuple-built task's row holds "" in both columns and the readers
-    # refuse by name with the remedy.
+    # (b) A tuple-built task's row holds "" in the digest column, no snapshot
+    # group is created, the receipt says :none, and the readers refuse by name
+    # with the remedy.
     pt = joinpath(dir, "tuple.h5")
-    execute!(TrackingTask((qd, d, qf, d); artifact=pt), rep(); turns=1)
-    let ext = read(TaskOutput(pt), :execution)
-        @test ext.machine_toml == [""] && ext.machine_sha256 == [""]
+    rst = audited(() -> execute!(TrackingTask((qd, d, qf, d); artifact=pt), rep(); turns=1))
+    @test ra_receipt(rst).machine_snapshot === true && ra_receipt(rst).machine_recorded === :none
+    @test read(TaskOutput(pt), :execution).machine_sha256 == [""]
+    Octopus.HDF5.h5open(pt, "r") do f
+        @test !haskey(f, "machine_snapshots")
     end
     for f in (() -> read(TaskOutput(pt), :machine), () -> read_machine(TaskOutput(pt)))
         m = msg(f)
@@ -22029,10 +22758,10 @@ end
     end
 
     # (c) An old-format artifact, the ledger of the 2026-10-16 layout without
-    # the two columns (built through the writer's own helpers): the columns
-    # read `nothing` without an error, the machine readers refuse by name
-    # naming the date, and continuing it is refused by name naming the machine
-    # columns' generation only.
+    # the digest column (built through the writer's own helpers): the column
+    # reads `nothing` without an error, the machine readers refuse by name
+    # naming the date, and continuing it is refused by name naming the digest
+    # column's generation only.
     pold = joinpath(dir, "old.h5")
     old_rows = Dict("start_turn" => Int64[0], "turns" => Int64[1], "current_turn" => Int64[0],
                     "elapsed" => [0.0], "rng_seed" => UInt64[1], "rng_method" => ["philox"])
@@ -22041,21 +22770,67 @@ end
         Octopus.HDF5.create_group(f, "luminosity")
         exg = Octopus.HDF5.create_group(f, "execution")
         for (name, T) in Octopus._RA_LEDGER_COLUMNS
-            name in ("machine_toml", "machine_sha256") && continue
+            name == "machine_sha256" && continue
             Octopus._ra_append_rows!(Octopus._ra_extendable!(exg, name, T), old_rows[name])
         end
     end
     let exo = read(TaskOutput(pold), :execution)
-        @test exo.machine_toml === nothing && exo.machine_sha256 === nothing && exo.start_turn == [0] && exo.rng_method == ["philox"]
+        @test exo.machine_sha256 === nothing && exo.start_turn == [0] && exo.rng_method == ["philox"]
     end
     let m = msg(() -> read(TaskOutput(pold), :machine))
-        @test occursin("no machine_toml column", m) && occursin("2026-11-25", m) && occursin(pold, m)
+        @test occursin("no machine_sha256 column", m) && occursin("2026-11-25", m) && occursin(pold, m)
     end
     let m = msg(() -> execute!(TrackingTask((qd, d); artifact=RunArtifact(pold; append=true)), rep(); turns=1))
-        @test occursin("machine_toml, machine_sha256 column(s)", m) && occursin("predates", m) &&
+        @test occursin("machine_sha256 column(s)", m) && !occursin("machine_toml", m) && occursin("predates", m) &&
               occursin("2026-11-25", m) && !occursin("2026-10-16", m) && occursin("append=false", m)
     end
     @test read(TaskOutput(pold), :execution).start_turn == [0]      # left as found
+
+    # (c2) A file of the 2026-11-25 layout, the text in a `machine_toml`
+    # column beside the digest and no /machine_snapshots group: it reads (the
+    # text checked against the digest), it is continued (the text column kept
+    # aligned with an empty entry, the new row's text content-addressed), and
+    # a text that does not hash to its digest is refused by name.
+    stage4_rows = merge(old_rows, Dict("machine_toml" => [want], "machine_sha256" => [digest]))
+    function stage4_file(path, rows)
+        Octopus.HDF5.h5open(path, "w") do f
+            Octopus.HDF5.attributes(f)["octopus_run_artifact"] = Int64(1)
+            Octopus.HDF5.create_group(f, "luminosity")
+            exg = Octopus.HDF5.create_group(f, "execution")
+            for (name, T) in (Octopus._RA_LEDGER_COLUMNS..., ("machine_toml", String))
+                Octopus._ra_append_rows!(Octopus._ra_extendable!(exg, name, T), rows[name])
+            end
+        end
+        return path
+    end
+    p4 = stage4_file(joinpath(dir, "stage4.h5"), stage4_rows)
+    @test read(TaskOutput(p4), :machine) == want && read_machine(TaskOutput(p4)) == Machine(lattice)
+    @test read(TaskOutput(p4), :execution).machine_sha256 == [digest]
+    set_knob!("md4c_art.kf", 1.6)
+    execute!(TrackingTask(lattice; artifact=RunArtifact(p4; append=true)), rep(); turns=1)
+    set_knob!("md4c_art.kf", 1.5)
+    @test read(TaskOutput(p4), :execution).machine_sha256 == [digest, digest2]
+    @test read(TaskOutput(p4), :machine; slot=1) == want && read(TaskOutput(p4), :machine; slot=2) == want2
+    Octopus.HDF5.h5open(p4, "r") do f
+        @test read(f["execution"]["machine_toml"]) == [want, ""]        # aligned; the new row's text is content-addressed
+        @test collect(String.(keys(f["machine_snapshots"]))) == [digest2]
+    end
+    pbad = stage4_file(joinpath(dir, "stage4_bad.h5"),
+                       merge(stage4_rows, Dict("machine_toml" => [want * "\n# edited by hand\n"])))
+    @test occursin("does not hash to its machine_sha256", msg(() -> read(TaskOutput(pbad), :machine)))
+
+    # (c3) A row whose digest the file holds no snapshot for (a file written
+    # only partially) is refused by name.
+    pmiss = joinpath(dir, "missing.h5")
+    Octopus.HDF5.h5open(pmiss, "w") do f
+        Octopus.HDF5.attributes(f)["octopus_run_artifact"] = Int64(1)
+        Octopus.HDF5.create_group(f, "luminosity")
+        exg = Octopus.HDF5.create_group(f, "execution")
+        for (name, T) in Octopus._RA_LEDGER_COLUMNS
+            Octopus._ra_append_rows!(Octopus._ra_extendable!(exg, name, T), stage4_rows[name])
+        end
+    end
+    @test occursin("does not hold under /machine_snapshots", msg(() -> read(TaskOutput(pmiss), :machine)))
 
     # (d) StrongStrongTask(machine, :A, :B; artifact) of one turn embeds the
     # two-lattice machine and reads it back equal.
@@ -22069,7 +22844,7 @@ end
         set_global_rng!(seed=20261125, method=:philox)
         Beam(100, CPUThreadsExecutionPolicy(), Float64; beta=beta, alpha=(0.0, 0.0, 0.0),
              sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
-             charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+             charge=charge, mc2=mc2, E0=E0, npart=1.0e10)
     end
     ps = joinpath(dir, "ss.h5")
     execute!(StrongStrongTask(machine, :md4c_B1, :md4c_B2; artifact=ps),
@@ -22099,7 +22874,7 @@ end
         dg
     end
     @test read(TaskOutput(ptab))["machine_tables"] == Dict(digest_t => 12)
-    @test length(read(TaskOutput(ptab), :execution).machine_toml) == 2
+    @test length(read(TaskOutput(ptab), :execution).machine_sha256) == 2
     @test !haskey(read(TaskOutput(ptab), :all), :machine_tables)   # the tables are not a product kind
     let m = read_machine(TaskOutput(ptab)),
         spec = getfield(line_entries(m[:md4c_TAB].line)[3], :spec),
@@ -22111,13 +22886,51 @@ end
 
     # (f) A machine the codec refuses to snapshot (a predicate schedule holds a
     # function) does not stop the run: the prepare warns by name, the row
-    # records "" and the reader refuses by name.
+    # records "", the receipt says :refused and the reader refuses by name.
     pw = joinpath(dir, "warned.h5")
     lat_w = Lattice("md4c_WARN"; line=BeamLine("WARN", qd, d,
                     ScheduledObserver(MomentObserver(; name="md4c_m"), PredicateSchedule(ctx -> true))), reference=proton)
-    @test_logs (:warn, r"md4c_WARN.*could not be snapshotted.*PredicateSchedule") match_mode=:any execute!(TrackingTask(lat_w; artifact=pw), rep(); turns=1)
-    @test read(TaskOutput(pw), :execution).machine_toml == [""] && read(TaskOutput(pw), :moments; name="md4c_m").turn == [0.0]
+    rsw = Ref{Any}(nothing)
+    @test_logs (:warn, r"md4c_WARN.*could not be snapshotted.*PredicateSchedule") match_mode=:any begin
+        rsw[] = audited(() -> execute!(TrackingTask(lat_w; artifact=pw), rep(); turns=1))
+    end
+    @test ra_receipt(rsw[]).machine_snapshot === true && ra_receipt(rsw[]).machine_recorded === :refused
+    @test read(TaskOutput(pw), :execution).machine_sha256 == [""] && read(TaskOutput(pw), :moments; name="md4c_m").turn == [0.0]
     @test occursin("could not be snapshotted", msg(() -> read(TaskOutput(pw), :machine)))
+
+    # (g) The switch: `machine_snapshot = false` on either constructor writes
+    # nothing of the machine (not even a render), the row reads "disabled",
+    # the receipt carries the request beside the outcome, the readers refuse
+    # by name naming the keyword, and a value that is not a Bool is refused
+    # by name. The switch on, the same run writes the snapshot: the keyword's
+    # effect at its consumer boundary.
+    poff = joinpath(dir, "off.h5")
+    art_off = RunArtifact(poff; machine_snapshot=false)
+    @test art_off.machine_snapshot === false && RunArtifact(poff).machine_snapshot === true
+    @test RunArtifact(; storage=:memory, machine_snapshot=false).machine_snapshot === false
+    task_off = TrackingTask(lattice; artifact=art_off)
+    rso = audited(() -> execute!(task_off, rep(); turns=1))
+    @test ra_receipt(rso).machine_snapshot === false && ra_receipt(rso).machine_recorded === :disabled
+    @test task_off.machine_snapshot_cache[] === nothing            # nothing was rendered
+    @test read(TaskOutput(poff), :execution).machine_sha256 == [Octopus._RA_MACHINE_SNAPSHOT_DISABLED] == ["disabled"]
+    Octopus.HDF5.h5open(poff, "r") do f
+        @test !haskey(f, "machine_snapshots") && !haskey(f, "machine_tables")
+    end
+    for f in (() -> read(TaskOutput(poff), :machine), () -> read_machine(TaskOutput(poff)))
+        m = msg(f)
+        @test occursin("machine_snapshot = false", m) && occursin("machine_snapshot = true", m) && occursin(poff, m)
+    end
+    @test !haskey(read(TaskOutput(poff)), "machine_snapshots")
+    let m = msg(() -> RunArtifact(poff; machine_snapshot=1))
+        @test occursin("machine_snapshot must be true or false", m) && occursin("1", m)
+    end
+    @test occursin("machine_snapshot must be true or false", msg(() -> RunArtifact(; storage=:memory, machine_snapshot=nothing)))
+    @test run_artifact_option_schema().machine_snapshot.default === true &&
+          run_artifact_option_schema().machine_snapshot.consumer === :run_artifact_output &&
+          :machine_snapshot in fieldnames(RunArtifact)
+    pon = joinpath(dir, "on.h5")
+    execute!(TrackingTask(lattice; artifact=RunArtifact(pon; machine_snapshot=true)), rep(); turns=1)
+    @test read(TaskOutput(pon), :machine) == want
 
     set_global_rng!(seed=0x5eed, method=:philox)
 end
@@ -23219,7 +24032,7 @@ end
     # Both strong-strong line entrances refuse before either beam moves.
     cpu = CPUThreadsExecutionPolicy(threads=1)
     makebeam(id) = Beam(5, cpu, Float64; charge=-1.0, mc2=EMASS_EV,
-        E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11, rng_id=id)
+        E0=10.0e9, npart=1.7e11, rng_id=id)
     ip = StrongStrongCollision(:ip)
     for side in (1, 2)
         line1, line2 = side == 1 ? ((spec, ip), (ip,)) : ((ip,), (spec, ip))
@@ -23504,7 +24317,7 @@ end
     # strong-strong task mutates either ensemble or advances its turn.
     cpu = CPUThreadsExecutionPolicy(threads=1)
     makebeam(id) = Beam(8, cpu, Float64; charge=-1.0, mc2=EMASS_EV,
-        E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11, rng_id=id)
+        E0=10.0e9, npart=1.7e11, rng_id=id)
     ip = StrongStrongCollision(:ip)
     for line in ((PhaseSpaceResetSpec(), ip),
                  (BeamLine("buried", PhaseSpaceResetSpec(); x_offset=0.01), ip)), reset_beam in (1, 2)
@@ -24377,7 +25190,7 @@ end
         Beam(64, CPUThreadsExecutionPolicy(), Float64;
              beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
              sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
-             charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+             charge=charge, mc2=mc2, E0=E0, npart=1.0e10)
     end
     ip = StrongStrongCollision(:ip)
     plain = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,))
@@ -26453,7 +27266,8 @@ end
         Octopus.ElementMeta(m.kind, m.spec_type, m.friendly_constructor, m.runtime_type,
                             runtime_types, runtime_variants, variant_examples,
                             description, keywords, tracking_methods,
-                            m.contracts, m.analyses, parameters, example, construction_help)
+                            m.contracts, m.analyses, parameters, example, construction_help,
+                            m.rng_consumer)   # the stream class kept (R8b, 2026-11-26)
     withmeta(p; required=p.required, unit=p.unit, default=p.default, meaning=p.meaning,
              alternatives=p.alternatives) =
         ParamMeta(required, unit, default, meaning, alternatives)
@@ -26897,7 +27711,7 @@ end
         Beam(300, CPUThreadsExecutionPolicy(), Float64;
             beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
             sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
-            charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+            charge=charge, mc2=mc2, E0=E0, npart=1.0e10)
     end
     beams() = (mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9))
     L6s(b, t) = Linear6DSpec{Float64}(; beta1=b, beta2=b, alpha1=(0.0, 0.0, 0.0),
@@ -27281,7 +28095,7 @@ end
     E0 = 1.0e9
     cav() = ThinRFCavitySpec(400.8e6; voltage=1.0e6, e0=E0, mc2=PMASS_EV)
     dr = DriftSpec(L=100.0)
-    mk(id) = Beam(64, cpu, Float64; charge=1.0, mc2=PMASS_EV, E0=E0, r0=RE * ME0 / PMASS_EV,
+    mk(id) = Beam(64, cpu, Float64; charge=1.0, mc2=PMASS_EV, E0=E0,
                   npart=1.0e11, rng_id=id, beta=(1.0, 1.0, 1.0e-2 / 1.0e-3),
                   alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-4, 1.0e-2), cutoff=3.0)
     blocks = Octopus._strong_strong_runtime_blocks(StrongStrongTask((ip, dr, cav()), (ip, dr, cav())), 1)
@@ -27293,7 +28107,8 @@ end
     # What the compile bound, carried by the blocks: one cavity, the line's own
     # arc length as its circumference, no aperture, no record.
     @test blocks.binding == (apertures=0, loss_record=false, loss_rows=false,
-                             rf_cavities=1, accelerating_cavities=0, circumference=100.0)
+                             rf_cavities=1, accelerating_cavities=0, circumference=100.0,
+                             collision_markers=1)                  # the marker the line was cut at (R2, 2026-11-26)
     # Control: the cavity-free line is bitwise through both task kinds.
     a = mk(rid + 1); execute!(TrackingTask((dr,); policy=cpu), a; turns=1)
     b1 = mk(rid + 1); b2 = mk(rid + 2)
@@ -27335,7 +28150,7 @@ end
     # (3) An aperture in a strong-strong line: two of eight particles outside
     # |x| < 2 mm in beam 1; beam 2's line has no aperture.
     ap = ApertureSpec(x_limit=2.0e-3, name="COLL_A")
-    mk8(id) = Beam(8, cpu, Float64; charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV,
+    mk8(id) = Beam(8, cpu, Float64; charge=1.0, mc2=PMASS_EV, E0=275.0e9,
                    npart=1.0e11, rng_id=id, beta=(0.8, 0.072, 6.0e-2 / 6.6e-4),
                    alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0)
     outside!(b) = (b.rep.x[1] = 5.0e-3; b.rep.x[2] = -3.0e-3; b)
@@ -27420,12 +28235,12 @@ end
     bind = [r.values for r in rs if r.consumer === :strong_strong_line_binding]
     @test length(bind) == 2
     @test bind[1] == (beam=1, apertures=1, loss_record=true, loss_rows=true,
-                      rf_cavities=0, accelerating_cavities=0, circumference=0.0)
+                      rf_cavities=0, accelerating_cavities=0, circumference=0.0, collision_markers=1)
     @test bind[2] == (beam=2, apertures=0, loss_record=false, loss_rows=false,
-                      rf_cavities=0, accelerating_cavities=0, circumference=1.0)
+                      rf_cavities=0, accelerating_cavities=0, circumference=1.0, collision_markers=1)
     rep = configuration_report(task_art, b1, b2)
-    @test rep.binding == (beam1=(apertures=1, rf_cavities=0, accelerating_cavities=0, circumference=0.0),
-                          beam2=(apertures=0, rf_cavities=0, accelerating_cavities=0, circumference=1.0))
+    @test rep.binding == (beam1=(apertures=1, rf_cavities=0, accelerating_cavities=0, circumference=0.0, collision_markers=1),
+                          beam2=(apertures=0, rf_cavities=0, accelerating_cavities=0, circumference=1.0, collision_markers=1))
     rm(pss; force=true); rm(ptt; force=true)
 
     # (3d) Units R and S joined at integration (2026-10-19): the per-beam
@@ -27465,14 +28280,14 @@ end
     # ONE backend run the same fused kernel over the same bound op.
     if Octopus._HAS_CUDA && Octopus.CUDA.functional()
         gpu = CUDAExecutionPolicy()
-        mkg(id) = Beam(64, gpu, Float64; charge=1.0, mc2=PMASS_EV, E0=E0, r0=RE * ME0 / PMASS_EV,
+        mkg(id) = Beam(64, gpu, Float64; charge=1.0, mc2=PMASS_EV, E0=E0,
                        npart=1.0e11, rng_id=id, beta=(1.0, 1.0, 1.0e-2 / 1.0e-3),
                        alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-4, 1.0e-2), cutoff=3.0)
         ag = mkg(rid + 1); execute!(TrackingTask((dr, cav()); policy=gpu), ag; turns=1)
         g1 = mkg(rid + 1); g2 = mkg(rid + 2)
         execute!(StrongStrongTask((ip, dr, cav()), (ip, dr, cav()); policy=gpu), g1, g2; turns=1)
         @test coords(ag) == coords(g1)
-        mk8g(id) = Beam(8, gpu, Float64; charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV,
+        mk8g(id) = Beam(8, gpu, Float64; charge=1.0, mc2=PMASS_EV, E0=275.0e9,
                         npart=1.0e11, rng_id=id, beta=(0.8, 0.072, 6.0e-2 / 6.6e-4),
                         alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0)
         g1 = mk8g(rid + 1)
@@ -27956,7 +28771,7 @@ end
         Beam(64, CPUThreadsExecutionPolicy(), Float64;
             beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
             sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
-            charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+            charge=charge, mc2=mc2, E0=E0, npart=1.0e10)
     end
     cav(rng_id) = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,),
                                         phase_noise=(WhiteNoise(1.0e-2; rng_id=rng_id),))
@@ -28070,7 +28885,7 @@ end
         # are not wedged by an open handle.
         mkb(rng_id, charge, mc2, E0) = Beam(64, CPUThreadsExecutionPolicy(), Float64;
             beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3),
-            cutoff=5.0, rng_id=rng_id, charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+            cutoff=5.0, rng_id=rng_id, charge=charge, mc2=mc2, E0=E0, npart=1.0e10)
         b1, b2 = mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9)
         p_dss = joinpath(dir, "dup_ss.h5")
         white(rng) = (WhiteNoise(1.0e-3; rng_id=rng),)
@@ -28182,7 +28997,7 @@ end
             Beam(64, CPUThreadsExecutionPolicy(), Float64;
                 beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
                 sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
-                charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+                charge=charge, mc2=mc2, E0=E0, npart=1.0e10)
         end
         L6s(b, t) = Linear6DSpec{Float64}(; beta1=b, beta2=b, alpha1=(0.0, 0.0, 0.0),
                                           alpha2=(0.0, 0.0, 0.0), dmu=2pi .* t)
@@ -28306,7 +29121,7 @@ end
         ip = StrongStrongCollision(:ip)
         mkb(rng_id, charge, mc2, E0) = Beam(64, CPUThreadsExecutionPolicy(), Float64;
             beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3),
-            cutoff=5.0, rng_id=rng_id, charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+            cutoff=5.0, rng_id=rng_id, charge=charge, mc2=mc2, E0=E0, npart=1.0e10)
         set_global_rng!(seed=1001, method=:philox)
         b1, b2 = mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9)
         cav_s2 = crab(phase_noise=(SpectralNoise(sig, band, :flat; rng_id=1105, turns=256),))
@@ -28555,7 +29370,10 @@ end
     end
     @test length(claim_sites) >= 4
     @testset let sites = [s[1] * ":" * string(s[2]) for s in claim_sites]
-        @test all(s -> occursin(r"consumer\s*=\s*:[a-z_]+", s[3]), claim_sites)
+        # Every site names its class literally, except the flexible form's claim
+        # (R8b, 2026-11-26), whose class is the kind's `ElementMeta.rng_consumer`
+        # and which returns before claiming when the kind declares none.
+        @test all(s -> occursin(r"consumer\s*=\s*(:[a-z_]+|meta\.rng_consumer)", s[3]), claim_sites)
     end
     claim_classes = Set(Symbol(m.captures[1]) for s in claim_sites
                         for m in eachmatch(r"consumer\s*=\s*:([a-z_]+)", s[3]))
@@ -28600,7 +29418,7 @@ end
     ip = StrongStrongCollision(:ip)
     mkb(rng_id, charge, mc2, E0; policy=CPUThreadsExecutionPolicy()) = Beam(64, policy, Float64;
         beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3),
-        cutoff=5.0, rng_id=rng_id, charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+        cutoff=5.0, rng_id=rng_id, charge=charge, mc2=mc2, E0=E0, npart=1.0e10)
     # The suite's fresh-explicit-id convention: above the counter, above every
     # literal id, and clear of what another test claimed in the same band.
     fresh() = Octopus._unheld_rng_id(Octopus.next_rng_id!() + 1_000_000)
@@ -29034,7 +29852,7 @@ end
             Beam(64, CPUThreadsExecutionPolicy(), Float64;
                  beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
                  sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
-                 charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+                 charge=charge, mc2=mc2, E0=E0, npart=1.0e10)
         end
         task = StrongStrongTask((ip, hetero..., l6a), (ip, hetero..., l6b))
         blocks1 = Octopus._strong_strong_runtime_blocks(task, 1)
@@ -29317,7 +30135,7 @@ Octopus.prepare_observer!(::ThrowingPrepareObserver, runtime_elems) =
     @test RunArtifact(tempname() * ".h5").record_turn_modulation === false
     @test RunArtifact(tempname() * ".h5"; record_turn_modulation=true).record_turn_modulation === true
     schema = run_artifact_option_schema()
-    @test Set(keys(schema)) == Set((:append, :capacity, :record_turn_modulation, :storage))   # :storage since 2026-11-03
+    @test Set(keys(schema)) == Set((:append, :capacity, :record_turn_modulation, :storage, :machine_snapshot))   # :storage since 2026-11-03, :machine_snapshot since 2026-11-26 (R9)
     @test Set(keys(schema)) ⊆ Set(fieldnames(RunArtifact))
     @test schema.record_turn_modulation.option_type === Bool
     @test schema.record_turn_modulation.default === false
@@ -29419,7 +30237,7 @@ Octopus.prepare_observer!(::ThrowingPrepareObserver, runtime_elems) =
         Beam(64, CPUThreadsExecutionPolicy(), Float64;
             beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
             sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
-            charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+            charge=charge, mc2=mc2, E0=E0, npart=1.0e10)
     end
     cav(rng_id) = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,),
                                         phase_noise=(WhiteNoise(1.0e-2; rng_id=rng_id),))
@@ -29918,7 +30736,7 @@ Octopus.observe!(o::_MemArtifactThrowAtTurn, ctx::Octopus.TrackingContext, rep) 
             Beam(64, CPUThreadsExecutionPolicy(), Float64;
                  beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
                  sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
-                 charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+                 charge=charge, mc2=mc2, E0=E0, npart=1.0e10)
         end
         rid = Octopus.next_rng_id!() + 3_000_000
         b1, b2 = mkb(rid + 1, -1.0, EMASS_EV, 10.0e9), mkb(rid + 2, 1.0, PMASS_EV, 275.0e9)
@@ -30091,7 +30909,7 @@ end
         @test !isfile(lockof(p_dup))
         mkb(rng_id, charge, mc2, E0) = Beam(64, CPUThreadsExecutionPolicy(), Float64;
             beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3),
-            cutoff=5.0, rng_id=rng_id, charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+            cutoff=5.0, rng_id=rng_id, charge=charge, mc2=mc2, E0=E0, npart=1.0e10)
         b1, b2 = mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9)
         ip = StrongStrongCollision(:ip)
         p_dss = joinpath(dir, "dup_ss.h5")
@@ -30125,8 +30943,8 @@ end
         cols = [n for (n, _) in Octopus._RA_LEDGER_COLUMNS]
         @test ("rng_seed", UInt64) in Octopus._RA_LEDGER_COLUMNS
         @test ("rng_method", String) in Octopus._RA_LEDGER_COLUMNS
-        @test ("machine_toml", String) in Octopus._RA_LEDGER_COLUMNS      # D14, 2026-11-25
-        @test ("machine_sha256", String) in Octopus._RA_LEDGER_COLUMNS
+        @test ("machine_sha256", String) in Octopus._RA_LEDGER_COLUMNS      # D14, 2026-11-25; the text under /machine_snapshots since R9 (2026-11-26)
+        @test !any(c -> c[1] == "machine_toml", Octopus._RA_LEDGER_COLUMNS)
         Octopus.HDF5.h5open(p_seed, "r") do f
             @test sort(String.(collect(keys(f["execution"])))) == sort(cols)
         end
@@ -30168,24 +30986,23 @@ end
             Octopus._ra_extendable!(f["execution"], "rng_method", String)
         end
         # With the seed columns added the file is the 2026-10-16 layout, which
-        # lacks the machine columns of 2026-11-25 (D14): refused by name naming
-        # that generation alone; with those two added as well it continues.
+        # lacks the machine digest column of 2026-11-25 (D14): refused by name
+        # naming that generation alone; with it added as well it continues.
         err_mid = try
             execute!(TrackingTask(drift; artifact=RunArtifact(p_old; append=true)), rep; turns=1)
             "did not throw"
         catch e
             sprint(showerror, e)
         end
-        @test occursin("machine_toml", err_mid) && occursin("machine_sha256", err_mid) &&
+        @test occursin("machine_sha256", err_mid) && !occursin("machine_toml", err_mid) &&
               occursin("2026-11-25", err_mid) && !occursin("2026-10-16", err_mid)
         Octopus.HDF5.h5open(p_old, "r+") do f
-            Octopus._ra_extendable!(f["execution"], "machine_toml", String)
             Octopus._ra_extendable!(f["execution"], "machine_sha256", String)
         end
         set_global_rng!(seed=23, method=:philox)
         quiet(() -> execute!(TrackingTask(drift; artifact=RunArtifact(p_old; append=true)), rep; turns=1))
         @test read(TaskOutput(p_old), :execution).rng_seed == UInt64[23]
-        @test read(TaskOutput(p_old), :execution).machine_toml == [""]
+        @test read(TaskOutput(p_old), :execution).machine_sha256 == [""]
         set_global_rng!(seed=0x5eed, method=:philox)
     end
 end
@@ -30289,7 +31106,7 @@ end
         pM = joinpath(dir, "M.h5")
         tM = TrackingTask((disp(), hooks()...); loss_report=false,
                           artifact=RunArtifact(pM; storage=:memory, append=true, capacity=3,
-                                               record_turn_modulation=true))
+                                               record_turn_modulation=true, machine_snapshot=false))   # R9 (2026-11-26): off here, on in tA
         for (k, m) in pairs(run_artifact_option_schema())
             @test any(a -> getproperty(a, k) != m.default, (tA.artifact, tM.artifact))
         end
@@ -30298,7 +31115,9 @@ end
         @test isempty(Octopus._output_receipt_gaps(rsA, tracking_schemas))
         ra = one(rsA, :run_artifact_output)
         @test propertynames(ra) == (:task, :artifact, :append, :continued, :capacity,
-                                    :record_turn_modulation, :recording, :storage, :execution)   # :storage since 2026-11-03
+                                    :record_turn_modulation, :recording, :storage,
+                                    :machine_snapshot, :machine_recorded, :execution)   # :storage since 2026-11-03; the machine pair since 2026-11-26 (R9)
+        @test ra.machine_snapshot === true && ra.machine_recorded === :none           # a tuple-built task has no machine to embed
         @test ra.storage === :file
         @test ra.task === :TrackingTask && ra.artifact == pA && ra.execution == 1
         @test ra.append === true && ra.continued === false
@@ -30426,7 +31245,7 @@ end
             Beam(64, CPUThreadsExecutionPolicy(), Float64;
                 beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
                 sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
-                charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+                charge=charge, mc2=mc2, E0=E0, npart=1.0e10)
         end
         ip = StrongStrongCollision(:ip)
         plain = ThinCrabCavitySpec{1}(394.0e6; strengthX=(2.0e-3,), phase=(0.0,))
@@ -30486,7 +31305,8 @@ end
         fake(c, v) = ExecutionAuditReceipt(c, CPUThreadsBackend, v)
         g1 = Octopus._output_receipt_gaps([fake(:run_artifact_output, (task=:TrackingTask, artifact="x", append=true,
                                                                        continued=false, capacity=1, recording=false,
-                                                                       storage=:file, execution=1))], [art_schema])   # one field missing: storage carried since 2026-11-03
+                                                                       storage=:file, machine_snapshot=true,
+                                                                       machine_recorded=:none, execution=1))], [art_schema])   # one field missing: storage carried since 2026-11-03, machine_snapshot since 2026-11-26
         @test length(g1) == 1 && occursin("RunArtifact.record_turn_modulation", g1[1]) &&
               occursin("no field named record_turn_modulation", g1[1])
         @test Octopus._output_receipt_gaps(ExecutionAuditReceipt[], [art_schema]) ==
@@ -31247,7 +32067,7 @@ end
         Beam(64, CPUThreadsExecutionPolicy(), Float64;
             beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
             sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
-            charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+            charge=charge, mc2=mc2, E0=E0, npart=1.0e10)
     end
     snap(b) = Tuple(copy(a) for a in coordinate_arrays(b.rep))
     table3 = TurnTable([0.001, 0.002, 0.003]; name="three")
@@ -31325,7 +32145,7 @@ end
         Beam(300, CPUThreadsExecutionPolicy(), Float64;
             beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
             sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
-            charge=charge, mc2=mc2, E0=E0, r0=RE * ME0 / mc2, npart=1.0e10)
+            charge=charge, mc2=mc2, E0=E0, npart=1.0e10)
     end
     beams() = (mkb(1, -1.0, EMASS_EV, 10.0e9), mkb(2, 1.0, PMASS_EV, 275.0e9))
     L6s(b, t) = Linear6DSpec{Float64}(; beta1=b, beta2=b, alpha1=(0.0, 0.0, 0.0),
@@ -32318,8 +33138,7 @@ end
         let sl = LongitudinalSlicing(nslices=3, method=:normal_quantile)
             mkb(pol) = Beam(2000, pol, Float64; beta=(0.55, 0.056, 12.7),
                 alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
-                r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
             for solver in (PICPoissonSolver(; slicing=sl, grid=(16, 16)),
                            GaussianPICPoissonSolver(; slicing=sl, grid=(16, 16)),
                            SpectralPoissonSolver(; slicing=sl, grid=(16, 16)),
@@ -35958,8 +36777,7 @@ end
         sl512 = LongitudinalSlicing(nslices=3, method=:normal_quantile)
         mkb(pol) = Beam(4000, pol, Float64; beta=(0.55, 0.056, 12.7),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
-            r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
         run512(solver) = begin
             pol = CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=512))
             set_global_rng!(seed=123, method=:philox)
@@ -36133,10 +36951,10 @@ end
             set_global_rng!(seed=4242, method=:philox)
             e = Beam(8000, pol, Float64; beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
                      sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=1, charge=-1.0,
-                     mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                     mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
             p = Beam(8000, pol, Float64; beta=(0.8, 0.072, 90.9), alpha=(0.0, 0.0, 0.0),
                      sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0, rng_id=2, charge=1.0,
-                     mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+                     mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
             e.rep.x .+= offset; e.rep.y .+= offset
             p.rep.x .+= offset; p.rep.y .+= offset
             solver = PICPoissonSolver(; grid=(32, 32),
@@ -36197,8 +37015,7 @@ end
         sl = LongitudinalSlicing(nslices=3, method=:normal_quantile)
         mkb(pol) = Beam(4000, pol, Float64; beta=(0.55, 0.056, 12.7),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
-            r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
         default_route = function (solver, threads)
             pol = CUDAExecutionPolicy(launch=CUDALaunchConfig(threads=threads))
             set_global_rng!(seed=123, method=:philox)
@@ -38071,7 +38888,7 @@ end
         set_global_rng!(seed=5, method=:philox)
         Beam(n, pol, Float64; beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
              sigma=(1.0e-4, 1.0e-5, 1.0e-2), cutoff=5.0, rng_id=1, charge=-1.0,
-             mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.0e11)
+             mc2=EMASS_EV, E0=10.0e9, npart=1.0e11)
     end
     b = mkb(CPUThreadsBackend)
     z = round.(Array(b.rep.z) ./ 1.0e-3) .* 1.0e-3       # deliberate ties
@@ -38136,10 +38953,10 @@ end
             set_global_rng!(seed=31, method=:philox)
             e = Beam(400, pol, Float64; beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
                 sigma=(1.0e-4, 1.0e-5, 1.0e-2), cutoff=5.0, rng_id=1, charge=-1.0,
-                mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.0e11)
+                mc2=EMASS_EV, E0=10.0e9, npart=1.0e11)
             p = Beam(400, pol, Float64; beta=(0.8, 0.072, 90.9), alpha=(0.0, 0.0, 0.0),
                 sigma=(9.0e-5, 8.0e-6, 6.0e-2), cutoff=5.0, rng_id=2, charge=1.0,
-                mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=7.0e10)
+                mc2=PMASS_EV, E0=275.0e9, npart=7.0e10)
             if poison
                 x = Array(e.rep.x); y = Array(e.rep.y); pz = Array(e.rep.pz)
                 for i in 1:4
@@ -38304,8 +39121,7 @@ end
               Set(nameof.(Octopus._concrete_octopus_subtypes(Octopus.AbstractPoissonSolver)))
         mkb(id, q, m, E) = (set_global_rng!(seed=4242, method=:philox);
                             Beam(64, CPUThreadsExecutionPolicy(), Float64; beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0),
-                                 sigma=(106.0e-6, 9.5e-6, 1.0e-2), cutoff=5.0, rng_id=id, charge=q, mc2=m, E0=E,
-                                 r0=RE * ME0 / m, npart=1.7e11))
+                                 sigma=(106.0e-6, 9.5e-6, 1.0e-2), cutoff=5.0, rng_id=id, charge=q, mc2=m, E0=E, npart=1.7e11))
         for (name, build) in solvers
             # At the CONSUMER BOUNDARY (2026-10-18 audit F-219/U36-6: the lines
             # this replaces compared the file-writing gate with the solver's
@@ -38347,8 +39163,7 @@ end
         shared = PredicateSchedule(ctx -> (push!(consulted, (run_id[], ctx.turn)); true))
         mkb6(id, q, m, E) = (set_global_rng!(seed=4242, method=:philox);
                              Beam(64, CPUThreadsExecutionPolicy(), Float64; beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0),
-                                  sigma=(106.0e-6, 9.5e-6, 1.0e-2), cutoff=5.0, rng_id=id, charge=q, mc2=m, E0=E,
-                                  r0=RE * ME0 / m, npart=1.7e11))
+                                  sigma=(106.0e-6, 9.5e-6, 1.0e-2), cutoff=5.0, rng_id=id, charge=q, mc2=m, E0=E, npart=1.7e11))
         ip6 = StrongStrongCollision(:ip; poisson_solver=GaussianPoissonSolver(
             slicing=LongitudinalSlicing(nslices=2, method=:equal_area), luminosity_schedule=shared))
         taskA = StrongStrongTask((ip6,), (ip6,))
@@ -38917,7 +39732,7 @@ end
             Beam(512, policy, Float64;
                 beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
                 sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=rng_id,
-                charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV,
+                charge=1.0, mc2=PMASS_EV, E0=275.0e9,
                 npart=1.0e10)
         end
         allc(b) = map(a -> Array(a), (b.rep.x, b.rep.px, b.rep.y, b.rep.py, b.rep.z, b.rep.pz))
@@ -39353,7 +40168,7 @@ aperture_beam(n; seed=7) = begin
     set_global_rng!(seed=seed, method=:philox)
     Beam(n, CPUThreadsBackend, Float64; beta=(0.5, 0.5, 10.0), alpha=(0.0, 0.0, 0.0),
          sigma=(1.0e-3, 1.0e-3, 1.0e-2), cutoff=4.0, rng_id=1,
-         charge=-1.0, mc2=EMASS_EV, E0=1.0e10, r0=RE * ME0 / EMASS_EV, npart=1.0e11)
+         charge=-1.0, mc2=EMASS_EV, E0=1.0e10, npart=1.0e11)
 end
 
 # `===` elementwise, so NaN compares equal to NaN. Ordinary `==` would call two
@@ -40315,7 +41130,7 @@ end
             set_global_rng!(seed=11, method=:philox)
             Beam(n, CPUThreadsBackend, Float64; beta=(0.5, 0.5, 10.0), alpha=(0.0, 0.0, 0.0),
                  sigma=(1.0e-3, 1.0e-3, 1.0e-2), cutoff=4.0, rng_id=1,
-                 charge=-1.0, mc2=EMASS_EV, E0=1.0e10, r0=RE * ME0 / EMASS_EV, npart=1.0e11)
+                 charge=-1.0, mc2=EMASS_EV, E0=1.0e10, npart=1.0e11)
         end
         line = (compile_runtime(SolenoidSpec(L=1.3, ks=1.7)),
                 compile_runtime(ThinQuadrupoleSpec(k1l=0.05)),
@@ -40494,11 +41309,11 @@ end
         e = Beam(2000, CPUThreadsBackend, Float64;
             beta=(0.55, 0.056, 0.7e-2 / 5.5e-4), alpha=(0.0, 0.0, 0.0),
             sigma=(106.0e-6, 9.5e-6, 0.7e-2), cutoff=5.0, rng_id=1,
-            charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7203e11)
+            charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7203e11)
         p = Beam(2000, CPUThreadsBackend, Float64;
             beta=(0.8, 0.072, 6.0e-2 / 6.6e-4), alpha=(0.0, 0.0, 0.0),
             sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0, rng_id=2,
-            charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.6881e11)
+            charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.6881e11)
         return e, p
     end
     sl = LongitudinalSlicing(method=:normal_quantile, nslices=3, center_position=:centroid)
@@ -40654,7 +41469,7 @@ end
     mkb(rng_id, q, m, E) = begin
         Beam(10_000, Octopus.CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.7),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=rng_id, charge=q, mc2=m, E0=E, r0=RE * ME0 / m, npart=1.0e11)
+            rng_id=rng_id, charge=q, mc2=m, E0=E, npart=1.0e11)
     end
     runtol(tol) = begin
         set_global_rng!(seed=97, method=:philox)
@@ -40768,12 +41583,10 @@ end
         set_global_rng!(seed=11, method=:philox)
         e = Beam(8000, CPUThreadsBackend, Float64;
             beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-4, 1.0e-2),
-            cutoff=5.0, rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
-            r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            cutoff=5.0, rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
         p = Beam(8000, CPUThreadsBackend, Float64;
             beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-4, 1.0e-2),
-            cutoff=5.0, rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9,
-            r0=RE * ME0 / PMASS_EV, npart=1.7e11)
+            cutoff=5.0, rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=1.7e11)
         return e, p
     end
     sl = LongitudinalSlicing(nslices=1, method=:normal_quantile, center_position=:centroid)
@@ -40808,12 +41621,10 @@ end
         set_global_rng!(seed=7, method=:philox)
         e = Beam(8000, CPUThreadsBackend, Float64;
             beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-4, 1.0e-2),
-            cutoff=5.0, rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
-            r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            cutoff=5.0, rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
         p = Beam(8000, CPUThreadsBackend, Float64;
             beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-4, 1.0e-2),
-            cutoff=5.0, rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9,
-            r0=RE * ME0 / PMASS_EV, npart=1.7e11)
+            cutoff=5.0, rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=1.7e11)
         return e, p
     end
     sl = LongitudinalSlicing(nslices=1, method=:normal_quantile, center_position=:centroid)
@@ -40930,10 +41741,10 @@ end
         set_global_rng!(seed=77, method=:philox)
         e = Beam(6000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.0),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
         p = Beam(6000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.0),
             alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
         return e, p
     end
     sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
@@ -41000,10 +41811,10 @@ end
         set_global_rng!(seed=91, method=:philox)
         e = Beam(6000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.0),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
         p = Beam(6000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.0),
             alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
         return e, p
     end
     sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
@@ -41100,10 +41911,10 @@ end
         set_global_rng!(seed=53, method=:philox)
         e = Beam(6000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.0),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
         p = Beam(6000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.0),
             alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
         return e, p
     end
     sl = LongitudinalSlicing(nslices=4, method=:normal_quantile, center_position=:centroid)
@@ -41210,10 +42021,10 @@ end
         set_global_rng!(seed=64, method=:philox)
         e = Beam(6000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.0),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
         p = Beam(6000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.0),
             alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
         return e, p
     end
     sl = LongitudinalSlicing(nslices=5, method=:normal_quantile)
@@ -41572,10 +42383,10 @@ if _lane_gate("CUDA GaussianPIC coupled subtraction matches CPU")
             set_global_rng!(seed=91, method=:philox)
             e = Beam(8000, pol, Float64; beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
                 sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=1,
-                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
             p = Beam(8000, pol, Float64; beta=(0.8, 0.072, 90.9), alpha=(0.0, 0.0, 0.0),
                 sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0, rng_id=2,
-                charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+                charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
             (e, p)
         end
         sl = LongitudinalSlicing(nslices=5, method=:normal_quantile, center_position=:centroid)
@@ -41622,10 +42433,10 @@ end # _lane_gate("CUDA GaussianPIC coupled subtraction matches CPU")
         set_global_rng!(seed=91, method=:philox)
         e = Beam(3000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.7),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
         p = Beam(3000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.0),
             alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
         (e, p)
     end
     run(tol) = begin
@@ -41944,10 +42755,10 @@ end
     set_global_rng!(seed=13, method=:philox)
     e = Beam(4000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.7),
         alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-        rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+        rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
     p = Beam(4000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.0),
         alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-        rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+        rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
     for d in (2.0, 4.0, 8.0, 16.0)
         solver = SpectralPoissonSolver(; grid=(32, 64), domain_factor=d)
         L_plain = Octopus._spectral_box(solver, e.rep.x, e.rep.y, p.rep.x, p.rep.y)[1]
@@ -41978,10 +42789,10 @@ end
         set_global_rng!(seed=31, method=:philox)
         e = Beam(2000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.0),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
         p = Beam(2000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.0),
             alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
         return e, p
     end
     sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
@@ -42051,10 +42862,10 @@ end
         set_global_rng!(seed=31, method=:philox)
         e = Beam(2000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.0),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
         p = Beam(2000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.0),
             alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
         return e, p
     end
     sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
@@ -42106,12 +42917,12 @@ end
     e0 = Beam(1200, CPUThreadsBackend, Float64;
         beta=(0.55, 0.056, 12.0), alpha=(0.0, 0.0, 0.0),
         sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=1,
-        charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV,
+        charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
         npart=1.7e11)
     p0 = Beam(1200, CPUThreadsBackend, Float64;
         beta=(0.8, 0.072, 90.0), alpha=(0.0, 0.0, 0.0),
         sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0, rng_id=2,
-        charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV,
+        charge=1.0, mc2=PMASS_EV, E0=275.0e9,
         npart=0.7e11)
     clone_beam(b) = begin
         rep = Phase6DRep((copy(a) for a in coordinate_arrays(b.rep))...)
@@ -42145,10 +42956,10 @@ end
     set_global_rng!(seed=23, method=:philox)
     er = Beam(3000, CPUThreadsBackend, Float64; beta=(1.0, 1.0, 10.0),
         alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-4, 7.0e-3), cutoff=5.0, rng_id=1,
-        charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+        charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
     pr = Beam(3000, CPUThreadsBackend, Float64; beta=(1.0, 1.0, 10.0),
         alpha=(0.0, 0.0, 0.0), sigma=(1.0e-4, 1.0e-4, 6.0e-3), cutoff=5.0, rng_id=2,
-        charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=1.7e11)
+        charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=1.7e11)
     sr = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
     spec_e, spec_p = clone_beam(er), clone_beam(pr)
     pic_e, pic_p = clone_beam(er), clone_beam(pr)
@@ -42566,12 +43377,10 @@ end
             set_global_rng!(seed=11, method=:philox)
             e = Beam(2000, CUDAExecutionPolicy(), Float64; beta=(1.0, 1.0, 10.0),
                      alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 1.0e-2), cutoff=5.0,
-                     rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
-                     r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                     rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
             p = Beam(2000, CUDAExecutionPolicy(), Float64; beta=(1.0, 1.0, 10.0),
                      alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 1.0e-2), cutoff=5.0,
-                     rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9,
-                     r0=RE * ME0 / PMASS_EV, npart=1.7e11)
+                     rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=1.7e11)
             return e, p
         end
         for (mk, expected) in arms, mode in (:sequential, :wavefront)
@@ -43021,10 +43830,10 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             set_global_rng!(seed=77, method=:philox)
             e = Beam(6000, backend, Float64; beta=(0.55, 0.056, 12.0),
                 alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
             p = Beam(6000, backend, Float64; beta=(0.8, 0.072, 90.0),
                 alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-                rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+                rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
             return e, p
         end
         sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
@@ -43058,10 +43867,10 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             set_global_rng!(seed=31, method=:philox)
             e = Beam(4000, backend, Float64; beta=(0.55, 0.056, 12.0),
                 alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
             p = Beam(4000, backend, Float64; beta=(0.8, 0.072, 90.0),
                 alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-                rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+                rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
             return e, p
         end
         sl = LongitudinalSlicing(nslices=5, method=:normal_quantile, center_position=:centroid)
@@ -43250,11 +44059,11 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             e = Beam(4000, CPUThreadsBackend, Float64;
                 beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0),
                 sigma=(106.0e-6, 9.5e-6, 1.0e-2), cutoff=5.0, rng_id=1,
-                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
             p = Beam(4000, CPUThreadsBackend, Float64;
                 beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0),
                 sigma=(95.0e-6, 8.5e-6, 1.0e-2), cutoff=5.0, rng_id=2,
-                charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=1.7e11)
+                charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=1.7e11)
             return e, p
         end
         sl = LongitudinalSlicing(nslices=3, method=:normal_quantile, center_position=:centroid)
@@ -43473,11 +44282,11 @@ if Octopus._HAS_CUDA && Octopus.CUDA.functional()
             e = Beam(6000, CPUThreadsBackend, Float64;
                 beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
                 sigma=(106.0e-6, 9.5e-6, 0.7e-2), cutoff=5.0, rng_id=1,
-                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
             p = Beam(6000, CPUThreadsBackend, Float64;
                 beta=(0.8, 0.072, 90.0), alpha=(0.0, 0.0, 0.0),
                 sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0, rng_id=2,
-                charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+                charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
             return e, p
         end
         sl = LongitudinalSlicing(nslices=5, method=:normal_quantile, center_position=:centroid)
@@ -45042,10 +45851,10 @@ end
             set_global_rng!(seed=91, method=:philox)
             e = Beam(6000, pol, Float64; beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
                 sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=1,
-                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
             p = Beam(6000, pol, Float64; beta=(0.8, 0.072, 90.9), alpha=(0.0, 0.0, 0.0),
                 sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0, rng_id=2,
-                charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+                charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
             (e, p)
         end
         flat(b) = vcat((Array(a) for a in coordinate_arrays(b))...)
@@ -45103,10 +45912,10 @@ end
             set_global_rng!(seed=7, method=:philox)
             be = Beam(4000, CUDAExecutionPolicy(), Float64; beta=(0.55, 0.056, 12.7),
                 alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
             bp = Beam(4000, CUDAExecutionPolicy(), Float64; beta=(0.8, 0.072, 90.9),
                 alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-                rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+                rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
             L6(b, t) = Linear6DSpec{Float64}(; beta1=b, beta2=b, alpha1=(0.0, 0.0, 0.0),
                                              alpha2=(0.0, 0.0, 0.0), dmu=2pi .* t)
             ip = StrongStrongCollision(:ip; poisson_solver=solver)
@@ -45161,10 +45970,10 @@ end
             set_global_rng!(seed=91, method=:philox)
             e = Beam(5000, pol, Float64; beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
                 sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=1,
-                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
             p = Beam(5000, pol, Float64; beta=(0.8, 0.072, 90.9), alpha=(0.0, 0.0, 0.0),
                 sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0, rng_id=2,
-                charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+                charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
             (e, p)
         end
         flat(b) = vcat((Array(a) for a in coordinate_arrays(b))...)
@@ -45289,10 +46098,10 @@ end
             set_global_rng!(seed=91, method=:philox)
             e = Beam(4000, pol, Float64; beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
                 sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=1,
-                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
             p = Beam(4000, pol, Float64; beta=(0.8, 0.072, 90.9), alpha=(0.0, 0.0, 0.0),
                 sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0, rng_id=2,
-                charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+                charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
             (e, p)
         end
         run_pair(pol, gt) = begin
@@ -45370,10 +46179,10 @@ if _lane_gate("PIC green_type=:lattice")
         set_global_rng!(seed=91, method=:philox)
         e = Beam(3000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.7),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
         p = Beam(3000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.9),
             alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
         (e, p)
     end
     run(gt) = begin
@@ -45402,10 +46211,10 @@ if _lane_gate("PIC green_type=:lattice")
             set_global_rng!(seed=91, method=:philox)
             e = Beam(3000, pol, Float64; beta=(0.55, 0.056, 12.7), alpha=(0.0, 0.0, 0.0),
                 sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0, rng_id=1,
-                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
             p = Beam(3000, pol, Float64; beta=(0.8, 0.072, 90.9), alpha=(0.0, 0.0, 0.0),
                 sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0, rng_id=2,
-                charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+                charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
             (e, p)
         end
         for kw in (NamedTuple(), (green_cache=:none,), (cuda_indexed_wavefront=false,),
@@ -45604,10 +46413,10 @@ if _lane_gate("Green-cache expansion preserves the grid alignment its kernels re
         set_global_rng!(seed=91, method=:philox)
         e = Beam(2000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.7),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
         p = Beam(2000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.9),
             alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
         (e, p)
     end
     for gt in (:lattice, :standard, :integrated)
@@ -45657,10 +46466,10 @@ end
         set_global_rng!(seed=91, method=:philox)
         e = Beam(3000, CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.7),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=dropped_id, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            rng_id=dropped_id, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
         p = Beam(3000, CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.9),
             alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-            rng_id=dropped_id2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            rng_id=dropped_id2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
         (e, p)
     end
     run(; kw...) = begin
@@ -46020,12 +46829,10 @@ end
                 set_global_rng!(seed=91, method=:philox)
                 e = Beam(3000, backend, Float64; beta=(0.55, 0.056, 12.7),
                     alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-                    rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
-                    r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                    rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
                 p = Beam(3000, backend, Float64; beta=(0.8, 0.072, 90.9),
                     alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-                    rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9,
-                    r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+                    rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
                 (e, p)
             end
             dropped_total(lg) = begin
@@ -46080,8 +46887,7 @@ end
             set_global_rng!(seed=4242, method=:philox)
             Beam(20_000, Octopus.CPUThreadsBackend, Float32; beta=(0.55, 0.056, 12.7),
                 alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
-                r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
         end
         solver = GaussianPoissonSolver(; slicing=LongitudinalSlicing(
             nslices=3, method=:normal_quantile))
@@ -46113,12 +46919,10 @@ end
             set_global_rng!(seed=4242, method=:philox)
             e2 = Beam(4000, Octopus.CPUThreadsBackend, Float32; beta=(0.55, 0.056, 12.7),
                 alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
-                r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
             p2 = Beam(4000, Octopus.CPUThreadsBackend, Float32; beta=(0.8, 0.072, 90.9),
                 alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-                rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9,
-                r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+                rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
             (Octopus._strong_strong_contract_beam(e2, Octopus.CUDABackend),
              Octopus._strong_strong_contract_beam(p2, Octopus.CUDABackend))
         end
@@ -46152,10 +46956,10 @@ end
             set_global_rng!(seed=4242, method=:philox)
             e = Beam(n, CPUThreadsBackend, T; beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0),
                      sigma=(1.0e-6, 1.0e-6, 1.0e-2), cutoff=5.0, rng_id=1, charge=-1.0,
-                     mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                     mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
             p = Beam(n, CPUThreadsBackend, T; beta=(1.0, 1.0, 10.0), alpha=(0.0, 0.0, 0.0),
                      sigma=(1.0e-6, 1.0e-6, 1.0e-2), cutoff=5.0, rng_id=2, charge=1.0,
-                     mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=1.7e11)
+                     mc2=PMASS_EV, E0=275.0e9, npart=1.7e11)
             (Octopus._strong_strong_contract_beam(e, Octopus.CUDABackend),
              Octopus._strong_strong_contract_beam(p, Octopus.CUDABackend))
         end
@@ -46211,12 +47015,10 @@ if _lane_gate("PIC-family luminosity returns Float64 on every backend and precis
         set_global_rng!(seed=4242, method=:philox)
         e = Beam(8000, Octopus.CPUThreadsBackend, T; beta=(0.55, 0.056, 12.7),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
-            r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
         p = Beam(8000, Octopus.CPUThreadsBackend, T; beta=(0.8, 0.072, 90.9),
             alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9,
-            r0=RE * ME0 / PMASS_EV, npart=0.7e11)
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.7e11)
         (e, p)
     end
     mkpic() = PICPoissonSolver(grid=(16, 16), green_cache=:none,
@@ -46281,7 +47083,7 @@ end # _lane_gate("PIC-family luminosity returns Float64 on every backend and pre
     mkgb(rng_id, q, m, E) = begin
         Beam(6000, Octopus.CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.7),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=rng_id, charge=q, mc2=m, E0=E, r0=RE * ME0 / m, npart=1.0e11)
+            rng_id=rng_id, charge=q, mc2=m, E0=E, npart=1.0e11)
     end
     runflip(when, backend, kw) = begin
         set_global_rng!(seed=71, method=:philox)
@@ -46490,12 +47292,10 @@ end
         set_global_rng!(seed=51, method=:philox)
         e = Beam(4000, Octopus.CPUThreadsBackend, Float64; beta=(0.55, 0.056, 12.7),
             alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
-            r0=RE * ME0 / EMASS_EV, npart=1.0e11)
+            rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.0e11)
         p = Beam(4000, Octopus.CPUThreadsBackend, Float64; beta=(0.8, 0.072, 90.9),
             alpha=(0.0, 0.0, 0.0), sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0,
-            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9,
-            r0=RE * ME0 / PMASS_EV, npart=1.0e11)
+            rng_id=2, charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=1.0e11)
         eg = Octopus._strong_strong_contract_beam(e, Octopus.CUDABackend)
         pg = Octopus._strong_strong_contract_beam(p, Octopus.CUDABackend)
         g = GaussianPICPoissonSolver(; grid=(16, 16), luminosity_scale=1.0,
@@ -46626,8 +47426,7 @@ end
             set_global_rng!(seed=4242, method=:philox)
             e = Beam(50_000, Octopus.CPUThreadsBackend, T; beta=(0.55, 0.056, 12.7),
                 alpha=(0.0, 0.0, 0.0), sigma=(106.0e-6, 9.5e-6, 7.0e-3), cutoff=5.0,
-                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9,
-                r0=RE * ME0 / EMASS_EV, npart=1.7e11)
+                rng_id=1, charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7e11)
             eg = Octopus._strong_strong_contract_beam(e, Octopus.CUDABackend)
             for method in (:normal_quantile, :equal_area, :equal_width,
                            :equal_count, :specified)
@@ -46657,8 +47456,7 @@ end
         mk32(rng_id, charge, mc2, E0, betas, sigmas, npart) = begin
             Beam(20_000, Octopus.CPUThreadsBackend, Float32; beta=betas,
                 alpha=(0.0, 0.0, 0.0), sigma=sigmas, cutoff=5.0, rng_id=rng_id,
-                charge=charge, mc2=mc2, E0=E0,
-                r0=RE * ME0 / mc2, npart=npart)
+                charge=charge, mc2=mc2, E0=E0, npart=npart)
         end
         basepair() = begin
             set_global_rng!(seed=4242, method=:philox)

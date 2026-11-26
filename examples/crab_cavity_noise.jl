@@ -422,8 +422,8 @@ weak_r0 = RE * ME0 / wb.mass
 # The weak beam's species and energy as one ReferenceParticle
 # (docs/design/machine_description.md, D12): the Beam takes it in place of
 # the flat charge, mc2, E0 keywords, so the three cannot disagree. The
-# classical radius r0 stays a keyword of its own (not derived from the
-# reference in this batch).
+# classical radius r0 comes with it, derived once as RE * ME0 / mc2 (R3 of
+# the follow-ups note, 2026-11-26; the value this script used to type).
 wb_ref = ReferenceParticle(; charge = wb.charge, mc2 = wb.mass, E0 = wb.energy)
 
 # The weak beam's linear optics, spelled once as LinearOptics points
@@ -444,7 +444,6 @@ beam = Beam(n_macro, policy, Float64;
     cutoff = wb.cutoff,
     rng_id = 1,
     reference = wb_ref,
-    r0 = weak_r0,
     npart = wb.n_particle,
     initial_offset = wb.initial_offset,
 )

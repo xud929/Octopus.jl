@@ -112,6 +112,8 @@ function _overrides_line(line::ElementSpec{:line}, pairs, where::AbstractString)
             for (key, value) in table
                 _overrides_check_key(target, key, where)
                 getfield(target, :overrides)[key] = value
+                # An `rng_id` override claims the stream under the spec's class (R8b).
+                _claim_override_stream!(getfield(target, :spec), key, value)
             end
         end
     end

@@ -56,10 +56,10 @@ ele_beta = (0.55, 0.056, 0.7e-2 / 5.5e-4)
 pro_beta = (0.8, 0.072, 6.0e-2 / 6.6e-4)
 beam_ele = Beam(npart, policy, Float64; beta=ele_beta, alpha=(0.0, 0.0, 0.0),
     sigma=(106.0e-6, 9.5e-6, 0.7e-2), cutoff=5.0, rng_id=1,
-    charge=-1.0, mc2=EMASS_EV, E0=10.0e9, r0=RE * ME0 / EMASS_EV, npart=1.7203e11)
+    charge=-1.0, mc2=EMASS_EV, E0=10.0e9, npart=1.7203e11)
 beam_pro = Beam(npart, policy, Float64; beta=pro_beta, alpha=(0.0, 0.0, 0.0),
     sigma=(95.0e-6, 8.5e-6, 6.0e-2), cutoff=5.0, rng_id=2,
-    charge=1.0, mc2=PMASS_EV, E0=275.0e9, r0=RE * ME0 / PMASS_EV, npart=0.6881e11)
+    charge=1.0, mc2=PMASS_EV, E0=275.0e9, npart=0.6881e11)
 
 slicing_production = LongitudinalSlicing(method=:normal_quantile, nslices=nslices,
                                          center_position=:centroid)

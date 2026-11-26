@@ -317,9 +317,9 @@ function ss_beams()
     set_global_rng!(seed = SEED, method = :philox)
     ele, pro = SS.electron, SS.proton
     electron = Beam(N_MACRO, policy, Float64; optics = SS_ELE.ip, sigma = ele.sigma, cutoff = ele.cutoff,
-                    rng_id = 1, reference = SS_ELE.ref, r0 = RE * ME0 / ele.mass, npart = ele.n_particle)
+                    rng_id = 1, reference = SS_ELE.ref, npart = ele.n_particle)
     proton = Beam(N_MACRO, policy, Float64; optics = SS_PRO.ip, sigma = pro.sigma, cutoff = pro.cutoff,
-                  rng_id = 2, reference = SS_PRO.ref, r0 = RE * ME0 / pro.mass, npart = pro.n_particle)
+                  rng_id = 2, reference = SS_PRO.ref, npart = pro.n_particle)
     return (electron, proton)
 end
 
@@ -397,7 +397,7 @@ function ws_beams()
     set_global_rng!(seed = SEED, method = :philox)
     wb = WS.weak
     return (Beam(N_MACRO, policy, Float64; optics = WS_P.ip, emit = WS_P.emit, cutoff = wb.cutoff, rng_id = 1,
-                 reference = WS_P.ref, r0 = WS_P.r0, npart = wb.n_particle,
+                 reference = WS_P.ref, npart = wb.n_particle,
                  initial_offset = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)),)
 end
 

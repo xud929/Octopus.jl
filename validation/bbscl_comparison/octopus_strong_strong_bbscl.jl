@@ -66,10 +66,10 @@ ele_ip = LinearOptics(; beta = (ele.beta_star..., ele.sigma[3] / ele.sigd))
 pro_ip = LinearOptics(; beta = (pro.beta_star..., pro.sigma[3] / pro.sigd))
 
 beam_ele = Beam(NE, policy, Float64; optics = ele_ip, sigma = ele.sigma, cutoff = ele.cutoff,
-    rng_id = 1, charge = ele.charge, mc2 = ele.mass, E0 = ele.energy, r0 = RE * ME0 / ele.mass,
+    rng_id = 1, charge = ele.charge, mc2 = ele.mass, E0 = ele.energy,
     npart = ele.n_particle)
 beam_pro = Beam(NP, policy, Float64; optics = pro_ip, sigma = pro.sigma, cutoff = pro.cutoff,
-    rng_id = 2, charge = pro.charge, mc2 = pro.mass, E0 = pro.energy, r0 = RE * ME0 / pro.mass,
+    rng_id = 2, charge = pro.charge, mc2 = pro.mass, E0 = pro.energy,
     npart = pro.n_particle)
 
 slicing = LongitudinalSlicing(; method = :normal_quantile, nslices = NS, center_position = :centroid)

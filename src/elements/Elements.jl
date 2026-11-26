@@ -17,3 +17,5 @@ include("beam_line.jl")
 include("turn_modulated.jl")
 include("floor_plan.jl")
 include("phase_space_reset.jl")
+# The class form over the registry and the flexible form's folds: LAST, after every kind.
+include("templates.jl")

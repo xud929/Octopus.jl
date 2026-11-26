@@ -59,10 +59,20 @@ at the next `execute!` — exactly like knob assignment.
 struct ElementSpec{Kind} <: AbstractElementSpec
     params::Dict{Symbol,Any}
     function ElementSpec{Kind}(params::Dict{Symbol,Any}) where {Kind}
+        # The element layer's fold of a named strength handed to this form
+        # (`k1` into `kn[2]`, a bend's `angle`, an rbend's `chord`; R11 of the
+        # follow-ups note, 2026-11-26), registered by src/elements/templates.jl
+        # once the fold tables exist; a no-op before that and for a kind
+        # without folds. It runs BEFORE the spec is built, on the dictionary
+        # the spec will hold.
+        hook = _FLEXIBLE_FOLD_HOOK[]
+        hook === nothing || hook(Kind, params)
         spec = new{Kind}(params)
         # Every construction route funnels through here, so this is the one
-        # choke point for the unknown-key warning (2026-08-05 audit, U13-1).
+        # choke point for the unknown-key warning (2026-08-05 audit, U13-1)
+        # and for the stream claim of a kind that declares `rng_id` (R8b).
         _warn_unknown_spec_keys(ElementSpec{Kind}, params)
+        _claim_spec_stream!(Kind, get(params, :rng_id, nothing))
         return spec
     end
 end
@@ -109,6 +119,41 @@ schema tells the truth and this list stays empty.
 The fallback is empty, so a kind that does not extend this is unaffected.
 """
 _extra_tracked_keys(::Val) = ()
+
+# The element layer's fold for the flexible form (`_fold_flexible_params!`,
+# src/elements/templates.jl), set once the fold tables exist.
+const _FLEXIBLE_FOLD_HOOK = Ref{Any}(nothing)
+
+"""
+    _claim_spec_stream!(kind, id)
+
+Claim an explicit counter-RNG stream id stored on a spec of `kind` under the
+consumer class its `ElementMeta` declares (`rng_consumer`; R8b, 2026-11-26), so
+every route into the flexible form -- the friendly constructor (which claimed
+already; a same-class re-claim is silent, the 2026-10-16 policy), the snapshot
+reader, `resolve_knobs` rebuilding a spec, a placement override on `rng_id`
+(`_claim_override_stream!`) -- leaves the id held. `0` (a fresh stream at
+construction), a non-integer or a kind without a class claims nothing: the
+constructors and the compile refuse those by name where they matter.
+"""
+function _claim_spec_stream!(kind::Symbol, id)
+    (id isa Integer && !(id isa Bool) && id > 0 && id <= typemax(UInt64)) || return nothing
+    meta = get(ELEMENT_META_BY_KIND, kind, nothing)
+    (meta === nothing || meta.rng_consumer === nothing) && return nothing
+    # The kind's own id -- the friendly constructor's claim, or the stream it
+    # resolved for `rng_id = 0` and stored -- is held by the class already;
+    # every rebuild of the spec through this form passes it again, silently.
+    _rng_id_held_by(id, meta.rng_consumer) && return nothing
+    claim_rng_id!(id; consumer=meta.rng_consumer)
+    return nothing
+end
+
+"""The claim of an `rng_id` written as a placement override or a spec assignment (R8b): the spec's kind decides the class."""
+function _claim_override_stream!(spec, name::Symbol, value)
+    (name === :rng_id && spec isa ElementSpec) || return nothing
+    _claim_spec_stream!(kind(spec), value)
+    return nothing
+end
 
 function _warn_unknown_spec_keys(::Type{ElementSpec{Kind}}, params::Dict{Symbol,Any}) where {Kind}
     meta = get(ELEMENT_META_BY_KIND, Kind, nothing)
@@ -182,6 +227,9 @@ function Base.setproperty!(spec::ElementSpec{Kind}, name::Symbol, value) where {
     end
     p[name] = value
     _SPEC_EPOCH[] += 1
+    # An explicit stream id assigned after construction is claimed under the
+    # kind's class like one given at construction (R8b, 2026-11-26).
+    _claim_override_stream!(spec, name, value)
     return value
 end
 
@@ -313,7 +361,7 @@ end
 """
     ElementMeta(; kind, spec_type, friendly_constructor, runtime_type, runtime_types,
                  runtime_variants, variant_examples, description, keywords, tracking_methods, contracts, analyses,
-                 parameters, example, construction_help)
+                 parameters, example, construction_help, rng_consumer=nothing)
 
 Single declarative metadata record for an element kind. Human-maintained
 element metadata should live in one `ElementMeta` declaration, usually through
@@ -338,6 +386,16 @@ struct ElementMeta
     parameters::NamedTuple
     example::Any
     construction_help::String
+    # The counter-RNG consumer class a kind's `rng_id` parameter belongs to
+    # (`:lumped_radiation`, `:particle_tunes`), `nothing` for a kind without a
+    # stream (R8b of docs/design/machine_description_followups.md, 2026-11-26,
+    # closing the audit's B-6a): the flexible form `ElementSpec{kind}(params)`,
+    # the door every construction route passes -- the snapshot reader, a
+    # placement override, the spec route -- claims an explicit `rng_id` under
+    # this class, so a reloaded id is held and a reload onto another class's
+    # id warns as the friendly constructor's claim would have. A kind declaring
+    # `rng_id` without a class fails `validate_element_metadata`.
+    rng_consumer::Union{Nothing,Symbol}
 end
 
 function ElementMeta(; kind::Symbol, spec_type, friendly_constructor=nothing,
@@ -346,7 +404,7 @@ function ElementMeta(; kind::Symbol, spec_type, friendly_constructor=nothing,
                      description="", keywords=Symbol[],
                      tracking_methods=DataType[], contracts=DataType[], analyses=DataType[],
                      parameters=NamedTuple(), example=nothing,
-                     construction_help="")
+                     construction_help="", rng_consumer=nothing)
     method_vec = DataType[tracking_methods...]
     runtime_map = _runtime_types_dict(runtime_type, runtime_types, method_vec)
     return ElementMeta(
@@ -367,6 +425,7 @@ function ElementMeta(; kind::Symbol, spec_type, friendly_constructor=nothing,
         parameters,
         example,
         String(construction_help),
+        rng_consumer === nothing ? nothing : Symbol(rng_consumer),
     )
 end
 
@@ -540,7 +599,30 @@ function register_element_meta!(meta::ElementMeta)
     meta.friendly_constructor === nothing ||
         (ELEMENT_META_BY_FRIENDLY_TYPE[meta.friendly_constructor] = meta)
     ELEMENT_META_BY_KIND[meta.kind] = meta
+    _install_class_form!(meta)
     return meta
+end
+
+"""
+    _install_class_form!(meta::ElementMeta)
+
+The MAD-X class form (R11 of `docs/design/machine_description_followups.md`,
+2026-11-26), `Ctor(template::ElementSpec{kind}; name, kwargs...)`, installed on
+the kind's friendly constructor by the registration itself -- not by a loop
+over the registry in a later file, which include order defeats (the aperture
+registers after `Elements.jl`) -- when the constructor is a type; the `:line`
+kind composes (`BeamLine`) and derives nothing. The body, `_derive_spec` in
+`src/elements/templates.jl`, is resolved when the form is called, so the
+registration order of the element files is immaterial. A re-registration of a
+kind replaces the method with its equal.
+"""
+function _install_class_form!(meta::ElementMeta)
+    ctor = meta.friendly_constructor
+    (ctor isa Type && meta.kind !== :line) || return nothing
+    kind = meta.kind
+    @eval (::Type{$ctor})(template::ElementSpec{K}; kwargs...) where {K} =
+        _derive_spec($ctor, $(QuoteNode(kind)), template, kwargs)
+    return nothing
 end
 
 """
@@ -659,6 +741,8 @@ Validation checklist:
 - the numeric type follows ONE rule for every kind (owner decision 2026-10-16): the compile constructor builds the runtime in `numeric_type(spec)`, the promotion of the stored parameters over a `Float64` floor for an untyped friendly constructor (a `Float32` input gives a `Float64` element, a dual or complex input widens it, nothing narrows) and the stored `numeric_type` for the `Spec{T}` form -- which every kind has, so every kind can sit in a `Float32` line; the typed form stores `_typed_spec_params(T; ...)` (floating-point inputs as `T`, `numeric_type = T`) and the untyped form routes `numeric_type=T` to it, storing no type itself (an untyped form that builds through its typed one drops the stored type again with `_floor_form`, so a dual or BigFloat placed later by a knob or a placement override still widens the element); declare the schema entry by splicing `_PLACEMENT_PARAMS...` (or `numeric_type=_PLACEMENT_PARAMS.numeric_type`); the runtime struct carries `T<:Number` as its one numeric type parameter, from which `_required_beam_eltype` (`src/track/Track.jl`) derives the beam element type the kind requires, so a task refuses a beam of another type by name; the suite pins the derived set against the registry;
 - declare the cross-backend rounding class on the runtime type (`_cross_backend_rounding`, `CrossBackendRounding` in `src/track/Track.jl`): for each of the six coordinates `:untouched`, `:bitwise` (written by single IEEE operations or arithmetic exact under any FMA fusion) or `:ulp` with a bound in ulps of the coordinate's scale and a `why` naming the operations; the device fuses `a b + c` into one FMA and its libm differs from the host's on transcendentals, so anything else is `:ulp`; there is no default, and the suite's "Cross-backend rounding classes" testset derives the set of types that must declare and measures every registry example against its declaration (the measurement wins);
 - declare the placement keys by splicing `_PLACEMENT_PARAMS...`, or through `_placement_param(:key; meaning=...)` where the kind has more to say about one: `validate_element_metadata` holds every placement entry to the table's unit, default and alternatives, compares EVERY declared default (the example's or not) with the map omitting the parameter compiles to, requires a Symbol or type default to lie within its `alternatives`, and refuses empty descriptions, keywords, meanings and construction help (F-168, F-171, F-172);
+- declare `rng_consumer = :class` on a kind whose schema declares `rng_id`, and only on such a kind (`validate_element_metadata` holds the equivalence): the flexible form `ElementSpec{kind}(params)` -- the snapshot reader's, the knob resolve's and the override routes' way in -- claims an explicit id under that class in the process registry, as the friendly constructor's `claim_rng_id!` does (R8b, 2026-11-26); the kind's own stored id (auto-assigned for `rng_id = 0`) passes every rebuild silently;
+- the class form `MyElementSpec(template; name, kwargs...)` is installed by the registration itself on a type `friendly_constructor` (R11, 2026-11-26; `_install_class_form!`, `_derive_spec`): keep the all-keyword form accepting every key the kind stores, which the suite's registry-derived tripwire (a no-change derivation of the `example` equals it up to the name) checks for every kind;
 - run `validate_element_metadata()`;
 - run `element_help(MyElementSpec)` and `element_help(:my_element)`;
 - smoke-test execution through `TrackingTask`.
@@ -806,14 +890,87 @@ at compile only when `T` can hold it, so the typed form is the precision the
 caller spelled, never a promotion.
 """
 function _typed_spec_params(::Type{T}; kwargs...) where {T}
-    params = Dict{Symbol,Any}(Symbol(k) => _as_numeric_type(T, v) for (k, v) in pairs(kwargs))
+    params = Dict{Symbol,Any}(Symbol(k) => _as_numeric_type(T, v, Symbol(k)) for (k, v) in pairs(kwargs))
     params[:numeric_type] = T
     return params
 end
-_as_numeric_type(::Type{T}, v::AbstractFloat) where {T} = T(v)
-_as_numeric_type(::Type{T}, v::Tuple) where {T} = map(x -> _as_numeric_type(T, x), v)
-_as_numeric_type(::Type{T}, v::AbstractArray{<:AbstractFloat}) where {T} = T.(v)
-_as_numeric_type(::Type{T}, v) where {T} = v
+
+"""
+    _as_numeric_type(T, v[, key])
+
+The typed form's conversion of one stored value to `T` (`_typed_spec_params`;
+the snapshot reader's re-narrowing by a lattice's `eltype`): a floating-point
+scalar, tuple or array is converted, anything else is stored as given. A value
+WIDER than `Float64` (a `BigFloat`) is converted only when `T` holds it,
+`_numeric_type_holds(T, typeof(v))`, and refused by name otherwise -- the
+parameter `key` when the caller knows it, the two types and the two remedies
+(R6 of docs/design/machine_description_followups.md, owner decision 2026-11-26,
+closing the audit's B-11): narrowing a `Float64` literal to `Float32` is what
+every `Float32` user wants (they type `0.7`, not `0.7f0`) and the suite pins
+it, while a `BigFloat` reaching a `Float64` element is deliberate by
+construction and the conversion would drop its digits silently. The lattice's
+numeric-type tripwire applies the same predicate to a typed spec's merged
+values (`_lattice_check_params_eltype`, `_lattice_check_line_eltype`), so every
+route into a `Lattice` -- an in-place override, `with_overrides`, `spec.L =
+big"..."`, the flexible form, the snapshot reader -- refuses with one message.
+A dual (a `Real` that is not an `AbstractFloat`) is stored as given and
+converts at compile only where `T` can hold it, unchanged.
+"""
+function _as_numeric_type(::Type{T}, v::AbstractFloat, key=nothing) where {T}
+    _numeric_type_holds(T, typeof(v)) || throw(ArgumentError(_numeric_type_refusal(T, typeof(v), key)))
+    return T(v)
+end
+_as_numeric_type(::Type{T}, v::Tuple, key=nothing) where {T} = map(x -> _as_numeric_type(T, x, key), v)
+function _as_numeric_type(::Type{T}, v::AbstractArray{<:AbstractFloat}, key=nothing) where {T}
+    _numeric_type_holds(T, eltype(v)) || throw(ArgumentError(_numeric_type_refusal(T, eltype(v), key)))
+    return T.(v)
+end
+_as_numeric_type(::Type{T}, v, key=nothing) where {T} = v
+
+"""
+    _numeric_type_holds(T, V) -> Bool
+
+Whether a typed element of numeric type `T` may store a value of floating-point
+type `V` (R6): yes when `V` is at most `Float64` wide (`precision(V) <=
+precision(Float64)`: `Float16`, `Float32`, `Float64`, so a `Float64` narrows
+into a `Float32` element as every `Float32` user wants), or when `T` is a
+floating-point type at least as wide as `V` (a `BigFloat` into a `BigFloat`
+element), or when `T` is not a floating-point type at all (a dual element type
+converts as it always did). A `BigFloat` into a `Float64` or `Float32` element
+is the refused case.
+"""
+function _numeric_type_holds(::Type{T}, ::Type{V}) where {T,V}
+    V <: AbstractFloat || return true
+    precision(V) <= precision(Float64) && return true
+    T <: AbstractFloat || return true
+    return precision(T) >= precision(V)
+end
+_numeric_type_refusal(::Type{T}, ::Type{V}, key) where {T,V} =
+    "numeric_type = $(T) cannot hold " * (key === nothing ? "a" : "parameter `$(key)`'s") *
+    " $(V) value without losing digits ($(precision(V)) significand bits against " *
+    "$(precision(T))): a typed element never narrows a value wider than Float64 (R6, " *
+    "2026-11-26). Use the untyped form, which promotes to $(V), or numeric_type = $(V)."
+
+"""
+    _widest_float_type(v) -> Union{Nothing,Type}
+
+The widest floating-point type among a stored value's entries (a scalar, a
+tuple or an array; nested tuples descended), `nothing` when it holds no float:
+what the lattice's numeric-type tripwire hands `_numeric_type_holds` for a typed
+element's merged parameters.
+"""
+_widest_float_type(v::AbstractFloat) = typeof(v)
+_widest_float_type(v::AbstractArray{<:AbstractFloat}) = eltype(v)
+function _widest_float_type(v::Union{Tuple,AbstractArray})
+    W = nothing
+    for x in v
+        w = _widest_float_type(x)
+        w === nothing && continue
+        W = W === nothing || precision(w) > precision(W) ? w : W
+    end
+    return W
+end
+_widest_float_type(v) = nothing
 
 """
     _as_number_or_expression(T, x)
@@ -1131,6 +1288,12 @@ function element_help(query; io::IO=stdout)
     println(io, "Construction:")
     help = construction_help(T)
     println(io, isempty(help) ? "  No construction_help is registered." : _indent_lines(help, "  "))
+    class_ctor = _element_help_class_form_constructor(T)
+    class_ctor === nothing || println(io, "Class form: ", nameof(class_ctor), "(template::ElementSpec{:",
+        kind_label, "}; name = \"...\", kwargs...) ",
+        "derives a new spec of this kind from a template (MAD-X `QF: Q, K1 = 1.0`): a keyword replaces ",
+        "its key, a named strength its slot in the stored tuple; the kind, the numeric type and the ",
+        "name are checked by name. See the docstring of ", nameof(class_ctor), ".")
 
     schema = parameter_schema(T)
     println(io, "Parameters:")
@@ -1163,6 +1326,14 @@ function element_help(query; io::IO=stdout)
     println(io, "  example_spec(", label, ")")
     println(io, "  construction_help(", label, ")")
     return nothing
+end
+
+"""The friendly constructor carrying the class form for the kind `T` belongs to (`_install_class_form!`): a type, `:line` excepted; `nothing` otherwise."""
+function _element_help_class_form_constructor(T::Type)
+    meta = _element_meta_or_nothing(T)
+    meta === nothing && return nothing
+    ctor = meta.friendly_constructor
+    return ctor isa Type && meta.kind !== :line ? ctor : nothing
 end
 
 _element_help_target(spec::AbstractElementSpec) = typeof(spec)
@@ -1624,6 +1795,17 @@ function _validate_element_metadata(; throw_on_error::Bool=false)
         end
 
         schema = parameter_schema(T)
+        # R8b (2026-11-26): a kind declaring `rng_id` declares the consumer
+        # class its claims go under, and only such a kind does, so the flexible
+        # form's claim (`_claim_spec_stream!`) cannot miss a stream-holding kind.
+        if haskey(schema, :rng_id)
+            meta.rng_consumer === nothing && push!(errors,
+                "ElementMeta $(meta.kind) declares an rng_id parameter but no rng_consumer class " *
+                "(the flexible form claims an explicit id under it)")
+        elseif meta.rng_consumer !== nothing
+            push!(errors, "ElementMeta $(meta.kind) declares rng_consumer = $(meta.rng_consumer) " *
+                          "but no rng_id parameter")
+        end
         for (key, pmeta) in pairs(schema)
             if pmeta isa ParamMeta
                 # The unit is drawn from a controlled vocabulary, for the same
