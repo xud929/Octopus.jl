@@ -18,7 +18,7 @@ Environment: OCTOPUS_REQUIRE_GPU_CONTRACT=1 makes a CUDA skip fatal.
 
 The gate's CUDA arm runs this script with the GPU leg required (the testset
 "CUDA-requiring validation scripts run in the gate's CUDA arm" in
-test/runtests.jl reads the line below; validation/README.md):
+the suite reads the line below; validation/README.md):
 
 GATE-CUDA-ARM: env OCTOPUS_REQUIRE_GPU_CONTRACT=1 ; verdict "cuda_status = passed"
 =#

@@ -118,7 +118,7 @@ effectiveness test at the consumer boundary.
 *Remark (2026-10-15, review of stage 1, F3).* One new name did land with
 the option: the exported metadata query `run_artifact_option_schema()`,
 which the suite's schema-export tripwire requires ("every public
-configuration schema is exported", `test/runtests.jl`: every
+configuration schema is exported", `test/suite/core.jl`: every
 `*_option_schema` binding of the module must be exported) and which D2 did
 not foresee; no reader name was added. The option's declared consumer was
 the `:strong_strong_output` receipt, which carried `record_turn_modulation`

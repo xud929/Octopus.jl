@@ -58,7 +58,7 @@ Compare completed runs with
 The gate's CUDA arm runs the GPU backend at a reduced size under its own tag
 and removes the files it wrote, so a gate run never sits beside a study's arms
 (the testset "CUDA-requiring validation scripts run in the gate's CUDA arm" in
-test/runtests.jl reads the line below; validation/README.md):
+the suite reads the line below; validation/README.md):
 
 GATE-CUDA-ARM: env OCTOPUS_OPT_BACKEND=gpu OCTOPUS_OPT_TAG=cuda_arm_gate OCTOPUS_OPT_TURNS=4 OCTOPUS_OPT_NPART=2000 OCTOPUS_OPT_GRID=32 OCTOPUS_OPT_NSLICES=5 OCTOPUS_OPT_TIMING_FROM=2 ; verdict "cuda_arm_gate" ; outputs result/pic_option_cuda_arm_gate.tsv result/pic_option_cuda_arm_gate.meta.tsv result/pic_option_cuda_arm_gate.h5
 

@@ -23,7 +23,7 @@ Run (production point):
 Do not run this while another job is using the GPU.
 
 Not run by the gate's CUDA arm (the testset "CUDA-requiring validation scripts
-run in the gate's CUDA arm" in test/runtests.jl reads the line below): a
+run in the gate's CUDA arm" in the suite reads the line below): a
 CUPTI-profiled fork of the strong-strong harness frozen at the paper's
 production point, whose drift from the harness is priced in the ledger
 (comprehensive audit 2026-10-18, F-201).

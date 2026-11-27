@@ -1,9 +1,12 @@
 # Test Lanes: the Fast Checkpoint and the Full Gate
 
-> **Status: implemented (2026-08-13).** Mechanism in `test/runtests.jl` (the
-> lane preamble, the `_lane_gate` guards, the accounting banner). This note
-> records the measurements that shaped it, the decision matrix for when the
-> full gate is mandatory, and the rules that keep a partial run honest.
+> **Status: implemented (2026-08-13); the suite split into files with
+> `only=<file>` selection on 2026-11-27.** Mechanism in `test/runtests.jl`
+> (the driver: the lane preamble, `only=`, the layout tripwire, the
+> accounting banners) and the `_lane_gate` guards inside the files of
+> `test/suite/`. This note records the measurements that shaped the lanes,
+> the decision matrix for when the full gate is mandatory, the rules that
+> keep a partial run honest, and (section 5) the split's state.
 
 ## 1. What exists
 
@@ -19,8 +22,25 @@
   `Core.Box` sweep, knob round-trips) and the whole population of cheap pins
   where the audit history says regressions actually hide.
 
-An unknown lane name is an **error**, never a silent fall-through to full: a
-typo must not produce a vacuous verdict. A fast run prints one loud
+- **`only=<file>[,<file>]`** (`Pkg.test(test_args=["only=artifact_observers"])`,
+  since 2026-11-27): `core.jl` -- the structural sweeps every run executes --
+  plus the named files of `test/suite/`, in the driver's include order, the
+  files not run named in a banner at the end; a checkpoint exactly as the
+  fast lane is, and the two combine (`lane=fast` inside the selected files).
+  `only=core` is the smoke run. What makes a selection trustworthy is the
+  layout the driver's first testset enforces on every run: the directory is
+  the include list, block titles and column-0 helper names are unique across
+  the files, and no file reaches for a helper another file defines,
+  `common.jl` excepted -- so a file runs under `only=` in the state the full
+  lane gives it, but for what earlier files leave behind in the process (a
+  registry claim, a result file), which only the full lane sees. The files,
+  the parser they are read through (`test/suite_structure.jl`), the mover
+  (`test/move_testsets.jl`) and the measurements are in
+  [`../history/suite_split_2026_11_27.md`](../history/suite_split_2026_11_27.md).
+
+An unknown lane name, an unknown file name or any other argument is an
+**error**, never a silent fall-through to full: a typo must not produce a
+vacuous verdict. A fast run prints one loud
 `LANE SKIP` line per skipped section as it skips it, and ends with a banner
 naming everything skipped and stating that the full gate is still owed. A
 skipped check that vanishes silently is the F2 failure mode; the banner is
@@ -45,8 +65,8 @@ either. So:
 
 The registered sections were the 13 measured heavyweights at first landing
 (2026-08-13); the list lives in the `_lane_gate` call sites and nowhere else
-(no second hand-copy; `grep -o '_lane_gate("[^"]*"' test/runtests.jl | sort -u`
-lists them, 17 titles at 2026-10-22).
+(no second hand-copy; `grep -oh '_lane_gate("[^"]*"' test/suite/*.jl | sort -u`
+lists them, 17 titles at 2026-10-22, the same 17 after the 2026-11-27 split).
 Membership is a judgment renewed by measurement, not a property a tripwire
 can check: when a new testset lands, the question "does it belong behind a
 gate?" is part of its review, and this note's numbers are the precedent.
@@ -82,7 +102,7 @@ following change classes no amount of fast-lane green substitutes — each row i
 | symbol removal/rename or arity change | full gate, after a repo-wide grep | U3-2 capped 4 of 12 launches; U1-6 left 4 stale call sites in the sibling file |
 | public config fields, solver/task options, observers, schedules | full gate | the "passes alone, fails in the suite" class (U3-2, U5-1); config-effectiveness contracts live in the heavy sections the fast lane skips |
 | element tracking kernels, `compile_runtime`, coordinate conversions | full gate | physics contracts and backend-consistency checks are skipped by the fast lane |
-| test infrastructure itself (gates, lanes, `runtests.jl` structure) | full gate | F2 again: a broken gate is the worst defect, because it silences every other one |
+| test infrastructure itself (gates, lanes, the driver, the layout of `test/suite/`) | full gate | F2 again: a broken gate is the worst defect, because it silences every other one |
 | markdown-only, DERIVED: `git diff --name-only` lists only `.md` files and none of them is `docs/registry_snapshot.md` | fast lane on the final tree (owner decision 2026-09-03) | the classification is read from the diff, not claimed; the only docs checks the suite has -- the snapshot compare and the `AGENTS.md` source-map tripwire, both in "Architecture integrity" -- run in the fast lane, so the full gate added nothing but insurance against misclassification, and the derivation removes the misclassification |
 | docs plus anything else (a `.jl` comment, `ci.yml`, the snapshot) | full gate (before the push, the bar stated above) | "it's only docs" is a claim; the derived row above is the check, and a diff outside it is not docs-only (the 2026-09-03 AGENTS.md restructure itself touched four `.jl` files and `ci.yml`) |
 
@@ -105,17 +125,41 @@ iteration path; the fast lane sits between probes and the gate.
    tree before every push (owner decision 2026-09-04) outside the derived
    markdown-only class of section 3, and that class still runs the fast lane
    on the final tree.
-4. **Unknown lanes error.** `lane=fats` must die, not silently run full.
+4. **Unknown lanes error.** `lane=fats` must die, not silently run full; so
+   must an unknown `only=` name and any other argument.
+5. **A selection names what it left out.** An `only=` run ends with the
+   suite files it did not run, in the lane banner's form; a selection whose
+   banner is missing is the same bug as a missing lane banner, and a report
+   of such a run carries the file names it ran.
 
-## 5. Deliberately not built (yet)
+## 5. Built on 2026-11-27, and what remains
 
-- **`only=<section>` positive selection** — running one named section plus
-  the structural tripwires. Worth building when `runtests.jl` is next
-  reorganized; today the script-mode probe workflow covers targeted
-  iteration, and wrapping all 184 testsets in named sections is a larger
-  restructuring than the lane-gate mechanism justified.
-- **A `smoke` lane** (validators + docs checks only, ~5 min) — blocked on the
-  same reorganization: the structural checks are scattered through the file,
-  so positive selection needs section membership everywhere.
-- **Splitting `runtests.jl` into files** — the natural v2, at which point
-  lane membership becomes file membership and the `only=` lane falls out.
+The three items this section listed as "deliberately not built (yet)" since
+2026-08-13 -- `only=<section>` selection, a smoke lane, and splitting
+`runtests.jl` into files -- landed together on 2026-11-27, in the order the
+last of them predicted: the split made lane membership file membership and
+`only=` fell out of it. The record is
+[`../history/suite_split_2026_11_27.md`](../history/suite_split_2026_11_27.md),
+with the measurements that priced the decision: the gate at 100 minutes
+(2026-11-27, CUDA active, 519 rows) against the 24.5 the per-push rule was
+set on (2026-09-04), the fast lane at 41, the testset times summing to 98 of
+the 100, and three subprocess-bound sections (the MPI seam, every example
+script, the CUDA validation arm) holding 44 of them.
+
+- **`only=<file>`** selects suite files; `core.jl` always runs, so `only=core`
+  IS the smoke lane: the layout tripwire and the twelve structural sweeps,
+  3 min 29 s wall on the GPU node at first landing, 2 min 09 s of it
+  "Architecture integrity".
+- **The split is staged.** `core.jl` and the first area file
+  (`artifact_observers.jl`, 23 testsets with their 12 fixtures) are peeled;
+  `legacy.jl` holds the other 451 testsets and 17 lane-gated blocks in the
+  single file's order. Each further peel moves one area by title through
+  `test/move_testsets.jl`, with its helpers, under the layout tripwire, as
+  its own gated push; the open row of `../todo.md` lists the areas with the
+  weights a keyword pass over the gate log gave them. Hidden order
+  dependence between regrouped testsets is what each peel's full gate
+  measures; the split's own reordering found one (the U12-8 control's
+  class-form leak, section 2 of the record), the first peel none.
+- **Not built, still:** running the three subprocess-bound sections beside
+  the in-process suite, the one lever left on the gate's own length. The
+  split shortens every checkpoint before the gate and nothing after it.

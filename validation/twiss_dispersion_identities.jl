@@ -63,7 +63,7 @@ the suite's pin as multiplier, "analysis normalizer" as argmax).
 Printed: one `TW-IDENT` line per identity in stable order, two
 `TW-NORMALIZER` lines, one `TW-TENTH` line (the machine count of identity
 rows whose ratio at the frozen `c` exceeds one tenth, one quarter (the
-re-open rule beside `_ST6_PIN` in test/runtests.jl), one half (the suite's
+re-open rule beside `_ST6_PIN` in the suite), one half (the suite's
 pin) and one (the contract's own gate), with the rows above one tenth named
 in stable order; the counts the freezing-set decision of 2026-09-14 reads,
 hand-read before), `TW-DIAG`, `TW-KINDS`, and one `TW-DIGEST` line (the
@@ -110,7 +110,7 @@ const IDENT_MAPS4 = parse(Int, get(ENV, "OCTOPUS_TWISS_IDENTITY_MAPS4", "20"))
 # metric key (contract `_identity_contract_reported_rows!`: the analysis's
 # U_6 residual at multiplier 1, value / rho_M1 and value / (rho_M1 cond(U_6)),
 # the largest over the fixtures), and the identity row whose multiplier the
-# suite pins the metric against (test/runtests.jl, the stage 6 testset). The
+# suite pins the metric against (the stage 6 testset). The
 # contract records no raw value and no argmax for them.
 const _IDENT_NORMALIZER_ROWS = (
     ("u6_reconstruction", :normalizer_ratio_u6_reconstruction, :r_u6_reconstruction),

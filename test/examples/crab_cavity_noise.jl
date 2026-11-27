@@ -665,7 +665,7 @@ default_case_name = "crab_noise_$(noise_rule_kind)_x$(scale_tag(noise_scale))" *
                     (use_radiation ? "" : "_norad")
 
 # The default task seed, ONE constant the run reads and the suite derives: the
-# multi-process harness testset (test/runtests.jl, "The developer harnesses run
+# multi-process harness testset (the suite, "The developer harnesses run
 # divided under an MPI launcher") reads this line by its text to find rank 0's
 # artifact directory, which is named by the seed, instead of copying the number
 # (2026-10-16 neighbour audit, U6-6). Keep the form `const HARNESS_DEFAULT_SEED

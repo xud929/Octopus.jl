@@ -90,7 +90,7 @@ at EIC_EMIT_OUT.
 
 The gate's CUDA arm runs this benchmark at a reduced size (the testset
 "CUDA-requiring validation scripts run in the gate's CUDA arm" in
-test/runtests.jl reads the line below; validation/README.md):
+the suite reads the line below; validation/README.md):
 
 GATE-CUDA-ARM: env OCTOPUS_USE_GPU=1 OCTOPUS_TURNS=2 OCTOPUS_N_MACRO=2000 EIC_TAG=cuda_arm_gate EIC_EMIT_OUT=@TMP@/eic_emit.tsv ; verdict "MESHSCAN " ; outputs result/cuda_arm_gate.h5
 =#

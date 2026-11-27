@@ -82,27 +82,40 @@ REPL-level checks, from a session in either mode:
 
 ## Iterating on one testset
 
-The suite is one file, `test/runtests.jl`, selected only by lane; there is no
-`only=` filter (`../design/testing_lanes.md`, section 5). The recorded probe
-workflow:
+The suite is `test/runtests.jl`, the driver, plus the files under
+`test/suite/` it includes (`../design/testing_lanes.md`, section 1). Three
+grains, from fine to coarse, none of them a gate:
 
-1. Probes are scratch `.jl` files, not `-e` one-liners, kept outside the
-   repository or under the git-ignored `result/`.
-2. To iterate on a testset, copy its `@testset` block plus any file-level
-   helpers it uses (`_HAS_CUDA`, `_lane_gate`, shared constants) into a
-   scratch file that starts `using Octopus, Test`, and run it in package mode
-   with `julia --project=. --threads=4 scratch.jl`, so it takes the same
-   extension branches the suite does.
-3. If the block needs a test-only dependency, stack a scratch environment that
-   holds it: `JULIA_LOAD_PATH="<repo>:<scratch-env>:@stdlib"`.
-4. A standalone-green probe is reported as standalone. It never substitutes
-   for the fast lane, and the fast lane never substitutes for the gate.
+1. One block: `julia --project=. --threads=4 test/run_extracted_testsets.jl "<title>" ...`
+   cuts the named testsets out of the suite's files through the parser, with
+   `common.jl` and the file-level helpers each block reaches for
+   (transitively, test observers' methods included), and runs them in
+   package mode: seconds after the package loads. State an earlier testset
+   of the same file leaves behind is absent here. A block that needs a
+   test-only dependency the main project lacks (`ForwardDiff`, `Symbolics`,
+   `MPI`) runs under a scratch environment that holds it:
+   `JULIA_LOAD_PATH="<repo>:<scratch-env>:@stdlib"`.
+2. One file: `Pkg.test(test_args=["only=<file>"], julia_args=["--threads=4"])`
+   runs `core.jl` (the structural sweeps) plus the named files, the layout
+   tripwire first, and names the files it did not run; `only=core` is the
+   smoke run (about three and a half minutes on the GPU node).
+3. The fast lane, then the full gate (next section).
+
+A testset that changes file goes through `test/move_testsets.jl` (by title,
+with its helpers by name; it reports the helpers left across the cut); the
+driver's tripwire refuses a file that reaches for another file's helper, so
+a helper two files need lives in `common.jl`. Probes stay scratch `.jl`
+files outside the repository or under the git-ignored `result/`; a
+standalone-green probe is reported as standalone, and none of the three
+grains substitutes for the fast lane, nor the fast lane for the gate.
 
 ## Lanes and the gate
 
 The fast lane skips the registered heavyweight sections, prints one loud
 `LANE SKIP` line per skipped section, and ends with a banner naming what it
-owes; an unknown lane name is an error. Green fast runs accumulate no
+owes; an unknown lane name is an error. An `only=` run (`core.jl` plus the
+named suite files) ends with the files it did not run and stands exactly
+where the fast lane stands. Green fast runs accumulate no
 authority: the full gate runs on the final tree of the batch being pushed
 (owner decision 2026-09-04 -- commits may accumulate locally and the gate
 covers the tree they add up to, so a batch costs one gate rather than one per

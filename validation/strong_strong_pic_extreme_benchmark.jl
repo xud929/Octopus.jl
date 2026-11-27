@@ -36,7 +36,7 @@ The gate's CUDA arm runs this benchmark at a reduced size, 20 turns (the
 minimum its steady-state window needs) of 4000 macroparticles per beam, so the
 driver, the harness's CUDA path and the summary's launch-family provenance are
 executed by the gate rather than by nobody (the testset "CUDA-requiring
-validation scripts run in the gate's CUDA arm" in test/runtests.jl reads the
+validation scripts run in the gate's CUDA arm" in the suite reads the
 line below; validation/README.md). Its timings at that size are not a
 performance record.
 

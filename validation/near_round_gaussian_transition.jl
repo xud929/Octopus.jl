@@ -39,7 +39,7 @@ sweep's sampling does not reach them).
 
 The gate's CUDA arm runs this script with the parity leg required (the
 testset "CUDA-requiring validation scripts run in the gate's CUDA arm" in
-test/runtests.jl reads the line below; validation/README.md):
+the suite reads the line below; validation/README.md):
 
 GATE-CUDA-ARM: env OCTOPUS_REQUIRE_GPU_CONTRACT=1 ; verdict "CUDA parity Float64: max relative error"
 

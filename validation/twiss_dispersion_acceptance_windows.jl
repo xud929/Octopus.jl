@@ -10,8 +10,9 @@
 # (2) every PROVISIONAL constant's window by the one-tenth / ten rule, fixture names DERIVED from the data;
 # (3) the rejected side of every `c eps kappa` check family of the stage 4a testsets;
 # (4) the paper cross-checks (trial-011 crab eta_+, the N15 / N17 controls, the DBA coasting eta).
-# The fixture builders are the suite's own `_st3_` / `_st4_` helpers, extracted from test/runtests.jl
-# by NAME at run time (never copied by hand); nothing here is a test lane.
+# The fixture builders are the suite's own `_st3_` / `_st4_` helpers, extracted from the suite's files
+# (test/suite/, through the suite's parser test/suite_structure.jl) by NAME at run time (never copied by
+# hand); nothing here is a test lane.
 using Octopus, LinearAlgebra, Random, Printf
 using Octopus: determined_value, is_determined
 const REPO = normpath(joinpath(@__DIR__, ".."))
@@ -25,28 +26,36 @@ dv(d) = is_determined(d) ? determined_value(d) : nothing
 st(d) = is_determined(d) ? "unique" : string(d.status, ":", d.reason)
 
 # --- the suite's fixture helpers, extracted by name -------------------------------------------------
-const RUNTESTS = readlines(joinpath(REPO, "test", "runtests.jl"))
-"Lines of the top-level definition that starts at a line beginning with one of `starts` (a one-liner or a `function ... end` block)."
-function definition_lines(starts...)
-    i = findfirst(l -> any(s -> startswith(l, s), starts), RUNTESTS)
-    i === nothing && error("definition not found in runtests.jl: $(starts)")
-    startswith(RUNTESTS[i], "function ") || return RUNTESTS[i:i]
-    j = findnext(==("end"), RUNTESTS, i)
-    return RUNTESTS[i:j]
+# Through the suite's own parser (test/suite_structure.jl, the one reader of a suite file since the
+# 2026-11-27 split): the units of every file under test/suite/, so a helper keeps being found when a
+# peel moves it to another file. Until the split this read test/runtests.jl by line, which the split
+# emptied of helpers.
+include(joinpath(REPO, "test", "suite_structure.jl"))
+const SUITE_UNITS = let dir = joinpath(REPO, "test", "suite")
+    [(file=f, lines=split(read(joinpath(dir, f), String), '\n'; keepempty=true),
+      units=suite_units(read(joinpath(dir, f), String); filename=f))
+     for f in sort(filter(f -> endswith(f, ".jl"), readdir(dir)))]
+end
+"The text of the suite's top-level definition named `name` (exactly one across the suite's files)."
+function definition_text(name)
+    hits = [(s, u) for s in SUITE_UNITS for u in s.units if u.kind === :def && name in unit_names(u)]
+    length(hits) == 1 || error("definition $(name): $(length(hits)) in the suite's files")
+    return unit_text(hits[1][1].lines, hits[1][2])
 end
 function fixture_prelude()
-    pieces = String[]
-    for name in ("const _ST3_J2 =", "_st3_rot(mu::Real)", "function _st3_block_diag(", "function _st3_crab_map(",
-                 "_st3_crab_kc(;", "function _st3_defective_spectator(", "_st3_indefinite_6d() =", "_st3_definite_pair_6d() =")
-        append!(pieces, definition_lines(name))
-    end
-    i = findfirst(l -> startswith(l, "const _ST4_SEED"), RUNTESTS)
-    j = findnext(l -> startswith(l, "@testset \"Dispersion routes:"), RUNTESTS, i)
-    append!(pieces, RUNTESTS[i:j-1])
+    pieces = [definition_text(n) for n in ("_ST3_J2", "_st3_rot", "_st3_block_diag", "_st3_crab_map",
+                                           "_st3_crab_kc", "_st3_defective_spectator", "_st3_indefinite_6d",
+                                           "_st3_definite_pair_6d")]
+    # the stage 4 helpers: every definition from `_ST4_SEED` to the first "Dispersion routes:" testset of its file
+    s = only(s for s in SUITE_UNITS if any(u -> u.kind === :def && "_ST4_SEED" in unit_names(u), s.units))
+    i = findfirst(u -> u.kind === :def && "_ST4_SEED" in unit_names(u), s.units)
+    j = findnext(u -> u.kind === :testset && startswith(u.name, "Dispersion routes:"), s.units, i)
+    j === nothing && error("no \"Dispersion routes:\" testset after _ST4_SEED in $(s.file)")
+    append!(pieces, [unit_text(s.lines, u) for u in s.units[i:j-1] if u.kind in (:def, :method)])
     return join(pieces, "\n")
 end
 const PRELUDE = fixture_prelude()
-include_string(Main, PRELUDE, "runtests_prelude")
+include_string(Main, PRELUDE, "suite_prelude")
 
 # --- loaders --------------------------------------------------------------------------------------------
 function load_oracle_maps(path)

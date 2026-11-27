@@ -59,7 +59,7 @@ Environment
 
 The gate's CUDA arm runs this script with the leg required (the testset
 "CUDA-requiring validation scripts run in the gate's CUDA arm" in
-test/runtests.jl reads the line below; validation/README.md):
+the suite reads the line below; validation/README.md):
 
 GATE-CUDA-ARM: env OCTOPUS_REQUIRE_GPU_CONTRACT=1 OCTOPUS_LATTICE_N=512 OCTOPUS_LATTICE_TURNS=2 OCTOPUS_LATTICE_LONG=200 ; verdict "backend-consistent on CPU/CPU and CPU/CUDA" ; outputs result/lattice_cells.tsv
 """

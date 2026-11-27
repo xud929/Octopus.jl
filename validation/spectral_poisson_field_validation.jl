@@ -26,7 +26,7 @@ approximate: the metric is invariant to scaling the reference by 100%.
 
 So "median rel error 1.3e-3" is a statement about SHAPE and nothing else. The
 absolute normalisation is a separate claim, and it is checked separately, in
-`test/runtests.jl`'s "Spectral field absolute normalization is derived, not
+the suite's "Spectral field absolute normalization is derived, not
 fitted" testset -- which exists for this reason. Read the two together.
 
 Run from the project root:

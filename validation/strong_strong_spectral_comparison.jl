@@ -45,7 +45,7 @@ without a functional device.
 
 The gate's CUDA arm runs the CUDA backend at a reduced size (the testset
 "CUDA-requiring validation scripts run in the gate's CUDA arm" in
-test/runtests.jl reads the line below; validation/README.md):
+the suite reads the line below; validation/README.md):
 
 GATE-CUDA-ARM: env OCTOPUS_SPECTRAL_COMPARE_BACKEND=cuda OCTOPUS_SPECTRAL_COMPARE_N=4000 OCTOPUS_SPECTRAL_COMPARE_TURNS=2 OCTOPUS_SPECTRAL_COMPARE_NSLICES=5 OCTOPUS_SPECTRAL_COMPARE_GRID=64,256 OCTOPUS_SPECTRAL_COMPARE_FREE_GRID=24,24 OCTOPUS_SPECTRAL_COMPARE_OUTPUT=@TMP@/spectral_comparison ; verdict "backend = cuda"
 =#

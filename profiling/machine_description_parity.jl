@@ -114,7 +114,7 @@ no CUDA-plus-MPI mode to select.
 
 The gate's CUDA arm runs the deterministic case at a reduced size (the testset
 "CUDA-requiring validation scripts run in the gate's CUDA arm" in
-test/runtests.jl reads the line below; validation/README.md); its timings at
+the suite reads the line below; validation/README.md); its timings at
 that size are a run receipt, not a performance record:
 
 GATE-CUDA-ARM: env OCTOPUS_USE_GPU=1 OCTOPUS_PARITY_CASE=ws OCTOPUS_PARITY_N_MACRO=2000 OCTOPUS_PARITY_TURNS=2 OCTOPUS_PARITY_REPEATS=1 ; verdict "PARITY case=ws backend=cuda ranks=1 routes=tuple,control,lattice,machine runs=1 digests_equal=true"

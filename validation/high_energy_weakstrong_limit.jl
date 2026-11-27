@@ -55,7 +55,7 @@ keeps `domain_factor = 16` with the finer grid for its model-error record.
 
 The gate's CUDA arm runs this script with the CUDA spectral leg selected, at a
 reduced size (the testset "CUDA-requiring validation scripts run in the gate's
-CUDA arm" in test/runtests.jl reads the line below; validation/README.md):
+CUDA arm" in the suite reads the line below; validation/README.md):
 
 GATE-CUDA-ARM: env OCTOPUS_HIGH_ENERGY_SPECTRAL_CUDA=1 OCTOPUS_HIGH_ENERGY_N=4000 OCTOPUS_HIGH_ENERGY_NSLICES=3 OCTOPUS_HIGH_ENERGY_GRID=48 OCTOPUS_HIGH_ENERGY_SPECTRAL_GRID=63,255 OCTOPUS_HIGH_ENERGY_SPECTRAL_FREE_GRID=24,24 ; verdict "spectral_cuda_grid.limit_passed = true"
 =#

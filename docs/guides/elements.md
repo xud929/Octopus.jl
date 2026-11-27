@@ -125,8 +125,9 @@ docstrings of public objects.
      declaration changes.
 7. Confirm `element_help(MyElementSpec)` and `element_help(:my_element)` give a
    useful summary, and run `validate_element_metadata()`.
-8. Add a testset in `test/runtests.jl` (the suite is a single file; element
-   testsets sit near "Thin elements, markers and RBEND"). If the element adds
+8. Add a testset to the suite (`test/suite/`; element testsets sit in
+   `legacy.jl` near "Thin elements, markers and RBEND" until an elements file
+   is peeled off, `../design/testing_lanes.md` section 5). If the element adds
    differentiable parameters, raise the `metrics[:checked] >=` ratchet in the
    "Element parameter effectiveness" testset; it never fails on its own when
    parameters are added.

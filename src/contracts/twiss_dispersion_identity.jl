@@ -77,7 +77,7 @@ run 436 on e960ca8 red on the stage 6 one-tenth pins; the test-side fix",
 "Not fixed here, still carried"): a row whose ratio at its frozen `c`
 exceeds 0.25 in either measured arm or on the CI runner (whose per-row table
 the stage 6 testset prints) re-opens that row's measurement before the
-suite's one-half pin `_ST6_PIN` in test/runtests.jl trips: `c` moves only by
+suite's one-half pin `_ST6_PIN` (above the stage 6 testset, test/suite/) trips: `c` moves only by
 the H15 rule with a documented third-arm entry, or the row's kappa is
 re-examined; never a hand move. A slug missing here fails the contract by
 name; a key that is not a row fails it too.
@@ -163,7 +163,7 @@ The design note's ABSOLUTE benchmark pins, recorded and judged beside the
 `c eps kappa` rows: `:ohmi` (design row 465, (O2)-(O5) "identities to
 1e-12", applied to the three `k_ohmi_*` residual maxima), `:rolled_tune`
 (theory 13.10, the exact equal tune 0.0360896443733161 of the rolled FODO,
-the stage 3 pin 1e-13 of test/runtests.jl) and `:rolled_gram` (its Gram
+the suite's stage 3 pin 1e-13) and `:rolled_gram` (its Gram
 minimum 0.0838222432933016, pin 1e-12). `metrics[:absolute_pins_checked]`
 counts them.
 """
@@ -223,7 +223,7 @@ description(::Type{TwissDispersionIdentityContract}) =
 
 # ---------------------------------------------------------------------------
 # Fixtures (dossier H3, H8, H10). Recipes are those of validation/lattice_cells.jl
-# 68-87 and test/runtests.jl 4532-4545, 5352-5366; NST = 4, ORDER = 4.
+# 68-87 and the suite's `_st3_` / `_st4_` fixture helpers (test/suite/); NST = 4, ORDER = 4.
 
 """
     _identity_contract_dba_cell() -> Tuple
@@ -315,7 +315,7 @@ end
 Small builders of the manufactured diagnostic fixtures: the 2x2 rotation
 `R(mu) = [cos sin; -sin cos]` (eigenvalue `exp(-i mu)`), a block-diagonal
 assembly, and the canonical transformation `M_cal = M_zeta M_eta` of theory
-(D3) for a dispersion pair (test/runtests.jl 5305-5309, test-local there).
+(D3) for a dispersion pair (the suite's `_st4_mcal`, test-local there).
 """
 _identity_contract_rot(mu::Real) = [cos(mu) sin(mu); -sin(mu) cos(mu)]
 function _identity_contract_blockdiag(blocks::AbstractMatrix...)

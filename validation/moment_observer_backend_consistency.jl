@@ -19,7 +19,7 @@ Overrides: `OCTOPUS_MOMENT_CONSISTENCY_N` (default 100000),
 `OCTOPUS_MOMENT_CONSISTENCY_RTOL`.
 
 The gate's CUDA arm runs this script (the testset "CUDA-requiring validation
-scripts run in the gate's CUDA arm" in test/runtests.jl reads the line below;
+scripts run in the gate's CUDA arm" in the suite reads the line below;
 validation/README.md):
 
 GATE-CUDA-ARM: env OCTOPUS_MOMENT_CONSISTENCY_N=20000 ; verdict "passed = true"

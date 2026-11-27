@@ -74,7 +74,8 @@ rather than redefine one.
    literals until the 2026-10-20 fix batch, and a keyword-default drift on
    those constructors passed (2026-10-18 audit, F-169).
 5. Add coverage beside "The placeholder and deprecated policies actually run"
-   and "Configuration rejection" in `test/runtests.jl`.
+   and "Configuration rejection" in the suite (`test/suite/`, found by
+   title; `test/run_extracted_testsets.jl "<title>"` runs one).
 
 ## Finish
 

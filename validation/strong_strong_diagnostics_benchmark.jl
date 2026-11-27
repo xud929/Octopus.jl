@@ -31,7 +31,7 @@ happened wherever it was launched from.
 
 The gate's CUDA arm runs this benchmark at a reduced size (the testset
 "CUDA-requiring validation scripts run in the gate's CUDA arm" in
-test/runtests.jl reads the line below; see validation/README.md):
+the suite reads the line below; see validation/README.md):
 
 GATE-CUDA-ARM: env OCTOPUS_N_MACRO_ELE=4000 OCTOPUS_N_MACRO_PRO=4000 OCTOPUS_DIAGNOSTIC_BENCHMARK_TURNS=12 OCTOPUS_DIAGNOSTIC_BENCHMARK_SAMPLE_TURNS=4 OCTOPUS_DIAGNOSTIC_BENCHMARK_MODE=both OCTOPUS_RESULT_DIR=@TMP@ ; verdict "diagnostic_summary = " ; outputs result/pic_diagnostics_both_turn_times.tsv result/pic_diagnostics_both_summary.tsv
 

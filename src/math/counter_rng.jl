@@ -556,8 +556,9 @@ statistics are satisfied by any generator with good low-order behaviour
 whatever its round function: a Philox with the Weyl key bump removed, and a
 3-round variant, both pass a mean/variance/correlation gate comfortably
 (2026-08-05_b audit, U25-2, measured). Only a known-answer vector pins the
-*implementation*. Both `test/runtests.jl` and
-`validation/counter_rng_validation.jl` call this, so there is one copy of the
+*implementation*. Both the suite ("Philox4x32-10 matches the Random123
+known-answer vectors") and `validation/counter_rng_validation.jl` call this,
+so there is one copy of the
 vectors and one driver under test.
 """
 function philox4x32_self_test()

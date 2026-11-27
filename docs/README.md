@@ -87,10 +87,12 @@ predates this folder and stays top-level because `AGENTS.md` links it.)
 - [`testing_lanes.md`](design/testing_lanes.md) — the fast development lane
   (`Pkg.test(test_args=["lane=fast"])`): the measured time split behind the
   lane-gated heavyweight sections (13 at the 2026-08-13 measurement; the list
-  is the `_lane_gate` call sites in `test/runtests.jl`, 17 titles at
-  2026-10-22), the loud-skip accounting rules, and the
+  is the `_lane_gate` call sites in `test/suite/`, 17 titles at
+  2026-10-22), the loud-skip accounting rules, the
   decision matrix for change classes where only the full gate (CUDA active)
-  counts. The fast lane is a checkpoint, never a finish line.
+  counts, and since 2026-11-27 the suite's files under `test/suite/` with the
+  `only=<file>` selection and its layout tripwire. The fast lane and an
+  `only=` run are checkpoints, never a finish line.
 - [`multi_process_policy.md`](design/multi_process_policy.md) — the
   multi-process execution policy: why the resolved state is a slot on the CPU
   policy rather than a wrapper around it, why resolution is pure while
@@ -427,6 +429,17 @@ Procedures, one per task class, routed from the Task Routing table in
   the snapshot codec, the four targets of `theory/reference_ramp.md`
   measured (the suite and `validation/reference_ramp.jl`), the
   recompile cost, the neighbour audit, the gate and the push.
+- [`suite_split_2026_11_27.md`](history/suite_split_2026_11_27.md) — the
+  suite split into `test/runtests.jl` (the driver) and `test/suite/` (the
+  structural `core.jl`, the area files, `common.jl`, the single file's body
+  as `legacy.jl`): the measurements that priced it (the 100-minute gate
+  against the 24.5 the per-push rule was set on, the per-area weights, the
+  file-level helper census), the `only=<file>` selection, the layout
+  tripwire (directory = include list, unique titles and helpers, no
+  cross-file helper), the parser module behind the mover, the extracted
+  runner and the acceptance-windows script, the first peel (the run
+  artifact and the observers, 23 testsets), the `particle_id` reader
+  keyword with its red and green runs, the checkpoints and the gate.
 - [`audit_machine_description_compile_path1_2026_11_26.md`](history/audit_machine_description_compile_path1_2026_11_26.md)
   — the scoped neighbour audit of batch A: the call sites and sibling
   surfaces of each unit re-walked, the properties re-run on what the units

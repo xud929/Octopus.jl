@@ -2659,6 +2659,55 @@ on the knob, and pin the zero on the one that does not, as the suite's
 testsets now do; a cost claim about the recompile names the line it was
 measured on (4.7 ms per step on 162 entries, 55 us on four).
 
+## A suite file is addressed through the parser, not through its indentation
+
+The 2026-11-27 split of `test/runtests.jl` into `test/suite/` (record
+`history/suite_split_2026_11_27.md`) first cut blocks with a regex over
+column 0: a block from its opener to the first column-0 `end`. Measured
+against a stack of column-0 openers and closers, 24 places disagreed: the
+17 lane-gated testsets sit at column 0 INSIDE their `if _lane_gate(...)`,
+so the `if` would have closed at the testset's `end` and the
+`end # _lane_gate` line become an orphan, and several column-0 `end`s close
+indented openers (`const X = let ... end`, a testset whose body is
+outdented). `Meta.parseall` gives every top-level expression with its line,
+the comment run above it is the only thing to add, and a parse `:error` or
+`:incomplete` is loud. **Why:** indentation is a convention nobody checks,
+and a cut that trusts it moves half a block and reports success. **How to
+apply:** `test/suite_structure.jl` is the one reader of a suite file (the
+driver's layout tripwire, `test/move_testsets.jl`, the extracted runner and
+`validation/twiss_dispersion_acceptance_windows.jl` go through it); a tool
+that cuts code out of a file parses the file and re-parses both results
+before anything runs (the mover does). And a file that moves is grepped for
+by NAME across the whole tree, scripts included, before the move is called
+done: the acceptance-windows script read `test/runtests.jl` by path for its
+fixture helpers, nothing in the suite runs that script, and only the grep
+found it.
+
+## A restore written against yesterday's registration misses today's side effect
+
+The suite's U12-8 control (2026-09-07) registers a scratch element kind with
+`DriftSpec` as its friendly constructor and restores afterwards every
+container the registration wrote: four of them, derived from the registering
+function's source so that a fifth could not join unrestored. On 2026-11-26
+the registration gained a side effect that is not a container, the class
+form `(::Type{DriftSpec})(template::ElementSpec)` installed by `@eval`, and
+the control's restore was complete for the old registration and silent
+about the new one: every `DriftSpec(template)` after that block derived a
+`u12_8_probe`. Nothing failed, because in the single-file suite every
+consumer of the drift's class form happened to run before the control; the
+2026-11-27 split put the structural sweeps first and the next gate's fast
+lane was red 231 rows in (`history/suite_split_2026_11_27.md`, section 2).
+**Why:** a restore enumerates the effects it knows; a side effect added to
+the registration later is outside the enumeration, and a method is not a
+container. **How to apply:** when a registration or constructor gains a
+side effect, grep `test/` for every call that registers and restores it in
+the same commit and extend each restore (here `_install_class_form!` of the
+displaced meta); write the control that checks the restore from OUTSIDE the
+block (an `@eval`ed method is a world-age matter inside it); and treat a
+reorder of the suite -- a split, an `only=` run -- as the instrument that
+finds such leaks, which is one more reason for testsets that do not depend
+on their order.
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

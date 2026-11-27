@@ -76,7 +76,7 @@ selection that leaves a cache without its CPU reference is refused by name.
 
 The gate's CUDA arm runs this benchmark at a reduced size (the testset
 "CUDA-requiring validation scripts run in the gate's CUDA arm" in
-test/runtests.jl reads the line below; validation/README.md); its timings at
+the suite reads the line below; validation/README.md); its timings at
 that size are a run receipt, not a performance record:
 
 GATE-CUDA-ARM: env OCTOPUS_BENCH_N_MACRO=2000 OCTOPUS_BENCH_GRID=32 OCTOPUS_BENCH_SLICES=5 OCTOPUS_BENCH_TURNS=1 OCTOPUS_BENCH_REPEATS=1 OCTOPUS_BENCH_WARMUP_TURNS=1 OCTOPUS_BENCH_PROFILE_FASTEST=0 OCTOPUS_BENCH_RESULT_PATH=@TMP@/strong_strong_pic_benchmark.tsv ; verdict "BENCH-PHYSICS rows=14 consistent=14"

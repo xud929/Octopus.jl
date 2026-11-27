@@ -91,10 +91,15 @@ submodules. Every directory under `src/` has a bullet below; the suite checks.
 - `src/examples/`: the `Example` objects and the examples catalogue.
 - `ext/`: package extensions for the `[weakdeps]`, the one sanctioned
   boundary outside the module; core keeps a serial passthrough.
-- `test/runtests.jl`: the single suite. `test/examples/`: developer harnesses.
-  `examples/`: clean precedents. `validation/`: numerical checks and their
-  `README.md`. `profiling/`: opt-in benchmark drivers. `result/`: git-ignored
-  run output, never evidence.
+- `test/runtests.jl`: the suite's driver (the lanes, `only=`, the layout
+  tripwire, the include list); `test/suite/`: the suite's files, `core.jl`
+  the structural sweeps every run executes, one file per area, `common.jl`
+  the helpers two files share; `test/suite_structure.jl` the one parser of a
+  suite file; `test/move_testsets.jl` moves blocks between files;
+  `test/run_extracted_testsets.jl` runs one block. `test/examples/`:
+  developer harnesses. `examples/`: clean precedents. `validation/`:
+  numerical checks and their `README.md`. `profiling/`: opt-in benchmark
+  drivers. `result/`: git-ignored run output, never evidence.
 - `docs/`: `theory/` derives, `design/` decides, `guides/` instructs,
   `history/` records (frozen: add, never rewrite); `docs/README.md` indexes
   all of it. `.github/workflows/ci.yml`: the CPU-only CI gate.
@@ -141,6 +146,8 @@ attended session would have made. Nothing unattended writes shared history.
 ```bash
 # fast lane: a development checkpoint, never the finish line
 julia --project=. --threads=4 -e 'using Pkg; Pkg.test(test_args=["lane=fast"], julia_args=["--threads=4"])'
+# one suite file plus the structural core: a targeted checkpoint, never a gate
+julia --project=. --threads=4 -e 'using Pkg; Pkg.test(test_args=["only=<file>"], julia_args=["--threads=4"])'
 # full gate at CI settings: the finish line for every class but one
 julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"])'
 ```
@@ -148,7 +155,8 @@ julia --project=. --threads=4 -e 'using Pkg; Pkg.test(julia_args=["--threads=4"]
 The full gate is the finish line for every class below except the first,
 whose membership is read from `git diff --name-only`, never claimed. The
 fast lane skips heavyweight sections loudly and earns no authority
-elsewhere. CI has no GPU, so green CI covers CPU testsets only. Targeted
+elsewhere; an `only=` run names the suite files it did not run and earns
+none either. CI has no GPU, so green CI covers CPU testsets only. Targeted
 checks run before the gate, never instead of it. Receipts:
 `docs/design/testing_lanes.md`, section 3.
 
@@ -165,7 +173,7 @@ checks run before the gate, never instead of it. Receipts:
 | concurrency surfaces: worker closures, reductions, chunk grids, counter RNG | the `Core.Box` tripwire; thread-count invariance | full, at four threads |
 | examples | the script runs; the catalogue entry | full; example execution is full-lane only |
 | validation, study, or benchmark | the script reproduces; the record is committed | full, before the push carrying the claim |
-| test infrastructure: lanes, gates, `test/runtests.jl` | the skip banner still appears | full |
+| test infrastructure: lanes, gates, the driver, the layout of `test/suite/` | the skip banner still appears; the layout tripwire | full |
 | read-only work | report the recorded configuration and every skipped check | none |
 
 ## Definition of Done

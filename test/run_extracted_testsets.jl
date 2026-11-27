@@ -1,12 +1,15 @@
 #=
-Run suite testsets EXTRACTED from test/runtests.jl, by title, before the full
+Run suite testsets EXTRACTED from the suite's files, by title, before the full
 gate. A development checkpoint, never the finish line (AGENTS.md: the gate the
 verification matrix names runs on the final tree); it exists because the
 suite's sweeps and a campaign's own testsets run in seconds after `using
-Octopus`, while the full lane takes about ninety minutes, and because a block
-that fails extracted fails for a reason the gate would only report later (the
-2026-10 lesson: the Core.Box sweep and the detached-docstring sweep killed two
-gate attempts that this would have caught first).
+Octopus`, while the full lane takes about a hundred minutes, and because a
+block that fails extracted fails for a reason the gate would only report later
+(the 2026-10 lesson: the Core.Box sweep and the detached-docstring sweep killed
+two gate attempts that this would have caught first). Since the 2026-11-27
+split, `Pkg.test(test_args=["only=<file>"])` runs a whole suite file under the
+driver's tripwire (docs/design/testing_lanes.md, section 1); this tool is the
+finer grain, one block.
 
 Run from the project root (the main project, so `using Octopus` resolves):
 
@@ -18,65 +21,73 @@ test/examples/: every `.jl` there is a HARNESS the suite runs and requires to
 write under OCTOPUS_RESULT_DIR ("Every example script runs against the
 current interface"), which this tool, a runner of suite blocks, is not.
 
-Each block is cut out of test/runtests.jl by its title, from the column-0
-`@testset "<title>"` line to the first bare `end` at column 0, and evaluated
-in Main with `_lane_full()` and `_lane_gate(...)` answering true; the
-file-level test observers (`struct X <: Octopus.AbstractBeamObserver` and the
-`Octopus.` method lines that follow them) a block names are evaluated first.
+Each block is found in the suite's files (`test/suite/*.jl`) by its title --
+a column-0 `@testset "<title>"` or a lane-gated `if _lane_gate("<title>")`
+block -- through the parser (`test/suite_structure.jl`), and evaluated in
+Main with `_lane_full()` and `_lane_gate(...)` answering true, after
+`test/suite/common.jl` (what every suite file may reach for) and the
+file-level definitions of the block's own file that the block mentions,
+transitively (a helper's helpers, a test observer's `Octopus.` methods), in
+source order. That resolution is what the single-file runner lacked: it
+evaluated the test observers only, and a block naming another helper errored
+with `UndefVarError` here and was left to the gate.
 
 Limits, stated so a reader does not mistake an extracted error for a suite
-failure: file-level helpers other than observers (test fixtures, helper
-functions, `using ForwardDiff`) are NOT evaluated, so a block that names one
-errors with `UndefVarError` here and is left to the gate; the per-block
-summaries print what ran. `OCTOPUS_EXTRACT_PRELUDE=<file>` includes a Julia
-file first (a place to define such helpers for one run; the stage-2 audit of
-2026-11-22 used one that cut the needed helper definitions out of the suite
-by name). Exit status: 1 when any block failed, else 0; the log is the
-evidence, read it.
+failure: state an earlier testset of the same file leaves behind (a registry
+claim, a file under the result directory, a global a `let` block at file level
+assigned) is absent here, and `OCTOPUS_EXTRACT_PRELUDE=<file>` includes a
+Julia file first (a place for one run's own definitions). Exit status: 1 when
+any block failed, else 0; the log is the evidence, read it.
 =#
 using Octopus, Test, LinearAlgebra, Random
 const _HAS_CUDA = Octopus._HAS_CUDA
-const CUDA_TESTS_ACTIVE = Octopus._HAS_CUDA && Octopus.CUDA.functional()
 _lane_full() = true
 _lane_gate(name::AbstractString) = true
+include(joinpath(@__DIR__, "suite_structure.jl"))
+include(joinpath(@__DIR__, "suite", "common.jl"))      # _SUITE_FILES, CUDA_TESTS_ACTIVE, the shared helpers
 let prelude = get(ENV, "OCTOPUS_EXTRACT_PRELUDE", "")
     isempty(prelude) || (println("=== prelude: ", prelude, " ==="); Base.include(Main, prelude))
 end
-root = pkgdir(Octopus)
-lines = readlines(joinpath(root, "test", "runtests.jl"))
-function block(title)
-    start = findfirst(l -> startswith(l, "@testset \"" * title * "\""), lines)
-    start === nothing && error("no testset titled $(repr(title))")
-    stop = findnext(l -> l == "end", lines, start)
-    return join(lines[start:stop], "\n")
+const SUITE = Dict(f => let text = read(joinpath(_suite_dir(), f), String)
+                            (lines=split(text, '\n'; keepempty=true), units=suite_units(text; filename=f))
+                        end for f in _SUITE_FILES)
+# the block by title: exactly one across the files
+function find_block(title)
+    hits = [(f, u) for f in _SUITE_FILES for u in SUITE[f].units if u.kind in (:testset, :gated) && u.name == title]
+    length(hits) == 1 || error("title $(repr(title)): $(length(hits)) blocks across " * join(_SUITE_FILES, ", "))
+    return hits[1]
 end
-# name => definition text, for every file-level test observer
-function observer_defs()
-    defs = Dict{String,String}()
-    for (i, l) in enumerate(lines)
-        m = match(r"^(?:mutable )?struct (\w+) <: Octopus\.AbstractBeamObserver", l)
-        m === nothing && continue
-        stop = endswith(l, " end") ? i : findnext(==("end"), lines, i)
-        j = stop + 1
-        while j <= length(lines) && (startswith(lines[j], "Octopus.") || startswith(lines[j], "    "))
-            j += 1
+# the file-level definitions of `f` the block reaches, transitively, in source order
+function needed_units(f, block::SuiteUnit)
+    units = SUITE[f].units
+    frontier = unit_symbols(block)
+    chosen = Set{Int}()
+    while true
+        before = length(chosen)
+        defined = Set(Symbol(n) for k in chosen if units[k].kind === :def for n in unit_names(units[k]))
+        for (k, u) in enumerate(units)
+            k in chosen && continue
+            take = (u.kind === :def && any(Symbol(n) in frontier for n in unit_names(u))) ||
+                   (u.kind === :method && !isdisjoint(unit_symbols(u), defined))
+            take || continue
+            push!(chosen, k)
+            union!(frontier, unit_symbols(u))
         end
-        defs[m.captures[1]] = join(lines[i:j-1], "\n")
+        length(chosen) == before && break
     end
-    return defs
+    return [units[k] for k in sort!(collect(chosen))]
 end
-defs = observer_defs()
 const FAILED = String[]
 for title in ARGS
-    text = block(title)
-    for (name, def) in defs
-        occursin(name, text) || continue
-        isdefined(Main, Symbol(name)) && continue
-        Core.eval(Main, Meta.parseall(def; filename="runtests.jl[def " * name * "]"))
+    f, block = find_block(title)
+    lines = SUITE[f].lines
+    for u in needed_units(f, block)
+        u.kind === :def && all(isdefined(Main, Symbol(n)) for n in unit_names(u)) && continue
+        Core.eval(Main, Meta.parseall(unit_text(lines, u); filename="$(f)[def $(u.name)]"))
     end
-    println("=== extracted: ", title, " ===")
+    println("=== extracted: ", title, " (", f, ") ===")
     try
-        Core.eval(Main, Meta.parseall(text; filename="runtests.jl[" * title * "]"))
+        Core.eval(Main, Meta.parseall(unit_text(lines, block); filename="$(f)[$(title)]"))
     catch e
         push!(FAILED, title)
         println("!!! block failed: ", title, " -- ", sprint(showerror, e)[1:min(end, 400)])

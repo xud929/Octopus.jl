@@ -16,7 +16,7 @@ the GPU machine's gate runs it: three committed scripts died on the 2026-08-18
 retirement of a constructor and nothing executing noticed for two months
 (comprehensive audit 2026-10-18, A-4, F-200, F-236). Since 2026-10-20 the full
 lane's last testset, "CUDA-requiring validation scripts run in the gate's CUDA
-arm" (`test/runtests.jl`), runs every CUDA-capable script of `validation/` and
+arm" (the suite, `test/suite/legacy.jl`), runs every CUDA-capable script of `validation/` and
 `profiling/` in a subprocess at a reduced size when the test process has a
 device, and records a visible skip naming them when it has none (CI). The
 subprocess loads Octopus as a package (`-L` with `using Octopus`, so each
@@ -302,7 +302,7 @@ campaign (sequential vs non-indexed vs indexed wavefront paths, the moment-
 reduction and Green-build fixes, and the CPU/CUDA bit-parity story). The CUDA
 indexed wavefront path reaches GaussianPIC@128 ~1.6x PIC and GaussianPIC@64 ~1.2x
 PIC@128 at equal-or-better accuracy. CPU/CUDA parity is guarded by the "CUDA
-GaussianPIC solver matches CPU" testset in `test/runtests.jl`.
+GaussianPIC solver matches CPU" testset in the suite (`test/suite/`).
 
 ## Spectral Sine-Series Poisson Field
 
@@ -360,7 +360,7 @@ upstream vectors bit-for-bit or fails. The moment and correlation checks are a
 *statistics* test and cannot stand in for it — measured, a Philox4x32 with the
 Weyl key bump removed and a 3-round variant both pass every moment bound
 comfortably (2026-08-05_b audit, U25-2). The same known-answer gate runs in
-`test/runtests.jl` ("Philox4x32-10 matches the Random123 known-answer
+the suite ("Philox4x32-10 matches the Random123 known-answer
 vectors"); both call `Octopus.philox4x32_self_test()`, so there is one copy of
 the vectors and one driver under test.
 
@@ -2144,9 +2144,11 @@ max(ratio_native, ratio_haswell))))` does not apply to these constants. A
 kappa changes only when its derivation is found wrong, never to fit a window.
 
 The fixture builders are the suite's own `_st3_` / `_st4_` helpers, extracted
-from `test/runtests.jl` by NAME at run time (the definitions from `const
-_ST4_SEED` to the first `Dispersion routes:` testset, plus the named `_st3_`
-helpers): renaming one of them breaks this script loudly, never silently.
+from the suite's files (`test/suite/`, through the parser
+`test/suite_structure.jl`) by NAME at run time (the definitions from
+`_ST4_SEED` to the first `Dispersion routes:` testset of their file, plus the
+named `_st3_` helpers): renaming or losing one of them breaks this script
+loudly, never silently.
 
 ```bash
 julia --startup-file=no --project=. validation/twiss_dispersion_acceptance_windows.jl

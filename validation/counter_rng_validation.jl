@@ -37,7 +37,7 @@ What each half of this script can and cannot detect (2026-08-05_b audit, U25-2):
   * The KNOWN-ANSWER check does exactly that, and is the anchor: it drives the
     production block function against the upstream Random123 `kat_vectors` for
     philox4x32-10 and reproduces them bit-for-bit or fails. It runs first here,
-    and again in `test/runtests.jl` ("Philox4x32-10 matches the Random123
+    and again in the suite ("Philox4x32-10 matches the Random123
     known-answer vectors"), from one shared implementation.
 
 The moment checks remain useful for what they are: they catch a driver that

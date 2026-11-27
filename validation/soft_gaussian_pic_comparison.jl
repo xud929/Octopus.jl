@@ -18,7 +18,7 @@ Controls:
 
 The gate's CUDA arm runs this script at a reduced size (the testset
 "CUDA-requiring validation scripts run in the gate's CUDA arm" in
-test/runtests.jl reads the line below; validation/README.md):
+the suite reads the line below; validation/README.md):
 
 GATE-CUDA-ARM: env OCTOPUS_SOFT_PIC_N=4000 OCTOPUS_SOFT_PIC_NSLICES=5 OCTOPUS_SOFT_PIC_GRID=32 ; verdict "luminosity_relative_difference = "
 =#
