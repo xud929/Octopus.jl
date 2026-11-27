@@ -307,7 +307,10 @@ with the chosen route for each:
    approximation of convenience: the reference is *defined* as bookkeeping,
    and a per-turn update with boundary rescaling reproduces ramp physics
    (bucket motion, adiabatic emittance damping) with kernels that never see
-   time.
+   time. (2026-11-27: the theory note
+   [`../theory/reference_ramp.md`](../theory/reference_ramp.md) derives the
+   boundary map in convention #3 and fixes the route; batch C of the
+   machine-description follow-ups implements it.)
 
 ## 7. Validation that must land with the implementation
 

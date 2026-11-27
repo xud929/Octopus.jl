@@ -314,6 +314,7 @@ owner's, each with a default the implementer takes if no answer arrives.
   ramp is recorded as a program (a table by digest) beside the declared
   machine, never as a snapshot per turn.
 - **Status 2026-11-26:** not in batch A; the ramp campaign is batch C, after the `ParamMeta` type campaign (the owner's choice, section 5 item 4).
+- **Status 2026-11-27:** batch C's theory note [`../theory/reference_ramp.md`](../theory/reference_ramp.md) written with the owner's choices; its implementation follows (the status line under "Batch C").
 
 ### R8 The four priced leads
 
@@ -632,6 +633,18 @@ program as a scheduled action over a turn table, the validation targets),
 then the implementation with the single-pass refusal relaxed for that route
 only and the ramp recorded as a program in the artifact. After batch B
 unless the owner orders otherwise (section 5, item 4).
+
+- **Status 2026-11-27:** the theory note is written,
+  [`../theory/reference_ramp.md`](../theory/reference_ramp.md): the boundary
+  map derived in convention #3 (momenta scale by `P0_old/P0_new`, positions
+  stay), the consistency relation `E0(n+1) - E0(n) = qV sin(phi_s)`, the
+  route (a turn table of `E0(n)` by digest, a scheduled action, the epoch
+  check in the turn loop), four validation targets with tolerances, and the
+  owner's four choices (single-beam `TrackingTask` first, the table as the
+  program, the RF phase the user's through a knob program, plain-number
+  strengths constant). One departure from R7's text: the single-pass refusal
+  of `ThinAcceleratingCavitySpec` stays, since the ramp route never passes
+  through an accelerating cavity. The implementation follows.
 
 ### Deferred by decision
 

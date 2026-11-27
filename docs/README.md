@@ -293,7 +293,9 @@ Procedures, one per task class, routed from the Task Routing table in
   [`history/machine_description_compile_path1_2026_11_26.md`](history/machine_description_compile_path1_2026_11_26.md));
   each ruling carries its dated `Status` line; batch B (the `ParamMeta`
   types) implemented 2026-11-26 (record
-  [`history/machine_description_param_types_2026_11_26.md`](history/machine_description_param_types_2026_11_26.md)); batch C remains.
+  [`history/machine_description_param_types_2026_11_26.md`](history/machine_description_param_types_2026_11_26.md)); batch C's theory note
+  [`theory/reference_ramp.md`](theory/reference_ramp.md) written 2026-11-27, its
+  implementation next.
 - [`linear_optics_examples_2026_11_21.md`](history/linear_optics_examples_2026_11_21.md)
   — the shipped examples in the `LinearOptics` form (the weak-strong,
   strong-strong and crab-noise scripts spell each beam's optics as IP and
@@ -525,6 +527,16 @@ reference material, not API docs; the implementing code links back to them.
   does, the symplectic z-shift form of the cavity's slip correction with the
   exact cancellation-free `g(δ)`, and the two measured wrong forms kept as
   negative results. Physics behind the survey channel and the F16 closure.
+- [`reference_ramp.md`](theory/reference_ramp.md) — the ramping ring as a
+  quasi-static energy program (batch C of the machine-description
+  follow-ups, R7): the boundary map on a live beam derived in convention #3
+  (the three momenta scale by `P0_old/P0_new`, the positions stay, `det J =
+  ρ³`, adiabatic damping as `ε P0 = const`), the flat-profile error, the
+  consistency relation between the energy program and the RF phase, the
+  knob route (a turn table of `E0(n)`, a scheduled action, the per-turn
+  epoch check), the artifact's program by digest, the validation targets
+  that make the implementation a contract, the scope and the owner's four
+  choices of 2026-11-27. Written first; nothing implemented.
 - [`floor_plan_survey.md`](theory/floor_plan_survey.md) — the global-geometry
   survey (MAD-X `SURVEY`): frame propagation `(V, W)`, the per-element
   geometric maps (bends in the `ref_tilt`-rolled plane, patches through the
