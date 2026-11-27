@@ -440,6 +440,11 @@ Procedures, one per task class, routed from the Task Routing table in
   runner and the acceptance-windows script, the first peel (the run
   artifact and the observers, 23 testsets), the `particle_id` reader
   keyword with its red and green runs, the checkpoints and the gate.
+- [`suite_split_2026_11_27_peels.md`](history/suite_split_2026_11_27_peels.md)
+  — the count behind the peels: every testset still in `legacy.jl` after the
+  first peel (468) read and placed in an area, the per-area counts and
+  summed gate times, the recommended order, and the title lists the mover
+  takes as input.
 - [`audit_machine_description_compile_path1_2026_11_26.md`](history/audit_machine_description_compile_path1_2026_11_26.md)
   — the scoped neighbour audit of batch A: the call sites and sibling
   surfaces of each unit re-walked, the properties re-run on what the units
