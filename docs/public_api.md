@@ -242,10 +242,13 @@ Use Julia help:
 ?TrackingContext
 ?ScheduledObserver
 ?ScheduledAction
+?ReferenceRamp
+?synchronous_phase_program
 ?EveryNSteps
 ?AtTurns
 ?schedule_option_schema
 ?observer_option_schema
+?action_option_schema
 ?Moment
 ?MomentObserver
 ?MomentOutput

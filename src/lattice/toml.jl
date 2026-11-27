@@ -1808,7 +1808,12 @@ function _toml_referenced_digests(doc)
 end
 function _toml_collect_digests!(out, x)
     if x isa AbstractDict
-        haskey(x, "type") && haskey(x, "sha256") && x["sha256"] isa AbstractString && push!(out, String(x["sha256"]))
+        # A table reference is any inline table carrying a `sha256` hex digest:
+        # a typed object (`{ type = "TurnTable", sha256, ... }`) or a bare
+        # program table (`program = { sha256, length }` of a ReferenceRamp,
+        # 2026-11-27); the 64-hex-digit form is the guard against a stray key.
+        haskey(x, "sha256") && x["sha256"] isa AbstractString &&
+            occursin(r"^[0-9a-f]{64}$", x["sha256"]) && push!(out, String(x["sha256"]))
         foreach(v -> _toml_collect_digests!(out, v), values(x))
     elseif x isa AbstractVector
         foreach(v -> _toml_collect_digests!(out, v), x)

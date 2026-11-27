@@ -2341,6 +2341,34 @@ function validate_configuration_metadata()
     # BPMObserver was absent from these lists (U3-4); the tree guard below
     # keeps the next observer from repeating that.
     # Recursive for the same reason as the solver walk above (2026-09-07).
+    # Actions by TYPE TREE, as the observers below: one `action_option_schema`
+    # per concrete `AbstractBeamAction`, every option with a consumer,
+    # `BeamSwapAction` exempt by name (it holds the function that provides the
+    # replacement beam and has no options to describe; the snapshot refuses it
+    # the same way). The ramp's defaults against a CONSTRUCTED default ramp
+    # (its two required options given; the knob need not exist at construction).
+    for T in _concrete_octopus_subtypes(AbstractBeamAction)
+        T === BeamSwapAction && continue
+        if !hasmethod(action_option_schema, Tuple{Type{T}})
+            push!(errors, "$(T) is a concrete Octopus beam action with no action_option_schema")
+            continue
+        end
+        for (name, meta) in pairs(action_option_schema(T))
+            meta.consumer === :unspecified && push!(errors,
+                "$(T).$(name) has no runtime consumer")
+        end
+    end
+    default_ramp = ReferenceRamp([1.0e9, 2.0e9];
+                                 reference=ReferenceParticle(:proton; E0=KnobRef(:validate_configuration_metadata_ramp)))
+    ramp_schema = action_option_schema(ReferenceRamp)
+    ramp_schema.start_turn.default == default_ramp.start_turn ||
+        push!(errors, "ReferenceRamp metadata start_turn default disagrees with constructor")
+    ramp_schema.name.default == default_ramp.name ||
+        push!(errors, "ReferenceRamp metadata name default disagrees with constructor")
+    ramp_schema.companions.default == default_ramp.companions ||
+        push!(errors, "ReferenceRamp metadata companions default disagrees with constructor")
+    Set(keys(ramp_schema)) == Set((:program, :reference, :start_turn, :name, :companions)) ||
+        push!(errors, "ReferenceRamp public options changed without metadata review")
     for T in _concrete_octopus_subtypes(AbstractBeamObserver)
         any(o -> o isa T, observer_instances) || push!(errors,
             "$(T) is a concrete AbstractBeamObserver with no validate_configuration_metadata coverage")
@@ -4060,6 +4088,8 @@ function _split_strong_strong_line(line::Tuple, record=nothing)
         "PhaseSpaceReset is supported by TrackingTask only; StrongStrongTask would need a joint reset of both live beams and solver state"))
     _has_particle_tunes(Tuple(entries)) && throw(ArgumentError(
         "ParticleLinear6D is supported by TrackingTask only; StrongStrongTask has no persistent particle-tune binding lifecycle"))
+    _reference_ramp_of(Tuple(entries)) === nothing || throw(ArgumentError(
+        "ReferenceRamp is supported by TrackingTask only; a StrongStrongTask would need both beams' references stepped together with the solver's slice geometry (docs/theory/reference_ramp.md, section 5)"))
     bound, binding = _bind_line_entries(Tuple(entries), line, record)
     blocks = Any[]
     start = 1

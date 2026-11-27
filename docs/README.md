@@ -293,9 +293,10 @@ Procedures, one per task class, routed from the Task Routing table in
   [`history/machine_description_compile_path1_2026_11_26.md`](history/machine_description_compile_path1_2026_11_26.md));
   each ruling carries its dated `Status` line; batch B (the `ParamMeta`
   types) implemented 2026-11-26 (record
-  [`history/machine_description_param_types_2026_11_26.md`](history/machine_description_param_types_2026_11_26.md)); batch C's theory note
-  [`theory/reference_ramp.md`](theory/reference_ramp.md) written 2026-11-27, its
-  implementation next.
+  [`history/machine_description_param_types_2026_11_26.md`](history/machine_description_param_types_2026_11_26.md)); batch C (the
+  reference ramp) implemented 2026-11-27 after its theory note
+  [`theory/reference_ramp.md`](theory/reference_ramp.md) (record
+  [`history/machine_description_reference_ramp_2026_11_27.md`](history/machine_description_reference_ramp_2026_11_27.md)).
 - [`linear_optics_examples_2026_11_21.md`](history/linear_optics_examples_2026_11_21.md)
   — the shipped examples in the `LinearOptics` form (the weak-strong,
   strong-strong and crab-noise scripts spell each beam's optics as IP and
@@ -419,6 +420,13 @@ Procedures, one per task class, routed from the Task Routing table in
   forms kept for `Any` and for old files, `element_help` printing the
   class; the red-first evidence, the verification, the gate and the
   neighbour audit in one record.
+- [`machine_description_reference_ramp_2026_11_27.md`](history/machine_description_reference_ramp_2026_11_27.md)
+  — batch C of the machine-description follow-ups, the reference ramp
+  (R7): `ReferenceRamp` as a scheduled action placed last in the line, the
+  turn-boundary map on the live beam, the epoch check in the turn loop,
+  the snapshot codec, the four targets of `theory/reference_ramp.md`
+  measured (the suite and `validation/reference_ramp.jl`), the
+  recompile cost, the neighbour audit, the gate and the push.
 - [`audit_machine_description_compile_path1_2026_11_26.md`](history/audit_machine_description_compile_path1_2026_11_26.md)
   — the scoped neighbour audit of batch A: the call sites and sibling
   surfaces of each unit re-walked, the properties re-run on what the units

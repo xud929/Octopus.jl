@@ -1108,7 +1108,10 @@ function _knob_binding_sites!(out, entry::LineEntry, ordinal)
         _knob_param_sites!(out, entry_path(entry), _merged_params(entry))
         return _knob_binding_sites!(out, line_entries(spec), ordinal)
     end
-    spec isa AbstractElementSpec || return out
+    # A hook placed in the line (a ReferenceRamp carries knob references of its
+    # own; docs/theory/reference_ramp.md) walks by its own method; any other
+    # non-element placement falls to the identity below.
+    spec isa AbstractElementSpec || return _knob_binding_sites!(out, spec, ordinal)
     ordinal[] += 1
     _knob_param_sites!(out, entry_path(entry), _merged_params(entry))
     return out

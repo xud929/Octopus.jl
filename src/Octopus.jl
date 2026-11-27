@@ -141,6 +141,9 @@ include("tasks/BeamObservers.jl")
 include("tasks/PhaseSpaceResetTrials.jl")
 include("tasks/PhaseSpaceReset.jl")
 include("tasks/ParticleTunes.jl")
+# The reference ramp (docs/theory/reference_ramp.md): after the hook types and
+# the two state-bound features it refuses to share a line with.
+include("tasks/ReferenceRamp.jl")
 include("tasks/BPMObserver.jl")
 include("tasks/StrongStrong.jl")
 # The snapshot codec's methods for the objects a line holds beside its elements

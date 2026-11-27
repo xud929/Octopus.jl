@@ -22522,6 +22522,10 @@ end
     spectral = SpectralPoissonSolver(; grid=(16, 24), domain_factor=8.0, method=:grid_free, slicing2=sl)
     gpic = GaussianPICPoissonSolver(; grid=(16, 16), margin_sigma=4.0, deposit_method=:TSC, coupling_tol=0.5, slicing=sl)
     table = TurnTable([0.1, -0.2, 0.3, -0.4, 0.5, -0.6, 0.7]; name="md4b_table")
+    @knob md4b_ramp.E0 = 1.0e9
+    @knob md4b_ramp.phi = 0.0
+    ramp = ReferenceRamp([1.0e9, 1.1e9, 1.1e9]; reference=ReferenceParticle(:proton; E0=@knob_expr(md4b_ramp.E0)),
+                         start_turn=3, name="md4b_ramp", companions=("md4b_ramp.phi" => [0.1, 0.2, 0.3],))
     instances = Any[
         AlwaysSchedule(), EveryNSteps(start=3, stop=20, step=5), AtTurns(Set([1, 4, 9])),
         MomentObserver(; name="md4b_moments", orders=(1,), extra=(Moment(; z=2), Moment(; x=1, px=1))),
@@ -22534,17 +22538,19 @@ end
         WhiteNoise(1e-3; rng_id=rng_b), PinkNoise(2e-3; rng_id=rng_c, octaves=8), table,
         StrongStrongCollision(:md4b_ip; poisson_solver=pic), StrongStrongCollision(:md4b_bare),
         ScheduledObserver(MomentObserver(; name="md4b_hooked"), EveryNSteps(step=3)),
+        ramp, ScheduledAction(ramp),
     ]
     covered = Set(string(nameof(typeof(x))) for x in instances)
     # Every registered type of the roster has an instance, and so do the two
     # wrappers and the marker, which sit under none of the roots (the
     # registry also holds the core codec's types, tracking methods and enums,
-    # which are unit A's). ScheduledAction has none: no action Octopus
-    # defines can be snapshotted, so the wrapper is exercised below through
-    # its refusal alone.
+    # which are unit A's). ScheduledAction wraps the one action with a
+    # codec, the ReferenceRamp of batch C (2026-11-27; before it no action
+    # Octopus defined could be snapshotted), and is exercised below through
+    # its refusal of the function-holding one as well.
     @test isempty(setdiff(intersect(registered, Set(roster)), covered))
-    @test issubset(Set(["ScheduledObserver", "ScheduledAction", "StrongStrongCollision"]), registered)
-    @test "ScheduledObserver" in covered && "StrongStrongCollision" in covered
+    @test issubset(Set(["ScheduledObserver", "ScheduledAction", "StrongStrongCollision", "ReferenceRamp"]), registered)
+    @test "ScheduledObserver" in covered && "StrongStrongCollision" in covered && "ScheduledAction" in covered
     for x in instances
         tbl = O._toml_encode_object(x, ctx)
         @test tbl["type"] == string(nameof(typeof(x)))
@@ -45241,7 +45247,321 @@ if _lane_gate("Machine description: the effectiveness contract's expression arm"
     # The arm's knobs are forgotten, whatever the verdict.
     @test isempty(list_knobs("md2c_effect"))
 end
+
 end # _lane_gate("Machine description: the effectiveness contract's expression arm")
+
+# [MDC] Machine description follow-ups, batch C: the reference ramp
+# (docs/theory/reference_ramp.md; the record
+# docs/history/machine_description_reference_ramp_2026_11_27.md). The four
+# testsets land directly below this comment and nowhere else. Each was red on
+# b00c586 with the theory note (result/gates/ramp/red/): `ReferenceRamp`
+# undefined, so no target could be measured on that tree.
+
+@testset "Reference ramp: the boundary map damps the emittance exactly, a flat program is the identity, and the receipts say so (targets 1, 4)" begin
+    O = Octopus
+    cpu = CPUThreadsExecutionPolicy(threads=1)
+    @knob mdc1.E0 = 2.5e9
+    ref = ReferenceParticle(:proton; E0=@knob_expr(mdc1.E0))
+    # A linear 4D rotation (beta_x = 10 m, beta_y = 5 m, tunes 0.31 and 0.27)
+    # beside R56 = -alpha_c C: exactly linear and symplectic, so the rms
+    # emittance of ANY distribution is invariant through it to rounding, and
+    # the ramp's boundary map is the only thing that moves it.
+    C = 100.0; alpha_c = 0.2
+    rot(beta, mu) = (cos(mu), beta * sin(mu), -sin(mu) / beta, cos(mu))
+    ax, bx, cx, dx = rot(10.0, 2pi * 0.31); ay, by, cy, dy = rot(5.0, 2pi * 0.27)
+    ring = Linear6DSpec(matrix=[ax bx 0 0 0 0; cx dx 0 0 0 0; 0 0 ay by 0 0; 0 0 cy dy 0 0;
+                                0 0 0 0 1.0 -alpha_c * C; 0 0 0 0 0 1.0])
+    # A staircase: 10 MeV every 10 turns, so the recompiles are countable and
+    # the turns between steps are a control (the identity on epsilon P0).
+    program = [2.5e9 + 1.0e7 * floor(n / 10) for n in 0:99]
+    ramp = ReferenceRamp(program; reference=ref, name="mdc1")
+    lat = Lattice("mdc1"; line=BeamLine("mdc1", ring, ramp), reference=ref, knob_root=:mdc1)
+    N = 10_000
+    function fresh(seed)
+        rng = Random.MersenneTwister(seed)
+        g(sig) = sig .* randn(rng, N)
+        return Phase6DRep(g(1.0e-4), g(1.0e-5), g(5.0e-5), g(1.0e-5), g(1.0e-2), g(1.0e-4))
+    end
+    p0c(E) = sqrt((E - PMASS_EV) * (E + PMASS_EV))
+    function emit(a, b)
+        ma = sum(a) / N; mb = sum(b) / N
+        saa = sum((a .- ma) .^ 2) / N; sbb = sum((b .- mb) .^ 2) / N; sab = sum((a .- ma) .* (b .- mb)) / N
+        return sqrt(saa * sbb - sab^2)
+    end
+    rep = fresh(20261127)
+    ex0, ey0, dz0 = emit(rep.x, rep.px), emit(rep.y, rep.py), emit(rep.z, rep.pz)^2
+    P00 = p0c(2.5e9)
+    task = TrackingTask(lat; policy=cpu)
+    audit = ExecutionAudit()
+    worst = 0.0
+    with_execution_audit(audit) do
+        for chunk in 1:10
+            # Turns 10(chunk-1) .. 10 chunk - 1; the step sits at the chunk's
+            # last boundary, and the knob then holds the NEXT turn's energy.
+            execute!(task, rep; turns=10)
+            E = knob_value("mdc1.E0")
+            @test E == program[clamp(10 * chunk + 1, 1, 100)]
+            P = p0c(E)
+            worst = max(worst, abs(emit(rep.x, rep.px) * P / (ex0 * P00) - 1),
+                        abs(emit(rep.y, rep.py) * P / (ey0 * P00) - 1),
+                        abs(emit(rep.z, rep.pz)^2 * P^2 / (dz0 * P00^2) - 1))
+        end
+    end
+    @test worst < 1.0e-12                                  # target 1: epsilon P0 invariant, the longitudinal determinant by rho^2
+    @test knob_value("mdc1.E0") == 2.59e9                  # the program's last entry
+    receipts = execution_receipts(audit)
+    ramps = filter(r -> r.consumer === :reference_ramp, receipts)
+    @test length(ramps) == 10                              # one per execute!
+    @test all(r -> r.values.sha256 == ramp.digest && r.values.knob === Symbol("mdc1.E0") &&
+                   r.values.energy_key === :E0 && r.values.length == 100 && r.values.turns == 10 &&
+                   r.values.start_turn == 0 && r.values.name == "mdc1" && r.values.companions == (), ramps)
+    @test [r.values.first_turn for r in ramps] == collect(0:10:90)
+    @test [r.values.steps for r in ramps] == vcat(fill(1, 9), [0])      # the last window ends on the flat top
+    @test [r.values.E0_first for r in ramps] == [program[10k + 1] for k in 0:9]
+    @test [r.values.E0_last for r in ramps] == [program[clamp(10k + 11, 1, 100)] for k in 0:9]
+    # No element of this line depends on the knob (a numeric matrix), so the
+    # compile cache ignores the knob epoch and the loop recompiles nothing,
+    # chunked or in one window; the knob-dependent ring's count (one per
+    # step) is pinned in the fixed-point testset. In ONE window the
+    # coordinates are the chunked run's bit for bit.
+    @test all(r -> r.values.recompiles == 0, filter(r -> r.consumer === :reference_ramp_recompiles, receipts))
+    set_knob!("mdc1.E0", 2.5e9)
+    one = fresh(20261127)
+    audit1 = ExecutionAudit()
+    with_execution_audit(audit1) do
+        execute!(TrackingTask(lat; policy=cpu), one; turns=100)
+    end
+    @test coordinate_arrays(one) == coordinate_arrays(rep)
+    r1 = only(filter(r -> r.consumer === :reference_ramp_recompiles, execution_receipts(audit1)))
+    @test r1.values.recompiles == 0 && r1.values.turns == 100 && r1.values.name == "mdc1"
+    @test only(filter(r -> r.consumer === :reference_ramp, execution_receipts(audit1))).values.steps == 9
+    hooks = filter(r -> r.consumer === :hook_schedule && r.values.action === :ReferenceRamp, execution_receipts(audit1))
+    @test length(hooks) == 100 && all(r -> r.values.active && r.values.schedule === :AlwaysSchedule, hooks)
+    # The bitwise control: a flat program is the identity on the coordinates,
+    # moves no epoch, and says so once.
+    set_knob!("mdc1.E0", 2.5e9)
+    flat = ReferenceRamp(fill(2.5e9, 100); reference=ref, name="flat")
+    latf = Lattice("mdc1f"; line=BeamLine("mdc1f", ring, flat), reference=ref, knob_root=:mdc1)
+    lat0 = Lattice("mdc1z"; line=BeamLine("mdc1z", ring), reference=ref, knob_root=:mdc1)
+    rf, r0 = fresh(20261127), fresh(20261127)
+    epoch0 = knob_epoch()
+    logs, _ = Test.collect_test_logs(() -> execute!(TrackingTask(latf; policy=cpu), rf; turns=100))
+    @test length(logs) == 1 && occursin("steps nothing in this window", logs[1].message)
+    execute!(TrackingTask(lat0; policy=cpu), r0; turns=100)
+    @test coordinate_arrays(rf) == coordinate_arrays(r0)
+    @test knob_epoch() == epoch0 && knob_value("mdc1.E0") == 2.5e9
+end
+
+@testset "Reference ramp: every misplacement and mismatch is refused by name" begin
+    O = Octopus
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    cpu = CPUThreadsExecutionPolicy(threads=1)
+    @knob mdc2.E0 = 2.5e9
+    @knob mdc2.phi = 0.0
+    @knob mdc2other.E0 = 2.5e9
+    @knob mdc2out.phi = 0.0
+    ref = ReferenceParticle(:proton; E0=@knob_expr(mdc2.E0))
+    C = 100.0
+    ring = Linear6DSpec(matrix=[1.0 0 0 0 0 0; 0 1.0 0 0 0 0; 0 0 1.0 0 0 0; 0 0 0 1.0 0 0;
+                                0 0 0 0 1.0 -0.2 * C; 0 0 0 0 0 1.0])
+    cav = ThinRFCavitySpec(; harmon=1, voltage=2.0e5, phase=asin(0.5), reference=ref)
+    D = DriftSpec(L=C)                                 # the harmon cavity resolves its frequency against the arc length
+    program = [2.5e9, 2.6e9, 2.7e9]
+    ramp = ReferenceRamp(program; reference=ref)
+    one() = Phase6DRep([1.0e-4], [0.0], [0.0], [0.0], [0.0], [0.0])
+    run(elements; kw...) = execute!(TrackingTask(elements; policy=cpu, kw...), one(); turns=1)
+    # Construction.
+    @test occursin("at least one turn", msg(() -> ReferenceRamp(Float64[]; reference=ref)))
+    @test occursin("must be finite", msg(() -> ReferenceRamp([2.5e9, NaN]; reference=ref)))
+    @test occursin("must exceed mc2", msg(() -> ReferenceRamp([2.5e9, 1.0e8]; reference=ref)))
+    @test occursin("bare knob reference", msg(() -> ReferenceRamp(program; reference=ReferenceParticle(:proton; E0=2.5e9))))
+    @test occursin("bare knob reference", msg(() -> ReferenceRamp(program; reference=ReferenceParticle(:proton; E0=@knob_expr(2 * mdc2.E0)))))
+    @test occursin("must be the ReferenceParticle", msg(() -> ReferenceRamp(program; reference=2.5e9)))
+    @test occursin("one value per program entry", msg(() -> ReferenceRamp(program; reference=ref, companions=("mdc2.phi" => [0.1, 0.2],))))
+    @test occursin("names the reference's own knob", msg(() -> ReferenceRamp(program; reference=ref, companions=("mdc2.E0" => [1.0, 2.0, 3.0],))))
+    @test occursin("is given twice", msg(() -> ReferenceRamp(program; reference=ref, companions=("mdc2.phi" => [0.1, 0.2, 0.3], "mdc2.phi" => [0.1, 0.2, 0.3]))))
+    @test occursin("each companion is", msg(() -> ReferenceRamp(program; reference=ref, companions=(1,))))
+    @test occursin("must be finite", msg(() -> ReferenceRamp(program; reference=ref, companions=("mdc2.phi" => [0.1, Inf, 0.3],))))
+    @test occursin("exceeds the voltage's reach", msg(() -> synchronous_phase_program(program, 2.0e5)))
+    @test synchronous_phase_program(program, 2.0e8) == [asin(0.5), asin(0.5), 0.0]
+    @test synchronous_phase_program(program, 2.0e8; charge=-1) == [-asin(0.5), -asin(0.5), 0.0]
+    # Placement: at compile, by name.
+    @test occursin("must be the LAST entry", msg(() -> run((D, ring, ramp, cav))))
+    @test occursin("holds 2 ReferenceRamp actions", msg(() -> run((D, ring, cav, ramp, ramp))))
+    @test occursin("scheduled with EveryNSteps", msg(() -> run((D, ring, cav, ScheduledAction(ramp, EveryNSteps(step=2))))))
+    @test occursin("cannot be a task-level hook", msg(() -> TrackingTask((D, ring, cav); policy=cpu, hooks=ramp)))
+    @test occursin("cannot be a task-level hook", msg(() -> TrackingTask((D, ring, cav); policy=cpu, actions=(ScheduledAction(ramp),))))
+    @test occursin("cannot share a line with a PhaseSpaceReset", msg(() -> run((PhaseSpaceResetSpec(), D, ring, cav, ramp))))
+    tuned = Linear6DSpec(; beta1=(10.0, 5.0, 1.0), dmu=(0.7, 1.3, 0.1),
+                         particle_tunes=(nux=0.7 / 2pi, nuy=1.3 / 2pi, nuz=-0.06 / 2pi))
+    @test occursin("cannot share a line with particle tunes", msg(() -> run((D, tuned, cav, ramp))))
+    # Inside a kept-whole sub-line the ramp is a hook like any other (F-81).
+    @test occursin("compiles whole", msg(() -> run((D, ring, BeamLine("inner", cav, ramp; x_offset=1.0e-4)))))
+    # The run: before any turn.
+    fixed = ThinRFCavitySpec(; harmon=1, voltage=2.0e5, e0=2.5e9, mc2=PMASS_EV)
+    @test occursin("a plain number, beside a ReferenceRamp", msg(() -> run((D, ring, fixed, ramp))))
+    set_knob!("mdc2.E0", 2.6e9)
+    @test occursin("but knob mdc2.E0 holds 2.6e9", msg(() -> run((D, ring, cav, ramp))))
+    set_knob!("mdc2.E0", 2.5e9)
+    other = ReferenceParticle(:proton; E0=@knob_expr(mdc2other.E0))
+    latm = Lattice("mdc2m"; line=BeamLine("mdc2m", D, ring, ThinRFCavitySpec(; harmon=1, voltage=2.0e5, reference=other), ramp),
+                   reference=other, knob_root=(:mdc2, :mdc2other))
+    @test occursin("is not the lattice \"mdc2m\"'s", msg(() -> run(latm)))
+    # The lattice's knob roots: a companion's knob outside them is refused by the Lattice (D7).
+    rc = ReferenceRamp(program; reference=ref, companions=("mdc2out.phi" => [0.1, 0.2, 0.3],))
+    @test occursin("lies outside the declared knob root(s) mdc2", msg(() -> Lattice("mdc2r"; line=BeamLine("mdc2r", D, ring, cav, rc), reference=ref, knob_root=:mdc2)))
+    @test msg(() -> Lattice("mdc2r"; line=BeamLine("mdc2r", D, ring, cav, rc), reference=ref, knob_root=(:mdc2, :mdc2out))) == "ACCEPTED"
+    # The strong-strong task, at its compile.
+    mkb(id) = Beam(32, cpu; rng_id=id, sigma=(1.0e-4, 1.0e-4, 1.0e-2), reference=ReferenceParticle(:proton; E0=2.5e9), npart=1.0e11)
+    ip() = StrongStrongCollision(:mdc2_ip; poisson_solver=GaussianPoissonSolver())
+    ss = StrongStrongTask(BeamLine("a", D, ring, ip(), cav, ramp), BeamLine("b", D, ring, ip(), cav); policy=cpu)
+    @test occursin("supported by TrackingTask only", msg(() -> execute!(ss, mkb(O._unheld_rng_id(O.next_rng_id!() + 3_000_000)),
+                                                                      mkb(O._unheld_rng_id(O.next_rng_id!() + 3_000_001)); turns=1)))
+    # The controls: the well-formed line runs in both spellings.
+    @test msg(() -> run((D, ring, cav, ramp))) == "ACCEPTED"
+    set_knob!("mdc2.E0", 2.5e9)
+    @test msg(() -> run(Lattice("mdc2ok"; line=BeamLine("mdc2ok", D, ring, cav, ramp), reference=ref, knob_root=:mdc2))) == "ACCEPTED"
+    set_knob!("mdc2.E0", 2.5e9)
+end
+
+@testset "Reference ramp: the snapshot carries the program by digest and the metadata validator covers the actions" begin
+    O = Octopus
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    cpu = CPUThreadsExecutionPolicy(threads=1)
+    @knob mdc3.E0 = 2.5e9
+    @knob mdc3.phi = 0.0
+    ref = ReferenceParticle(:proton; E0=@knob_expr(mdc3.E0))
+    C = 100.0
+    ring = Linear6DSpec(matrix=[1.0 0 0 0 0 0; 0 1.0 0 0 0 0; 0 0 1.0 0 0 0; 0 0 0 1.0 0 0;
+                                0 0 0 0 1.0 -0.2 * C; 0 0 0 0 0 1.0])
+    cav = ThinRFCavitySpec(; name="RF", harmon=1, voltage=2.0e5, phase=@knob_expr(mdc3.phi), reference=ref)
+    program = collect(range(2.5e9, 2.6e9; length=11))
+    phis = synchronous_phase_program(program, 2.0e7)
+    ramp = ReferenceRamp(program; reference=ref, start_turn=5, name="mdc3", companions=("mdc3.phi" => phis,))
+    lat = Lattice("mdc3"; line=BeamLine("mdc3", DriftSpec(L=C), ring, cav, ramp), reference=ref, knob_root=:mdc3)
+    tables = Dict{String,Any}()
+    text = machine_toml(Machine(lat), tables)
+    @test occursin("type = \"ReferenceRamp\"", text) && occursin("start_turn = 5", text) && occursin("name = \"mdc3\"", text)
+    @test occursin("program = { sha256 = \"$(ramp.digest)\", length = 11 }", text)
+    @test occursin("{ knob = \"mdc3.phi\", program = { sha256 = \"$(ramp.companions[1].digest)\", length = 11 } }", text)
+    @test Set(keys(tables)) == Set([ramp.digest, ramp.companions[1].digest]) && tables[ramp.digest] == program
+    back = parse_machine(text; tables)
+    @test back[:mdc3] == lat
+    found = [getfield(e, :spec) for e in O.line_entries(back[:mdc3].line) if getfield(e, :spec) isa ReferenceRamp]
+    @test length(found) == 1 && found[1] == ramp && found[1].digest == ramp.digest && found[1].companions[1].program == phis
+    # The text is deterministic; without a container of its own the one-argument form fills a throwaway one.
+    @test machine_toml(Machine(lat)) == text
+    # The file form with its sidecar, and the seam's refusals.
+    dir = mktempdir()
+    path = joinpath(dir, "mdc3.machine.toml")
+    write_machine(path, Machine(lat))
+    @test isfile(path) && isfile(joinpath(dir, "mdc3.machine.tables.h5"))
+    @test read_machine(path)[:mdc3] == lat
+    bad = Dict{String,Any}(tables); bad[ramp.digest] = program .+ 1.0
+    @test occursin("hashes to", msg(() -> parse_machine(text; tables=bad)))
+    @test occursin("no tables were given", msg(() -> parse_machine(text)))
+    # The direct codec round trip (as the roster tripwire runs it), the registry, and the decoder's refusals.
+    ctx = O._TomlContext()
+    rt(x) = O._toml_decode_object(O._toml_encode_object(x, ctx), ctx)
+    @test rt(ramp) == ramp && rt(ScheduledAction(ramp)).action == ramp
+    @test haskey(O._TOML_OBJECT_TYPES, "ReferenceRamp") && !(ReferenceRamp in O._toml_refused_object_types())
+    enc = O._toml_encode_object(ramp, ctx)
+    @test occursin("unknown key \"bogus\"", msg(() -> O._toml_decode_object(merge(enc, Dict("bogus" => 1)), ctx)))
+    short = merge(enc, Dict("program" => O._TomlTable("sha256" => ramp.digest, "length" => 4)))
+    @test occursin("does not match the table's 11 entries", msg(() -> O._toml_decode_object(short, ctx)))
+    @test occursin("needs a `reference` table", msg(() -> O._toml_decode_object(delete!(copy(enc), "reference"), ctx)))
+    @test occursin("the step from entry", msg(() -> synchronous_phase_program(program, 1.0e6)))
+    # The run artifact embeds the machine, the ramp's tables under /machine_tables with it (R9).
+    set_knob!("mdc3.E0", 2.5e9)
+    art = RunArtifact(; storage=:memory)
+    logs, _ = Test.collect_test_logs(() -> execute!(TrackingTask(lat; policy=cpu, artifact=art),
+                                                    Phase6DRep([1.0e-4], [0.0], [0.0], [0.0], [0.0], [0.0]); turns=2))
+    @test length(logs) == 1 && occursin("steps nothing", logs[1].message)      # start_turn = 5: the window holds
+    @test knob_value("mdc3.phi") == phis[1]                                     # the companion set to the first turn's value
+    out = TaskOutput(art)
+    @test occursin("ReferenceRamp", read(out, :machine)) && occursin("phi = $(phis[1])", read(out, :machine))   # set BEFORE the snapshot
+    @test read_machine(out)[:mdc3] == lat
+    # The metadata: the validator walks the actions, and the schema's consumer is the receipt.
+    @test validate_configuration_metadata()
+    schema = action_option_schema(ReferenceRamp)
+    @test Set(keys(schema)) == Set((:program, :reference, :start_turn, :name, :companions))
+    @test all(m -> m.consumer === :reference_ramp, values(schema)) && action_option_schema(ramp) === schema
+    @test schema.start_turn.default == 0 && schema.name.default == "" && schema.companions.default == ()
+    @test all(T -> T === BeamSwapAction || hasmethod(action_option_schema, Tuple{Type{T}}),
+              O._concrete_octopus_subtypes(O.AbstractBeamAction))
+    set_knob!("mdc3.E0", 2.5e9); set_knob!("mdc3.phi", 0.0)
+end
+
+@testset "Reference ramp: the synchronous particle is the fixed point of the ramped ring, and the device map is the host's bit for bit (target 3a, backends)" begin
+    O = Octopus
+    cpu = CPUThreadsExecutionPolicy(threads=1)
+    @knob mdc4.E0 = 2.5e9
+    ref = ReferenceParticle(:proton; E0=@knob_expr(mdc4.E0))
+    C = 100.0; alpha_c = 0.2
+    r56 = Linear6DSpec(matrix=[1.0 0 0 0 0 0; 0 1.0 0 0 0 0; 0 0 1.0 0 0 0; 0 0 0 1.0 0 0;
+                               0 0 0 0 1.0 -alpha_c * C; 0 0 0 0 0 1.0])
+    V = 2.0e5; dE = 1.0e5
+    program = [2.5e9 + dE * n for n in 0:199]                    # 100 keV per turn: sin(phi_s) = 0.5
+    cav = ThinRFCavitySpec(; harmon=1, voltage=V, phase=asin(dE / V), reference=ref)
+    ramp = ReferenceRamp(program; reference=ref, name="mdc4")
+    line = (DriftSpec(L=C), r56, cav, ramp)
+    # Two particles: the synchronous one at the origin, and a neighbour at
+    # delta = 1e-4 whose oscillation stays bounded along the ramp.
+    rep = Phase6DRep([0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 1.0e-4])
+    task = TrackingTask(line; policy=cpu)
+    zmax = 0.0; dmax = 0.0; nmax = 0.0
+    for n in 1:199
+        execute!(task, rep; turns=1)
+        zmax = max(zmax, abs(rep.z[1])); dmax = max(dmax, abs(rep.pz[1])); nmax = max(nmax, abs(rep.z[2]))
+    end
+    @test zmax < 1.0e-9 && dmax < 1.0e-9                          # target 3a: the consistency relation held exactly
+    @test knob_value("mdc4.E0") == program[200]
+    @test 1.0e-3 < nmax < 0.2                                     # the neighbour oscillates (eta C delta ~ 0.6 mm per turn), bounded
+    # The knob-dependent line recompiles once per step in one window: the
+    # program steps at every one of the window's 100 boundaries, and 99 of
+    # those steps are followed by a turn of this window (the first turn's
+    # compile is the window's prologue, keyed on the knob epoch; the last
+    # step's recompile falls to the next window).
+    set_knob!("mdc4.E0", 2.5e9)
+    auditw = ExecutionAudit()
+    with_execution_audit(auditw) do
+        execute!(TrackingTask(line; policy=cpu), Phase6DRep([0.0], [0.0], [0.0], [0.0], [0.0], [0.0]); turns=100)
+    end
+    @test only(filter(r -> r.consumer === :reference_ramp_recompiles, execution_receipts(auditw))).values.recompiles == 99
+    @test only(filter(r -> r.consumer === :reference_ramp, execution_receipts(auditw))).values.steps == 100
+    @test knob_value("mdc4.E0") == program[101]
+    if CUDA_TESTS_ACTIVE
+        gpu = CUDAExecutionPolicy()
+        @knob mdc4g.E0 = 2.5e9
+        refg = ReferenceParticle(:proton; E0=@knob_expr(mdc4g.E0))
+        steps = [2.5e9, 2.7e9, 2.9e9, 2.9e9, 3.4e9]
+        function run_on(policy)
+            set_global_rng!(seed=20261127, method=:philox)
+            b = Beam(256, policy, Float64; rng_id=13, sigma=(1.0e-4, 1.0e-4, 1.0e-2))
+            set_knob!("mdc4g.E0", 2.5e9)
+            execute!(TrackingTask((DriftSpec(L=0.0), ReferenceRamp(steps; reference=refg)); policy=policy), b; turns=5)
+            return map(a -> Array(a), coordinate_arrays(b))
+        end
+        host = run_on(cpu); dev = run_on(gpu)
+        @test host == dev                                         # two multiplications and one fma per particle: bit for bit
+        @test knob_value("mdc4g.E0") == 3.4e9
+        set_global_rng!(seed=20261127, method=:philox)
+        b0 = map(copy, coordinate_arrays(Beam(256, cpu, Float64; rng_id=13, sigma=(1.0e-4, 1.0e-4, 1.0e-2))))
+        rho = O._ramp_p0c_from_knob(refg, 2.5e9) / O._ramp_p0c_from_knob(refg, 3.4e9)
+        @test host[1] == b0[1] && host[3] == b0[3] && host[5] == b0[5]          # x, y, z untouched
+        @test isapprox(host[2], rho .* b0[2]; rtol=1.0e-14) && isapprox(host[4], rho .* b0[4]; rtol=1.0e-14)
+        @test isapprox(host[6], rho .* b0[6] .+ (rho - 1); rtol=1.0e-13)
+        # The ramped ring on the device: the same fixed point.
+        set_knob!("mdc4.E0", 2.5e9)
+        cu = O.CUDA.CuVector
+        repg = Phase6DRep(cu([0.0, 0.0]), cu([0.0, 0.0]), cu([0.0, 0.0]), cu([0.0, 0.0]), cu([0.0, 0.0]), cu([0.0, 1.0e-4]))
+        execute!(TrackingTask(line; policy=gpu), repg; turns=199)
+        zg = Array(repg.z); dg = Array(repg.pz)
+        @test abs(zg[1]) < 1.0e-9 && abs(dg[1]) < 1.0e-9 && 1.0e-3 < abs(zg[2]) < 0.2
+        @test knob_value("mdc4.E0") == program[200]
+        set_global_rng!(seed=0x5eed, method=:philox)
+    end
+end
 
 @testset "Knob control" begin
     reset_knobs!()

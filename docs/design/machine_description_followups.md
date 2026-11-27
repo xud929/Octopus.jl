@@ -314,7 +314,7 @@ owner's, each with a default the implementer takes if no answer arrives.
   ramp is recorded as a program (a table by digest) beside the declared
   machine, never as a snapshot per turn.
 - **Status 2026-11-26:** not in batch A; the ramp campaign is batch C, after the `ParamMeta` type campaign (the owner's choice, section 5 item 4).
-- **Status 2026-11-27:** batch C's theory note [`../theory/reference_ramp.md`](../theory/reference_ramp.md) written with the owner's choices; its implementation follows (the status line under "Batch C").
+- **Status 2026-11-27:** batch C's theory note [`../theory/reference_ramp.md`](../theory/reference_ramp.md) written with the owner's choices, and the implementation landed the same day (the status line under "Batch C" in section 3; record [`../history/machine_description_reference_ramp_2026_11_27.md`](../history/machine_description_reference_ramp_2026_11_27.md)): the ramp is a scheduled action on the reference knob, exactly this ruling's route, the single-pass refusal of the accelerating cavity left standing.
 
 ### R8 The four priced leads
 
@@ -644,7 +644,24 @@ unless the owner orders otherwise (section 5, item 4).
   program, the RF phase the user's through a knob program, plain-number
   strengths constant). One departure from R7's text: the single-pass refusal
   of `ThinAcceleratingCavitySpec` stays, since the ramp route never passes
-  through an accelerating cavity. The implementation follows.
+  through an accelerating cavity.
+- **Status 2026-11-27 (implementation, record
+  [`../history/machine_description_reference_ramp_2026_11_27.md`](../history/machine_description_reference_ramp_2026_11_27.md)):**
+  landed. `ReferenceRamp(program; reference, start_turn, name, companions)`,
+  a scheduled action placed last in the line (`src/tasks/ReferenceRamp.jl`):
+  the turn-boundary map on the live beam, the knob assigned in the
+  reference's spelling, companion knob programs (the RF phase program
+  `synchronous_phase_program` builds among them), the epoch check in the
+  task's turn loop, the snapshot codec with the program as a bulk table by
+  digest, `action_option_schema` with the validator's action block, the
+  `:reference_ramp` and `:reference_ramp_recompiles` receipts, and the
+  refusals by name (placement, schedule, task-level hook, PhaseSpaceReset
+  and particle tunes, the strong-strong task, a plain-number cavity, a
+  lattice reference not the ramp's, a knob off the program). The theory
+  note's four targets measured (its section 6). Deferred: the selective
+  recompile of the knob-dependent entries alone (4.7 ms per step on a
+  162-entry line today), the ramp under more than one MPI rank, the
+  strong-strong ramp, transition crossing.
 
 ### Deferred by decision
 

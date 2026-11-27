@@ -2616,6 +2616,49 @@ shape (here: the executor's text names the field and no per-call survey; the
 before/after bytes of one spelling in the record), not the equality of two
 shapes that were never promised equal.
 
+## A step and its recompile fall on different sides of a window boundary
+
+The reference ramp (batch C of the machine-description follow-ups,
+2026-11-27, record `history/machine_description_reference_ramp_2026_11_27.md`)
+steps the reference at the END of a turn and recompiles the line at the START
+of the next. A window of 100 turns whose program steps at every boundary has
+100 steps and 99 recompiles: the last step's recompile belongs to the next
+window (or to nobody). The first pin expected both counts equal and read
+`100 == 99`. **Why:** two events a sentence calls "the step" sit on
+different sides of the window boundary, and a receipt that reports only one
+of them cannot be checked against the other. **How to apply:** when an
+action at the end of a turn has a consequence at the start of the next,
+record both counts in the receipts (`steps` and `recompiles` here) and pin
+them separately; and state in the docstring which side of the boundary each
+belongs to.
+
+## A side effect that configures the run precedes the snapshot of the run
+
+The ramp's companion knobs (the RF phase program) are set to the first turn's
+value as a window starts. Placed after the per-run receipts, the assignment
+came AFTER the artifact's machine snapshot was rendered, so the snapshot
+recorded the knob at the user's declared value while the run tracked with
+the program's; `read_machine(out)` then refused the file by name against the
+live knob. **Why:** the snapshot is "the machine as the window ran it", and
+anything that configures the window must be in force before it is taken.
+**How to apply:** in `_execute_tracking_task!`, a check-and-configure step
+sits before `prepare_run_artifact!` (its refusals first, its assignments
+last, so a refused run configures nothing); the receipts come after, and a
+pin reads the configured value back out of the embedded snapshot.
+
+## A knob-independent line does not recompile when the knob moves
+
+The compile cache (`_runtime_entries`) ignores the knob epoch for a line
+with no knob-dependent element (`_has_knob_parameters`), so the ramp's
+per-turn epoch check recompiles nothing on a line of numeric matrices and
+recompiles once per step on a line whose cavity is built on the reference.
+A pin that expected nine recompiles on the numeric line read zero. **Why:**
+the recompile is a property of the line's dependence, not of the knob's
+motion. **How to apply:** measure a recompile count on a line that depends
+on the knob, and pin the zero on the one that does not, as the suite's
+testsets now do; a cost claim about the recompile names the line it was
+measured on (4.7 ms per step on 162 entries, 55 us on four).
+
 ## Standing decisions, deliberately not being done
 
 Closed with reasons; reopen only if the stated condition changes.

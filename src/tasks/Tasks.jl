@@ -1689,6 +1689,14 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
             "fused route carries luminosity through wrappers), or drop the " *
             "artifact if you do not need the luminosity channel."))
     end
+    # The ramp's run checks (docs/theory/reference_ramp.md, section 3): the
+    # lattice's reference, the cavities' normalisation and the knob's value
+    # refused by name BEFORE the artifact opens, commits or records anything,
+    # and the companion knobs set for the first turn before the machine
+    # snapshot below is rendered, so the snapshot's knob values are the
+    # window's; the window's receipt follows the per-run receipts.
+    ramp = _reference_ramp_of(runtime_entries)
+    ramp === nothing || _check_reference_ramp_run(ramp, task, first_turn)
     # Per-strong-beam luminosity channel labels are positional; the element
     # `name` will take over when runtime elements carry it. Computed once for
     # the prepare and the output receipt below; `nothing` without an artifact.
@@ -1779,6 +1787,7 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
     _record_execution!(:tracking_output, backend_type(policy),
                        _ra_task_output_receipt(art, labels; loss_report=task.loss_report))
     _record_tracking_receipts!(task, runtime_entries, policy, turns, first_turn, turn_modulation)
+    ramp === nothing || _start_reference_ramp!(ramp, policy, first_turn, turns)
     if artifact_diagnostics
         # The route that ACTUALLY ran, not the one requested: a receipt naming
         # the request would pass while the run took the other path.
@@ -1811,21 +1820,43 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
         # Hoisted out of the turn loop (U1-3): the per-turn plan key consults
         # the hooks only, never the heterogeneous entries tuple.
         hook_entries = _line_hook_entries(runtime_entries)
+        # The ramp's live bindings (docs/theory/reference_ramp.md, section 3): a
+        # ReferenceRamp assigns the reference knob at the end of a turn, and the
+        # line is recompiled before the next turn tracks. These four are
+        # rebound inside the loop and nowhere else, under fresh names, so no
+        # closure above (the prepare's scoped block) captures a rebound
+        # variable (the Core.Box tripwire); without a ramp they are the
+        # bindings compiled before the loop, read every turn as before.
+        live_entries = runtime_entries
+        live_elems = runtime_elems
+        live_hooks = hook_entries
+        live_beams = strong_beams
+        recompiles = 0
         for offset in 0:(turns - 1)
             turn = first_turn + offset
             _turn_t0 = _record_turns ? time_ns() : UInt64(0)
             ctx = with_turn(base_ctx, turn)
             run_actions!(task.actions, ctx, rep)
+            if ramp !== nothing && _runtime_entries_stale(task)
+                # One Ref read per turn; the recompile only when an epoch moved
+                # (the ramp's step at the end of the previous turn). The compile
+                # cache empties the plan cache, so the plans are rebuilt below.
+                live_entries = _runtime_entries(task, rep)
+                live_elems = _physics_line(live_entries)
+                live_hooks = _line_hook_entries(live_entries)
+                live_beams = art === nothing ? () : _strong_beams_of(live_elems)
+                recompiles += 1
+            end
             task_diagnostics = requires_elementwise_tracking(task.observers, ctx) ||
                                artifact_diagnostics
-            plan_key = _active_plan_key(hook_entries, ctx, task_diagnostics,
+            plan_key = _active_plan_key(live_hooks, ctx, task_diagnostics,
                                         task.luminosity_tracking)
             # `get`/`setindex!` rather than `get!(cache, key) do`: the do-block
             # closure captures the isbits entries tuple BY VALUE, a copy of the
             # whole line every turn (U1-3).
             plan = get(task.plan_cache, plan_key, nothing)
             if plan === nothing
-                plan = _build_tracking_plan(runtime_entries, plan_key, reset_state, tune_state)
+                plan = _build_tracking_plan(live_entries, plan_key, reset_state, tune_state)
                 task.plan_cache[plan_key] = plan
             end
             # The ledger's live-progress column, set BEFORE any channel push
@@ -1840,7 +1871,7 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
             _tm_end_turn!(_tm_sink, turn)
             run_observers!(task.observers, ctx, rep)
             if art !== nothing
-                for (i, elem) in enumerate(strong_beams)
+                for (i, elem) in enumerate(live_beams)
                     lum = luminosity(elem, ctx, rep)
                     # The positive filter, per element (carried over
                     # from the retired text observer): a strong beam whose
@@ -1856,6 +1887,8 @@ function _execute_tracking_task!(task, rep, runtime_entries, runtime_elems,
                 shard_offset=first(_mp_current_shard(rep)))
             _stamp_turn!(_record_turns, task.turn_times, _turn_t0, _turn_backend)
         end
+        ramp === nothing || _record_execution!(:reference_ramp_recompiles, backend_type(policy),
+                                               (name=ramp.name, recompiles=recompiles, turns=turns))
         tracking_completed = true
     finally
         # Nested so the line observers are finalized even when a task-level
@@ -2104,6 +2137,9 @@ function _runtime_entries(task::TrackingTask, rep=nothing)
     kepoch = knob_epoch()
     sepoch = _spec_epoch()
     entries = _runtime_line_entries(task.elements)
+    # A ReferenceRamp sits last in the line, alone, on every turn, and beside
+    # no state-bound feature (docs/theory/reference_ramp.md, section 3).
+    _check_reference_ramp_placement(entries)
     # The three binding steps, in the one function both task kinds compile
     # through (`_bind_line_entries`; the strong-strong compile ran none of
     # them until the 2026-10-19 fix batch, unit R).

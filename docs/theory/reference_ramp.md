@@ -1,6 +1,11 @@
 # The Reference Ramp: a Quasi-Static Energy Program for a Ring
 
-> **Status (2026-11-27): theory note, written first; nothing implemented.**
+> **Status (2026-11-27): written first, implemented the same day** (record
+> [`../history/machine_description_reference_ramp_2026_11_27.md`](../history/machine_description_reference_ramp_2026_11_27.md);
+> `ReferenceRamp`, `synchronous_phase_program`, the four suite testsets
+> "Reference ramp: ..." and `validation/reference_ramp.jl`). Where the
+> implementation departs from the first text, the paragraph says
+> "Implemented:" and states what landed.
 > Batch C of
 > [`../design/machine_description_followups.md`](../design/machine_description_followups.md)
 > (ruling R7) and case 4 of the taxonomy in
@@ -134,22 +139,35 @@ Everything the ramp needs exists but one loop check:
   The implementation verifies this on the cavity (a probe, then a pin): a
   cavity whose strength did not follow the knob would deliver a growing
   fraction of its voltage as the energy rose.
-- **The program is a turn table.** `ReferenceRamp(program; knob)` holds the
+- **The program is a turn table.** `ReferenceRamp(program; reference)` holds the
   reference energy per turn, $E_0(n)$ for $n$ in the program's window, as a
   `TurnTable`-class table (content-addressed by digest, the sidecar and the
   artifact's `/machine_tables` already carry such tables, D13), so any
   program is representable and a parametric one (linear, parabolic, a
-  sinusoidal RHIC-style ramp) is a constructor that fills the table. The
-  energy spelling follows the reference's key (`E0`, `p0c`, `gamma0` or
-  `brho`), converted once at construction; the table stores one quantity.
+  sinusoidal RHIC-style ramp) is a constructor that fills the table.
+  Implemented: the table stores $E_0(n)$ in eV, content-addressed by its
+  SHA-256 (the snapshot's bulk-table digest); `reference` is the lattice's
+  `ReferenceParticle`, whose energy must be a bare knob reference in any of
+  the four spellings, and the action converts each entry to the
+  reference's typed key when it assigns the knob, by the reference's own
+  formulas, so the receipt and the snapshot carry energies. Entry $i$ is
+  turn `start_turn + i - 1`; the first entry holds before `start_turn` and
+  the last after the program ends (the flat top is physics, not an error).
+  Companion programs, `companions = (knob_path => values, ...)` of the
+  program's length, are assigned at the same boundaries (and set to the
+  first turn's value as a window starts, before the artifact's snapshot),
+  the RF phase program `synchronous_phase_program(E0, V; charge)` builds
+  among them, so a non-linear ramp's $\varphi_s(n)$ and a frequency
+  program ride with the energy (the owner's choice 3).
 - **The action, placed last in the line.** A scheduled action
   (`AbstractBeamAction`, `src/tasks/BeamObservers.jl`) placed as the LAST
   hook of the top-level line, so it fires at the end of turn $n$, after the
   cavity has delivered the turn's energy: with $n+1$ inside the program it
   computes $\rho$ from the current reference (the knob's value) and the
   table's entry for $n+1$ through the reference's `mc2`, applies the
-  section-2 map to the representation on its backend (three broadcast
-  multiplications over the coordinate arrays, host or device), and assigns
+  section-2 map to the representation on its backend (two broadcast
+  multiplications and one fused multiply-add, `pz' = fma(rho, pz, rho - 1)`,
+  one rounding and the same instruction on host and device), and assigns
   the knob `set_knob!(knob, E_0(n+1))`, which bumps the knob epoch. Turn $n$
   is tracked at $E_0(n)$ and the program's first entry must equal the
   reference the run starts from (checked before any turn runs, refused by
@@ -170,12 +188,17 @@ Everything the ramp needs exists but one loop check:
   moved, the compiled entries, the physics line, the hook entries and the
   strong-beam list re-derived together. The first implementation refuses
   the ramp beside a `PhaseSpaceReset` or particle tunes, whose state binds
-  to one compiled line, by name. The recompile's cost per
-  step is the knob resolve plus the compile of the knob-dependent entries
-  (the magnets given as plain numbers are not knob-dependent and are not
-  rebuilt); the implementation measures it per turn on the shipped
-  strong-strong lattice and records it, and a ramp that moves the knob every
-  turn pays it every turn by construction -- the staircase is the lever.
+  to one compiled line, by name. Implemented: the compile cache's unit is
+  the whole line (`_runtime_entries`, keyed on the knob and spec epochs),
+  so a step recompiles every entry, the plain-number magnets included, and
+  rebuilds the turn plans; a line with no knob-dependent element ignores
+  the knob epoch, as the cache does, and recompiles nothing. Measured
+  (`validation/reference_ramp.jl`, one particle, one thread): 55 us per
+  step on the 4-entry F16 ring and 4.7 ms per step on a 162-entry FODO
+  line with its cavity, against 2.7 us and 43 us per turn without a step.
+  A ramp that moves the knob every turn pays it every turn by
+  construction -- the staircase is the lever -- and the selective
+  recompile of the knob-dependent entries alone is the follow-up row.
 - **The artifact (R9).** The program is a table by digest beside the declared
   machine, never a snapshot per turn: the ramp hook is written by the
   snapshot's hook rules with its table reference, the artifact's
@@ -234,8 +257,11 @@ compared with the formula evaluated at the energy of the measurement.
    \qquad \eta = \alpha_c - \frac{1}{\gamma_0^2},$$
    evaluated at the window's mid-turn energy. Along this ramp $\eta$ goes
    from 0.059 to 0.128 and $E_0$ by 1.4, so the window tunes differ by a
-   factor near 1.2 -- a test the static fixture cannot pass by accident. The
-   static control is the F16 testset itself.
+   factor near 1.2 (measured 1.14 between the first and the last window,
+   whose mid-turn energies are 2.6 and 3.4 GeV) -- a test the static
+   fixture cannot pass by accident. The static control is the F16 testset
+   itself. Implemented: `validation/reference_ramp.jl`, every window
+   within 0.7%.
 3. **Bucket motion.** (a) With $\varphi = \varphi_s(n)$ programmed, the
    particle launched at $(z, \delta) = (0, 0)$ stays within $10^{-9}$ in
    both over the ramp (the consistency relation held exactly). (b) With
@@ -243,12 +269,22 @@ compared with the formula evaluated at the energy of the measurement.
    oscillation moves to $z_1 = \arcsin(\Delta E_{\rm ref}/qV)/k$, measured
    as the mean $z$ over one synchrotron period against the formula to 1%.
 4. **Effectiveness and refusals.** The ramp's knob must be one the lattice's
-   reference depends on (a lattice whose reference energy is a plain number
-   is refused by name, with the `@knob_expr` remedy); a program whose window
-   the `execute!` call exceeds is refused before any turn runs, as a turn
-   table is (`_check_turn_window`); the `:reference_ramp` receipt carries the
-   digest and the end energies; the artifact reads the program back through
-   its table.
+   reference depends on (a reference whose energy is a plain number, or an
+   expression other than a bare knob, is refused by name at the ramp's
+   construction, and a lattice reference that is not the ramp's at
+   `execute!`); the `:reference_ramp` receipt carries the digest, the window
+   and the end energies; the artifact reads the program back through its
+   table. Implemented differently from the first text: a program shorter
+   than the window is not refused as a turn table is -- the program holds
+   at its ends (a flat top), and a window that reaches no step of any
+   program warns once by name. The refusals that landed: the placement's
+   (last in the top-level line, one ramp, `AlwaysSchedule` only, never a
+   task-level hook, not beside a `PhaseSpaceReset` or particle tunes, not in
+   a `StrongStrongTask`), the run's (a ring cavity whose `beta0` or
+   `strength` is a plain number, the lattice reference mismatch, a knob not
+   at the program's value for the window's first turn) and the
+   constructor's (an empty or non-finite program, an entry at or below
+   `mc2`, a companion of another length or on the reference's own knob).
 
 ## 5. Scope, and the owner's choices
 
@@ -275,10 +311,26 @@ compared with the formula evaluated at the energy of the measurement.
 
 The action type with its option schema and snapshot registration, the
 turn-loop epoch check with its cost measured and recorded, the boundary map
-on the three backends (bitwise identical across CPU threads, CUDA and MPI,
-it being three multiplications), the `:reference_ramp` receipt and the
-artifact's table, the lattice-dependence refusal, the four targets above as
-suite testsets (1, 3a, 4) and a validation script with its record (2, 3b),
-the docstrings and `docs/public_api.md`, the design notes' status lines, and
-the batch record with the neighbour audit. Every target is red first on the
-tree without the action.
+on the CPU and CUDA backends (bitwise identical, two multiplications and one
+fma, pinned in the suite; a run divided across MPI ranks refuses line
+actions, the ramp included, so the map reaches MPI at one rank only and
+its lifting is a follow-up), the `:reference_ramp` and
+`:reference_ramp_recompiles` receipts and the program's table in the
+artifact's `/machine_tables` through the embedded snapshot, the
+lattice-dependence refusal, the four targets above as suite testsets (1,
+3a, 4) and a validation script with its record (2, 3b), the docstrings and
+`docs/public_api.md`, the design notes' status lines, and the batch record
+with the neighbour audit. Every target was red first on the tree without
+the action (`result/gates/ramp/red/`, `ReferenceRamp` undefined).
+
+Implemented 2026-11-27: `src/tasks/ReferenceRamp.jl` (the action, its
+schema, the helper, the compile and run checks, the epoch predicate), the
+turn loop of `_execute_tracking_task!` (src/tasks/Tasks.jl), the codec in
+src/lattice/toml_hooks.jl, the knob-root walk's hook arm
+(src/elements/beam_line.jl), the digest scan of src/lattice/toml.jl, the
+metadata validator's action block and the strong-strong refusal
+(src/tasks/strongstrong/interface.jl). Measured: target 1 to $< 10^{-12}$
+over a 10-step staircase on $10^4$ particles; target 2 within 0.7% in
+every 2,000-turn window; target 3a at $4\times 10^{-12}$ m and
+$10^{-15}$ in $\delta$ over the 10,000-turn ramp; target 3b within 0.4%
+of $z_1 = 8.333$ m. The record carries the tables.

@@ -254,8 +254,8 @@ end
 
 An in-line action hook: `type = "ScheduledAction"`, `action` the action's
 table and `schedule` the schedule's, rebuilt as `ScheduledAction(action,
-schedule)` under the checks of `_toml_hook_part`. No action Octopus defines
-has an option schema: `BeamSwapAction` holds the function that provides the
+schedule)` under the checks of `_toml_hook_part`. `ReferenceRamp` has its own
+rules below; `BeamSwapAction` holds the function that provides the
 replacement beam and is refused by name (it is on
 `_toml_refused_object_types`), and an action of any other type is refused as
 having no option schema to print by.
@@ -278,6 +278,95 @@ _toml_encode_object(x::BeamSwapAction, ctx::_TomlContext) = _toml_refuse(ctx,
     "beam and cannot be snapshotted; place the action from code when the machine is reloaded")
 _toml_encode_object(x::AbstractBeamAction, ctx::_TomlContext) = _toml_refuse(ctx,
     "a $(nameof(typeof(x))) action has no option schema to print by and cannot be snapshotted")
+
+"""
+    _toml_encode_object(x::ReferenceRamp, ctx)
+    _toml_decode_object(::Type{<:ReferenceRamp}, tbl, ctx)
+
+The ramp action (docs/theory/reference_ramp.md): `type = "ReferenceRamp"`,
+`reference` the reference particle's table (`_toml_reference_table`, its
+energy the knob expression), `start_turn`, `name` (left out when empty),
+`program = { sha256, length }` the energy program as a bulk table by digest
+(`_toml_store_table!`; the sidecar and the artifact's `/machine_tables` hold
+it) and `companions`, an array of `{ knob, program = { sha256, length } }`,
+left out when there are none. Read back through the constructor, which
+recomputes the digests the text carries; a table whose digest differs from
+the text's is refused by the table seam (`_toml_table`), a `length` that
+does not match the table, an unknown key, a missing part and the
+constructor's own refusals by name with the table's path.
+"""
+function _toml_encode_object(x::ReferenceRamp, ctx::_TomlContext)
+    tbl = Dict{String,Any}(
+        "type" => "ReferenceRamp",
+        "reference" => _toml_reference_table(x.reference, _toml_at(ctx, "reference")),
+        "start_turn" => Int64(x.start_turn),
+        "program" => _toml_ramp_program_table(x.program, _toml_at(ctx, "program")),
+    )
+    isempty(x.name) || (tbl["name"] = x.name)
+    if !isempty(x.companions)
+        tbl["companions"] = Any[
+            _TomlTable("knob" => String(c.knob),
+                       "program" => _toml_ramp_program_table(c.program, _toml_at(ctx, "companions")))
+            for c in x.companions]
+    end
+    return tbl
+end
+_toml_ramp_program_table(program::Vector{Float64}, ctx::_TomlContext) =
+    _TomlTable("sha256" => _toml_store_table!(ctx, program), "length" => length(program))
+# The direct round trip (encode, then decode without a text in between, as the
+# suite's tripwire does) hands the decoder the encoder's inline tables; the
+# parsed text hands it dictionaries. Both read as dictionaries here.
+_toml_ramp_plain(x) = x
+_toml_ramp_plain(t::_TomlTable) = Dict{String,Any}(k => _toml_ramp_plain(v) for (k, v) in t.pairs)
+function _toml_ramp_program(tbl::AbstractDict, key::AbstractString, ctx::_TomlContext)
+    p = _toml_ramp_plain(get(tbl, key, nothing))
+    p isa AbstractDict || _toml_refuse(ctx,
+        "ReferenceRamp needs `$(key) = { sha256 = \"...\", length = n }`, the program as a bulk table by digest")
+    pctx = _toml_at(ctx, key)
+    _toml_only_keys(p, ("sha256", "length"), :ReferenceRamp, pctx)
+    (haskey(p, "sha256") && p["sha256"] isa AbstractString) || _toml_refuse(pctx,
+        "`$(key)` needs `sha256`, the table's digest as a string")
+    data = _toml_table(pctx, p["sha256"])
+    if haskey(p, "length")
+        n = p["length"]
+        (n isa Integer && !(n isa Bool) && n == length(data)) || _toml_refuse(pctx,
+            "`length` = $(repr(n)) does not match the table's $(length(data)) entries")
+    end
+    return data
+end
+function _toml_decode_object(::Type{<:ReferenceRamp}, tbl::AbstractDict, ctx::_TomlContext)
+    _toml_only_keys(tbl, ("type", "reference", "start_turn", "name", "program", "companions"),
+                    :ReferenceRamp, ctx)
+    ref_tbl = _toml_ramp_plain(get(tbl, "reference", nothing))
+    ref_tbl isa AbstractDict || _toml_refuse(ctx, "ReferenceRamp needs a `reference` table")
+    reference = _toml_decode_reference(ref_tbl, _toml_at(ctx, "reference"))
+    program = _toml_ramp_program(tbl, "program", ctx)
+    start_turn = get(tbl, "start_turn", 0)
+    (start_turn isa Integer && !(start_turn isa Bool)) || _toml_refuse(_toml_at(ctx, "start_turn"),
+        "`start_turn` must be an integer; got $(repr(start_turn))")
+    name = get(tbl, "name", "")
+    name isa AbstractString || _toml_refuse(_toml_at(ctx, "name"), "`name` must be a string; got $(repr(name))")
+    companions = Pair{Symbol,Vector{Float64}}[]
+    if haskey(tbl, "companions")
+        raw = tbl["companions"]
+        raw isa AbstractVector || _toml_refuse(_toml_at(ctx, "companions"),
+            "`companions` must be an array of { knob, program } tables; got $(repr(raw))")
+        for (i, c) in enumerate(raw)
+            cctx = _toml_at(ctx, "companions[$(i)]")
+            c = _toml_ramp_plain(c)
+            c isa AbstractDict || _toml_refuse(cctx, "a companion must be a { knob, program } table; got $(repr(c))")
+            _toml_only_keys(c, ("knob", "program"), :ReferenceRamp, cctx)
+            (haskey(c, "knob") && c["knob"] isa AbstractString) || _toml_refuse(cctx,
+                "a companion needs `knob`, the knob path as a string")
+            push!(companions, Symbol(c["knob"]) => _toml_ramp_program(c, "program", cctx))
+        end
+    end
+    return _toml_construct(ctx, :ReferenceRamp) do
+        ReferenceRamp(program; reference, start_turn=Int(start_turn), name=String(name),
+                      companions=Tuple(companions))
+    end
+end
+_toml_register_object!(ReferenceRamp)
 
 # ---------------------------------------------------------------------------
 # Collision markers with the solver on them.

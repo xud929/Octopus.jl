@@ -411,6 +411,26 @@ OCTOPUS_RNG_VALIDATION_WRITE_CSV=true \
 julia --project=. validation/counter_rng_validation.jl
 ```
 
+## Reference Ramp
+
+`reference_ramp.jl` measures targets 2 and 3b of
+`docs/theory/reference_ramp.md` (section 4) on the suite's F16 ring (C = 100
+m, alpha_c = 0.2, a harmonic-1 cavity built on the knob reference), a proton
+ramped from 2.5 to 3.5 GeV over 10,000 turns by a `ReferenceRamp` placed
+last in the line: the synchrotron tune of each 2,000-turn window against
+the linearised one-turn map at the window's mid-turn energy (1%), the
+synchronous particle's fixed point over the whole ramp (1e-9), the bucket
+centre with the phase held at zero (`z1 = C asin(dE/qV)/(2 pi h)`, 1%),
+and the cost of the per-turn recompile against a flat program on the
+4-entry ring and a 162-entry FODO line. Writes
+`reference_ramp_validation.txt` under `OCTOPUS_RESULT_DIR`; the record of
+2026-11-27 (`docs/history/machine_description_reference_ramp_2026_11_27.md`)
+carries its tables. CPU only.
+
+```bash
+julia --project=. --threads=1 validation/reference_ramp.jl
+```
+
 ## Strong-Beam Kick Fingerprint
 
 `strong_beam_kick_fingerprint.jl` is a refactor guard for the weak-strong kick
