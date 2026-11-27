@@ -2725,6 +2725,7 @@ read(out, :moments; name="IP6", column=Moment(; x=1))   # one column
 read(out, :moments; name="IP6", orders=1:2)  # a moment selection
 read(out, :bpm; name="BPM_07", column=:x)
 read(out, :snapshot; name="inj", turn=2)     # one fired block
+read(out, :snapshot; name="inj", particle_id=7)  # one particle's rows across the blocks
 read(out, :losses)                           # rows + apertures + summary
 read(out, :execution)                        # one ledger row per execute!
 read(out, :turn_modulation)                  # modulation provenance per execute!
@@ -2880,6 +2881,13 @@ function _ra_select_column(rows::NamedTuple, column, what)
         join(string.(keys(rows)), ", ")))
     return rows[key]
 end
+
+# Row selection on a probe group's column NamedTuple: the vectors filter by
+# the mask, the scalars (`s`, `attrs`) carry through. A function of its own so
+# that the masks of `read`'s two row selectors are never captured by a
+# generator closure in `read` (the `Core.Box` class a reassigned local grows).
+_ra_keep_rows(rows::NamedTuple, keep::AbstractVector{Bool}) =
+    (; (k => (v isa AbstractVector ? v[keep] : v) for (k, v) in pairs(rows))...)
 
 # `g` is the /losses group, handed over by `_ra_require_group` (U5-7). A
 # `TrackingTask` wrote the one-beam layout into the group itself; a
@@ -3359,7 +3367,7 @@ end
 
 """
     read(out::TaskOutput, kind::Symbol; name=nothing, column=nothing, turn=nothing,
-         orders=nothing, extra=(), exclude=(), slot=nothing)
+         particle_id=nothing, orders=nothing, extra=(), exclude=(), slot=nothing)
 
 One product of the artifact. `kind` is one of `:luminosity`, `:moments`,
 `:snapshot`, `:bpm`, `:reset_trials`, `:reset_losses`, `:losses`, `:execution`,
@@ -3376,7 +3384,10 @@ its OWN turn axis -- a collision has a row exactly where its schedule
 evaluated; the execution ledger's `turns` is a different thing, the planned
 window length per `execute!`). `column` narrows a probe group to one column vector and accepts a
 `Symbol`, a column-name string, or a `Moment` (moment groups). `turn` narrows
-a snapshot group to one fired block.
+a snapshot group to one fired block, `particle_id` to one particle's rows (the
+id the snapshot's `particle_id` column carries, 1-based over the whole beam),
+and the two together to one row; an absent turn or id reads as empty columns,
+and either keyword with any other kind is refused by name.
 
 `orders`/`extra`/`exclude` narrow a MOMENT group to a selection, by the
 `MomentObserver` rules (expand `orders`, add `extra`, remove `exclude`;
@@ -3447,6 +3458,7 @@ entry per `execute!` that had a modulated element, the vector
 function Base.read(out::TaskOutput, kind::Symbol;
                    name::Union{Nothing,AbstractString}=nothing,
                    column=nothing, turn::Union{Nothing,Integer}=nothing,
+                   particle_id::Union{Nothing,Integer}=nothing,
                    orders=nothing, extra=(), exclude=(),
                    slot::Union{Nothing,Integer}=nothing)
     kind === :all || kind === :machine || kind in _RA_KINDS || throw(ArgumentError(
@@ -3464,8 +3476,8 @@ function Base.read(out::TaskOutput, kind::Symbol;
             "pass either column or an orders/extra/exclude selection, not both"))
     end
     if kind in (:all, :losses, :execution, :turn_modulation, :machine)
-        (name === nothing && column === nothing && turn === nothing) ||
-            throw(ArgumentError("$(kind) is not a named group: name/column/turn do not apply"))
+        (name === nothing && column === nothing && turn === nothing && particle_id === nothing) ||
+            throw(ArgumentError("$(kind) is not a named group: name/column/turn/particle_id do not apply"))
     end
     if kind === :all
         present = _ra_contents(out)
@@ -3474,6 +3486,8 @@ function Base.read(out::TaskOutput, kind::Symbol;
     end
     turn === nothing || kind === :snapshot || throw(ArgumentError(
         "turn selects a snapshot block; it does not apply to $(kind)"))
+    particle_id === nothing || kind === :snapshot || throw(ArgumentError(
+        "particle_id selects a snapshot's particle; it does not apply to $(kind)"))
     column === nothing || kind in _RA_PROBE_KINDS || throw(ArgumentError(
         "column selects from a probe group; it does not apply to $(kind)"))
     _ra_open(out) do f
@@ -3491,18 +3505,18 @@ function Base.read(out::TaskOutput, kind::Symbol;
         g = _ra_require_group(f, out, kind)
         one_group = kind === :luminosity ? _ra_lum_series : _ra_probe_columns
         if name === nothing
-            column === nothing && turn === nothing || throw(ArgumentError(
-                "column/turn selection needs a name= to pick the group"))
+            column === nothing && turn === nothing && particle_id === nothing || throw(ArgumentError(
+                "column/turn/particle_id selection needs a name= to pick the group"))
             return Dict(String(k) => one_group(g[k])
                         for k in keys(g) if g[k] isa HDF5.Group)
         end
         rows = one_group(_ra_named_group(g, out, kind, name))
-        if turn !== nothing
-            keep = rows.turn .== Float64(turn)
-            # Scalars (the s attribute) carry through; only columns filter.
-            rows = (; (k => (v isa AbstractVector ? v[keep] : v)
-                       for (k, v) in pairs(rows))...)
-        end
+        # A snapshot's row selectors, each a mask over the whole group: `turn`
+        # keeps one fired block, `particle_id` one particle's rows, the two
+        # together one row (2026-11-27). Scalars (`s`, `attrs`) carry through;
+        # only the columns filter (`_ra_keep_rows`).
+        turn === nothing || (rows = _ra_keep_rows(rows, rows.turn .== Float64(turn)))
+        particle_id === nothing || (rows = _ra_keep_rows(rows, rows.particle_id .== Float64(particle_id)))
         if selection
             # The MomentObserver selection rules; requested-but-unrecorded
             # moments are skipped, matching MomentOutput.

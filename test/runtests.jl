@@ -28078,6 +28078,26 @@ end
         # turn= narrows a snapshot to one fired block; column=Moment selects
         # a moment column by its canonical identity.
         @test all(read(tout, :snapshot; name="inj", turn=1).turn .== 1.0)
+        # particle_id= narrows a snapshot to one particle's rows, as turn=
+        # narrows it to one fired block, and the two together select one
+        # row; an id the group does not hold reads as empty columns, as an
+        # absent turn does, and the keyword is refused by name wherever it
+        # cannot mean anything (the keyword landed 2026-11-27, the one Integer
+        # form `turn` takes).
+        let every = read(tout, :snapshot; name="inj"),
+            one = read(tout, :snapshot; name="inj", particle_id=2)
+            @test all(one.particle_id .== 2.0) && sort(Int.(one.turn)) == [0, 1, 2]
+            @test one.x == every.x[every.particle_id .== 2.0] && one.s === every.s
+        end
+        let cell = read(tout, :snapshot; name="inj", turn=1, particle_id=2)
+            @test length(cell.turn) == 1 && cell.turn[1] == 1.0 && cell.particle_id[1] == 2.0
+            @test read(tout, :snapshot; name="inj", turn=1, particle_id=2, column=:px) == cell.px
+        end
+        @test isempty(read(tout, :snapshot; name="inj", particle_id=7).turn)
+        @test_throws ArgumentError read(tout, :moments; name="IP6", particle_id=1)
+        @test_throws ArgumentError read(tout, :snapshot; particle_id=1)
+        @test_throws ArgumentError read(tout, :execution; particle_id=1)
+        @test occursin("particle_id", sprint(showerror, try read(tout, :bpm; name="BPM_07", particle_id=1) catch e; e end))
         @test read(tout, :moments; name="IP6", column=Moment(; x=1)) ==
               read(mout, Moment(; x=1))
         # orders/extra/exclude fold in with the MomentObserver selection

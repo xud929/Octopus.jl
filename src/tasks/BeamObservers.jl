@@ -884,7 +884,8 @@ Record full phase-space snapshots into the owning task's
 windows dropped by the artifact's per-group cursor. `npart` captures only
 the leading particles; `nothing` captures every particle. Requires the task
 to carry `artifact=...`; read back with
-`read(TaskOutput(path), :snapshot; name=name)`.
+`read(TaskOutput(path), :snapshot; name=name)`, `turn=` for one fired block,
+`particle_id=` for one particle's rows.
 
 Each fire writes its block IMMEDIATELY: the artifact's `capacity` batching
 deliberately does not apply here, because a snapshot block is already large

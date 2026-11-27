@@ -310,6 +310,7 @@ read(out, :moments; name = "proton", column = Moment(; x = 1))
 read(out, :moments; name = "proton", orders = 1:2)   # selection, MomentObserver rules
 read(out, :bpm; name = "BPM_07", column = :x)
 read(out, :snapshot; name = "inj", turn = 100)
+read(out, :snapshot; name = "inj", particle_id = 7)   # one particle's rows across the fired blocks
 read(out, :losses)                        # rows + apertures + summary
 read(out, :execution)                     # per-execute! ledger
 read(out, :machine)                       # the embedded machine snapshot's TOML text (D14; slot = n for one row)
