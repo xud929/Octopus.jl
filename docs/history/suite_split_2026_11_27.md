@@ -236,7 +236,9 @@ All on the GPU node (`sapphirerapids`, one RTX 4500 Ada), four threads.
   EST after 231 rows, the U12-8 class-form leak above; exit 1.
 - The fast lane on the final tree (the second attempt, after the U12-8
   repair): green: exit 0, 503 top-level rows, 160,221 of 160,225 pass, the three Broken rows the lane always carries ("Misalignment maps" 2, the `@elements` expansion 1, the one-particle probe's two-rank arm the lane skips 1), 18 sections skipped and named in the banner, 41 min 44 s (12:09:06 to 12:50:50 EST, `fast_lane.log`).
-- The full gate at CI settings, CUDA active, on the final tree: [GATE].
+- The full gate at CI settings, CUDA active, on the final tree: green: exit 0, 521 top-level rows, 163,683 of 163,686 pass, the two standing Broken rows ("Misalignment maps" 2, the `@elements` expansion 1), no lane skip, the CUDA arm's 225 checks included ("CUDA-requiring validation scripts run in the gate's CUDA arm" 8 min 32 s), 99 min 25 s (13:00:00 to 14:39:25 EST), on the committed tree `883a831` (tree `26a5974d2fa4d081d7c431a635065d1c7c133e17`, a clean checkout), `full_gate_native.log`.
+- Git kept the driver's path, so `legacy.jl` is not a rename to git: the
+  single file's last state is `git show 7522bfb:test/runtests.jl`.
 
 Not verified: hidden order dependence beyond what the full gate's single
 order exercises (the artifact file now runs after `legacy.jl`, so every
