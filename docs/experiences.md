@@ -2685,6 +2685,14 @@ Closed with reasons; reopen only if the stated condition changes.
   the Measured Lessons, and `docs/history/`; procedures live in
   `docs/guides/`, one guide per routing row. A fact that will age does not
   go in the entry point; a tripwire test replaces any hand-maintained count.
+- **Beam definitions and machine-level reference particles on the
+  `Machine`** (owner decision 2026-11-26, R1 of
+  `design/machine_description_followups.md`). The machine holds lattices
+  and shared knob roots; a beam is a run object built on a
+  `ReferenceParticle`, and each lattice carries its entrance reference.
+  Reopen when a consumer needs a beam described by the machine; the beam
+  receipt in the run artifact comes with it (the deferred row of
+  `todo.md`, 2026-11-27).
 - **Include directives, element templates and element libraries inside the
   TOML snapshot** (owner decision 2026-11-26). The snapshot is the flat data
   form (D2 and D13 of the machine description: pure data cannot abstract,

@@ -669,7 +669,10 @@ The beam receipt in the run artifact (R1); `write_machine(path; split =
 :lattice)` and any reader-side include (R10); a removal verb for markers
 (R2); a derivation-provenance key in the snapshot (R11); the translators
 (D17) and the deliberately-not-now items (D18) as the parent note states
-them.
+them. Carried, each with the trigger that would reopen it, as the compact row
+"The machine description: the items the follow-ups note deferred by decision"
+of `../todo.md` (the 2026-11-27 ledger touch, which closed the campaign row
+into `../history/todo_ledger_archive.md`).
 
 ## 4. Measurements behind the note (2026-11-26)
 
