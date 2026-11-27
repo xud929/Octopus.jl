@@ -323,14 +323,14 @@ _is_turn_rule(entry) = entry === nothing || entry isa AbstractTurnRule
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        N=ParamMeta(required=true, meaning="maximum harmonic count encoded by ThinCrabCavitySpec{N} (and by the explicitly typed ThinCrabCavitySpec{N,T})"),
-        frequency=ParamMeta(required=true, unit="Hz", meaning="RF frequency"),
-        strengthX=ParamMeta(default=(), meaning="horizontal kick strength tuple of length N"),
-        strengthY=ParamMeta(default=(), meaning="vertical kick strength tuple of length N"),
-        phase=ParamMeta(unit="rad", default=(), meaning="phase tuple of length N"),
-        phase_noise=ParamMeta(unit="rad", default=(), meaning="per-harmonic turn-by-turn additive phase modulation, tuple of length N: each entry nothing (inactive) or a rule (WhiteNoise, PinkNoise, TurnTable, SpectralNoise -- the last resolving to a TurnTable at compile_runtime) realised once per turn on the host by the TurnModulated wrap at compile_runtime, never read by the kernel; see src/elements/turn_modulated.jl"),
-        strength_noise=ParamMeta(default=(), meaning="per-harmonic turn-by-turn RELATIVE strength modulation, dimensionless, tuple of length N: each entry nothing or a rule whose realised per-turn value d scales BOTH planes' strengths of its harmonic, strengthX[i] (1 + d) and strengthY[i] (1 + d) -- one voltage driver per cavity (relative, 2026-10-15); a WhiteNoise or PinkNoise sigma is the relative rms itself, a TurnTable holds relative factors and a SpectralNoise resolves at compile to such a table"),
-        tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
+        N=ParamMeta(type=Integer, required=true, meaning="maximum harmonic count encoded by ThinCrabCavitySpec{N} (and by the explicitly typed ThinCrabCavitySpec{N,T})"),
+        frequency=ParamMeta(type=Real, required=true, unit="Hz", meaning="RF frequency"),
+        strengthX=ParamMeta(type=Tuple{Vararg{Real}}, default=(), meaning="horizontal kick strength tuple of length N"),
+        strengthY=ParamMeta(type=Tuple{Vararg{Real}}, default=(), meaning="vertical kick strength tuple of length N"),
+        phase=ParamMeta(type=Tuple{Vararg{Real}}, unit="rad", default=(), meaning="phase tuple of length N"),
+        phase_noise=ParamMeta(type=Tuple{Vararg{Union{Nothing,AbstractTurnRule}}}, unit="rad", default=(), meaning="per-harmonic turn-by-turn additive phase modulation, tuple of length N: each entry nothing (inactive) or a rule (WhiteNoise, PinkNoise, TurnTable, SpectralNoise -- the last resolving to a TurnTable at compile_runtime) realised once per turn on the host by the TurnModulated wrap at compile_runtime, never read by the kernel; see src/elements/turn_modulated.jl"),
+        strength_noise=ParamMeta(type=Tuple{Vararg{Union{Nothing,AbstractTurnRule}}}, default=(), meaning="per-harmonic turn-by-turn RELATIVE strength modulation, dimensionless, tuple of length N: each entry nothing or a rule whose realised per-turn value d scales BOTH planes' strengths of its harmonic, strengthX[i] (1 + d) and strengthY[i] (1 + d) -- one voltage driver per cavity (relative, 2026-10-15); a WhiteNoise or PinkNoise sigma is the relative rms itself, a TurnTable holds relative factors and a SpectralNoise resolves at compile to such a table"),
+        tracking_method=ParamMeta(type=AbstractTrackingMethod, default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = ThinCrabCavitySpec{2}(1.0e8; strengthX=(1.0, 0.5), strengthY=(0.25, 0.125), phase=(0.0, 0.1))

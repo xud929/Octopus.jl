@@ -323,8 +323,8 @@ element compiles in (`numeric_type`; `Float32` for a Float32 line).
 KickerSpec
 
 const _THIN_COMMON = (
-    knl=ParamMeta(default=(), meaning="integrated normal strengths; index i holds K_{i-1} L, so knl[2] is K1 L. Integrated, not the thick kn: a thin element is the L -> 0 limit at fixed K L"),
-    ksl=ParamMeta(default=(), meaning="skew partners of knl"),
+    knl=ParamMeta(type=Tuple{Vararg{Real}}, default=(), meaning="integrated normal strengths; index i holds K_{i-1} L, so knl[2] is K1 L. Integrated, not the thick kn: a thin element is the L -> 0 limit at fixed K L"),
+    ksl=ParamMeta(type=Tuple{Vararg{Real}}, default=(), meaning="skew partners of knl"),
     # The placement entries are the ONE table's (`_PLACEMENT_PARAMS`: unit,
     # default, alternatives) with the thin kinds' meanings. They were hand-copied
     # `ParamMeta`s without units and, on `misalign_convention`, without the
@@ -339,7 +339,7 @@ const _THIN_COMMON = (
     y_pitch=_placement_param(:y_pitch; meaning="misalignment: rotation about the x axis, in radians"),
     tilt=_placement_param(:tilt; meaning="misalignment: roll about the longitudinal axis, in radians. Geometric, and distinct from building a skew element through ksl"),
     misalign_convention=_placement_param(:misalign_convention; meaning="which code's misalignment convention to follow, :bmad or :madx. At zero length the reference point cannot matter, so the two differ only in the order the rotations compose"),
-    tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
+    tracking_method=ParamMeta(type=AbstractTrackingMethod, default=Symplectic6DMap(), meaning="per-element tracking method"),
 )
 
 @element_spec begin
@@ -373,18 +373,18 @@ end
     parameters = (
         knl=_THIN_COMMON.knl,
         ksl=_THIN_COMMON.ksl,
-        k0l=ParamMeta(default=0, meaning="integrated dipole strength K0 L; folded into knl[1]"),
-        k0sl=ParamMeta(default=0, meaning="skew partner of k0l"),
-        k1l=ParamMeta(default=0, meaning="integrated quadrupole strength K1 L; folded into knl[2]"),
-        k1sl=ParamMeta(default=0, meaning="skew partner of k1l"),
-        k2l=ParamMeta(default=0, meaning="integrated sextupole strength K2 L; folded into knl[3]"),
-        k2sl=ParamMeta(default=0, meaning="skew partner of k2l"),
-        k3l=ParamMeta(default=0, meaning="integrated octupole strength K3 L; folded into knl[4]"),
-        k3sl=ParamMeta(default=0, meaning="skew partner of k3l"),
-        k4l=ParamMeta(default=0, meaning="integrated decapole strength K4 L; folded into knl[5]"),
-        k4sl=ParamMeta(default=0, meaning="skew partner of k4l"),
-        k5l=ParamMeta(default=0, meaning="integrated dodecapole strength K5 L; folded into knl[6]"),
-        k5sl=ParamMeta(default=0, meaning="skew partner of k5l"),
+        k0l=ParamMeta(type=Real, default=0, meaning="integrated dipole strength K0 L; folded into knl[1]"),
+        k0sl=ParamMeta(type=Real, default=0, meaning="skew partner of k0l"),
+        k1l=ParamMeta(type=Real, default=0, meaning="integrated quadrupole strength K1 L; folded into knl[2]"),
+        k1sl=ParamMeta(type=Real, default=0, meaning="skew partner of k1l"),
+        k2l=ParamMeta(type=Real, default=0, meaning="integrated sextupole strength K2 L; folded into knl[3]"),
+        k2sl=ParamMeta(type=Real, default=0, meaning="skew partner of k2l"),
+        k3l=ParamMeta(type=Real, default=0, meaning="integrated octupole strength K3 L; folded into knl[4]"),
+        k3sl=ParamMeta(type=Real, default=0, meaning="skew partner of k3l"),
+        k4l=ParamMeta(type=Real, default=0, meaning="integrated decapole strength K4 L; folded into knl[5]"),
+        k4sl=ParamMeta(type=Real, default=0, meaning="skew partner of k4l"),
+        k5l=ParamMeta(type=Real, default=0, meaning="integrated dodecapole strength K5 L; folded into knl[6]"),
+        k5sl=ParamMeta(type=Real, default=0, meaning="skew partner of k5l"),
         x_offset=_THIN_COMMON.x_offset,
         y_offset=_THIN_COMMON.y_offset,
         z_offset=_THIN_COMMON.z_offset,
@@ -416,8 +416,8 @@ end
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        k0l=ParamMeta(default=0, meaning="integrated dipole strength K0 L; folded into knl[1]. Gives dpx = -K0 L, the field convention, not the corrector one"),
-        k0sl=ParamMeta(default=0, meaning="skew partner of k0l, giving dpy = +Ks0 L"),
+        k0l=ParamMeta(type=Real, default=0, meaning="integrated dipole strength K0 L; folded into knl[1]. Gives dpx = -K0 L, the field convention, not the corrector one"),
+        k0sl=ParamMeta(type=Real, default=0, meaning="skew partner of k0l, giving dpy = +Ks0 L"),
         knl=_THIN_COMMON.knl,
         ksl=_THIN_COMMON.ksl,
         x_offset=_THIN_COMMON.x_offset,
@@ -451,8 +451,8 @@ end
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        k1l=ParamMeta(default=0, meaning="integrated quadrupole strength K1 L; folded into knl[2]"),
-        k1sl=ParamMeta(default=0, meaning="skew partner of k1l"),
+        k1l=ParamMeta(type=Real, default=0, meaning="integrated quadrupole strength K1 L; folded into knl[2]"),
+        k1sl=ParamMeta(type=Real, default=0, meaning="skew partner of k1l"),
         knl=_THIN_COMMON.knl,
         ksl=_THIN_COMMON.ksl,
         x_offset=_THIN_COMMON.x_offset,
@@ -486,8 +486,8 @@ end
     contracts = [ElementTrackingBackendConsistencyContract, PTCConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        k2l=ParamMeta(default=0, meaning="integrated sextupole strength K2 L; folded into knl[3]"),
-        k2sl=ParamMeta(default=0, meaning="skew partner of k2l"),
+        k2l=ParamMeta(type=Real, default=0, meaning="integrated sextupole strength K2 L; folded into knl[3]"),
+        k2sl=ParamMeta(type=Real, default=0, meaning="skew partner of k2l"),
         knl=_THIN_COMMON.knl,
         ksl=_THIN_COMMON.ksl,
         x_offset=_THIN_COMMON.x_offset,
@@ -521,7 +521,7 @@ end
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        hkick=ParamMeta(default=0, meaning="horizontal steering kick, dpx = +hkick. This is the corrector sign convention, opposite to a dipole field of the same magnitude"),
+        hkick=ParamMeta(type=Real, default=0, meaning="horizontal steering kick, dpx = +hkick. This is the corrector sign convention, opposite to a dipole field of the same magnitude"),
         x_offset=_THIN_COMMON.x_offset,
         y_offset=_THIN_COMMON.y_offset,
         z_offset=_THIN_COMMON.z_offset,
@@ -553,7 +553,7 @@ end
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        vkick=ParamMeta(default=0, meaning="vertical steering kick, dpy = +vkick"),
+        vkick=ParamMeta(type=Real, default=0, meaning="vertical steering kick, dpy = +vkick"),
         x_offset=_THIN_COMMON.x_offset,
         y_offset=_THIN_COMMON.y_offset,
         z_offset=_THIN_COMMON.z_offset,
@@ -585,8 +585,8 @@ end
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        hkick=ParamMeta(default=0, meaning="horizontal steering kick, dpx = +hkick"),
-        vkick=ParamMeta(default=0, meaning="vertical steering kick, dpy = +vkick"),
+        hkick=ParamMeta(type=Real, default=0, meaning="horizontal steering kick, dpx = +hkick"),
+        vkick=ParamMeta(type=Real, default=0, meaning="vertical steering kick, dpy = +vkick"),
         x_offset=_THIN_COMMON.x_offset,
         y_offset=_THIN_COMMON.y_offset,
         z_offset=_THIN_COMMON.z_offset,

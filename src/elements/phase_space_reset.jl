@@ -117,7 +117,7 @@ const _PHASE_SPACE_RESET_PLACEMENT_PARAMS = merge(_PLACEMENT_PARAMS,
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
-        tracking_method=ParamMeta(default=NonSymplectic6DMap(),
+        tracking_method=ParamMeta(type=AbstractTrackingMethod, default=NonSymplectic6DMap(),
             meaning="non-symplectic experimental reset; only NonSymplectic6DMap is supported"),
         _PHASE_SPACE_RESET_PLACEMENT_PARAMS...,
     )

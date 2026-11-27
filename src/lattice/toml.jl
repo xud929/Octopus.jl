@@ -95,23 +95,33 @@ disagree:
   constructor form converts (`_as_numeric_type`). A knob expression is the
   inline table `{ expr = "..." }` holding the knob system's surface syntax
   (`string(e)`, parsed by `knob_expression`, a documented total round trip); a
-  bare string where a number belongs is refused by name. A `Symbol` prints
-  as a bare string when the kind's `ParamMeta` for that key has a `Symbol`
-  default or alternative (`misalign_convention = "center"`) and as
-  `{ symbol = "..." }` otherwise, and the reader coerces on the same
-  evidence; a `String` is a string. A tuple prints as an array and is read
-  back as a tuple when the key's `ParamMeta` default is a tuple, as a vector
-  when it is a vector, and as `{ tuple = [...] }` or `{ vector = [...] }` when
-  the metadata gives no hint or the value's class differs from the hint's; a
-  matrix is `{ matrix = [[row], [row]] }`; mixed `(number, expr)` tuples follow
-  the same rule. The kind's example value counts as class evidence beside the
-  `ParamMeta` default and alternatives, so a bare string where the kind stores
-  a number is refused by name even for a key whose default is `nothing`. `nothing` is the
+  bare string where a number belongs is refused by name. The class of every
+  element parameter is its `ParamMeta.type` (R8d, batch B, 2026-11-26), the
+  one declaration the writer and the reader coerce by: a `Symbol` prints as
+  a bare string where the key declares `Symbol` (`misalign_convention =
+  "bmad"`) and reads back as one; a `Type` prints as its name where the key
+  declares `Type` (`numeric_type = "Float64"`), read through the allowlist
+  of numeric types (`Float64`, `Float32`, `Float16`, `BigFloat`, `Int`); a
+  tuple prints as a plain array where the key declares a tuple class
+  (`kn = [0.0, 1.0]`, a `Linear6DSpec`'s `beta1 = [1.0, 2.0, 3.0]`) and reads
+  back as a tuple, its items by the declared element class; a vector prints
+  as an array where the key declares a vector class; a matrix is always
+  `{ matrix = [[row], [row]] }`; mixed `(number, expr)` tuples follow the same
+  rule. A stored value outside the declared class is refused by name at
+  write, since the reader would refuse it (a friendly constructor stores the
+  declared class; a raw `ElementSpec` may not), and a file value outside it
+  is refused by name at read: a float where an integer is declared, a bare
+  string where a number or a tuple is declared, a boolean where a number is,
+  `{ nothing = true }` where the class has no `nothing`. The marker forms
+  `{ symbol = "..." }`, `{ tuple = [...] }`, `{ vector = [...] }` and
+  `{ type_name = "..." }` are kept for the keys declared `Any` (a
+  deliberately polymorphic parameter such as `particle_tunes`), for a class
+  admitting both tuples and vectors, and for the objects' options, whose
+  class the writer reads from the option metadata's default, alternatives
+  and the kind's example as before; the reader accepts every marker form on
+  every key, so a snapshot written before the types reads unchanged. `nothing` is the
   inline table `{ nothing = true }` (TOML has no null, and a stored `nothing`
-  is not an absent key). A `Type` prints as its name (`numeric_type =
-  "Float64"`) where the metadata expects a type and as `{ type_name = "..." }`
-  elsewhere, and is read through the allowlist of numeric types (`Float64`,
-  `Float32`, `Float16`, `BigFloat`, `Int`); a `BigFloat` VALUE is refused at
+  is not an absent key); a `BigFloat` VALUE is refused at
   write as lossy. A
   `tracking_method` singleton prints as `{ type = "Symplectic6DMap" }` and is
   read through the registry of methods; an `@enum` value as `{ enum =
@@ -519,6 +529,32 @@ function _toml_value_holds_number(v)
 end
 _toml_hint_tuple(hint) = hint !== nothing && hint.default isa Tuple
 
+# The declared type of the key being coded (R8d, batch B, 2026-11-26): the
+# `ParamMeta.type` of an element parameter; `nothing` for an undeclared or
+# `Any` one and for every hint that is not a `ParamMeta` (the objects' option
+# metadata), which keep the evidence rules above. With a declared type the
+# plain forms follow it -- a tuple prints as an array, a symbol as a bare
+# string, a type as its name -- and the marker forms are kept for the
+# undeclared keys and for a class the declaration leaves ambiguous (a type
+# admitting both tuples and vectors).
+_toml_hint_type(hint) = hint isa ParamMeta && hint.type !== nothing && hint.type !== Any ? hint.type : nothing
+_toml_type_members(T) = T isa Union ? Base.uniontypes(T) : (T,)
+_toml_type_admits(T, ::Type{C}) where {C} = T !== nothing && any(m -> m <: C, _toml_type_members(T))
+# A real class that is not an integer one admits a float (and a knob expression).
+_toml_type_admits_float(T) = T !== nothing && any(m -> m <: Real && !(m <: Integer) && m !== Bool, _toml_type_members(T))
+# The items of a declared tuple or vector class are coded with the element
+# class as their own hint (`Tuple{Vararg{Real}}` -> `Real`); a plain `Tuple`
+# or `AbstractVector` gives none.
+function _toml_item_hint(T)
+    T === nothing && return nothing
+    for m in _toml_type_members(T)
+        (m <: Tuple && m !== Tuple) && return ParamMeta(type=eltype(m))
+        (m <: AbstractVector && m !== AbstractVector) && return ParamMeta(type=eltype(m))
+        (m <: AbstractMatrix && m !== AbstractMatrix) && return ParamMeta(type=eltype(m))
+    end
+    return nothing
+end
+
 # The inline-table markers the value rules use; a dictionary parameter whose
 # keys spell one of them would read back as the marked class, so the writer
 # refuses it by name.
@@ -535,9 +571,15 @@ The value rules of the format, in both directions: numbers, strings, symbols,
 booleans, `nothing`, tuples, vectors, dictionaries, knob expressions, types,
 tracking methods, enums, nested specs, and every object `_toml_encode_object`
 handles. `hint` is the `ParamMeta` of the key being coded when the metadata
-has one (`nothing` otherwise): it decides whether a symbol prints bare and
-whether an array reads back as a tuple. Unit B's methods call these for every
-option value they nest, so one rule set serves elements and objects alike.
+has one (`nothing` otherwise): its declared `type` decides the plain forms
+(a bare symbol, a type name, a plain array for a tuple or a vector) and what
+the reader coerces a TOML value to; a hint without a declared type (an
+object's option metadata, a parameter declared `Any`) falls back to the
+evidence of its default, alternatives and the kind's example. Unit B's
+methods call these for every option value they nest, so one rule set serves
+elements and objects alike; the element-level checks (`_toml_element_table`,
+`_toml_decode_element`) hold every stored and every read value to the
+declared class through `_param_type_holds`.
 """
 function _toml_encode_value(v, hint, ctx::_TomlContext)
     v isa Bool && return v
@@ -555,12 +597,17 @@ function _toml_encode_value(v, hint, ctx::_TomlContext)
         "symbols, booleans, nothing, tuples, vectors, matrices, dictionaries, knob expressions, " *
         "types, tracking methods, enums, nested element specs and the registered objects)")
     v isa AbstractString && return String(v)
-    v isa Symbol && return _toml_hint_holds(hint, Symbol) ? String(v) : _TomlTable("symbol" => String(v))
+    T = _toml_hint_type(hint)
+    if v isa Symbol
+        plain = T === nothing ? _toml_hint_holds(hint, Symbol) : _toml_type_admits(T, Symbol)
+        return plain ? String(v) : _TomlTable("symbol" => String(v))
+    end
     v === nothing && return _TomlTable("nothing" => true)
     v isa AbstractKnobExpression && return _TomlTable("expr" => string(v))
     if v isa Type
         name = _toml_type_name(v, ctx)
-        return _toml_hint_holds(hint, Type) ? name : _TomlTable("type_name" => name)
+        plain = T === nothing ? _toml_hint_holds(hint, Type) : _toml_type_admits(T, Type)
+        return plain ? name : _TomlTable("type_name" => name)
     end
     v isa Function && _toml_refuse(ctx,
         "a function-valued parameter ($(v)) cannot be snapshotted: the snapshot is data, and a " *
@@ -570,15 +617,22 @@ function _toml_encode_value(v, hint, ctx::_TomlContext)
             "a function-valued parameter (a $(typeof(v))) cannot be snapshotted: the snapshot is data, and a " *
             "function has no data form; remove it or replace it by a parameterized form" :
             "a NamedTuple value is not a class the snapshot format covers; store a Dict or a Tuple")
-        items = Any[_toml_encode_value(v[i], hint, _toml_at(ctx, "[$(i)]")) for i in eachindex(v)]
-        return _toml_hint_tuple(hint) ? items : _TomlTable("tuple" => items)
+        ihint = T === nothing ? hint : _toml_item_hint(T)
+        items = Any[_toml_encode_value(v[i], ihint, _toml_at(ctx, "[$(i)]")) for i in eachindex(v)]
+        plain = T === nothing ? _toml_hint_tuple(hint) :
+                (_toml_type_admits(T, Tuple) && !_toml_type_admits(T, AbstractVector))
+        return plain ? items : _TomlTable("tuple" => items)
     end
     if v isa AbstractVector
-        items = Any[_toml_encode_value(v[i], hint, _toml_at(ctx, "[$(i)]")) for i in eachindex(v)]
-        return _toml_hint_tuple(hint) ? _TomlTable("vector" => items) : items
+        ihint = T === nothing ? hint : _toml_item_hint(T)
+        items = Any[_toml_encode_value(v[i], ihint, _toml_at(ctx, "[$(i)]")) for i in eachindex(v)]
+        plain = T === nothing ? !_toml_hint_tuple(hint) :
+                (_toml_type_admits(T, AbstractVector) && !_toml_type_admits(T, Tuple))
+        return plain ? items : _TomlTable("vector" => items)
     end
     if v isa AbstractMatrix
-        rows = Any[Any[_toml_encode_value(v[i, j], hint, _toml_at(ctx, "[$(i),$(j)]")) for j in axes(v, 2)]
+        ihint = T === nothing ? hint : _toml_item_hint(T)
+        rows = Any[Any[_toml_encode_value(v[i, j], ihint, _toml_at(ctx, "[$(i),$(j)]")) for j in axes(v, 2)]
                    for i in axes(v, 1)]
         return _TomlTable("matrix" => rows)
     end
@@ -611,20 +665,38 @@ function _toml_encode_value(v, hint, ctx::_TomlContext)
     return _toml_encode_object(v, ctx)
 end
 function _toml_decode_value(x, hint, ctx::_TomlContext)
-    x isa Bool && return x
+    T = _toml_hint_type(hint)
+    if x isa Bool
+        T === nothing || _toml_type_admits(T, Bool) || _toml_refuse(ctx,
+            "a boolean $(x) where the kind declares $(T)")
+        return x
+    end
     if x isa Integer
+        T === nothing || _toml_type_admits(T, Real) || _toml_refuse(ctx,
+            "an integer $(x) where the kind declares $(T)")
         d = hint === nothing ? nothing : hint.default
-        # Read back by the declared type where the metadata declares one
-        # (`rng_id`'s default is an unsigned count); an `Int` default or none
-        # keeps the TOML integer.
+        # Read back by the default's integer type where the metadata declares
+        # one (`rng_id`'s default is an unsigned count); an `Int` default or
+        # none keeps the TOML integer.
         d isa Integer && !(d isa Bool) && !(d isa Int) && return typeof(d)(x)
         return Int(x)
     end
     if x isa AbstractFloat
-        T = ctx.numeric_type
-        return T <: AbstractFloat ? _as_numeric_type(T, Float64(x)) : Float64(x)
+        T === nothing || _toml_type_admits_float(T) || _toml_refuse(ctx,
+            "a float $(x) where the kind declares $(T)" *
+            (_toml_type_admits(T, Integer) ? "; write an integer ($(isinteger(x) ? Int(x) : x))" : ""))
+        N = ctx.numeric_type
+        return N <: AbstractFloat ? _as_numeric_type(N, Float64(x)) : Float64(x)
     end
     if x isa AbstractString
+        if T !== nothing
+            _toml_type_admits(T, Symbol) && return Symbol(x)
+            _toml_type_admits(T, Type) && return _toml_type_from_name(x, ctx)
+            _toml_type_admits(T, AbstractString) && return String(x)
+            _toml_refuse(ctx, "a bare string $(repr(String(x))) where the kind declares $(T)" *
+                (_toml_type_admits(T, Real) ? "; write the number as a TOML number (0.6, not \"0.6\"), " *
+                                               "or a knob expression as { expr = \"...\" }" : ""))
+        end
         _toml_hint_holds(hint, Symbol) && return Symbol(x)
         _toml_hint_holds(hint, Type) && return _toml_type_from_name(x, ctx)
         _toml_hint_numeric(hint) && _toml_refuse(ctx,
@@ -633,6 +705,13 @@ function _toml_decode_value(x, hint, ctx::_TomlContext)
         return String(x)
     end
     if x isa AbstractVector
+        if T !== nothing
+            ihint = _toml_item_hint(T)
+            items = Any[_toml_decode_value(x[i], ihint, _toml_at(ctx, "[$(i)]")) for i in eachindex(x)]
+            _toml_type_admits(T, Tuple) && return Tuple(items)
+            _toml_type_admits(T, AbstractVector) && return _toml_narrow_vector(items)
+            _toml_refuse(ctx, "an array where the kind declares $(T)")
+        end
         items = Any[_toml_decode_value(x[i], hint, _toml_at(ctx, "[$(i)]")) for i in eachindex(x)]
         return _toml_hint_tuple(hint) ? Tuple(items) : _toml_narrow_vector(items)
     end
@@ -642,6 +721,8 @@ function _toml_decode_value(x, hint, ctx::_TomlContext)
             return _toml_decode_knob_expression(x["expr"], ctx)
         elseif ks == Set(["nothing"])
             x["nothing"] === true || _toml_refuse(ctx, "{ nothing = ... } takes `true`; got $(repr(x["nothing"]))")
+            T === nothing || _toml_type_admits(T, Nothing) || _toml_refuse(ctx,
+                "a stored nothing where the kind declares $(T)")
             return nothing
         elseif ks == Set(["symbol"])
             x["symbol"] isa AbstractString || _toml_refuse(ctx, "{ symbol = ... } takes a string; got $(repr(x["symbol"]))")
@@ -650,7 +731,8 @@ function _toml_decode_value(x, hint, ctx::_TomlContext)
             key = first(ks)
             arr = x[key]
             arr isa AbstractVector || _toml_refuse(ctx, "{ $(key) = ... } takes an array; got $(repr(arr))")
-            items = Any[_toml_decode_value(arr[i], hint, _toml_at(ctx, "[$(i)]")) for i in eachindex(arr)]
+            ihint = T === nothing ? hint : _toml_item_hint(T)
+            items = Any[_toml_decode_value(arr[i], ihint, _toml_at(ctx, "[$(i)]")) for i in eachindex(arr)]
             return key == "tuple" ? Tuple(items) : _toml_narrow_vector(items)
         elseif ks == Set(["matrix"])
             rows = x["matrix"]
@@ -659,7 +741,8 @@ function _toml_decode_value(x, hint, ctx::_TomlContext)
             n = length(rows)
             m = n == 0 ? 0 : length(rows[1])
             all(r -> length(r) == m, rows) || _toml_refuse(ctx, "{ matrix = ... } rows differ in length")
-            items = Any[_toml_decode_value(rows[i][j], hint, _toml_at(ctx, "[$(i),$(j)]")) for i in 1:n, j in 1:m]
+            ihint = T === nothing ? hint : _toml_item_hint(T)
+            items = Any[_toml_decode_value(rows[i][j], ihint, _toml_at(ctx, "[$(i),$(j)]")) for i in 1:n, j in 1:m]
             T = n * m == 0 ? Any : mapreduce(typeof, typejoin, items)
             return isconcretetype(T) ? Matrix{T}(items) : items
         elseif ks == Set(["type_name"])
@@ -842,7 +925,7 @@ function _toml_element_hint(meta::ElementMeta, key::Symbol)
     ex = meta.example
     (ex isa ElementSpec && haskey(getfield(ex, :params), key)) || return pm
     v = getfield(ex, :params)[key]
-    return ParamMeta(pm.required, pm.unit, pm.default, pm.meaning, (pm.alternatives..., v))
+    return ParamMeta(pm.required, pm.unit, pm.default, pm.meaning, (pm.alternatives..., v), pm.type)   # the declared type travels with the hint (R8d)
 end
 
 """
@@ -870,7 +953,13 @@ function _toml_element_table(spec::ElementSpec, ctx::_TomlContext)
         key in declared || _toml_refuse(_toml_at(ctx, string(key)),
             "the stored parameter $(key) is not declared by the kind $(repr(k)) (its declared keys are " *
             "$(join(sort!(map(string, collect(declared))), ", "))); the reader would refuse it, so the writer does")
-        push!(pairs, string(key) => _toml_encode_value(stored[key], _toml_element_hint(meta, key), _toml_at(ctx, string(key))))
+        hint = _toml_element_hint(meta, key)
+        T = _toml_hint_type(hint)
+        T === nothing || _param_type_holds(T, stored[key]) || _toml_refuse(_toml_at(ctx, string(key)),
+            "the stored parameter $(key) = $(repr(stored[key]))::$(typeof(stored[key])) is outside the type " *
+            "$(T) the kind $(repr(k)) declares; the reader would refuse it, so the writer does (a friendly " *
+            "constructor stores the declared class; a raw ElementSpec{:$(k)} may not)")
+        push!(pairs, string(key) => _toml_encode_value(stored[key], hint, _toml_at(ctx, string(key))))
     end
     return _TomlTable(pairs)
 end
@@ -902,7 +991,13 @@ function _toml_decode_element(tbl::AbstractDict, ctx::_TomlContext)
     for key in sort!(collect(String, keys(tbl)))
         key == "kind" && continue
         sym = Symbol(key)
-        params[sym] = _toml_decode_value(tbl[key], _toml_element_hint(meta, sym), _toml_at(ectx, key))
+        hint = _toml_element_hint(meta, sym)
+        v = _toml_decode_value(tbl[key], hint, _toml_at(ectx, key))
+        T = _toml_hint_type(hint)
+        T === nothing || _param_type_holds(T, v) || _toml_refuse(_toml_at(ectx, key),
+            "the value $(repr(v))::$(typeof(v)) read for $(key) is outside the type $(T) the kind " *
+            "$(repr(String(kname))) declares for it")
+        params[sym] = v
     end
     return ElementSpec{k}(params)
 end

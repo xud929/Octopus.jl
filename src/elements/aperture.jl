@@ -559,25 +559,25 @@ end
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
-        shape=ParamMeta(default=:rectangle, alternatives=(:rectangle, :ellipse, :rectellipse), meaning="acceptance shape: :rectangle, :ellipse, or :rectellipse (their intersection). Ignored when `alive` is given"),
+        shape=ParamMeta(type=Symbol, default=:rectangle, alternatives=(:rectangle, :ellipse, :rectellipse), meaning="acceptance shape: :rectangle, :ellipse, or :rectellipse (their intersection). Ignored when `alive` is given"),
         # The limits' declared alternatives are shrunken, millimetre-class
         # values, because a limit's only strong observable is the alive/dead
         # flip and the generic Real perturbation only ever GROWS a value --
         # from a surviving baseline, the one direction that shows nothing
         # (U4-1). The effectiveness probe's corner particle sits just inside
         # the probe limits and OUTSIDE these, so each alternative kills.
-        x_limit=ParamMeta(default=Inf, alternatives=(1.0e-3,), meaning="horizontal half-aperture in particle-coordinate length units"),
-        y_limit=ParamMeta(default=Inf, alternatives=(8.0e-4,), meaning="vertical half-aperture in particle-coordinate length units"),
-        dx=ParamMeta(default=0, meaning="horizontal displacement of the aperture, for a collimator on a displaced magnet body"),
-        dy=ParamMeta(default=0, meaning="vertical displacement of the aperture"),
-        alive=ParamMeta(default=nothing, meaning="pure scalar predicate (x, px, y, py, z, pz) -> Bool evaluated in the aperture frame, for shapes the regular set cannot express. Must not capture an array, or it will not run on the device"),
-        element_id=ParamMeta(default=0, meaning="identifier stamped into each loss record; assigned by the task from the aperture's position in the compiled line"),
-        loss_record=ParamMeta(default=nothing, meaning="per-beam loss record this aperture writes into; bound by the task at `execute!` for every aperture in its line, wrapped or inside a kept-whole line included. `nothing` means kill only -- no counter, no row, no name -- which is what a bare `track!` runs for every aperture"),
-        tracking_method=ParamMeta(default=NonSymplectic6DMap(), meaning="per-element tracking method"),
+        x_limit=ParamMeta(type=Real, default=Inf, alternatives=(1.0e-3,), meaning="horizontal half-aperture in particle-coordinate length units"),
+        y_limit=ParamMeta(type=Real, default=Inf, alternatives=(8.0e-4,), meaning="vertical half-aperture in particle-coordinate length units"),
+        dx=ParamMeta(type=Real, default=0, meaning="horizontal displacement of the aperture, for a collimator on a displaced magnet body"),
+        dy=ParamMeta(type=Real, default=0, meaning="vertical displacement of the aperture"),
+        alive=ParamMeta(type=Union{Nothing,Function}, default=nothing, meaning="pure scalar predicate (x, px, y, py, z, pz) -> Bool evaluated in the aperture frame, for shapes the regular set cannot express. Must not capture an array, or it will not run on the device"),
+        element_id=ParamMeta(type=Integer, default=0, meaning="identifier stamped into each loss record; assigned by the task from the aperture's position in the compiled line"),
+        loss_record=ParamMeta(type=Union{Nothing,LossRecord}, default=nothing, meaning="per-beam loss record this aperture writes into; bound by the task at `execute!` for every aperture in its line, wrapped or inside a kept-whole line included. `nothing` means kill only -- no counter, no row, no name -- which is what a bare `track!` runs for every aperture"),
+        tracking_method=ParamMeta(type=AbstractTrackingMethod, default=NonSymplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
         # After the splat, so this kind's more specific meaning wins over the
         # generic `name` in `_PLACEMENT_PARAMS` (2026-08-05_b audit, U15-12).
-        name=ParamMeta(default="", meaning="label carried into the loss log so a record names a collimator rather than an index"),
+        name=ParamMeta(type=AbstractString, default="", meaning="label carried into the loss log so a record names a collimator rather than an index"),
     )
     example = ApertureSpec(shape=:rectellipse, x_limit=2.0e-2, y_limit=5.0e-3, name="COLL_H")
     construction_help = "Friendly constructor: ApertureSpec(; shape=:rectangle, x_limit, y_limit, dx=0, dy=0, alive=nothing, name=\"\", tracking_method=NonSymplectic6DMap()). Regular shapes are :rectangle, :ellipse and :rectellipse; anything else goes through `alive`, a pure scalar predicate on all six coordinates. Killed particles become NaN in every coordinate. Loss position resolves only to where you place apertures, so guard both faces of a magnet with two of them. The task supplies element_id and loss_record when it builds the lattice; set neither by hand. Placement (every kind, consumed by the compile-time misalignment and design-roll wraps): x_offset, y_offset, z_offset [m], x_pitch, y_pitch, tilt, ref_tilt [rad], misalign_convention (:bmad or :madx). name: an optional label, carried into beam-line provenance paths and diagnostics, never read by a tracking kernel. numeric_type (every kind): the number type the element compiles in, Float64 unless built by the typed form ApertureSpec{T}(; ...) or given numeric_type=T by keyword (Float32 for a Float32 line; the untyped form promotes its inputs over a Float64 floor and never narrows); a beam whose element type differs from the element's is refused by name when a task compiles the line."

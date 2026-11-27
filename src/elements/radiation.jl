@@ -467,18 +467,18 @@ end
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
-        damping_turns=ParamMeta(required=true, meaning="horizontal, vertical, and longitudinal damping turns"),
-        beta=ParamMeta(default=(1, 1, 1), meaning="damped-mode beta values used by excitation"),
-        alpha=ParamMeta(default=(0, 0, 0), meaning="damped-mode alpha values used by excitation"),
-        sigma=ParamMeta(default=(-1, -1, -1), meaning="equilibrium beam sizes used by excitation; negative disables excitation"),
-        zeta=ParamMeta(default=(0, 0, 0, 0), meaning="crab dispersion coefficients (zeta1..zeta4) removed before damping and restored after it. " * _CANONICAL_DISPERSION_NOTE),
-        eta=ParamMeta(default=(0, 0, 0, 0), meaning="momentum dispersion coefficients (eta1..eta4) removed before damping and restored after it. " * _CANONICAL_DISPERSION_NOTE),
-        R=ParamMeta(default=(0, 0, 0, 0), meaning="x-y coupling coefficients (r1, r2, r3, r4) removed before damping and restored after it: the Edwards-Teng matrix R of XYCouplingSpec applied in the Edwards-Teng form `form` (1, XY_MODEA, unless a LinearOptics point in form 2 set form=2), lambda = 1/sqrt(1 + det R); the same R as Beam's coupling, NOT Linear6DSpec's block R1/R2 (C = adj(R)/sqrt(1 + det R))"),
-        form=ParamMeta(default=1, alternatives=(1, 2), meaning="Edwards-Teng form in which R is applied: 1 (XY_MODEA, the V1 normalizer) or 2 (XY_MODEB, V2). Set from the LinearOptics point given as optics (its twiss.form); the flat keywords couple in form 1 and refuse form=2 by name, and the raw ElementSpec{:lumped_radiation}(; form=2) spells it directly (design docs/design/linear_optics.md, D11)"),
-        is_damping=ParamMeta(default=true, meaning="enable radiation damping"),
-        is_excitation=ParamMeta(default=true, meaning="enable stochastic excitation when sigma and beta are valid"),
-        tracking_method=ParamMeta(default=Radiation6DMap(), meaning="per-element tracking method; use Damping6DMap() for damping only or Diffusion6DMap() for diffusion only"),
-        rng_id=ParamMeta(default=0, meaning="counter-RNG stream id for stochastic excitation; 0 (the default) makes LumpedRadSpec assign a fresh stream at construction, an explicit id is claimed in the process registry (which warns on sharing with another class or an auto-assigned consumer), and a spec still carrying 0 at compile is refused by name"),
+        damping_turns=ParamMeta(type=Tuple{Vararg{Real}}, required=true, meaning="horizontal, vertical, and longitudinal damping turns"),
+        beta=ParamMeta(type=Tuple{Vararg{Real}}, default=(1, 1, 1), meaning="damped-mode beta values used by excitation"),
+        alpha=ParamMeta(type=Tuple{Vararg{Real}}, default=(0, 0, 0), meaning="damped-mode alpha values used by excitation"),
+        sigma=ParamMeta(type=Tuple{Vararg{Real}}, default=(-1, -1, -1), meaning="equilibrium beam sizes used by excitation; negative disables excitation"),
+        zeta=ParamMeta(type=Tuple{Vararg{Real}}, default=(0, 0, 0, 0), meaning="crab dispersion coefficients (zeta1..zeta4) removed before damping and restored after it. " * _CANONICAL_DISPERSION_NOTE),
+        eta=ParamMeta(type=Tuple{Vararg{Real}}, default=(0, 0, 0, 0), meaning="momentum dispersion coefficients (eta1..eta4) removed before damping and restored after it. " * _CANONICAL_DISPERSION_NOTE),
+        R=ParamMeta(type=Tuple{Vararg{Real}}, default=(0, 0, 0, 0), meaning="x-y coupling coefficients (r1, r2, r3, r4) removed before damping and restored after it: the Edwards-Teng matrix R of XYCouplingSpec applied in the Edwards-Teng form `form` (1, XY_MODEA, unless a LinearOptics point in form 2 set form=2), lambda = 1/sqrt(1 + det R); the same R as Beam's coupling, NOT Linear6DSpec's block R1/R2 (C = adj(R)/sqrt(1 + det R))"),
+        form=ParamMeta(type=Integer, default=1, alternatives=(1, 2), meaning="Edwards-Teng form in which R is applied: 1 (XY_MODEA, the V1 normalizer) or 2 (XY_MODEB, V2). Set from the LinearOptics point given as optics (its twiss.form); the flat keywords couple in form 1 and refuse form=2 by name, and the raw ElementSpec{:lumped_radiation}(; form=2) spells it directly (design docs/design/linear_optics.md, D11)"),
+        is_damping=ParamMeta(type=Bool, default=true, meaning="enable radiation damping"),
+        is_excitation=ParamMeta(type=Bool, default=true, meaning="enable stochastic excitation when sigma and beta are valid"),
+        tracking_method=ParamMeta(type=AbstractTrackingMethod, default=Radiation6DMap(), meaning="per-element tracking method; use Damping6DMap() for damping only or Diffusion6DMap() for diffusion only"),
+        rng_id=ParamMeta(type=Integer, default=0, meaning="counter-RNG stream id for stochastic excitation; 0 (the default) makes LumpedRadSpec assign a fresh stream at construction, an explicit id is claimed in the process registry (which warns on sharing with another class or an auto-assigned consumer), and a spec still carrying 0 at compile is refused by name"),
         _PLACEMENT_PARAMS...,
     )
     example = LumpedRadSpec(damping_turns=(1000.0, 1000.0, 500.0), rng_id=1)

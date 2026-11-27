@@ -86,7 +86,15 @@ docstrings of public objects.
      compares EVERY declared `ParamMeta.default` -- the example's or not --
      with the map omitting the parameter compiles to, requires a discrete
      default to lie within its `alternatives`, and refuses empty
-     descriptions, keywords, meanings and construction help. The runtime
+     descriptions, keywords, meanings and construction help. Every
+     `ParamMeta` declares its value class, `type=` (R8d, batch B,
+     2026-11-26; the vocabulary is in `?ParamMeta`): the validator refuses
+     an undeclared parameter and holds the default, the alternatives and the
+     example's stored value to the declaration, the snapshot codec coerces by
+     it (a tuple class prints as a plain array, a `Symbol` class as a bare
+     string, a value outside the class is refused by name on both sides), and
+     `element_help` prints it; `Any` is for a deliberately polymorphic
+     parameter only, since it keeps the codec's marker forms. The runtime
      struct carries `T<:Number` as its ONE numeric type parameter: that is
      what `_required_beam_eltype` (`src/track/Track.jl`) derives, so a task
      refuses a beam of another element type by name, with the remedy naming

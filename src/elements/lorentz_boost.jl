@@ -94,8 +94,8 @@ end
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
-        angle=ParamMeta(required=true, unit="rad", meaning="HALF the full crossing angle (the Hirata phi), in radians. Named half_crossing_angle in knob_control.jl, Knobs.jl and validation/crossing_luminosity_anchor.jl and crossing_angle in the two tracking examples -- the same quantity throughout, and its factor of two is the classic beam-beam error (2026-08-05_b audit, U16-10)"),
-        tracking_method=ParamMeta(default=NonSymplectic6DMap(), meaning="per-element tracking method"),
+        angle=ParamMeta(type=Real, required=true, unit="rad", meaning="HALF the full crossing angle (the Hirata phi), in radians. Named half_crossing_angle in knob_control.jl, Knobs.jl and validation/crossing_luminosity_anchor.jl and crossing_angle in the two tracking examples -- the same quantity throughout, and its factor of two is the classic beam-beam error (2026-08-05_b audit, U16-10)"),
+        tracking_method=ParamMeta(type=AbstractTrackingMethod, default=NonSymplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = LorentzBoostSpec(0.03)
@@ -132,8 +132,8 @@ end
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [PlaceholderAnalysis]
     parameters = (
-        angle=ParamMeta(required=true, unit="rad", meaning="HALF the full crossing angle, matching LorentzBoostSpec; see its `angle` for the naming note (U16-10)"),
-        tracking_method=ParamMeta(default=NonSymplectic6DMap(), meaning="per-element tracking method"),
+        angle=ParamMeta(type=Real, required=true, unit="rad", meaning="HALF the full crossing angle, matching LorentzBoostSpec; see its `angle` for the naming note (U16-10)"),
+        tracking_method=ParamMeta(type=AbstractTrackingMethod, default=NonSymplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = RevLorentzBoostSpec(0.03)

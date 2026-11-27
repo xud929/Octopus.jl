@@ -86,18 +86,10 @@ export TurnModulated, WhiteNoise, PinkNoise, TurnTable, SpectralNoise, spectral_
 #     snapshot; `src/elements/aperture.jl`: `_requires_tracking_context`.
 # ---------------------------------------------------------------------------
 
-"""
-    AbstractTurnRule
-
-The root of every per-slot turn-modulation rule (`WhiteNoise`, `PinkNoise`,
-`TurnTable`, `SpectralNoise`). A concrete rule defines `_turn_offset` (its value on one turn,
-which the element's `realize` adds to a phase or scales a strength by as
-`S (1 + d)`) and `_rule_kind` (its provenance kind label). The rule catalogue is
-DERIVED from the concrete subtypes of this root (`_turn_rule_names`, the crab
-cavity's `_is_turn_rule`, the generic `_push_rule_slot!`, the suite's catalogue
-tripwire), never hand-copied into a case list.
-"""
-abstract type AbstractTurnRule end
+# `AbstractTurnRule`, the root of every rule below, is declared in
+# src/knowledge/Knowledge.jl beside `AbstractTrackingMethod`: the cavities'
+# schemas name it as a parameter type (R8d, 2026-11-26) and include before
+# this file.
 
 # The key layout of the counter RNG, `octopus_normal(seed, method, turn,
 # rng_id, particle_slot, component, T)`, as used in this tree. What separates

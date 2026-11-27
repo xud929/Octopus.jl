@@ -2534,7 +2534,12 @@ trip that must rebuild every value, because it audits the metadata the way
 help text and validators never will; and what it finds missing (here a
 type, or a typed default, on every parameter) is a metadata campaign, not a
 codec special case, so record it as the lead and keep the marker forms
-honest rather than guessing a class.
+honest rather than guessing a class. Closed 2026-11-26 as batch B of the
+follow-ups (record
+[`history/machine_description_param_types_2026_11_26.md`](history/machine_description_param_types_2026_11_26.md)):
+the declaration went on every parameter, and the survey that preceded it
+showed why it could not be inferred from the defaults -- 371 of the 681
+parameters declare a real quantity through an integer default `0`.
 
 ## A new route to an old state inherits the old route's missing guards
 

@@ -291,7 +291,9 @@ Procedures, one per task class, routed from the Task Routing table in
   reader and dropped at compile among them) and the choices still the
   owner's. Batch A implemented 2026-11-26 (record
   [`history/machine_description_compile_path1_2026_11_26.md`](history/machine_description_compile_path1_2026_11_26.md));
-  each ruling carries its dated `Status` line; batches B and C remain.
+  each ruling carries its dated `Status` line; batch B (the `ParamMeta`
+  types) implemented 2026-11-26 (record
+  [`history/machine_description_param_types_2026_11_26.md`](history/machine_description_param_types_2026_11_26.md)); batch C remains.
 - [`linear_optics_examples_2026_11_21.md`](history/linear_optics_examples_2026_11_21.md)
   — the shipped examples in the `LinearOptics` form (the weak-strong,
   strong-strong and crab-noise scripts spell each beam's optics as IP and
@@ -407,6 +409,14 @@ Procedures, one per task class, routed from the Task Routing table in
   the RBEND alias's convention, the flexible form's named-strength fold;
   the red-first evidence per unit, the fingerprints (CPU identical, CUDA
   within noise), the parity re-run, the gate and the push.
+- [`machine_description_param_types_2026_11_26.md`](history/machine_description_param_types_2026_11_26.md)
+  — batch B of the machine-description follow-ups, the `ParamMeta` type
+  campaign (R8d): a declared value class on every parameter of every kind,
+  the class rule `_param_type_holds`, the validator's four refusals, the
+  snapshot codec coercing by the declaration on both sides with the marker
+  forms kept for `Any` and for old files, `element_help` printing the
+  class; the red-first evidence, the verification, the gate and the
+  neighbour audit in one record.
 - [`audit_machine_description_compile_path1_2026_11_26.md`](history/audit_machine_description_compile_path1_2026_11_26.md)
   — the scoped neighbour audit of batch A: the call sites and sibling
   surfaces of each unit re-walked, the properties re-run on what the units

@@ -813,7 +813,10 @@ kept, loaded and built). `machine_toml(machine)` is the text without a file
 and `parse_machine(text; tables)` its reader, for a snapshot held in memory.
 The file states what it is (`format`, each lattice's `eltype`, each element's
 `kind` and `numeric_type`), holds the STORED parameters in the folded form
-the friendly constructors produce (`kn`, not `k1`; a hand-written `k1 = 1.0`
+the friendly constructors produce, each value by its parameter's declared
+`ParamMeta.type` (R8d, 2026-11-26: a tuple class as a plain array, a `Symbol`
+class as a bare string, a value outside the class refused by name at write
+and at read; `kn`, not `k1`; a hand-written `k1 = 1.0`
 reads as the constructors fold it, since 2026-11-26, and is written back as
 `kn`), knob expressions as
 `{ expr = "..." }` in the knob grammar and never a resolved value beside one,

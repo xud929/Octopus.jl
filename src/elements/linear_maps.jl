@@ -153,11 +153,11 @@ CrabDispersion{T}(zeta1, zeta2, zeta3, zeta4) where {T<:Number} =
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        zeta1=ParamMeta(default=0, meaning="x-z crab dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
-        zeta2=ParamMeta(default=0, meaning="px-z crab dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
-        zeta3=ParamMeta(default=0, meaning="y-z crab dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
-        zeta4=ParamMeta(default=0, meaning="py-z crab dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
-        tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
+        zeta1=ParamMeta(type=Real, default=0, meaning="x-z crab dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
+        zeta2=ParamMeta(type=Real, default=0, meaning="px-z crab dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
+        zeta3=ParamMeta(type=Real, default=0, meaning="y-z crab dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
+        zeta4=ParamMeta(type=Real, default=0, meaning="py-z crab dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
+        tracking_method=ParamMeta(type=AbstractTrackingMethod, default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = CrabDispersionSpec(zeta1=0.1)
@@ -269,11 +269,11 @@ MomentumDispersion{T}(eta1, eta2, eta3, eta4) where {T<:Number} =
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        eta1=ParamMeta(default=0, meaning="x-pz momentum dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
-        eta2=ParamMeta(default=0, meaning="px-pz momentum dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
-        eta3=ParamMeta(default=0, meaning="y-pz momentum dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
-        eta4=ParamMeta(default=0, meaning="py-pz momentum dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
-        tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
+        eta1=ParamMeta(type=Real, default=0, meaning="x-pz momentum dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
+        eta2=ParamMeta(type=Real, default=0, meaning="px-pz momentum dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
+        eta3=ParamMeta(type=Real, default=0, meaning="y-pz momentum dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
+        eta4=ParamMeta(type=Real, default=0, meaning="py-pz momentum dispersion coefficient. " * _CANONICAL_DISPERSION_NOTE),
+        tracking_method=ParamMeta(type=AbstractTrackingMethod, default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = MomentumDispersionSpec(eta1=0.2)
@@ -422,17 +422,17 @@ end
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        r1=ParamMeta(default=0, meaning="coupling coefficient r1: entry (1,1) of the Edwards-Teng matrix R = [r1 r2; r3 r4] of docs/theory/twiss_dispersion.md (T2), the map being V1(R) = lambda [I adj(R); -R I] (XY_MODEA) or V2(R) = lambda [adj(R) I; I -R] (XY_MODEB) with lambda = 1/sqrt(1 + det R); the same R as Beam's coupling and as ChromaticityKickSpec's and LumpedRadSpec's R, NOT Linear6DSpec's block R1/R2"),
-        r2=ParamMeta(default=0, meaning="coupling coefficient r2, entry (1,2) of the Edwards-Teng matrix R (see r1)"),
-        r3=ParamMeta(default=0, meaning="coupling coefficient r3, entry (2,1) of the Edwards-Teng matrix R (see r1)"),
-        r4=ParamMeta(default=0, meaning="coupling coefficient r4, entry (2,2) of the Edwards-Teng matrix R (see r1)"),
+        r1=ParamMeta(type=Real, default=0, meaning="coupling coefficient r1: entry (1,1) of the Edwards-Teng matrix R = [r1 r2; r3 r4] of docs/theory/twiss_dispersion.md (T2), the map being V1(R) = lambda [I adj(R); -R I] (XY_MODEA) or V2(R) = lambda [adj(R) I; I -R] (XY_MODEB) with lambda = 1/sqrt(1 + det R); the same R as Beam's coupling and as ChromaticityKickSpec's and LumpedRadSpec's R, NOT Linear6DSpec's block R1/R2"),
+        r2=ParamMeta(type=Real, default=0, meaning="coupling coefficient r2, entry (1,2) of the Edwards-Teng matrix R (see r1)"),
+        r3=ParamMeta(type=Real, default=0, meaning="coupling coefficient r3, entry (2,1) of the Edwards-Teng matrix R (see r1)"),
+        r4=ParamMeta(type=Real, default=0, meaning="coupling coefficient r4, entry (2,2) of the Edwards-Teng matrix R (see r1)"),
         # Every value of the enum, derived from it (2026-10-18 audit, F-97: the
         # schema once declared two values while the runtime accepted a third,
         # XY_UNDEF; that member was retired on 2026-11-21, design D14, so the
         # enum is the two Edwards-Teng forms and nothing else).
-        mode=ParamMeta(default=XY_MODEA, alternatives=Tuple(instances(XYCouplingMode)),
+        mode=ParamMeta(type=XYCouplingMode, default=XY_MODEA, alternatives=Tuple(instances(XYCouplingMode)),
                        meaning="coupling convention: XY_MODEA (the default, Edwards-Teng form 1) and XY_MODEB (form 2) select which coupling branch the map applies, with the roles of the (x, px) and (y, py) blocks exchanged between them; zero coefficients in XY_MODEA give the identity, in XY_MODEB the exchange of the transverse planes (the former zero member XY_UNDEF, the identity, was retired 2026-11-21, design D14)"),
-        tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
+        tracking_method=ParamMeta(type=AbstractTrackingMethod, default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = XYCouplingSpec(r1=0.01)

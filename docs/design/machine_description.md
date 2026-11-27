@@ -425,6 +425,15 @@ left out is in section 2's last decision.
   snapshot and `read_machine(path1, path2, ...; name, knob_root)` assembling
   a machine from several, equal to the original with a byte-identical
   `machine_toml`.
+  Status 2026-11-26 (R8d, batch B of
+  [`machine_description_followups.md`](machine_description_followups.md),
+  record [`../history/machine_description_param_types_2026_11_26.md`](../history/machine_description_param_types_2026_11_26.md)): the
+  schema the codec derives from the metadata now carries a declared value
+  class per parameter (`ParamMeta.type`, every parameter of every kind),
+  so the writer and the reader coerce by it -- a `Linear6DSpec`'s optics
+  tuples print as plain arrays, a value outside the class is refused by
+  name on both sides -- and the marker forms stay for the keys declared
+  `Any` and for files written before the types; the format stays 1.
 
 - **D14 The run artifact embeds the snapshot.** A run records the machine it
   ran as the TOML text, so it can be reproduced from the artifact alone and

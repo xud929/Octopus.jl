@@ -21044,6 +21044,150 @@ end
     @test getparam(line_entries(reread.line)[1], :kn) == (0.0, 1.0) && machine_toml(Machine(reread)) == text
 end
 
+@testset "Machine description: every element parameter declares its value class, the validator holds the declaration, and element_help prints it" begin
+    # R8d, batch B of docs/design/machine_description_followups.md (2026-11-26).
+    # Red on cb4045e (result/gates/pmb/red/b1_red.log): ParamMeta had no `type`
+    # field. The declaration is the one source the snapshot codec coerces by
+    # (the next testset), so the validator holds it to the default, the
+    # alternatives and the example's stored value, and refuses an undeclared
+    # parameter on every registered kind.
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    holds = Octopus._param_type_holds
+    # (a) Registry-derived: every parameter of every kind is typed, and the
+    # real registry validates.
+    untyped = [(k, key) for (k, m) in Octopus.ELEMENT_META_BY_KIND for (key, pm) in pairs(m.parameters) if pm.type === nothing]
+    @test isempty(untyped)
+    @test validate_element_metadata().passed
+    @test all(pm.type !== nothing for pm in values(Octopus._PLACEMENT_PARAMS))
+    @test Octopus._PLACEMENT_PARAMS.x_offset.type === Real && Octopus._PLACEMENT_PARAMS.misalign_convention.type === Symbol &&
+          Octopus._PLACEMENT_PARAMS.numeric_type.type === Type && Octopus._PLACEMENT_PARAMS.name.type === AbstractString
+    @test Octopus._placement_param(:tilt; meaning="probe").type === Real          # the per-kind placement entry carries the table's type
+    # (b) The class rules (`?ParamMeta`): a real class admits numbers and knob
+    # expressions, never a flag; an integer class admits integers only; a tuple
+    # class its items; a union any member; Any everything; nothing is the
+    # undeclared state and admits everything too (the validator refuses it).
+    @knob pmb1.k = 1.5
+    e = @knob_expr(pmb1.k)
+    @test holds(Real, 1) && holds(Real, 1.0) && holds(Real, 1.0f0) && holds(Real, e) && holds(Real, UInt64(3))
+    @test !holds(Real, true) && !holds(Real, "1.0") && !holds(Real, nothing) && !holds(Real, (1.0,))
+    @test holds(Integer, 4) && holds(Integer, UInt64(4)) && !holds(Integer, 4.0) && !holds(Integer, e) && !holds(Integer, true)
+    @test holds(Bool, true) && !holds(Bool, 1) && holds(Symbol, :bmad) && !holds(Symbol, "bmad")
+    @test holds(AbstractString, "QF") && !holds(AbstractString, :QF) && holds(Type, Float32) && !holds(Type, 1.0)
+    @test holds(Tuple{Vararg{Real}}, ()) && holds(Tuple{Vararg{Real}}, (0.0, 1)) && holds(Tuple{Vararg{Real}}, (0.0, e))
+    @test !holds(Tuple{Vararg{Real}}, [0.0, 1.0]) && !holds(Tuple{Vararg{Real}}, (0.0, "a")) && !holds(Tuple{Vararg{Real}}, (true,))
+    @test holds(NTuple{3,Real}, (1, 2, 3)) && !holds(NTuple{3,Real}, (1, 2)) && holds(Tuple, (1, "a"))
+    @test holds(Union{Nothing,Real}, nothing) && holds(Union{Nothing,Real}, 2.0) && !holds(Union{Nothing,Real}, "2")
+    @test holds(Union{Nothing,Tuple{Vararg{Real}}}, nothing) && holds(Union{Nothing,Tuple{Vararg{Real}}}, (1.0,))
+    @test holds(Any, nothing) && holds(Any, "x") && holds(nothing, "x") && holds(Union{Symbol,Octopus.AbstractVirtualDrift}, :hirata)
+    @test holds(AbstractTrackingMethod, Symplectic6DMap()) && !holds(AbstractTrackingMethod, :symplectic)
+    @test holds(Tuple{Vararg{Union{Nothing,Octopus.AbstractTurnRule}}}, (nothing, WhiteNoise(1.0e-3)))
+    # (c) The validator's four refusals, each by name, on a temporarily
+    # registered kind (removed in `finally`; the real registry re-validates).
+    try
+        Octopus.register_element_meta!(Octopus.ElementMeta(;
+            kind=:pmb1_probe, spec_type=ElementSpec{:pmb1_probe}, runtime_type=Octopus.LatticeMagnet,
+            description="probe", keywords=[:placeholder], construction_help="probe",
+            parameters=(untyped=Octopus.ParamMeta(; meaning="no type"),
+                        bad_default=Octopus.ParamMeta(; type=Integer, default=1.5, meaning="float default on an integer class"),
+                        bad_alt=Octopus.ParamMeta(; type=Symbol, default=:a, alternatives=(:a, "b"), meaning="a string alternative"),
+                        bad_example=Octopus.ParamMeta(; type=Real, meaning="the example stores a string"),
+                        not_a_type=Octopus.ParamMeta(; type=:Real, meaning="a symbol where a type belongs"),
+                        fine=Octopus.ParamMeta(; type=Union{Nothing,Real}, meaning="an optional real")),
+            example=ElementSpec{:pmb1_probe}(Dict{Symbol,Any}(:bad_example => "0.3", :fine => nothing))))
+        r = validate_element_metadata()
+        @test !r.passed
+        named(words...) = any(e -> all(w -> occursin(w, e), words), r.errors)
+        @test named("pmb1_probe", "parameter untyped declares no type")
+        @test named("pmb1_probe", "parameter bad_default declares default 1.5::Float64 outside its declared type Integer")
+        @test named("pmb1_probe", "parameter bad_alt declares alternative \"b\"::String outside its declared type Symbol")
+        @test named("pmb1_probe", "example stores bad_example = \"0.3\"::String outside the declared type Real")
+        @test named("pmb1_probe", "parameter not_a_type declares type :Real, which is not a Type")
+        @test !any(e -> occursin("pmb1_probe", e) && occursin("fine", e) && occursin("type", e), r.errors)
+    finally
+        delete!(Octopus.ELEMENT_META_BY_KIND, :pmb1_probe)
+        delete!(Octopus.ELEMENT_META_BY_SPEC_TYPE, ElementSpec{:pmb1_probe})
+        filter!(t -> t !== ElementSpec{:pmb1_probe}, Octopus.REGISTERED_ELEMENT_SPECS)
+    end
+    @test validate_element_metadata().passed                                   # the registry restored
+    # (d) element_help prints the class, on both query forms, before the unit.
+    text_k = sprint(io -> element_help(:quadrupole; io=io)); text_T = sprint(io -> element_help(QuadrupoleSpec; io=io))
+    for needle in ("- kn (optional; type=Tuple{Vararg{Real}};", "- nst (optional; type=Integer; default=1;",
+                   "- L (required; type=Real;", "- bend_model (optional; type=Symbol;",
+                   "- x_offset (optional; type=Real; unit=m; default=0;", "- numeric_type (optional; type=Type;",
+                   "- tracking_method (optional; type=AbstractTrackingMethod;")
+        @test occursin(needle, text_k) && occursin(needle, text_T)
+    end
+    @test occursin("- particle_tunes (optional; type=Any;", sprint(io -> element_help(:linear6d; io=io)))
+    @test occursin("- curved (optional; type=Union{Nothing, Bool};", text_k)
+    # (e) The five-field positional form still builds (undeclared) and the
+    # keyword form stores the type.
+    @test Octopus.ParamMeta(false, "m", 0, "legacy", ()).type === nothing
+    @test Octopus.ParamMeta(; type=Real, default=0, meaning="x").type === Real
+end
+
+@testset "Machine description: the snapshot coerces by the declared type, keeps the marker forms for untyped keys and old files, and refuses a value outside the class by name" begin
+    # R8d, batch B (2026-11-26), closing the stage-5 audit's C-6: a
+    # `Linear6DSpec` built from optics points printed every optics tuple as
+    # `{ tuple = [...] }` because no default, alternative or example spoke for
+    # the key's class. Red on cb4045e (result/gates/pmb/red/b2_red.log).
+    msg(f) = try; f(); "ACCEPTED"; catch err; sprint(showerror, err); end
+    o1 = LinearOptics(; beta=(1.1, 0.05, 80.0), alpha=(-0.1, 0.4, 0.0))
+    o2 = LinearOptics(; beta=(2.2, 0.10, 80.0), alpha=(0.3, -0.2, 0.0))
+    tr = Linear6DSpec{Float64}(o1, o2; dmu=(pi / 2, 0.1, 0.0), name="TR")
+    q = QuadrupoleSpec(; name="Q", numeric_type=Float64, L=0.3, k1=1.2, nst=4)
+    lat = Lattice("pmb2"; line=BeamLine("L", tr, q))
+    text = machine_toml(Machine(lat))
+    # (a) The plain forms: the optics tuples as arrays, no marker anywhere in
+    # this lattice; the round trip equal; the arrays read back as tuples.
+    @test occursin("beta1 = [1.1, 0.05, 80.0]", text) && occursin("alpha2 = [0.3, -0.2, 0.0]", text) && occursin("dmu = [", text)
+    @test !occursin("{ tuple = ", text) && !occursin("{ symbol = ", text) && !occursin("{ type_name = ", text)
+    @test occursin("kn = [0.0, 1.2]", text) && occursin("misalign_convention", text) == false   # defaults are not stored
+    m2 = parse_machine(text)
+    @test m2[:pmb2] == lat
+    tr2 = getfield(line_entries(m2[:pmb2].line)[1], :spec)
+    @test getparam(tr2, :beta1) === (1.1, 0.05, 80.0) && getparam(tr2, :dmu) isa Tuple && getparam(tr, :beta1) === (1.1, 0.05, 80.0)
+    # (b) A hand-written file in the plain forms reads by the declaration:
+    # an array for a tuple class, a bare string for a Symbol class, a type
+    # name; and the marker forms of a file written before the types still
+    # read on every key.
+    hand = replace(text, "beta1 = [1.1, 0.05, 80.0]" => "beta1 = [1.1, 0.05, 80.0]\nbend_model_probe = 0"; count=0)   # (no-op guard)
+    edit(from, to) = (t = replace(text, from => to; count=1); @assert t != text; t)
+    @test getparam(getfield(line_entries(parse_machine(edit("kn = [0.0, 1.2]", "kn = { tuple = [0.0, 1.2] }"))[:pmb2].line)[2], :spec), :kn) === (0.0, 1.2)
+    @test getparam(getfield(line_entries(parse_machine(edit("nst = 4", "nst = 4\nmisalign_convention = { symbol = \"madx\" }"))[:pmb2].line)[2], :spec), :misalign_convention) === :madx
+    @test getparam(getfield(line_entries(parse_machine(edit("nst = 4", "nst = 4\nmisalign_convention = \"madx\""))[:pmb2].line)[2], :spec), :misalign_convention) === :madx
+    @test getparam(getfield(line_entries(parse_machine(edit("numeric_type = \"Float64\"\n", "numeric_type = { type_name = \"Float64\" }\n"))[:pmb2].line)[1], :spec), :numeric_type) === Float64
+    @test getparam(getfield(line_entries(parse_machine(edit("nst = 4", "nst = 4\ncurved = { nothing = true }"))[:pmb2].line)[2], :spec), :curved) === nothing
+    # (c) Refused by name at read: a value outside the declared class.
+    @test occursin("a float 4.0 where the kind declares Integer; write an integer (4)", msg(() -> parse_machine(edit("nst = 4", "nst = 4.0"))))
+    @test occursin("a bare string \"4\" where the kind declares Integer", msg(() -> parse_machine(edit("nst = 4", "nst = \"4\""))))
+    @test occursin("an integer 7 where the kind declares Symbol", msg(() -> parse_machine(edit("nst = 4", "nst = 4\nbend_model = 7"))))
+    @test occursin("a boolean true where the kind declares Real", msg(() -> parse_machine(edit("L = 0.3", "L = true"))))
+    @test occursin("a stored nothing where the kind declares Real", msg(() -> parse_machine(edit("L = 0.3", "L = { nothing = true }"))))
+    @test occursin("a bare string \"0.3\" where the kind declares Real; write the number as a TOML number", msg(() -> parse_machine(edit("L = 0.3", "L = \"0.3\""))))
+    @test occursin("an array where the kind declares Real", msg(() -> parse_machine(edit("L = 0.3", "L = [0.3]"))))
+    @test occursin("outside the type Tuple{Vararg{Real}}", msg(() -> parse_machine(edit("kn = [0.0, 1.2]", "kn = { symbol = \"kn\" }"))))
+    # (d) Refused by name at write: a raw spec storing a class the kind does
+    # not declare (the reader would refuse the file).
+    raw = ElementSpec{:quadrupole}(; name="R", L=0.3, nst=4.0)
+    e = msg(() -> machine_toml(Machine(Lattice("pmb2w"; line=BeamLine("W", raw)))))
+    @test occursin("the stored parameter nst = 4.0::Float64 is outside the type Integer", e) && occursin("raw ElementSpec{:quadrupole}", e)
+    # (e) The marker forms stay where the declaration is `Any` or ambiguous:
+    # the strong beam's `coupling` (Any) as a 4 x 4 matrix prints as
+    # `{ matrix = ... }` and reads back equal; the matrix form of Linear6DSpec
+    # stores a 36-tuple and prints it as a plain array.
+    mt = Linear6DSpec{Float64}(matrix=Matrix(1.0I, 6, 6), name="MT")
+    tm = machine_toml(Machine(Lattice("pmb2m"; line=BeamLine("M", mt))))
+    @test occursin("matrix = [1.0, 0.0, 0.0", tm) && parse_machine(tm)[:pmb2m] == Lattice("pmb2m"; line=BeamLine("M", mt))
+    # (f) The stage-4 guarantee stands: every registered kind's example round-trips (the per-kind testset) -- here the thin kinds and the solenoid, whose
+    # tuples declare their own tables, and a Float32 element whose arrays re-narrow.
+    for s in (ThinQuadrupoleSpec(; name="TQ", k1l=0.05), SolenoidSpec(; name="SO", L=1.0, ks=0.1, k1=0.5),
+              QuadrupoleSpec{Float32}(; name="Q32", L=0.3, k1=1.0))
+        l = Lattice("pmb2k"; line=BeamLine("K", s), eltype=Octopus.numeric_type(s) === nothing ? Float64 : Octopus.numeric_type(s))
+        t = machine_toml(Machine(l))
+        @test !occursin("{ tuple = ", t) && parse_machine(t)[:pmb2k] == l
+    end
+end
+
 @testset "Machine description: a Lattice wraps a line and is accepted where the line is" begin
     # The DBA ring of examples/twiss_dispersion_dba_ring.jl closed by a thin RF
     # cavity, with the focusing strength on a knob so the wiring report has a
@@ -22259,7 +22403,7 @@ end
     # A bare string where a number belongs (L: the example's evidence; x_offset:
     # the default's); an undefined knob reference, in an element and in [knobs].
     let m = msg(() -> parse_machine(edit("L = 0.5\n", "L = \"0.5\"\n")))
-        @test occursin("at lattices.K.elements.D.L", m) && occursin("bare string \"0.5\" where a number belongs", m)
+        @test occursin("at lattices.K.elements.D.L", m) && occursin("bare string \"0.5\" where the kind declares Real", m)   # the declared-type wording (R8d, 2026-11-26)
     end
     @test occursin("at lattices.K.elements.D.x_offset: a bare string", msg(() -> parse_machine(edit("L = 0.5\n", "L = 0.5\nx_offset = \"1e-3\"\n"))))
     @test getparam(getfield(line_entries(parse_machine(edit("L = 0.5\n", "L = 0.5\nmisalign_convention = \"madx\"\n"))[:K].line)[1], :spec),
@@ -27269,8 +27413,8 @@ end
                             m.contracts, m.analyses, parameters, example, construction_help,
                             m.rng_consumer)   # the stream class kept (R8b, 2026-11-26)
     withmeta(p; required=p.required, unit=p.unit, default=p.default, meaning=p.meaning,
-             alternatives=p.alternatives) =
-        ParamMeta(required, unit, default, meaning, alternatives)
+             alternatives=p.alternatives, type=p.type) =
+        ParamMeta(required, unit, default, meaning, alternatives, type)   # the declared type kept (R8d, 2026-11-26)
     function with_replaced_meta(f, kind, newmeta)
         old = Octopus.ELEMENT_META_BY_KIND[kind]
         try
@@ -27467,7 +27611,7 @@ end
     let io = IOBuffer()
         element_help(:sbend; io=io)
         text = String(take!(io))
-        @test occursin(r"- y_offset \(optional; unit=m; default=0; misalignment", text)
+        @test occursin(r"- y_offset \(optional; type=Real; unit=m; default=0; misalignment", text)   # type= since 2026-11-26 (R8d)
     end
 
     # F-174: a kind that declares no tracking method answers none. The line

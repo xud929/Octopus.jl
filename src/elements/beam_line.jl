@@ -949,8 +949,8 @@ end
     contracts = DataType[]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        name=ParamMeta(default="", meaning="line name; becomes the leading path segment of every placement it contains"),
-        entries=ParamMeta(default=(), meaning="the expanded placements. Built by BeamLine(name, children...) from nested children; the keyword form takes them ready-made, which is how a slice becomes a line"),
+        name=ParamMeta(type=AbstractString, default="", meaning="line name; becomes the leading path segment of every placement it contains"),
+        entries=ParamMeta(type=Union{Tuple,AbstractVector}, default=(), meaning="the expanded placements. Built by BeamLine(name, children...) from nested children; the keyword form takes them ready-made, which is how a slice becomes a line"),
         # The placement entries are the ONE table's (`_PLACEMENT_PARAMS`: unit,
         # default, alternatives) with the line's meanings; they were hand-copied
         # `ParamMeta`s without units (2026-10-18 comprehensive audit, F-171).
@@ -977,7 +977,7 @@ end
         # ever report as a lie. The inactive-table entry `(:line, :L)` of the
         # effectiveness contract is unaffected (an exemption is consulted
         # before any perturbation is formed).
-        L=ParamMeta(unit="m", meaning="total arc length of the expanded line. DERIVED, not settable and declaring no default: `compile_runtime` merges the computed `total_length` under this key so a nested own-state line surveys at its real length rather than zero, and `BeamLine` rejects a supplied `L`. Nothing stores it on a user's line, so a supplied value would be honoured by the arc-position walkers and ignored by `total_length` and the survey"),
+        L=ParamMeta(type=Union{Nothing,Real}, unit="m", meaning="total arc length of the expanded line. DERIVED, not settable and declaring no default: `compile_runtime` merges the computed `total_length` under this key so a nested own-state line surveys at its real length rather than zero, and `BeamLine` rejects a supplied `L`. Nothing stores it on a user's line, so a supplied value would be honoured by the arc-position walkers and ignored by `total_length` and the survey"),
         ref_tilt=_PLACEMENT_PARAMS.ref_tilt,
     )
     example = BeamLine("CELL", QuadrupoleSpec(L=0.4, k1=1.7, nst=2))

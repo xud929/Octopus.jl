@@ -622,14 +622,14 @@ end
                  PTCConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        L=ParamMeta(default=0, meaning="magnetic length in metres"),
-        ks=ParamMeta(default=0, meaning="normalized longitudinal field B_s/(B*rho), MAD-X's KS. Sign follows charge and field direction; both polarities are checked against PTC. Note this is the SOLENOID strength, not the skew multipole tuple other magnets spell `ks`"),
-        kn=ParamMeta(default=(), meaning="normal multipole strengths superimposed on the solenoid; kn[i] = K_{i-1}. THICK strengths as for QuadrupoleSpec, not the thin family's integrated K_n L"),
-        kskew=ParamMeta(default=(), meaning="skew partners of kn. Spelled `kskew` rather than `ks` because the solenoid needs `ks` for its own strength; usually set through the named k0s/k1s/k2s keywords instead"),
-        curved=ParamMeta(default=nothing, meaning="force the curved (implicit-midpoint) or straight (exact) tracking path. `nothing` lets the frame decide, i.e. curved when h != 0. `true` with h = 0 runs the integrator where the exact map is also available, which validates it directly rather than as a limit; `false` with h != 0 ignores the curvature and warns"),
-        h=ParamMeta(default=0, meaning="reference-frame curvature. h=0 is the exact closed-form map; h!=0 has no closed form and no exact splitting either, so it integrates with implicit midpoint over nst steps"),
-        nst=ParamMeta(default=1, meaning="integration steps. Used when multipoles are present, or when h != 0; a straight pure solenoid is exact and ignores it. THE MACHINE-READABLE default=1 ABOVE IS THE STRAIGHT-SOLENOID VALUE: the compile path uses 16 when h != 0, because nst=1 does not converge at production curvature, and a single ParamMeta field cannot express a conditional default (2026-08-05_b audit, U9-5). Measure convergence for production work rather than trusting either number"),
-        tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
+        L=ParamMeta(type=Real, default=0, meaning="magnetic length in metres"),
+        ks=ParamMeta(type=Real, default=0, meaning="normalized longitudinal field B_s/(B*rho), MAD-X's KS. Sign follows charge and field direction; both polarities are checked against PTC. Note this is the SOLENOID strength, not the skew multipole tuple other magnets spell `ks`"),
+        kn=ParamMeta(type=Tuple{Vararg{Real}}, default=(), meaning="normal multipole strengths superimposed on the solenoid; kn[i] = K_{i-1}. THICK strengths as for QuadrupoleSpec, not the thin family's integrated K_n L"),
+        kskew=ParamMeta(type=Tuple{Vararg{Real}}, default=(), meaning="skew partners of kn. Spelled `kskew` rather than `ks` because the solenoid needs `ks` for its own strength; usually set through the named k0s/k1s/k2s keywords instead"),
+        curved=ParamMeta(type=Union{Nothing,Bool}, default=nothing, meaning="force the curved (implicit-midpoint) or straight (exact) tracking path. `nothing` lets the frame decide, i.e. curved when h != 0. `true` with h = 0 runs the integrator where the exact map is also available, which validates it directly rather than as a limit; `false` with h != 0 ignores the curvature and warns"),
+        h=ParamMeta(type=Real, default=0, meaning="reference-frame curvature. h=0 is the exact closed-form map; h!=0 has no closed form and no exact splitting either, so it integrates with implicit midpoint over nst steps"),
+        nst=ParamMeta(type=Integer, default=1, meaning="integration steps. Used when multipoles are present, or when h != 0; a straight pure solenoid is exact and ignores it. THE MACHINE-READABLE default=1 ABOVE IS THE STRAIGHT-SOLENOID VALUE: the compile path uses 16 when h != 0, because nst=1 does not converge at production curvature, and a single ParamMeta field cannot express a conditional default (2026-08-05_b audit, U9-5). Measure convergence for production work rather than trusting either number"),
+        tracking_method=ParamMeta(type=AbstractTrackingMethod, default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = SolenoidSpec(L=2.0, ks=0.35)

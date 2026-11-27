@@ -254,9 +254,25 @@ Base.propertynames(spec::ElementSpec, ::Bool=false) =
 
 """
     ParamMeta(; required=false, unit="", default=nothing, meaning="",
-              alternatives=())
+              alternatives=(), type=nothing)
 
 Declarative metadata for one element-construction parameter.
+
+`type` (R8d of `docs/design/machine_description_followups.md`, batch B,
+2026-11-26) declares the class of value the parameter STORES, the one source
+the snapshot codec coerces by, the validator holds the default, the
+alternatives and the kind's example to, and `element_help` prints. A Julia
+type read by [`_param_type_holds`](@ref): `Real` admits any non-`Bool` number
+and a knob expression (design D10, an expression stands where a number
+stands), `Integer` an integer only (no expression: the compile cannot
+resolve one to a count), `Bool` a flag, `Symbol` an enum member,
+`AbstractString`, `Type` a numeric type, `AbstractTrackingMethod` a method
+singleton, `Tuple{Vararg{Real}}` a tuple of reals or expressions of any
+length (`NTuple{N,Real}` one of a fixed length), `Union{Nothing,T}` a value
+that may be stored as `nothing`, an object type for a rule, a record or a
+nested spec, and `Any` a deliberately polymorphic parameter the codec writes
+with its marker forms. `nothing` means "undeclared": `validate_element_metadata`
+refuses it for every registered kind, so the declaration cannot be forgotten.
 
 `alternatives` declares the parameter's other legitimate values — the enum
 for a Symbol/flag parameter (`misalign_convention`'s `(:bmad, :madx)`), or
@@ -282,10 +298,50 @@ struct ParamMeta
     default::Any
     meaning::String
     alternatives::Tuple
+    type::Any
 end
 ParamMeta(; required::Bool=false, unit="", default=nothing, meaning="",
-          alternatives::Tuple=()) =
-    ParamMeta(required, String(unit), default, String(meaning), alternatives)
+          alternatives::Tuple=(), type=nothing) =
+    ParamMeta(required, String(unit), default, String(meaning), alternatives, type)
+# The five-field positional form predates the type (kept for callers that
+# spell it; the type is undeclared and the validator says so for a registered
+# kind).
+ParamMeta(required::Bool, unit, default, meaning, alternatives::Tuple) =
+    ParamMeta(required, String(unit), default, String(meaning), alternatives, nothing)
+
+"""
+    _param_type_holds(T, v) -> Bool
+
+Whether the stored value `v` is of the class a `ParamMeta.type` of `T`
+declares (the rules of `?ParamMeta`): `nothing` and `Any` admit everything; a
+`Union` admits what any member admits; `nothing` is admitted by `Nothing`
+only; a tuple type admits a tuple whose length fits (`NTuple{N,E}`) and whose
+items its element type admits; a knob expression is admitted by a real class
+that is not an integer one; a `Bool` by `Bool` alone (a flag is not a
+number here, as it is not in the snapshot); anything else by `isa`. The
+validator, the snapshot's writer (before printing a stored value) and its
+reader (after decoding one) all ask this one function, so the three cannot
+disagree about a value's class.
+"""
+_param_type_holds(::Nothing, v) = true
+function _param_type_holds(T::Type, v)
+    T === Any && return true
+    T isa Union && return any(m -> _param_type_holds(m, v), Base.uniontypes(T))
+    v === nothing && return T === Nothing
+    T === Nothing && return false
+    if T <: Tuple
+        v isa Tuple || return false
+        T === Tuple && return true
+        n = Base.isvatuple(T) ? nothing : length(T.parameters)
+        n === nothing || length(v) == n || return false
+        E = eltype(T)
+        return all(x -> _param_type_holds(E, x), v)
+    end
+    v isa AbstractKnobExpression && return T <: Real && !(T <: Integer)
+    v isa Bool && return T === Bool
+    return v isa T
+end
+_param_type_string(T) = sprint(show, T)
 
 # Schema entries for the placement keys, spliced into every registered kind's
 # `parameters` declaration (`_PLACEMENT_PARAMS...`, or `_placement_param(:key;
@@ -308,7 +364,7 @@ const _PLACEMENT_PARAMS = (
     # purpose is to be carried rather than consumed (2026-08-05_b audit,
     # U15-12). Those two kinds keep their own, more specific `meaning`; a
     # per-kind entry wins over this one.
-    name=ParamMeta(default="",
+    name=ParamMeta(default="", type=AbstractString,
         meaning="label for this element, carried into beam-line provenance paths (ARC1/QF[3]) and into diagnostics that name an element rather than an index; read by the line walker, never by a tracking kernel"),
     # `numeric_type` is here for the same reason: the number type a kind's
     # runtime compiles in is a property of EVERY kind, one rule (owner
@@ -318,23 +374,23 @@ const _PLACEMENT_PARAMS = (
     # `Spec{T}` form every kind has stores `T` (`_typed_spec_params`). The two
     # tracking precisions are its `alternatives`, so the parameter-effectiveness
     # contract perturbs it and checks the typed form reaches the map.
-    numeric_type=ParamMeta(default=Float64, alternatives=(Float64, Float32),
+    numeric_type=ParamMeta(default=Float64, alternatives=(Float64, Float32), type=Type,
         meaning="the number type the compiled runtime is built in, read by numeric_type(spec) at compile_runtime: unset by the untyped friendly constructor (the promotion of the stored parameters over a Float64 floor, so Float32 inputs give a Float64 element and a dual or complex input widens it), stored as T by the kind's Spec{T} form -- Spec{Float32}(; ...) is the Float32 element, and Spec(; numeric_type=Float32, ...) is the same element by keyword; a beam whose element type differs from the element's is refused by name when a task compiles the line"),
-    x_offset=ParamMeta(default=0, unit="m",
+    x_offset=ParamMeta(default=0, unit="m", type=Real,
         meaning="horizontal displacement of the element body, a placement error consumed by the generic misalignment wrap at compile_runtime, not by the element kernel; see src/elements/misalignment.jl"),
-    y_offset=ParamMeta(default=0, unit="m",
+    y_offset=ParamMeta(default=0, unit="m", type=Real,
         meaning="vertical displacement of the element body; see x_offset"),
-    z_offset=ParamMeta(default=0, unit="m",
+    z_offset=ParamMeta(default=0, unit="m", type=Real,
         meaning="longitudinal displacement of the element body along the local reference direction; see x_offset"),
-    x_pitch=ParamMeta(default=0, unit="rad",
+    x_pitch=ParamMeta(default=0, unit="rad", type=Real,
         meaning="rotation of the body in the x-s plane (about the vertical axis); see x_offset"),
-    y_pitch=ParamMeta(default=0, unit="rad",
+    y_pitch=ParamMeta(default=0, unit="rad", type=Real,
         meaning="rotation of the body in the y-s plane (about the horizontal transverse axis); see x_offset"),
-    tilt=ParamMeta(default=0, unit="rad",
+    tilt=ParamMeta(default=0, unit="rad", type=Real,
         meaning="roll of the body about s, an alignment ERROR measured against the design orbit; the design roll is ref_tilt"),
-    misalign_convention=ParamMeta(default=:bmad, alternatives=(:bmad, :madx),
+    misalign_convention=ParamMeta(default=:bmad, alternatives=(:bmad, :madx), type=Symbol,
         meaning="which code's misalignment convention to follow, :bmad or :madx; they differ in rotation-composition order, the arc point the displacement anchors at, and the frame an error is stated in against a ref_tilt"),
-    ref_tilt=ParamMeta(default=0, unit="rad",
+    ref_tilt=ParamMeta(default=0, unit="rad", type=Real,
         meaning="DESIGN roll of the element about s — geometry, not an error; wraps outside the misalignment, and a :madx alignment error against it is stated in the unrolled design frame"),
 )
 
@@ -355,7 +411,7 @@ every registered kind's placement entries to the table.
 """
 function _placement_param(key::Symbol; meaning::AbstractString)
     base = _PLACEMENT_PARAMS[key]
-    return ParamMeta(base.required, base.unit, base.default, String(meaning), base.alternatives)
+    return ParamMeta(base.required, base.unit, base.default, String(meaning), base.alternatives, base.type)
 end
 
 """
@@ -719,8 +775,8 @@ _cross_backend_rounding(::MyElement) = _rounding_class(
     contracts = DataType[]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        strength=ParamMeta(required=true, meaning="element strength"),
-        tracking_method=ParamMeta(default=Symplectic6DMap(),
+        strength=ParamMeta(required=true, type=Real, meaning="element strength"),
+        tracking_method=ParamMeta(type=AbstractTrackingMethod, default=Symplectic6DMap(),
                                   meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,   # placement, name and numeric_type: every kind
     )
@@ -741,6 +797,7 @@ Validation checklist:
 - the numeric type follows ONE rule for every kind (owner decision 2026-10-16): the compile constructor builds the runtime in `numeric_type(spec)`, the promotion of the stored parameters over a `Float64` floor for an untyped friendly constructor (a `Float32` input gives a `Float64` element, a dual or complex input widens it, nothing narrows) and the stored `numeric_type` for the `Spec{T}` form -- which every kind has, so every kind can sit in a `Float32` line; the typed form stores `_typed_spec_params(T; ...)` (floating-point inputs as `T`, `numeric_type = T`) and the untyped form routes `numeric_type=T` to it, storing no type itself (an untyped form that builds through its typed one drops the stored type again with `_floor_form`, so a dual or BigFloat placed later by a knob or a placement override still widens the element); declare the schema entry by splicing `_PLACEMENT_PARAMS...` (or `numeric_type=_PLACEMENT_PARAMS.numeric_type`); the runtime struct carries `T<:Number` as its one numeric type parameter, from which `_required_beam_eltype` (`src/track/Track.jl`) derives the beam element type the kind requires, so a task refuses a beam of another type by name; the suite pins the derived set against the registry;
 - declare the cross-backend rounding class on the runtime type (`_cross_backend_rounding`, `CrossBackendRounding` in `src/track/Track.jl`): for each of the six coordinates `:untouched`, `:bitwise` (written by single IEEE operations or arithmetic exact under any FMA fusion) or `:ulp` with a bound in ulps of the coordinate's scale and a `why` naming the operations; the device fuses `a b + c` into one FMA and its libm differs from the host's on transcendentals, so anything else is `:ulp`; there is no default, and the suite's "Cross-backend rounding classes" testset derives the set of types that must declare and measures every registry example against its declaration (the measurement wins);
 - declare the placement keys by splicing `_PLACEMENT_PARAMS...`, or through `_placement_param(:key; meaning=...)` where the kind has more to say about one: `validate_element_metadata` holds every placement entry to the table's unit, default and alternatives, compares EVERY declared default (the example's or not) with the map omitting the parameter compiles to, requires a Symbol or type default to lie within its `alternatives`, and refuses empty descriptions, keywords, meanings and construction help (F-168, F-171, F-172);
+- declare every parameter's value class, `ParamMeta(; type=Real, ...)` (R8d, batch B, 2026-11-26): `Real` for a number that may be a knob expression, `Integer` for a count, `Bool`, `Symbol` for an enum, `AbstractString`, `Type`, `AbstractTrackingMethod`, `Tuple{Vararg{Real}}` for a strength or optics tuple, `Union{Nothing, T}` where the stored value may be `nothing`, an object type for a rule or a record, `Any` only for a deliberately polymorphic parameter; the validator refuses an undeclared one and holds the default, the alternatives and the example's stored value to the declaration, the snapshot codec coerces by it, and `element_help` prints it;
 - declare `rng_consumer = :class` on a kind whose schema declares `rng_id`, and only on such a kind (`validate_element_metadata` holds the equivalence): the flexible form `ElementSpec{kind}(params)` -- the snapshot reader's, the knob resolve's and the override routes' way in -- claims an explicit id under that class in the process registry, as the friendly constructor's `claim_rng_id!` does (R8b, 2026-11-26); the kind's own stored id (auto-assigned for `rng_id = 0`) passes every rebuild silently;
 - the class form `MyElementSpec(template; name, kwargs...)` is installed by the registration itself on a type `friendly_constructor` (R11, 2026-11-26; `_install_class_form!`, `_derive_spec`): keep the all-keyword form accepting every key the kind stores, which the suite's registry-derived tripwire (a no-change derivation of the `example` equals it up to the name) checks for every kind;
 - run `validate_element_metadata()`;
@@ -791,6 +848,19 @@ end
 
 """Numerical algorithm used to propagate phase-space coordinates."""
 abstract type AbstractTrackingMethod <: AbstractOctopusObject end
+
+"""
+    AbstractTurnRule
+
+The root of every per-slot turn-modulation rule (`WhiteNoise`, `PinkNoise`,
+`TurnTable`, `SpectralNoise`). A concrete rule defines `_turn_offset` (its value on one turn,
+which the element's `realize` adds to a phase or scales a strength by as
+`S (1 + d)`) and `_rule_kind` (its provenance kind label). The rule catalogue is
+DERIVED from the concrete subtypes of this root (`_turn_rule_names`, the crab
+cavity's `_is_turn_rule`, the generic `_push_rule_slot!`, the suite's catalogue
+tripwire), never hand-copied into a case list.
+"""
+abstract type AbstractTurnRule end
 
 """Numerical execution decisions such as slicing, threading, GPU, or MPI."""
 abstract type AbstractExecutionPolicy <: AbstractOctopusObject end
@@ -1416,6 +1486,9 @@ end
 function _schema_meta_suffix_param(meta::ParamMeta)
     parts = String[]
     push!(parts, meta.required ? "required" : "optional")
+    # The declared value class (R8d, 2026-11-26), printed before the unit so
+    # a reader sees `type=Real; unit=m` as one phrase.
+    meta.type === nothing || push!(parts, "type=" * _param_type_string(meta.type))
     !isempty(meta.unit) && push!(parts, "unit=$(meta.unit)")
     meta.default !== nothing && push!(parts, "default=$(meta.default)")
     # Declared alternatives are half the point of the field: the enum a user
@@ -1808,6 +1881,40 @@ function _validate_element_metadata(; throw_on_error::Bool=false)
         end
         for (key, pmeta) in pairs(schema)
             if pmeta isa ParamMeta
+                # R8d (batch B, 2026-11-26): every parameter declares the class
+                # of value it stores, and the declaration holds what the kind
+                # already says about the key -- its default, its alternatives
+                # and the example's stored value -- so the snapshot codec can
+                # coerce by it and a translator can read a foreign value into
+                # it. A default of `nothing` is "no declared default" (the
+                # `_check_declared_defaults!` convention), not a stored nothing,
+                # and is not held to the type; a stored `nothing` in the
+                # example is, which is what makes an optional parameter
+                # declare `Union{Nothing, ...}`.
+                ptype = pmeta.type
+                if ptype === nothing
+                    push!(errors, "ElementMeta $(meta.kind) parameter $(key) declares no type " *
+                                  "(ParamMeta(; type=...), the value class the snapshot coerces by; " *
+                                  "`Any` for a deliberately polymorphic parameter)")
+                elseif !(ptype isa Type)
+                    push!(errors, "ElementMeta $(meta.kind) parameter $(key) declares type " *
+                                  "$(repr(ptype)), which is not a Type")
+                else
+                    pmeta.default === nothing || _param_type_holds(ptype, pmeta.default) || push!(errors,
+                        "ElementMeta $(meta.kind) parameter $(key) declares default " *
+                        "$(repr(pmeta.default))::$(typeof(pmeta.default)) outside its declared type $(ptype)")
+                    for alt in pmeta.alternatives
+                        _param_type_holds(ptype, alt) || push!(errors,
+                            "ElementMeta $(meta.kind) parameter $(key) declares alternative " *
+                            "$(repr(alt))::$(typeof(alt)) outside its declared type $(ptype)")
+                    end
+                    if example isa ElementSpec && hasparam(example, key)
+                        v = getparam(example, key)
+                        _param_type_holds(ptype, v) || push!(errors,
+                            "ElementMeta $(meta.kind) example stores $(key) = $(repr(v))::$(typeof(v)) " *
+                            "outside the declared type $(ptype)")
+                    end
+                end
                 # The unit is drawn from a controlled vocabulary, for the same
                 # reason the keywords above are: it drives behaviour. See
                 # `ALLOWED_PARAM_UNITS`. Measured when this landed: the whole
@@ -1898,14 +2005,16 @@ function _validate_element_metadata(; throw_on_error::Bool=false)
                 entry = schema[key]
                 entry isa ParamMeta || continue
                 (entry.required == ref.required && entry.unit == ref.unit &&
-                 isequal(entry.default, ref.default) && entry.alternatives == ref.alternatives) ||
+                 isequal(entry.default, ref.default) && entry.alternatives == ref.alternatives &&
+                 entry.type === ref.type) ||
                     push!(errors,
                         "ElementMeta $(meta.kind) placement parameter $(key) departs from " *
                         "_PLACEMENT_PARAMS (required $(entry.required) vs $(ref.required), unit " *
                         "$(repr(entry.unit)) vs $(repr(ref.unit)), default $(repr(entry.default)) " *
                         "vs $(repr(ref.default)), alternatives $(entry.alternatives) vs " *
-                        "$(ref.alternatives)); declare it through _placement_param(key; " *
-                        "meaning=...) so that only the meaning is the kind's own")
+                        "$(ref.alternatives), type $(repr(entry.type)) vs $(repr(ref.type))); declare " *
+                        "it through _placement_param(key; meaning=...) so that only the meaning " *
+                        "is the kind's own")
             end
         end
 

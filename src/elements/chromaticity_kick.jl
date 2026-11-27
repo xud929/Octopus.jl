@@ -268,14 +268,14 @@ end
     contracts = [ElementTrackingBackendConsistencyContract]
     analyses = [TwissDispersionAnalysis]
     parameters = (
-        xi=ParamMeta(required=true, meaning="horizontal and vertical chromaticities"),
-        beta=ParamMeta(required=true, meaning="two- or three-plane beta functions; only horizontal and vertical values are used"),
-        alpha=ParamMeta(default=(0, 0, 0), meaning="two- or three-plane alpha functions; only horizontal and vertical values are used"),
-        zeta=ParamMeta(default=(0, 0, 0, 0), meaning="crab dispersion coefficients (zeta1..zeta4), removed before the kick and restored after it. " * _CANONICAL_DISPERSION_NOTE),
-        eta=ParamMeta(default=(0, 0, 0, 0), meaning="momentum dispersion coefficients (eta1..eta4), removed before the kick and restored after it. " * _CANONICAL_DISPERSION_NOTE),
-        R=ParamMeta(default=(0, 0, 0, 0), meaning="x-y coupling coefficients (r1, r2, r3, r4): the Edwards-Teng matrix R of XYCouplingSpec, applied in the Edwards-Teng form `form` (1, XY_MODEA, unless a LinearOptics point in form 2 set form=2) with lambda = 1/sqrt(1 + det R), removed before the kick and restored after it; the same R as Beam's coupling, NOT Linear6DSpec's block R1/R2 (C = adj(R)/sqrt(1 + det R))"),
-        form=ParamMeta(default=1, alternatives=(1, 2), meaning="Edwards-Teng form in which R is applied: 1 (XY_MODEA, the V1 normalizer) or 2 (XY_MODEB, V2). Set from the LinearOptics point given as optics (its twiss.form); the flat keywords couple in form 1 and refuse form=2 by name, and the raw ElementSpec{:chromaticity_kick}(; form=2) spells it directly (design docs/design/linear_optics.md, D11)"),
-        tracking_method=ParamMeta(default=Symplectic6DMap(), meaning="per-element tracking method"),
+        xi=ParamMeta(type=Tuple{Vararg{Real}}, required=true, meaning="horizontal and vertical chromaticities"),
+        beta=ParamMeta(type=Tuple{Vararg{Real}}, required=true, meaning="two- or three-plane beta functions; only horizontal and vertical values are used"),
+        alpha=ParamMeta(type=Tuple{Vararg{Real}}, default=(0, 0, 0), meaning="two- or three-plane alpha functions; only horizontal and vertical values are used"),
+        zeta=ParamMeta(type=Tuple{Vararg{Real}}, default=(0, 0, 0, 0), meaning="crab dispersion coefficients (zeta1..zeta4), removed before the kick and restored after it. " * _CANONICAL_DISPERSION_NOTE),
+        eta=ParamMeta(type=Tuple{Vararg{Real}}, default=(0, 0, 0, 0), meaning="momentum dispersion coefficients (eta1..eta4), removed before the kick and restored after it. " * _CANONICAL_DISPERSION_NOTE),
+        R=ParamMeta(type=Tuple{Vararg{Real}}, default=(0, 0, 0, 0), meaning="x-y coupling coefficients (r1, r2, r3, r4): the Edwards-Teng matrix R of XYCouplingSpec, applied in the Edwards-Teng form `form` (1, XY_MODEA, unless a LinearOptics point in form 2 set form=2) with lambda = 1/sqrt(1 + det R), removed before the kick and restored after it; the same R as Beam's coupling, NOT Linear6DSpec's block R1/R2 (C = adj(R)/sqrt(1 + det R))"),
+        form=ParamMeta(type=Integer, default=1, alternatives=(1, 2), meaning="Edwards-Teng form in which R is applied: 1 (XY_MODEA, the V1 normalizer) or 2 (XY_MODEB, V2). Set from the LinearOptics point given as optics (its twiss.form); the flat keywords couple in form 1 and refuse form=2 by name, and the raw ElementSpec{:chromaticity_kick}(; form=2) spells it directly (design docs/design/linear_optics.md, D11)"),
+        tracking_method=ParamMeta(type=AbstractTrackingMethod, default=Symplectic6DMap(), meaning="per-element tracking method"),
         _PLACEMENT_PARAMS...,
     )
     example = ChromaticityKickSpec(xi=(1.0, 1.0), beta=(1.0, 1.0))
